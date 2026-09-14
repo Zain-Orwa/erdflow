@@ -298,7 +298,10 @@ void MainWindow::build_actions() {
     // Icon beside text, the way an office application labels its toolbar: the
     // glyph carries recognition, the word removes any doubt.
     toolbar->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-    toolbar->setIconSize(QSize(22, 22));
+    // Big enough that the drawing in an icon can be read rather than guessed
+    // at. The toolbar runs out of width before it runs out of room in height,
+    // so anything past this pushes buttons into the overflow.
+    toolbar->setIconSize(QSize(34, 34));
     toolbar->addAction(action_save);
     toolbar->addSeparator();
     toolbar->addAction(undo_);
@@ -578,7 +581,7 @@ void MainWindow::refresh_explorer() {
     // rebuilt when either changes.
     const auto& colors = theme(theme_);
     const auto append = [&](const QString& label, Glyph glyph, const auto& collection) {
-        const auto badge = glyph_icon(glyph, colors, 18, icon_mode_);
+        const auto badge = glyph_icon(glyph, colors, 22, icon_mode_);
         auto* group = new QStandardItem(badge, label + QString(" (%1)").arg(collection.size()));
         group->setSelectable(false);
         project->appendRow(group);
@@ -1003,8 +1006,8 @@ void MainWindow::set_theme(ThemeId id) {
 void MainWindow::refresh_icons() {
     const auto& colors = theme(theme_);
     for (const auto& [action, glyph] : action_glyphs_)
-        action->setIcon(glyph_icon(glyph, colors, 22, icon_mode_));
-    if (theme_button_) theme_button_->setIcon(glyph_icon(Glyph::Theme, colors, 22, icon_mode_));
+        action->setIcon(glyph_icon(glyph, colors, 34, icon_mode_));
+    if (theme_button_) theme_button_->setIcon(glyph_icon(Glyph::Theme, colors, 34, icon_mode_));
     if (notation_box_) {
         for (int index = 0; index < notation_box_->count(); ++index)
             notation_box_->setItemIcon(index, QIcon(canvas_->notation_preview(
