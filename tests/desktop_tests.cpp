@@ -1,3 +1,4 @@
+#include "app/desktop/icons.hpp"
 #include "app/desktop/main_window.hpp"
 #include "infrastructure/project_store.hpp"
 
@@ -19,7 +20,9 @@
 #include <QToolButton>
 #include <QTreeView>
 
+#include <algorithm>
 #include <iostream>
+#include <map>
 #include <stdexcept>
 
 namespace {
@@ -327,6 +330,41 @@ int main(int argc, char** argv) {
         require(window.canvas()->theme_id() == desktop::ThemeId::OfficeLight, "And back again");
         require(child<QAction>(window, "toolEntity")->icon().pixmap(18, 18).toImage() == entity_icon,
                 "Returning to a theme restores its icons");
+
+        // A glyph is a drawing, not a silhouette. The hand is the shape most at
+        // risk: it is a stack of overlapping rounded rects, so once its stroke
+        // approaches a finger's width the outlines merge and the whole icon
+        // fills in as one dark mass. Measuring how much of the pale palm fill
+        // survives at toolbar size catches exactly that collapse; the drawn-at-
+        // all check covers the rest of the set.
+        const auto share_of_fill = [](desktop::Glyph glyph) {
+            const auto drawn = desktop::glyph_icon(glyph, desktop::theme(desktop::ThemeId::OfficeLight), 22)
+                                   .pixmap(22, 22).toImage().convertToFormat(QImage::Format_ARGB32);
+            int opaque = 0;
+            int pale = 0;
+            for (int y = 0; y < drawn.height(); ++y)
+                for (int x = 0; x < drawn.width(); ++x) {
+                    const auto pixel = drawn.pixel(x, y);
+                    if (qAlpha(pixel) < 200) continue;
+                    ++opaque;
+                    if (qGray(pixel) > 150) ++pale;
+                }
+            require(opaque > 40, "Every glyph draws something at toolbar size");
+            return static_cast<double>(pale) / static_cast<double>(opaque);
+        };
+        for (int index = 0; index <= static_cast<int>(desktop::Glyph::Delete); ++index)
+            share_of_fill(static_cast<desktop::Glyph>(index));
+        require(share_of_fill(desktop::Glyph::Pan) > 0.3, "The hand keeps an open palm rather than filling in");
+
+        // The two menu buttons are added to the toolbar as widgets, so nothing
+        // makes them follow it: they have to ask for the icon themselves.
+        for (const char* menu_button : {"isaButton", "connectButton"}) {
+            auto* widget = child<QToolButton>(window, menu_button);
+            require(widget->toolButtonStyle() == Qt::ToolButtonTextBesideIcon,
+                    "A menu button on the toolbar shows its glyph like every other button");
+            require(!widget->icon().isNull() && widget->iconSize() == child<QToolBar>(window, "modelTools")->iconSize(),
+                    "And shows it at the toolbar's size");
+        }
 
         child<QAction>(window, "toolSelect")->trigger();
         require(!window.canvas()->tool_locked(), "Choosing another tool clears the lock");

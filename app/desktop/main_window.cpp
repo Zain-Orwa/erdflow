@@ -276,6 +276,7 @@ void MainWindow::build_actions() {
     // Icon beside text, the way an office application labels its toolbar: the
     // glyph carries recognition, the word removes any doubt.
     toolbar->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    toolbar->setIconSize(QSize(22, 22));
     toolbar->addAction(action_save);
     toolbar->addSeparator();
     toolbar->addAction(undo_);
@@ -330,7 +331,10 @@ void MainWindow::build_actions() {
     isa_button->setDefaultAction(isa_action_);
     isa_button->setMenu(isa_menu);
     isa_button->setPopupMode(QToolButton::MenuButtonPopup);
-    isa_button->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    // These two are plain widgets on the toolbar rather than actions, so they
+    // inherit none of its presentation and have to be told to match it.
+    isa_button->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    isa_button->setIconSize(toolbar->iconSize());
     toolbar->addWidget(isa_button);
     tool_actions_[Tool::Specialization] = isa_action_;
     tool_actions_[Tool::Generalization] = isa_action_;
@@ -361,7 +365,8 @@ void MainWindow::build_actions() {
     connect_button->setDefaultAction(connect_action);
     connect_button->setMenu(line_menu);
     connect_button->setPopupMode(QToolButton::MenuButtonPopup);
-    connect_button->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    connect_button->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    connect_button->setIconSize(toolbar->iconSize());
     toolbar->addWidget(connect_button);
     tool_actions_[Tool::Connect] = connect_action;
     connect_button->installEventFilter(this);

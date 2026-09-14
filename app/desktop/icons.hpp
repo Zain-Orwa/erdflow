@@ -15,6 +15,6 @@ enum class Glyph {
     Isa, Connect, Pan, Fit, Check, Duplicate, Rename, Delete
 };
 
-[[nodiscard]] QIcon glyph_icon(Glyph glyph, const Theme& colors, int size = 18);
+[[nodiscard]] QIcon glyph_icon(Glyph glyph, const Theme& colors, int size = 22);
 
 } // namespace erdflow::desktop

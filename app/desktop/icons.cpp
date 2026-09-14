@@ -1,5 +1,6 @@
 #include "icons.hpp"
 
+#include <QLinearGradient>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPixmap>
@@ -8,8 +9,24 @@
 namespace erdflow::desktop {
 namespace {
 
-// An arrowhead at `tip`, opening back along `back`, used by the several glyphs
-// that are an arrow of some kind.
+// A fill that runs from a lifted tint down to the base colour. The shading is
+// what gives a flat shape its sense of depth without resorting to bitmaps.
+QLinearGradient depth(const QRectF& box, const QColor& base) {
+    QLinearGradient gradient(box.topLeft(), box.bottomRight());
+    gradient.setColorAt(0.0, base.lighter(118));
+    gradient.setColorAt(1.0, base);
+    return gradient;
+}
+
+// Every outline uses the same weight and rounded ends, which is most of what
+// makes a set of glyphs read as one family.
+QPen outline(const QColor& colour, qreal weight) {
+    QPen pen(colour, weight);
+    pen.setJoinStyle(Qt::RoundJoin);
+    pen.setCapStyle(Qt::RoundCap);
+    return pen;
+}
+
 void arrow_head(QPainter& painter, const QPointF& tip, const QPointF& back, qreal spread, const QColor& ink) {
     const auto length = std::hypot(back.x(), back.y());
     if (length < 0.001) return;
@@ -25,114 +42,152 @@ void arrow_head(QPainter& painter, const QPointF& tip, const QPointF& back, qrea
 void draw(QPainter& painter, Glyph glyph, const Theme& colors, qreal side) {
     const auto ink = colors.text;
     const auto accent = colors.accent;
-    const QRectF box(2.5, 2.5, side - 5, side - 5);
+    const auto weight = side / 8.5;
+    const QRectF box(weight, weight, side - weight * 2, side - weight * 2);
     const auto centre = box.center();
-    QPen pen(ink, 1.5);
-    pen.setJoinStyle(Qt::RoundJoin);
-    pen.setCapStyle(Qt::RoundCap);
-    painter.setPen(pen);
+    painter.setPen(outline(ink, weight));
     painter.setBrush(Qt::NoBrush);
 
     switch (glyph) {
-    case Glyph::New:
-        painter.drawRect(box.adjusted(2, 0, -2, 0));
+    case Glyph::New: {
+        const auto fold = box.width() * 0.3;
+        const QRectF page(box.left() + box.width() * 0.1, box.top(), box.width() * 0.8, box.height());
+        QPainterPath sheet(QPointF(page.left(), page.top()));
+        sheet.lineTo(page.right() - fold, page.top());
+        sheet.lineTo(page.right(), page.top() + fold);
+        sheet.lineTo(page.right(), page.bottom());
+        sheet.lineTo(page.left(), page.bottom());
+        sheet.closeSubpath();
+        painter.setBrush(depth(box, colors.base));
+        painter.setPen(outline(colors.muted, weight * 0.85));
+        painter.drawPath(sheet);
+        painter.drawLine(QPointF(page.right() - fold, page.top()), QPointF(page.right() - fold, page.top() + fold));
+        painter.drawLine(QPointF(page.right() - fold, page.top() + fold), QPointF(page.right(), page.top() + fold));
         break;
+    }
     case Glyph::Open: {
-        // A folder: a tab along the top edge and the body beneath it.
         QPainterPath folder(QPointF(box.left(), box.bottom()));
-        folder.lineTo(box.left(), box.top() + 2);
-        folder.lineTo(box.left() + box.width() * 0.4, box.top() + 2);
-        folder.lineTo(box.left() + box.width() * 0.5, box.top() + 4.5);
-        folder.lineTo(box.right(), box.top() + 4.5);
+        folder.lineTo(box.left(), box.top() + box.height() * 0.18);
+        folder.lineTo(box.left() + box.width() * 0.4, box.top() + box.height() * 0.18);
+        folder.lineTo(box.left() + box.width() * 0.52, box.top() + box.height() * 0.34);
+        folder.lineTo(box.right(), box.top() + box.height() * 0.34);
         folder.lineTo(box.right(), box.bottom());
         folder.closeSubpath();
+        painter.setBrush(depth(box, accent.lighter(155)));
+        painter.setPen(outline(accent.darker(125), weight));
         painter.drawPath(folder);
         break;
     }
     case Glyph::Save:
-        painter.drawRect(box);
-        painter.setBrush(accent);
+        painter.setBrush(depth(box, accent));
+        painter.setPen(outline(accent.darker(140), weight));
+        painter.drawRoundedRect(box, 2.5, 2.5);
         painter.setPen(Qt::NoPen);
-        painter.drawRect(QRectF(box.left() + 3, box.top(), box.width() - 6, box.height() * 0.34));
+        painter.setBrush(colors.base);
+        painter.drawRect(QRectF(box.left() + box.width() * 0.24, box.top() + weight * 0.4,
+                                box.width() * 0.52, box.height() * 0.3));
         break;
     case Glyph::Undo:
     case Glyph::Redo: {
-        // A hooked arrow. Redo is the same path mirrored about the centre.
         const bool forward = glyph == Glyph::Redo;
         painter.save();
         if (forward) {
             painter.translate(centre.x() * 2, 0);
             painter.scale(-1, 1);
         }
-        QPainterPath hook(QPointF(box.right(), box.bottom() - 1));
-        hook.cubicTo(QPointF(box.right(), box.top() + 3), QPointF(box.left() + 3, box.top() + 1),
-                     QPointF(box.left() + 1.5, box.top() + 4));
+        QPainterPath hook(QPointF(box.right() - box.width() * 0.08, box.bottom()));
+        hook.cubicTo(QPointF(box.right(), box.top() + box.height() * 0.34),
+                     QPointF(box.left() + box.width() * 0.42, box.top() + box.height() * 0.12),
+                     QPointF(box.left() + box.width() * 0.26, box.top() + box.height() * 0.3));
+        painter.setPen(outline(ink, weight * 0.95));
         painter.drawPath(hook);
-        arrow_head(painter, QPointF(box.left() + 1, box.top() + 6.5), QPointF(0.6, -1), 2.4, ink);
+        // The head sits at the arc's end and points back along its tangent, so
+        // the two never separate however the curve is tuned.
+        arrow_head(painter, QPointF(box.left() + box.width() * 0.16, box.top() + box.height() * 0.42),
+                   QPointF(0.66, -0.75), weight * 1.15, ink);
         painter.restore();
         break;
     }
     case Glyph::Select: {
-        QPolygonF cursor;
-        cursor << QPointF(box.left() + 2, box.top() + 1) << QPointF(box.left() + 2, box.bottom() - 1)
-               << QPointF(box.left() + 5.5, box.bottom() - 4.5) << QPointF(box.right() - 3, box.bottom() - 5);
-        painter.setBrush(ink);
-        painter.drawPolygon(cursor);
+        // A pointer with the motion ticks that say it is the thing you move with.
+        QPainterPath cursor(QPointF(box.left() + box.width() * 0.1, box.top()));
+        cursor.lineTo(box.left() + box.width() * 0.1, box.bottom());
+        cursor.lineTo(box.left() + box.width() * 0.38, box.bottom() - box.height() * 0.28);
+        cursor.lineTo(box.right() - box.width() * 0.18, box.bottom() - box.height() * 0.32);
+        cursor.closeSubpath();
+        painter.setBrush(depth(box, accent));
+        painter.setPen(outline(accent.darker(150), weight * 0.9));
+        painter.drawPath(cursor);
+        painter.setPen(outline(accent, weight * 0.8));
+        painter.drawLine(QPointF(box.right() - box.width() * 0.2, box.top()),
+                         QPointF(box.right() - box.width() * 0.05, box.top() - weight * 0.2));
+        painter.drawLine(QPointF(box.right() - box.width() * 0.02, box.top() + box.height() * 0.2),
+                         QPointF(box.right() + weight * 0.3, box.top() + box.height() * 0.18));
         break;
     }
     case Glyph::Entity:
-        painter.setBrush(colors.entity_fill);
-        painter.setPen(QPen(colors.entity_border, 1.5));
-        painter.drawRect(box.adjusted(0, 2.5, 0, -2.5));
+        painter.setBrush(depth(box, colors.entity_fill));
+        painter.setPen(outline(colors.entity_border, weight));
+        painter.drawRoundedRect(box.adjusted(0, box.height() * 0.14, 0, -box.height() * 0.14), 2.5, 2.5);
         break;
     case Glyph::Attribute:
-        painter.setBrush(colors.attribute_fill);
-        painter.setPen(QPen(colors.attribute_border, 1.5));
-        painter.drawEllipse(box.adjusted(0, 3, 0, -3));
+        painter.setBrush(depth(box, colors.attribute_fill));
+        painter.setPen(outline(colors.attribute_border, weight));
+        painter.drawEllipse(box.adjusted(0, box.height() * 0.16, 0, -box.height() * 0.16));
         break;
     case Glyph::Relationship: {
         QPolygonF diamond;
         diamond << QPointF(centre.x(), box.top()) << QPointF(box.right(), centre.y())
                 << QPointF(centre.x(), box.bottom()) << QPointF(box.left(), centre.y());
-        painter.setBrush(colors.relationship_fill);
-        painter.setPen(QPen(colors.relationship_border, 1.5));
+        painter.setBrush(depth(box, colors.relationship_fill));
+        painter.setPen(outline(colors.relationship_border, weight));
         painter.drawPolygon(diamond);
         break;
     }
     case Glyph::Isa: {
         QPolygonF triangle;
-        triangle << QPointF(centre.x(), box.top() + 1) << QPointF(box.right(), box.bottom() - 1)
-                 << QPointF(box.left(), box.bottom() - 1);
-        painter.setBrush(colors.relationship_fill);
-        painter.setPen(QPen(colors.relationship_border, 1.5));
+        triangle << QPointF(centre.x(), box.top()) << QPointF(box.right(), box.bottom())
+                 << QPointF(box.left(), box.bottom());
+        painter.setBrush(depth(box, colors.relationship_fill));
+        painter.setPen(outline(colors.relationship_border, weight));
         painter.drawPolygon(triangle);
         break;
     }
     case Glyph::Connect: {
-        const QPointF from(box.left() + 2, box.bottom() - 2);
-        const QPointF to(box.right() - 2, box.top() + 2);
-        painter.setPen(QPen(colors.connector, 1.6));
+        const QPointF from(box.left() + weight, box.bottom() - weight);
+        const QPointF to(box.right() - weight, box.top() + weight);
+        painter.setPen(outline(accent, weight * 1.1));
         painter.drawLine(from, to);
-        painter.setPen(Qt::NoPen);
-        painter.setBrush(accent);
-        painter.drawEllipse(from, 2.4, 2.4);
-        painter.drawEllipse(to, 2.4, 2.4);
+        painter.setPen(outline(accent.darker(150), weight * 0.8));
+        painter.setBrush(depth(box, accent));
+        painter.drawEllipse(from, weight * 1.5, weight * 1.5);
+        painter.drawEllipse(to, weight * 1.5, weight * 1.5);
         break;
     }
-    case Glyph::Pan:
-        // Four short arms, which reads as "move in any direction".
-        painter.drawLine(QPointF(centre.x(), box.top() + 1), QPointF(centre.x(), box.bottom() - 1));
-        painter.drawLine(QPointF(box.left() + 1, centre.y()), QPointF(box.right() - 1, centre.y()));
-        arrow_head(painter, QPointF(centre.x(), box.top()), QPointF(0, 1), 2.2, ink);
-        arrow_head(painter, QPointF(centre.x(), box.bottom()), QPointF(0, -1), 2.2, ink);
-        arrow_head(painter, QPointF(box.left(), centre.y()), QPointF(1, 0), 2.2, ink);
-        arrow_head(painter, QPointF(box.right(), centre.y()), QPointF(-1, 0), 2.2, ink);
+    case Glyph::Pan: {
+        // A hand, as every tool that grabs a canvas uses: palm plus four fingers.
+        // The fingers have to be wider than the stroke that outlines them, or
+        // the whole hand fills in and reads as a blob at toolbar size.
+        const auto finger = box.width() * 0.2;
+        QPainterPath hand;
+        hand.addRoundedRect(QRectF(box.left() + box.width() * 0.08, centre.y() - box.height() * 0.08,
+                                   box.width() * 0.84, box.height() * 0.58), finger * 0.8, finger * 0.8);
+        for (int index = 0; index < 4; ++index) {
+            const auto x = box.left() + box.width() * (0.09 + index * 0.21);
+            const auto top = box.top() + box.height() * (index == 0 || index == 3 ? 0.26 : 0.08);
+            hand.addRoundedRect(QRectF(x, top, finger, centre.y() + box.height() * 0.16 - top),
+                                finger * 0.5, finger * 0.5);
+        }
+        painter.setBrush(depth(box, colors.base));
+        painter.setPen(outline(colors.muted, weight * 0.5));
+        painter.drawPath(hand.simplified());
         break;
+    }
     case Glyph::Fit: {
-        painter.setPen(QPen(ink, 1.3, Qt::DashLine));
-        painter.drawRect(box);
-        painter.setPen(pen);
-        const qreal arm = box.width() * 0.28;
+        painter.setPen(outline(colors.border, weight * 0.8));
+        painter.drawRoundedRect(box, 2, 2);
+        painter.setPen(outline(accent, weight * 1.1));
+        const qreal arm = box.width() * 0.22;
         for (const auto& [corner, dx, dy] : std::initializer_list<std::tuple<QPointF, qreal, qreal>>{
                  {box.topLeft(), 1, 1}, {box.topRight(), -1, 1},
                  {box.bottomLeft(), 1, -1}, {box.bottomRight(), -1, -1}}) {
@@ -143,30 +198,63 @@ void draw(QPainter& painter, Glyph glyph, const Theme& colors, qreal side) {
         break;
     }
     case Glyph::Check: {
-        QPainterPath tick(QPointF(box.left() + 1, centre.y()));
-        tick.lineTo(centre.x() - 1, box.bottom() - 2);
-        tick.lineTo(box.right(), box.top() + 1);
-        painter.setPen(QPen(accent, 2.2, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter.setBrush(depth(box, QColor(0x2e, 0xa0, 0x62)));
+        painter.setPen(outline(QColor(0x1d, 0x6f, 0x42), weight * 0.9));
+        painter.drawEllipse(box);
+        QPainterPath tick(QPointF(box.left() + box.width() * 0.26, centre.y() + box.height() * 0.02));
+        tick.lineTo(centre.x() - box.width() * 0.03, box.bottom() - box.height() * 0.26);
+        tick.lineTo(box.right() - box.width() * 0.22, box.top() + box.height() * 0.28);
+        painter.setPen(outline(Qt::white, weight * 1.15));
+        painter.setBrush(Qt::NoBrush);
         painter.drawPath(tick);
         break;
     }
     case Glyph::Duplicate:
-        painter.drawRect(QRectF(box.left(), box.top() + 3, box.width() - 3, box.height() - 3));
-        painter.setBrush(colors.panel);
-        painter.drawRect(QRectF(box.left() + 3, box.top(), box.width() - 3, box.height() - 3));
+        painter.setBrush(depth(box, colors.base));
+        painter.setPen(outline(colors.muted, weight * 0.9));
+        painter.drawRoundedRect(QRectF(box.left(), box.top() + box.height() * 0.2,
+                                       box.width() * 0.8, box.height() * 0.8), 2, 2);
+        painter.setBrush(depth(box, accent.lighter(165)));
+        painter.setPen(outline(accent.darker(120), weight * 0.9));
+        painter.drawRoundedRect(QRectF(box.left() + box.width() * 0.2, box.top(),
+                                       box.width() * 0.8, box.height() * 0.8), 2, 2);
         break;
     case Glyph::Rename: {
-        painter.drawLine(QPointF(box.left() + 1, box.bottom()), QPointF(box.right() - 3, box.bottom()));
-        QPainterPath nib(QPointF(box.left() + 2, box.bottom() - 3));
-        nib.lineTo(box.right() - 2, box.top() + 1);
-        painter.setPen(QPen(accent, 2.0, Qt::SolidLine, Qt::RoundCap));
-        painter.drawPath(nib);
+        painter.setPen(outline(colors.muted, weight * 0.9));
+        painter.drawLine(QPointF(box.left(), box.bottom()), QPointF(box.right() - box.width() * 0.1, box.bottom()));
+        // The pen is a quadrilateral barrel closed by a tip, so it reads as a
+        // pencil rather than as a stray diagonal line.
+        const QPointF tip(box.left() + box.width() * 0.08, box.bottom() - box.height() * 0.14);
+        const auto barrel = box.width() * 0.22;
+        QPainterPath pen(tip);
+        pen.lineTo(tip.x() + barrel * 0.5, tip.y() - barrel * 0.85);
+        pen.lineTo(box.right() - box.width() * 0.06, box.top() + box.height() * 0.12);
+        pen.lineTo(box.right() - box.width() * 0.22, box.top());
+        pen.closeSubpath();
+        painter.setBrush(depth(box, accent));
+        painter.setPen(outline(accent.darker(145), weight * 0.75));
+        painter.drawPath(pen);
         break;
     }
-    case Glyph::Delete:
-        painter.drawLine(QPointF(box.left() + 1, box.top() + 3), QPointF(box.right() - 1, box.top() + 3));
-        painter.drawRect(QRectF(box.left() + 2.5, box.top() + 3, box.width() - 5, box.height() - 3));
+    case Glyph::Delete: {
+        const auto lip = box.top() + box.height() * 0.26;
+        const QColor rim(0xc0, 0x3b, 0x3b);
+        // Handle first, then lid, then a body that tapers: the silhouette is
+        // what identifies a bin, so none of the three can be dropped.
+        painter.setPen(outline(rim, weight * 0.85));
+        painter.drawLine(QPointF(centre.x() - box.width() * 0.16, box.top() + box.height() * 0.08),
+                         QPointF(centre.x() + box.width() * 0.16, box.top() + box.height() * 0.08));
+        painter.setBrush(depth(box, QColor(0xe2, 0x6a, 0x6a)));
+        painter.drawRoundedRect(QRectF(box.left(), lip - box.height() * 0.1,
+                                       box.width(), box.height() * 0.16), 1.5, 1.5);
+        QPainterPath body(QPointF(box.left() + box.width() * 0.12, lip + box.height() * 0.06));
+        body.lineTo(box.right() - box.width() * 0.12, lip + box.height() * 0.06);
+        body.lineTo(box.right() - box.width() * 0.2, box.bottom());
+        body.lineTo(box.left() + box.width() * 0.2, box.bottom());
+        body.closeSubpath();
+        painter.drawPath(body);
         break;
+    }
     }
 }
 
