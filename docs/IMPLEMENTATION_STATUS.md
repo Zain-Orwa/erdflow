@@ -38,8 +38,11 @@ not been built yet. Their presence in those documents is not a completion claim.
 - One drag or duplicate/delete group is one history entry. Deletion restores
   dependent attributes and participant records on undo. Duplicate generates new
   IDs, including participant IDs, and remaps the copied subgraph.
-- Generalization and specialization: the **ISA** tool places a triangle under
-  the entity it generalises, and connecting entities to it makes them subtypes.
+- Generalization and specialization: one **ISA** toolbar entry offers both
+  directions from its dropdown. Specialization works top-down — click the entity
+  to specialise and connect subtypes afterwards. Generalization works bottom-up —
+  select the subtypes, then click the entity that generalises them, and they are
+  adopted in one gesture. Both build the same structure.
   Each carries a disjoint/overlapping constraint and total/partial completeness,
   the two inputs a later conversion needs to choose a relational mapping.
   Hierarchies nest, and inheritance cycles are rejected.

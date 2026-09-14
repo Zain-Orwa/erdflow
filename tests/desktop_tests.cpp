@@ -15,6 +15,7 @@
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QToolBar>
+#include <QToolButton>
 #include <QTreeView>
 
 #include <iostream>
@@ -219,8 +220,31 @@ int main(int argc, char** argv) {
         click_canvas(*window.canvas(), QPointF(360, 250));
         click_canvas(*window.canvas(), QPointF(520, 250));
         require(window.editor().project().entities.size() == 5, "A locked tool keeps placing");
-        require(window.canvas()->tool() == desktop::Tool::Isa || window.canvas()->tool() == desktop::Tool::Entity,
+        require(window.canvas()->tool() == desktop::Tool::Entity,
                 "A locked tool stays selected");
+        // ISA is one toolbar entry offering both directions; the dropdown picks
+        // the mode and the button itself locks like every other tool.
+        auto* isa = child<QAction>(window, "toolIsa");
+        require(isa->text() == "Specialization", "ISA starts in its top-down mode");
+        child<QAction>(window, "isaGeneralization")->trigger();
+        settle();
+        require(window.canvas()->tool() == desktop::Tool::Generalization, "The dropdown switches direction");
+        require(isa->text() == "Generalization", "The button reports the chosen direction");
+        require(!window.canvas()->tool_locked(), "Choosing a direction does not lock it");
+        auto* isa_button = child<QToolButton>(window, "isaButton");
+        QMouseEvent isa_double(QEvent::MouseButtonDblClick, QPointF(5, 5), QPointF(5, 5),
+                               Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(isa_button, &isa_double);
+        settle();
+        require(window.canvas()->tool_locked() && window.canvas()->tool() == desktop::Tool::Generalization,
+                "Double-clicking ISA locks the chosen direction");
+        require(isa->text().startsWith("Generalization") && isa->text() != "Generalization",
+                "The locked ISA button is marked");
+        child<QAction>(window, "isaSpecialization")->trigger();
+        settle();
+        require(window.canvas()->tool() == desktop::Tool::Specialization && !window.canvas()->tool_locked(),
+                "Choosing the other direction resets to one-shot");
+
         child<QAction>(window, "toolSelect")->trigger();
         require(!window.canvas()->tool_locked(), "Choosing another tool clears the lock");
         require(entity_tool->text() == "Entity", "The mark is removed when the lock ends");

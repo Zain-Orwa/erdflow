@@ -10,7 +10,11 @@
 
 namespace erdflow::desktop {
 
-enum class Tool { Select, Entity, Attribute, Relationship, Isa, Connect, Pan };
+// Generalization and specialization produce the same ISA structure; they differ
+// in direction. Specialization works top-down: name the supertype and attach
+// subtypes afterwards. Generalization works bottom-up: select the subtypes
+// first, then name the entity that generalises them.
+enum class Tool { Select, Entity, Attribute, Relationship, Specialization, Generalization, Connect, Pan };
 
 // How each participant end is drawn. The model is the same in every notation:
 // participation supplies the minimum (0 or 1) and cardinality the maximum

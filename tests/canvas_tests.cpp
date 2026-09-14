@@ -9,6 +9,7 @@
 #include <QMouseEvent>
 #include <QPainter>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <iostream>
@@ -35,6 +36,10 @@ void require(bool condition, const char* message) {
     if (!condition) throw std::runtime_error(message);
 }
 void require(const application::EditResult& result, const char* message) { require(result.ok, message); }
+bool blocks(const domain::Project& project) {
+    const auto issues = validate(project);
+    return std::any_of(issues.begin(), issues.end(), [](const auto& issue) { return issue.blocks_save; });
+}
 QGraphicsItem* find_node(desktop::DiagramView& view, const QString& name) {
     for (auto* item : view.scene()->items())
         if (item->zValue() > 0 && item->toolTip() == name) return item;
@@ -402,6 +407,71 @@ void tool_locking_tests() {
     require(!view.tool_locked(), "Select is never locked");
 }
 
+// Generalization and specialization build the same ISA structure from opposite
+// directions: specialization names the supertype first, generalization adopts
+// the entities already selected as the subtypes.
+void inheritance_direction_tests() {
+    SequentialIds ids;
+    application::Editor editor(ids);
+    const auto person = std::get<domain::EntityId>(*editor.create_entity("Person", {0, 0, 160, 80}).created);
+    const auto student = std::get<domain::EntityId>(*editor.create_entity("Student", {-260, 320, 160, 80}).created);
+    const auto employee = std::get<domain::EntityId>(*editor.create_entity("Employee", {260, 320, 160, 80}).created);
+
+    desktop::DiagramView view(editor);
+    view.resize(900, 700);
+    view.show();
+    view.actual_size();
+    view.centerOn(0, 160);
+    QApplication::processEvents();
+    const auto at = [&](const QString& name) {
+        return find_node(view, name)->sceneBoundingRect().center();
+    };
+
+    // Top-down: the clicked entity becomes the supertype, subtypes come later.
+    view.set_tool(desktop::Tool::Specialization);
+    click(view, at("Person"));
+    require(editor.project().specializations.size() == 1, "Specialization places one triangle");
+    const auto& top_down = editor.project().specializations.begin()->second;
+    require(top_down.supertype == person, "The clicked entity is the supertype");
+    require(top_down.subtypes.empty(), "Specialization starts with no subtypes");
+    require(view.tool() == desktop::Tool::Select, "The tool is one-shot");
+    require(editor.undo(), "Undo the triangle");
+
+    // Bottom-up without a selection has nothing to generalise, so it does nothing.
+    view.select_elements({});
+    view.set_tool(desktop::Tool::Generalization);
+    const auto before = editor.revision();
+    click(view, at("Person"));
+    require(editor.revision() == before, "Generalization needs the subtypes selected first");
+    require(view.tool() == desktop::Tool::Generalization, "A refused click does not consume the tool");
+
+    // Bottom-up with a selection adopts it, in one gesture.
+    view.select_elements({domain::ElementRef{student}, domain::ElementRef{employee}});
+    click(view, at("Person"));
+    require(editor.project().specializations.size() == 1, "Generalization places one triangle");
+    const auto& bottom_up = editor.project().specializations.begin()->second;
+    require(bottom_up.supertype == person, "The clicked entity generalises the selection");
+    require(bottom_up.subtypes.size() == 2, "The selected entities became subtypes");
+    require(!blocks(editor.project()), "The result is a valid hierarchy");
+
+    // The supertype is never adopted as its own subtype, even when selected.
+    for (int step = 0; step < 3; ++step) require(editor.undo(), "Unwind");
+    view.select_elements({domain::ElementRef{student}, domain::ElementRef{person}});
+    view.set_tool(desktop::Tool::Generalization);
+    // The Domain refuses an entity as its own subtype, so the outcome would be
+    // the same either way. What the filter buys is silence: the user chose a
+    // sensible selection and must not be told off for including the supertype.
+    int refusals = 0;
+    view.on_edit = [&refusals](const application::EditResult& result) { if (!result) ++refusals; };
+    click(view, at("Person"));
+    view.on_edit = {};
+    const auto& guarded = editor.project().specializations.begin()->second;
+    require(guarded.subtypes.size() == 1 && guarded.subtypes.front() == student,
+            "The supertype is excluded from its own subtypes");
+    require(refusals == 0, "Including the supertype in the selection reports no error");
+    require(!blocks(editor.project()), "Selecting the supertype too is still valid");
+}
+
 void synchronization_lifetime_tests() {
     SequentialIds ids;
     application::Editor editor(ids);
@@ -576,6 +646,7 @@ int main(int argc, char** argv) {
         inline_rename_tests();
         notation_tests();
         tool_locking_tests();
+        inheritance_direction_tests();
         std::cout << "Canvas tests passed\n";
     } catch (const std::exception& exception) {
         std::cerr << "Canvas test failed: " << exception.what() << '\n';

@@ -51,6 +51,10 @@ private:
     QAction* rename_ = nullptr;
     std::map<Tool, QAction*> tool_actions_;
     std::map<Notation, QAction*> notation_actions_;
+    // Generalization and specialization share one toolbar entry; this is the
+    // mode its main button uses, chosen from its dropdown.
+    Tool isa_mode_ = Tool::Specialization;
+    QAction* isa_action_ = nullptr;
     QComboBox* notation_box_ = nullptr;
     std::map<QString, domain::ElementRef> references_;
     std::vector<domain::ElementRef> selection_;

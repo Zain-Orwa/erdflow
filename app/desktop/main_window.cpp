@@ -18,6 +18,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenuBar>
+#include <QMenu>
 #include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QRegularExpression>
@@ -27,6 +28,7 @@
 #include <QStandardItemModel>
 #include <QStatusBar>
 #include <QToolBar>
+#include <QToolButton>
 #include <QTreeView>
 #include <QVBoxLayout>
 
@@ -211,6 +213,9 @@ void MainWindow::build_shell() {
 }
 
 namespace {
+QString isa_label(Tool mode) {
+    return mode == Tool::Generalization ? QStringLiteral("Generalization") : QStringLiteral("Specialization");
+}
 // The notations offered, in the order they appear everywhere in the UI.
 const std::array<std::pair<Notation, QString>, 4>& notation_styles() {
     static const std::array<std::pair<Notation, QString>, 4> styles{{
@@ -268,9 +273,9 @@ void MainWindow::build_actions() {
     toolbar->addAction(redo_);
     toolbar->addSeparator();
     auto* group = new QActionGroup(this);
-    const std::array<std::pair<Tool, QString>, 7> tools{{
+    const std::array<std::pair<Tool, QString>, 6> tools{{
         {Tool::Select, "Select"}, {Tool::Entity, "Entity"}, {Tool::Attribute, "Attribute"},
-        {Tool::Relationship, "Relationship"}, {Tool::Isa, "ISA"}, {Tool::Connect, "Connect"}, {Tool::Pan, "Pan"}
+        {Tool::Relationship, "Relationship"}, {Tool::Connect, "Connect"}, {Tool::Pan, "Pan"}
     }};
     for (const auto& [tool, label] : tools) {
         auto* action = toolbar->addAction(label);
@@ -285,6 +290,39 @@ void MainWindow::build_actions() {
         // because the click that locks is also an ordinary click that selects.
         if (auto* button = toolbar->widgetForAction(action)) button->installEventFilter(this);
     }
+    // ISA covers two directions onto the same structure, so one entry carries
+    // both: the arrow chooses the direction, the button uses the chosen one and
+    // locks on a double click exactly like every other tool.
+    isa_action_ = new QAction(isa_label(isa_mode_), this);
+    isa_action_->setCheckable(true);
+    isa_action_->setData(isa_label(isa_mode_));
+    isa_action_->setObjectName("toolIsa");
+    isa_action_->setActionGroup(group);
+    connect(isa_action_, &QAction::triggered, this, [this] { choose_tool(isa_mode_, false); });
+    auto* isa_menu = new QMenu(this);
+    for (const auto mode : {Tool::Specialization, Tool::Generalization}) {
+        auto* entry = isa_menu->addAction(isa_label(mode));
+        entry->setObjectName("isa" + isa_label(mode));
+        entry->setToolTip(mode == Tool::Specialization
+            ? "Top-down: click the entity to specialise, then connect its subtypes."
+            : "Bottom-up: select the subtypes, then click the entity that generalises them.");
+        connect(entry, &QAction::triggered, this, [this, mode] {
+            isa_mode_ = mode;
+            isa_action_->setData(isa_label(mode));
+            choose_tool(mode, false);
+        });
+    }
+    auto* isa_button = new QToolButton(toolbar);
+    isa_button->setObjectName("isaButton");
+    isa_button->setDefaultAction(isa_action_);
+    isa_button->setMenu(isa_menu);
+    isa_button->setPopupMode(QToolButton::MenuButtonPopup);
+    isa_button->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    toolbar->addWidget(isa_button);
+    tool_actions_[Tool::Specialization] = isa_action_;
+    tool_actions_[Tool::Generalization] = isa_action_;
+    isa_button->installEventFilter(this);
+
     toolbar->addSeparator();
     auto* fit = toolbar->addAction("Fit", canvas_, &DiagramView::fit_diagram);
     fit->setShortcut(QKeySequence("Ctrl+0"));
@@ -705,6 +743,9 @@ void MainWindow::refresh_tool_labels() {
     const auto active = canvas_->tool();
     const auto locked = canvas_->tool_locked();
     for (const auto& [tool, action] : tool_actions_) {
+        // Generalization and specialization share one action, so only the mode
+        // its button is actually set to should drive the label.
+        if (action == isa_action_ && tool != isa_mode_) continue;
         const auto plain = action->data().toString();
         // A locked tool is marked on the button, since nothing else on screen
         // would explain why placing does not stop after the first element.
@@ -722,8 +763,12 @@ QWidget* MainWindow::toolbar_widget(QAction* action) const {
 
 bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
     if (event->type() == QEvent::MouseButtonDblClick) {
+        if (watched == static_cast<QObject*>(findChild<QToolButton*>("isaButton"))) {
+            choose_tool(isa_mode_, true);
+            return true;
+        }
         for (const auto& [tool, action] : tool_actions_)
-            if (watched == static_cast<QObject*>(toolbar_widget(action))) {
+            if (action != isa_action_ && watched == static_cast<QObject*>(toolbar_widget(action))) {
                 choose_tool(tool, true);
                 return true;
             }
