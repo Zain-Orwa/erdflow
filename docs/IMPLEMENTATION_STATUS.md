@@ -27,6 +27,9 @@ not been built yet. Their presence in those documents is not a completion claim.
 - One drag or duplicate/delete group is one history entry. Deletion restores
   dependent attributes and participant records on undo. Duplicate generates new
   IDs, including participant IDs, and remaps the copied subgraph.
+- Names can be edited in two places: double-click an element to type its name on
+  the canvas itself, or use the Properties panel. Return or clicking away commits
+  as one undoable rename; Escape keeps the previous name.
 - Connecting works either as one press-drag-release gesture or as click-then-click.
   While connecting, a dashed line follows the pointer from the source and a valid
   drop target is outlined. Creating an attribute while one element is selected

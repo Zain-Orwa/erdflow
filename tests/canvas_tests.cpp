@@ -4,6 +4,7 @@
 #include <QGraphicsItem>
 #include <QGraphicsScene>
 #include <QKeyEvent>
+#include <QLineEdit>
 #include <QMouseEvent>
 
 #include <cmath>
@@ -55,6 +56,11 @@ void click(desktop::DiagramView& view, const QPointF& point) {
 void key(desktop::DiagramView& view, int code) {
     QKeyEvent event(QEvent::KeyPress, code, Qt::NoModifier);
     QApplication::sendEvent(&view, &event);
+}
+void key_to(QWidget* widget, int code) {
+    QKeyEvent event(QEvent::KeyPress, code, Qt::NoModifier);
+    QApplication::sendEvent(widget, &event);
+    QApplication::processEvents();
 }
 
 void group_movement_tests() {
@@ -213,6 +219,79 @@ void drag_to_connect_tests() {
     require(editor.revision() == revision, "Releasing over empty canvas connects nothing");
     view.cancel_interaction();
     require(editor.revision() == revision, "Cancelling a carried connection changes nothing");
+}
+
+// A name must be editable on the element itself, not only in the properties
+// panel, and the in-place editor must go through the same command path.
+void inline_rename_tests() {
+    SequentialIds ids;
+    application::Editor editor(ids);
+    const auto student = std::get<domain::EntityId>(*editor.create_entity("Student", {-120, 0, 170, 84}).created);
+
+    desktop::DiagramView view(editor);
+    view.resize(900, 600);
+    view.show();
+    view.actual_size();
+    view.centerOn(0, 0);
+    QApplication::processEvents();
+
+    const auto centre = view.mapFromScene(find_node(view, "Student")->sceneBoundingRect().center());
+    require(!view.renaming(), "No editor is open to begin with");
+    mouse(view, QEvent::MouseButtonDblClick, centre, Qt::LeftButton, Qt::LeftButton);
+    require(view.renaming(), "Double-clicking an element opens an in-place editor");
+
+    auto* field = view.viewport()->findChild<QLineEdit*>("inlineName");
+    require(field != nullptr, "The in-place editor exists");
+    require(field->isVisible(), "The in-place editor is shown over the element");
+    require(field->text() == "Student", "The editor starts from the current name");
+    require(field->geometry().contains(centre), "The editor sits over the element it renames");
+
+    // Committing goes through the editor, so it is one undoable edit.
+    const auto revision = editor.revision();
+    field->setText("UniversityStudent");
+    require(editor.revision() == revision, "Typing alone does not change the model");
+    view.commit_rename();
+    require(editor.project().entities.at(student).name == "UniversityStudent", "Commit renames the element");
+    require(!view.renaming(), "Committing closes the editor");
+    require(editor.undo_label() == "Rename element", "The in-place rename is one named history entry");
+    require(editor.undo() && editor.project().entities.at(student).name == "Student", "One undo restores the name");
+
+    // Escape abandons the pending text and leaves the model untouched.
+    view.synchronize();
+    QApplication::processEvents();
+    mouse(view, QEvent::MouseButtonDblClick, centre, Qt::LeftButton, Qt::LeftButton);
+    require(view.renaming(), "The editor reopens");
+    field = view.viewport()->findChild<QLineEdit*>("inlineName");
+    field->setText("Discarded");
+    const auto before_escape = editor.revision();
+    key_to(field, Qt::Key_Escape);
+    require(!view.renaming(), "Escape closes the editor");
+    require(editor.revision() == before_escape, "Escape makes no edit");
+    require(editor.project().entities.at(student).name == "Student", "Escape keeps the previous name");
+
+    // Renaming to the identical text is not an edit at all.
+    mouse(view, QEvent::MouseButtonDblClick, centre, Qt::LeftButton, Qt::LeftButton);
+    const auto unchanged = editor.revision();
+    view.commit_rename();
+    require(editor.revision() == unchanged, "Committing an unchanged name records nothing");
+
+    // Escape must cancel only the rename. Left to bubble, it would reach the
+    // view's own Escape handling and reset the active tool as a side effect.
+    view.set_tool(desktop::Tool::Connect);
+    view.begin_rename(domain::ElementRef{student});
+    require(view.renaming(), "Renaming can be started without a double-click");
+    field = view.viewport()->findChild<QLineEdit*>("inlineName");
+    field->setText("Abandoned");
+    key_to(field, Qt::Key_Escape);
+    require(!view.renaming(), "Escape cancels the rename");
+    require(view.tool() == desktop::Tool::Connect, "Escape while renaming leaves the active tool alone");
+    require(editor.project().entities.at(student).name == "Student", "Escape still keeps the previous name");
+
+    // Cancelling any interaction must not leave an editor floating on the canvas.
+    view.set_tool(desktop::Tool::Select);
+    mouse(view, QEvent::MouseButtonDblClick, centre, Qt::LeftButton, Qt::LeftButton);
+    view.cancel_interaction();
+    require(!view.renaming() && !field->isVisible(), "Cancelling closes the in-place editor");
 }
 
 void synchronization_lifetime_tests() {
@@ -386,6 +465,7 @@ int main(int argc, char** argv) {
         synchronization_lifetime_tests();
         connector_shaping_tests();
         drag_to_connect_tests();
+        inline_rename_tests();
         std::cout << "Canvas tests passed\n";
     } catch (const std::exception& exception) {
         std::cerr << "Canvas test failed: " << exception.what() << '\n';

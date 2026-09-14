@@ -4,6 +4,7 @@
 #include <QGraphicsItem>
 #include <QGraphicsScene>
 #include <QKeyEvent>
+#include <QLineEdit>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPathStroker>
@@ -293,6 +294,11 @@ struct DiagramView::Impl {
     bool synchronizing = false;
     bool panning = false;
     QPoint pan_start;
+    // An editor placed over the node being renamed. It is a viewport child
+    // rather than a scene item so it keeps ordinary text-field behaviour, and
+    // it is repositioned whenever the view scrolls or zooms.
+    QLineEdit* inline_editor = nullptr;
+    std::optional<ElementRef> renaming;
     std::optional<ElementRef> connect_start;
     // While a connection is being made the pointer carries a preview line, so
     // the same gesture works as click-then-click or as one press-drag-release.
@@ -329,6 +335,59 @@ struct DiagramView::Impl {
         }
         return nullptr;
     }
+    void place_inline_editor() {
+        if (!renaming || !inline_editor) return;
+        const auto found = nodes.find(*renaming);
+        if (found == nodes.end()) return;
+        const auto box = found->second->sceneBoundingRect();
+        // Match the inset the node uses for its own label so the text does not
+        // jump when the editor opens, and keep a diamond's text off its points.
+        const auto inset = std::holds_alternative<RelationshipId>(*renaming) ? box.width() * 0.22 : 12.0;
+        const QRect area(view.mapFromScene(box.topLeft() + QPointF(inset, 0)),
+                         view.mapFromScene(box.bottomRight() - QPointF(inset, 0)));
+        auto font = inline_editor->font();
+        font.setPointSizeF(std::clamp(11.0 * view.zoom_factor(), 7.0, 28.0));
+        font.setWeight(std::holds_alternative<EntityId>(*renaming) ? QFont::DemiBold : QFont::Normal);
+        inline_editor->setFont(font);
+        const auto height = std::min(area.height(), inline_editor->sizeHint().height());
+        inline_editor->setGeometry(area.x(), area.center().y() - height / 2, std::max(area.width(), 24), height);
+    }
+    void begin_inline_edit(const ElementRef& element) {
+        if (!exists(editor.project(), element)) return;
+        commit_inline_edit();
+        if (!inline_editor) {
+            inline_editor = new QLineEdit(view.viewport());
+            inline_editor->setObjectName("inlineName");
+            inline_editor->setAlignment(Qt::AlignCenter);
+            inline_editor->setFrame(false);
+            inline_editor->installEventFilter(&view);
+            // editingFinished covers both Return and losing focus; Escape is
+            // handled by the filter and clears the target before it fires.
+            QObject::connect(inline_editor, &QLineEdit::editingFinished, &view,
+                             [this] { commit_inline_edit(); });
+        }
+        renaming = element;
+        inline_editor->setText(QString::fromStdString(name(editor.project(), element)));
+        place_inline_editor();
+        inline_editor->show();
+        inline_editor->selectAll();
+        inline_editor->setFocus(Qt::MouseFocusReason);
+        status(QStringLiteral("Type a name, then press Return. Escape keeps the previous name."));
+    }
+    void commit_inline_edit() {
+        if (!renaming || !inline_editor) return;
+        const auto element = *renaming;
+        const auto value = inline_editor->text().toStdString();
+        renaming.reset();
+        inline_editor->hide();
+        if (!exists(editor.project(), element) || value == name(editor.project(), element)) return;
+        publish(editor.rename(element, value));
+    }
+    void cancel_inline_edit() {
+        if (!renaming) return;
+        renaming.reset();
+        if (inline_editor) inline_editor->hide();
+    }
     EdgeItem* edge_at(const QPoint& viewport_position) const {
         for (auto* item : view.items(viewport_position)) {
             if (auto* edge = dynamic_cast<EdgeItem*>(item)) return edge;
@@ -355,6 +414,7 @@ struct DiagramView::Impl {
     void zoom(qreal requested) {
         const auto bounded = std::clamp(requested, minimum_zoom, maximum_zoom);
         view.scale(bounded / view.zoom_factor(), bounded / view.zoom_factor());
+        place_inline_editor();
         if (view.on_zoom) view.on_zoom(view.zoom_factor());
     }
     void connect_node(NodeItem* node) {
@@ -568,6 +628,9 @@ void DiagramView::synchronize() {
         impl_->connect_pointer.reset();
         impl_->connect_hover.reset();
     }
+    // An element can disappear under an open editor through undo or a reload.
+    if (impl_->renaming && !exists(project, *impl_->renaming)) impl_->cancel_inline_edit();
+    impl_->place_inline_editor();
     impl_->selection_changed();
 }
 
@@ -677,6 +740,7 @@ void DiagramView::cancel_interaction() {
         impl_->displayed_revision.reset();
         synchronize();
     }
+    impl_->cancel_inline_edit();
     impl_->connect_start.reset();
     impl_->connect_pointer.reset();
     impl_->connect_hover.reset();
@@ -809,9 +873,37 @@ void DiagramView::drawForeground(QPainter* painter, const QRectF& rect) {
         painter->drawEllipse(pointer, 3.5, 3.5);
     }
 }
+void DiagramView::begin_rename(const ElementRef& element) { impl_->begin_inline_edit(element); }
+bool DiagramView::renaming() const { return impl_->renaming.has_value(); }
+void DiagramView::commit_rename() { impl_->commit_inline_edit(); }
+
+void DiagramView::scrollContentsBy(int dx, int dy) {
+    QGraphicsView::scrollContentsBy(dx, dy);
+    impl_->place_inline_editor();
+}
+
+bool DiagramView::eventFilter(QObject* watched, QEvent* event) {
+    if (impl_->inline_editor && watched == static_cast<QObject*>(impl_->inline_editor)
+        && event->type() == QEvent::KeyPress
+        && static_cast<QKeyEvent*>(event)->key() == Qt::Key_Escape) {
+        // Discard the pending text before the field can report it as finished.
+        impl_->cancel_inline_edit();
+        setFocus();
+        return true;
+    }
+    return QGraphicsView::eventFilter(watched, event);
+}
+
 void DiagramView::mouseDoubleClickEvent(QMouseEvent* event) {
-    // Double-clicking a connector restores automatic routing. Nodes keep Qt's
-    // own double-click behaviour, so only clicks that miss every node count.
+    // Double-clicking an element renames it in place; double-clicking a
+    // connector restores its automatic routing.
+    if (event->button() == Qt::LeftButton && impl_->active_tool == Tool::Select) {
+        if (auto* node = impl_->node_at(event->position().toPoint())) {
+            impl_->begin_inline_edit(node->ref);
+            event->accept();
+            return;
+        }
+    }
     if (event->button() == Qt::LeftButton && impl_->active_tool == Tool::Select
         && !impl_->node_at(event->position().toPoint())) {
         if (auto* edge = impl_->edge_at(event->position().toPoint())) {

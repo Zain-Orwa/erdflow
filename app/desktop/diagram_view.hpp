@@ -30,6 +30,11 @@ public:
     [[nodiscard]] ThemeId theme_id() const;
     void delete_selection();
     void cancel_interaction();
+    // Editing a name on the canvas itself, as an alternative to the properties
+    // panel. Commit writes the pending text through the normal command path.
+    void begin_rename(const domain::ElementRef& element);
+    [[nodiscard]] bool renaming() const;
+    void commit_rename();
     [[nodiscard]] double zoom_factor() const;
 
     std::function<void(const application::EditResult&)> on_edit;
@@ -41,6 +46,8 @@ public:
 protected:
     void drawBackground(QPainter*, const QRectF&) override;
     void drawForeground(QPainter*, const QRectF&) override;
+    void scrollContentsBy(int, int) override;
+    bool eventFilter(QObject*, QEvent*) override;
     void mousePressEvent(QMouseEvent*) override;
     void mouseDoubleClickEvent(QMouseEvent*) override;
     void mouseMoveEvent(QMouseEvent*) override;
