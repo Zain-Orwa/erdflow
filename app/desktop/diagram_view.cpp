@@ -54,14 +54,30 @@ public:
     std::function<QPointF(QPointF)> constrain;
 
     void set_theme(const Theme& colors) {
+        colors_ = &colors;
+        apply_colors();
+    }
+    // Colour depends on the associative flag, so changing it re-picks the palette.
+    void set_associative(bool value) {
+        if (associative == value) return;
+        associative = value;
+        apply_colors();
+    }
+
+    void apply_colors() {
+        const auto& colors = *colors_;
         fill_ = colors.attribute_fill;
         border_ = colors.attribute_border;
         if (std::holds_alternative<EntityId>(ref)) {
             fill_ = colors.entity_fill;
             border_ = colors.entity_border;
         } else if (std::holds_alternative<RelationshipId>(ref)) {
-            fill_ = colors.relationship_fill;
-            border_ = colors.relationship_border;
+            // An associative entity converts to a relation of its own, so it
+            // wears the entity palette. Its unfilled surrounding rectangle,
+            // not its colour, is what keeps it distinct from an entity.
+            const bool as_entity = associative;
+            fill_ = as_entity ? colors.entity_fill : colors.relationship_fill;
+            border_ = as_entity ? colors.entity_border : colors.relationship_border;
         }
         text_ = colors.node_text;
         selection_ = colors.accent;
@@ -157,6 +173,7 @@ protected:
     }
 private:
     QRectF bounds_{0, 0, 160, 80};
+    const Theme* colors_ = nullptr;
     QColor fill_, border_, text_, selection_;
 };
 
@@ -632,7 +649,7 @@ void DiagramView::synchronize() {
         if (node->label != label || node->attribute_kind != kind || node->associative != associative) {
             node->label = label;
             node->attribute_kind = kind;
-            node->associative = associative;
+            node->set_associative(associative);
             node->update();
         }
         node->setToolTip(label);

@@ -28,8 +28,9 @@ not been built yet. Their presence in those documents is not a completion claim.
   dependent attributes and participant records on undo. Duplicate generates new
   IDs, including participant IDs, and remaps the copied subgraph.
 - Associative entities: mark a relationship associative in Properties and it
-  takes the entity body size and is drawn as a filled diamond inside an unfilled
-  rectangle, so it stays distinguishable from a solid entity. It may then take
+  takes the entity body size and palette, since it converts to a relation of its
+  own, and is drawn as a filled diamond inside an unfilled rectangle, which is
+  what keeps it distinguishable from a solid entity. It may then take
   part in further relationships, as an entity does. Adopting or dropping the
   shape resizes it in the same undoable edit.
 - Names can be edited in two places: double-click an element to type its name on
