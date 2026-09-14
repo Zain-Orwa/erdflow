@@ -54,6 +54,8 @@ public:
     // A sample of how a notation draws one participant end, for the picker.
     // It uses the same drawing code as the canvas, so it cannot misrepresent it.
     [[nodiscard]] QPixmap notation_preview(Notation notation, QSize size) const;
+    // A sample of a line style, drawn the way the canvas draws it.
+    [[nodiscard]] QPixmap line_style_preview(LineStyle style, QSize size) const;
     [[nodiscard]] Notation notation() const;
     void set_grid_visible(bool enabled);
     void set_snap_enabled(bool enabled);

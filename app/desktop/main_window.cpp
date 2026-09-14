@@ -273,9 +273,9 @@ void MainWindow::build_actions() {
     toolbar->addAction(redo_);
     toolbar->addSeparator();
     auto* group = new QActionGroup(this);
-    const std::array<std::pair<Tool, QString>, 6> tools{{
+    const std::array<std::pair<Tool, QString>, 4> tools{{
         {Tool::Select, "Select"}, {Tool::Entity, "Entity"}, {Tool::Attribute, "Attribute"},
-        {Tool::Relationship, "Relationship"}, {Tool::Connect, "Connect"}, {Tool::Pan, "Pan"}
+        {Tool::Relationship, "Relationship"}
     }};
     for (const auto& [tool, label] : tools) {
         auto* action = toolbar->addAction(label);
@@ -323,6 +323,44 @@ void MainWindow::build_actions() {
     tool_actions_[Tool::Generalization] = isa_action_;
     isa_button->installEventFilter(this);
 
+    // How connectors are drawn belongs with the tool that draws them, so the
+    // Connect button carries the choice on its own arrow rather than in a
+    // separate control the eye has to find.
+    auto* connect_action = new QAction("Connect", this);
+    connect_action->setCheckable(true);
+    connect_action->setData("Connect");
+    connect_action->setObjectName("toolConnect");
+    connect_action->setActionGroup(group);
+    connect(connect_action, &QAction::triggered, this, [this] { choose_tool(Tool::Connect, false); });
+    auto* line_menu = new QMenu(this);
+    for (const auto style : {LineStyle::Curved, LineStyle::Straight}) {
+        const QString label = style == LineStyle::Straight ? "Straight lines" : "Curved lines";
+        auto* entry = line_menu->addAction(QIcon(canvas_->line_style_preview(style, QSize(34, 18))), label);
+        entry->setCheckable(true);
+        entry->setChecked(style == canvas_->line_style());
+        entry->setObjectName(style == LineStyle::Straight ? "lineStraight" : "lineCurved");
+        line_actions_[style] = entry;
+        connect(entry, &QAction::triggered, this, [this, style] { choose_line_style(style); });
+    }
+    auto* connect_button = new QToolButton(toolbar);
+    connect_button->setObjectName("connectButton");
+    connect_button->setDefaultAction(connect_action);
+    connect_button->setMenu(line_menu);
+    connect_button->setPopupMode(QToolButton::MenuButtonPopup);
+    connect_button->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    toolbar->addWidget(connect_button);
+    tool_actions_[Tool::Connect] = connect_action;
+    connect_button->installEventFilter(this);
+
+    auto* pan_action = toolbar->addAction("Pan");
+    pan_action->setCheckable(true);
+    pan_action->setData("Pan");
+    pan_action->setObjectName("toolPan");
+    pan_action->setActionGroup(group);
+    tool_actions_[Tool::Pan] = pan_action;
+    connect(pan_action, &QAction::triggered, this, [this] { choose_tool(Tool::Pan, false); });
+    if (auto* button = toolbar->widgetForAction(pan_action)) button->installEventFilter(this);
+
     toolbar->addSeparator();
     auto* fit = toolbar->addAction("Fit", canvas_, &DiagramView::fit_diagram);
     fit->setShortcut(QKeySequence("Ctrl+0"));
@@ -350,20 +388,7 @@ void MainWindow::build_actions() {
         choose_notation(static_cast<Notation>(index));
     });
     toolbar->addWidget(notation_box_);
-    auto* lines_label = new QLabel("  Lines ", toolbar);
-    lines_label->setObjectName("hint");
-    toolbar->addWidget(lines_label);
-    auto* lines = new QComboBox(toolbar);
-    lines->setObjectName("linePicker");
-    lines->setToolTip("How connectors are drawn between elements.");
-    lines->addItem("Curved");
-    lines->addItem("Straight");
-    lines->setCurrentIndex(canvas_->line_style() == LineStyle::Straight ? 1 : 0);
-    connect(lines, &QComboBox::currentIndexChanged, this, [this](int index) {
-        if (refreshing_ || index < 0) return;
-        canvas_->set_line_style(index == 1 ? LineStyle::Straight : LineStyle::Curved);
-    });
-    toolbar->addWidget(lines);
+
     auto* view = findChild<QMenu*>("viewMenu");
     view->addSeparator();
     view->addAction(fit);
@@ -773,6 +798,11 @@ void MainWindow::choose_notation(Notation notation) {
 
 // Choosing a tool and reporting the choice happen in one place, so the button
 // label can never disagree with what the canvas will actually do.
+void MainWindow::choose_line_style(LineStyle style) {
+    canvas_->set_line_style(style);
+    for (const auto& [candidate, action] : line_actions_) action->setChecked(candidate == style);
+}
+
 void MainWindow::choose_tool(Tool tool, bool locked) {
     finish_field_edit();
     canvas_->set_tool(tool, locked);
@@ -806,6 +836,10 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
     if (event->type() == QEvent::MouseButtonDblClick) {
         if (watched == static_cast<QObject*>(findChild<QToolButton*>("isaButton"))) {
             choose_tool(isa_mode_, true);
+            return true;
+        }
+        if (watched == static_cast<QObject*>(findChild<QToolButton*>("connectButton"))) {
+            choose_tool(Tool::Connect, true);
             return true;
         }
         for (const auto& [tool, action] : tool_actions_)

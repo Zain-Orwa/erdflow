@@ -245,6 +245,32 @@ int main(int argc, char** argv) {
         require(window.canvas()->tool() == desktop::Tool::Specialization && !window.canvas()->tool_locked(),
                 "Choosing the other direction resets to one-shot");
 
+        // The line style sits on the Connect button's own arrow, with each
+        // option drawn rather than only named.
+        require(window.canvas()->line_style() == desktop::LineStyle::Curved, "Connectors start curved");
+        auto* straight = child<QAction>(window, "lineStraight");
+        auto* curved = child<QAction>(window, "lineCurved");
+        require(!straight->icon().isNull() && !curved->icon().isNull(), "Each line style is drawn, not just named");
+        require(curved->isChecked() && !straight->isChecked(), "The menu marks the style in use");
+        straight->trigger();
+        settle();
+        require(window.canvas()->line_style() == desktop::LineStyle::Straight, "The menu changes the line style");
+        require(straight->isChecked() && !curved->isChecked(), "The mark follows the choice");
+        // Choosing a style must not silently change which tool is active.
+        const auto tool_before = window.canvas()->tool();
+        curved->trigger();
+        settle();
+        require(window.canvas()->line_style() == desktop::LineStyle::Curved, "And back again");
+        require(window.canvas()->tool() == tool_before, "Choosing a line style leaves the active tool alone");
+        // The button still behaves like a tool, including its double-click lock.
+        auto* connect_button = child<QToolButton>(window, "connectButton");
+        QMouseEvent connect_double(QEvent::MouseButtonDblClick, QPointF(5, 5), QPointF(5, 5),
+                                   Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(connect_button, &connect_double);
+        settle();
+        require(window.canvas()->tool() == desktop::Tool::Connect && window.canvas()->tool_locked(),
+                "Double-clicking Connect locks it");
+
         child<QAction>(window, "toolSelect")->trigger();
         require(!window.canvas()->tool_locked(), "Choosing another tool clears the lock");
         require(entity_tool->text() == "Entity", "The mark is removed when the lock ends");

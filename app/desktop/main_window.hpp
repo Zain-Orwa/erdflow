@@ -55,6 +55,7 @@ private:
     // mode its main button uses, chosen from its dropdown.
     Tool isa_mode_ = Tool::Specialization;
     QAction* isa_action_ = nullptr;
+    std::map<LineStyle, QAction*> line_actions_;
     QComboBox* notation_box_ = nullptr;
     std::map<QString, domain::ElementRef> references_;
     std::vector<domain::ElementRef> selection_;
@@ -64,6 +65,7 @@ private:
     void build_shell();
     void build_actions();
     void choose_tool(Tool tool, bool locked);
+    void choose_line_style(LineStyle style);
     void refresh_tool_labels();
     [[nodiscard]] QWidget* toolbar_widget(QAction* action) const;
     void choose_notation(Notation notation);

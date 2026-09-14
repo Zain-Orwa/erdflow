@@ -1021,6 +1021,29 @@ void DiagramView::set_line_style(LineStyle style) {
 }
 LineStyle DiagramView::line_style() const { return impl_->style; }
 
+QPixmap DiagramView::line_style_preview(LineStyle style, QSize size) const {
+    const auto& colors = theme(impl_->theme_id);
+    QPixmap pixmap(size * devicePixelRatioF());
+    pixmap.setDevicePixelRatio(devicePixelRatioF());
+    pixmap.fill(Qt::transparent);
+    QPainter painter(&pixmap);
+    painter.setRenderHint(QPainter::Antialiasing);
+    QPen pen(colors.connector, 1.6);
+    pen.setCosmetic(true);
+    painter.setPen(pen);
+    painter.setBrush(Qt::NoBrush);
+    const QPointF from(4, size.height() - 4.0);
+    const QPointF to(size.width() - 4.0, 4);
+    if (style == LineStyle::Straight) {
+        painter.drawLine(from, to);
+    } else {
+        QPainterPath path(from);
+        path.cubicTo(from + QPointF(size.width() * 0.45, 0), to - QPointF(size.width() * 0.45, 0), to);
+        painter.drawPath(path);
+    }
+    return pixmap;
+}
+
 QPixmap DiagramView::notation_preview(Notation notation, QSize size) const {
     const auto& colors = theme(impl_->theme_id);
     QPixmap pixmap(size * devicePixelRatioF());
