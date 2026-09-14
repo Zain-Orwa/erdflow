@@ -31,7 +31,7 @@ target_link_libraries(erdflow_application PUBLIC erdflow_domain PRIVATE erdflow_
 add_library(erdflow_infrastructure infrastructure/project_store.cpp)
 target_link_libraries(erdflow_infrastructure PUBLIC erdflow_application Qt6::Core PRIVATE erdflow_warnings)
 
-add_library(erdflow_canvas app/desktop/diagram_view.cpp)
+add_library(erdflow_canvas app/desktop/diagram_view.cpp app/desktop/theme.cpp)
 target_link_libraries(erdflow_canvas PUBLIC erdflow_application Qt6::Widgets PRIVATE erdflow_warnings)
 
 add_library(erdflow_desktop app/desktop/main_window.cpp)
@@ -55,9 +55,13 @@ if(BUILD_TESTING)
     add_executable(canvas_tests tests/canvas_tests.cpp)
     target_link_libraries(canvas_tests PRIVATE erdflow_canvas erdflow_warnings)
     add_test(NAME canvas COMMAND canvas_tests)
+
+    add_executable(theme_tests tests/theme_tests.cpp)
+    target_link_libraries(theme_tests PRIVATE erdflow_canvas erdflow_warnings)
+    add_test(NAME theme COMMAND theme_tests)
     add_executable(desktop_tests tests/desktop_tests.cpp)
     target_link_libraries(desktop_tests PRIVATE erdflow_desktop erdflow_infrastructure erdflow_warnings)
     add_test(NAME desktop COMMAND desktop_tests)
     add_test(NAME desktop_smoke COMMAND erdflow --example --smoke-test)
-    set_tests_properties(canvas desktop desktop_smoke PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
+    set_tests_properties(canvas theme desktop desktop_smoke PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
 endif()
