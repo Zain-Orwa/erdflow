@@ -12,6 +12,7 @@ class QDockWidget;
 class QLabel;
 class QComboBox;
 class QScrollArea;
+class QToolButton;
 class QStandardItemModel;
 class QTreeView;
 
@@ -25,12 +26,19 @@ public:
     bool open_path(const QString& path);
     // Applies a theme to the window and its canvas, and remembers it.
     void set_theme(ThemeId id);
+    // Shows a theme without choosing it, so one can be judged on the window
+    // itself rather than on its name. Leaving the menu puts back the chosen one.
+    void preview_theme(ThemeId id);
+    // Which icon set the window draws its actions with, and remembers it.
+    void set_icon_mode(IconMode mode);
+    [[nodiscard]] IconMode icon_mode() const { return icon_mode_; }
     void load_example();
     [[nodiscard]] const application::Editor& editor() const { return editor_; }
     [[nodiscard]] DiagramView* canvas() const { return canvas_; }
 
 protected:
     void closeEvent(QCloseEvent* event) override;
+    void resizeEvent(QResizeEvent* event) override;
     bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
@@ -56,13 +64,31 @@ private:
     std::map<Notation, QAction*> notation_actions_;
     std::map<ThemeId, QAction*> theme_actions_;
     std::map<QAction*, Glyph> action_glyphs_;
+    // What the window is currently showing, and what the user actually chose.
+    // They differ only while a theme is being previewed under the pointer.
     ThemeId theme_ = ThemeId::OfficeLight;
+    ThemeId committed_theme_ = ThemeId::OfficeLight;
+    void apply_appearance(ThemeId id);
+    // Fits the toolbar to the width there is, rather than letting it run off
+    // the end of the window.
+    void fit_toolbar();
+    [[nodiscard]] int icon_pixels() const;
+    // Keeps the canvas's own controls in the corner of the view as it resizes.
+    void place_canvas_controls();
+    IconMode icon_mode_ = IconMode::Normal;
+    std::map<IconMode, QAction*> icon_mode_actions_;
     // Generalization and specialization share one toolbar entry; this is the
     // mode its main button uses, chosen from its dropdown.
     Tool isa_mode_ = Tool::Specialization;
     QAction* isa_action_ = nullptr;
     std::map<LineStyle, QAction*> line_actions_;
     QComboBox* notation_box_ = nullptr;
+    QWidget* canvas_controls_ = nullptr;
+    QAction* notation_action_ = nullptr;
+    QAction* notation_label_action_ = nullptr;
+    QAction* notation_separator_ = nullptr;
+    bool fitting_ = false;
+    QToolButton* theme_button_ = nullptr;
     std::map<QString, domain::ElementRef> references_;
     std::vector<domain::ElementRef> selection_;
     QString path_;

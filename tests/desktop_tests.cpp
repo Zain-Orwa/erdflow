@@ -8,12 +8,15 @@
 #include <QDockWidget>
 #include <QFile>
 #include <QKeyEvent>
+#include <QLabel>
 #include <QLineEdit>
+#include <QMenu>
 #include <QMessageBox>
 #include <QMouseEvent>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSettings>
+#include <QStandardItemModel>
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QToolBar>
@@ -21,6 +24,7 @@
 #include <QTreeView>
 
 #include <algorithm>
+#include <cstdlib>
 #include <iostream>
 #include <map>
 #include <stdexcept>
@@ -319,12 +323,12 @@ int main(int argc, char** argv) {
                 require(!action->icon().isNull(), "Every toolbar action is given an icon");
         const auto entity_icon = child<QAction>(window, "toolEntity")->icon()
             .pixmap(18, 18).toImage();
-        child<QAction>(window, "thememidnight")->trigger();
+        child<QAction>(window, "themedracula")->trigger();
         settle();
-        require(window.canvas()->theme_id() == desktop::ThemeId::Midnight, "The menu changes the canvas theme");
+        require(window.canvas()->theme_id() == desktop::ThemeId::Dracula, "The menu changes the canvas theme");
         require(child<QAction>(window, "toolEntity")->icon().pixmap(18, 18).toImage() != entity_icon,
                 "Icons are redrawn for the new theme");
-        require(QSettings().value("theme").toString() == "midnight", "The choice is remembered");
+        require(QSettings().value("theme").toString() == "dracula", "The choice is remembered");
         child<QAction>(window, "themeofficelight")->trigger();
         settle();
         require(window.canvas()->theme_id() == desktop::ThemeId::OfficeLight, "And back again");
@@ -334,27 +338,234 @@ int main(int argc, char** argv) {
         // A glyph is a drawing, not a silhouette. The hand is the shape most at
         // risk: it is a stack of overlapping rounded rects, so once its stroke
         // approaches a finger's width the outlines merge and the whole icon
-        // fills in as one dark mass. Measuring how much of the pale palm fill
-        // survives at toolbar size catches exactly that collapse; the drawn-at-
-        // all check covers the rest of the set.
-        const auto share_of_fill = [](desktop::Glyph glyph) {
-            const auto drawn = desktop::glyph_icon(glyph, desktop::theme(desktop::ThemeId::OfficeLight), 22)
+        // fills in as one mass of outline colour. Measuring how much of the palm
+        // still carries the fill colour rather than the outline's catches exactly
+        // that collapse; the drawn-at-all check covers the rest of the set. The
+        // comparison is against the theme's own two colours, not a fixed
+        // brightness, so it holds however light or dark the palette is.
+        const auto& glyph_theme = desktop::theme(desktop::ThemeId::OfficeLight);
+        const auto fill_grey = qGray(glyph_theme.base.rgb());
+        const auto outline_grey = qGray(glyph_theme.muted.rgb());
+        const auto share_of_fill = [&](desktop::Glyph glyph) {
+            const auto drawn = desktop::glyph_icon(glyph, glyph_theme, 22)
                                    .pixmap(22, 22).toImage().convertToFormat(QImage::Format_ARGB32);
             int opaque = 0;
-            int pale = 0;
+            int filled = 0;
             for (int y = 0; y < drawn.height(); ++y)
                 for (int x = 0; x < drawn.width(); ++x) {
                     const auto pixel = drawn.pixel(x, y);
                     if (qAlpha(pixel) < 200) continue;
                     ++opaque;
-                    if (qGray(pixel) > 150) ++pale;
+                    const auto grey = qGray(pixel);
+                    if (std::abs(grey - fill_grey) < std::abs(grey - outline_grey)) ++filled;
                 }
             require(opaque > 40, "Every glyph draws something at toolbar size");
-            return static_cast<double>(pale) / static_cast<double>(opaque);
+            return static_cast<double>(filled) / static_cast<double>(opaque);
         };
         for (int index = 0; index <= static_cast<int>(desktop::Glyph::Delete); ++index)
             share_of_fill(static_cast<desktop::Glyph>(index));
         require(share_of_fill(desktop::Glyph::Pan) > 0.3, "The hand keeps an open palm rather than filling in");
+
+        // An element given a colour of its own wears it in the properties panel,
+        // so the panel and the shape on the canvas read as the same object.
+        {
+            const auto entity = window.editor().project().entities.begin()->first;
+            window.canvas()->select_elements({domain::ElementRef{entity}});
+            settle();
+            // The name field wears the colour the element is drawn with, even
+            // when that colour came from the theme rather than from a choice.
+            const auto entity_fill = desktop::theme(window.canvas()->theme_id()).entity_fill.name();
+            require(child<QLineEdit>(window, "elementName")->styleSheet().contains(entity_fill),
+                    "The name box wears the element's theme colour");
+            // The heading says what kind of thing this is and stays a title.
+            require(child<QLabel>(window, "propertyHeading")->styleSheet().isEmpty(),
+                    "The kind heading is left to the theme");
+
+            require(bool(editor.recolour({domain::ElementRef{entity}}, domain::Colour{0x20, 0x20, 0x30})),
+                    "Colour the entity a dark shade");
+            window.canvas()->select_elements({});
+            settle();
+            window.canvas()->select_elements({domain::ElementRef{entity}});
+            settle();
+            const auto sheet = child<QLineEdit>(window, "elementName")->styleSheet();
+            require(sheet.contains("#202030"), "The name box is filled with the element's own colour");
+            require(sheet.contains("#ffffff"), "And written in ink chosen against it, not against the theme");
+            require(child<QLabel>(window, "propertyHeading")->styleSheet().isEmpty(),
+                    "The heading still carries no colour of the element's");
+            require(bool(editor.undo()), "Undo the colour");
+        }
+
+        // The modern set is artwork rather than drawing, so it neither follows
+        // the theme nor needs to: switching to it must change every button, and
+        // switching back must restore what the theme was drawing.
+        {
+            const auto drawn = child<QAction>(window, "toolEntity")->icon().pixmap(22, 22).toImage();
+            child<QAction>(window, "iconsmodern")->trigger();
+            settle();
+            require(window.icon_mode() == desktop::IconMode::Modern, "The menu changes the icon set");
+            const auto artwork = child<QAction>(window, "toolEntity")->icon().pixmap(22, 22).toImage();
+            require(!artwork.isNull() && artwork != drawn, "Every button takes the new set");
+            require(QSettings().value("iconMode").toString() == "modern", "The choice is remembered");
+            // Every glyph the window uses has to exist in the set, or a button
+            // silently falls back and the two sets disagree about what is there.
+            for (int index = 0; index <= static_cast<int>(desktop::Glyph::Theme); ++index) {
+                const auto glyph = static_cast<desktop::Glyph>(index);
+                const QIcon file(QStringLiteral(":/erdflow/icons/%1.svg").arg(desktop::icon_name(glyph)));
+                require(!file.pixmap(22, 22).isNull(),
+                        "The modern set has artwork for every glyph the window draws");
+            }
+            child<QAction>(window, "iconsnormal")->trigger();
+            settle();
+            require(child<QAction>(window, "toolEntity")->icon().pixmap(22, 22).toImage() == drawn,
+                    "Going back restores the drawn glyphs");
+        }
+
+        // A theme can be seen on the window before it is chosen, and looking at
+        // one without choosing it must leave nothing behind.
+        {
+            const auto chosen = window.canvas()->theme_id();
+            auto* dracula = child<QAction>(window, "themedracula");
+            emit dracula->hovered();
+            settle();
+            require(window.canvas()->theme_id() == desktop::ThemeId::Dracula,
+                    "Hovering a theme shows it on the window");
+            require(QSettings().value("theme").toString() != "dracula",
+                    "But looking at one does not remember it");
+            require(!dracula->isChecked(), "Nor tick it as the chosen one");
+
+            // Closing the menu without choosing puts the window back.
+            emit child<QMenu>(window, "themeMenu")->aboutToHide();
+            settle();
+            require(window.canvas()->theme_id() == chosen, "Leaving the menu restores the chosen theme");
+
+            // Choosing one while previewing keeps it, rather than being undone
+            // by the same closing that would have reverted a mere look.
+            emit dracula->hovered();
+            settle();
+            dracula->trigger();
+            settle();
+            emit child<QMenu>(window, "themeMenu")->aboutToHide();
+            settle();
+            require(window.canvas()->theme_id() == desktop::ThemeId::Dracula, "Choosing one keeps it");
+            require(QSettings().value("theme").toString() == "dracula", "And remembers it");
+            child<QAction>(window, "themeofficelight")->trigger();
+            settle();
+        }
+
+        // A narrow window must shed what it can spare rather than let tools run
+        // off the end of the toolbar where they cannot be reached, and it must
+        // shed them in order of what can best be done without.
+        {
+            auto* bar = child<QToolBar>(window, "modelTools");
+            auto* picker = child<QComboBox>(window, "notationPicker");
+            const auto tools = bar->actions().size();
+
+            window.resize(1800, 820);
+            settle();
+            require(bar->toolButtonStyle() == Qt::ToolButtonTextBesideIcon, "A wide window shows the names");
+            require(picker->isVisible(), "And the notation picker with them");
+            const auto wide = bar->iconSize().width();
+
+            // The names stay as long as they can: a tool's lock mark hangs on
+            // its name. The icons shrink first, and the picker goes before the
+            // names do.
+            window.resize(1300, 820);
+            settle();
+            require(bar->toolButtonStyle() == Qt::ToolButtonTextBesideIcon, "A tighter one keeps the names");
+            require(bar->iconSize().width() < wide, "And gives up some of the icons' size instead");
+
+            window.resize(700, 620);
+            settle();
+            require(bar->toolButtonStyle() == Qt::ToolButtonIconOnly, "Only a small window drops the names");
+            require(bar->actions().size() == tools, "But loses no tool on the way down");
+            require(!picker->isVisible(), "The picker has gone by then, and is in the View menu");
+
+            window.resize(1800, 820);
+            settle();
+            require(bar->toolButtonStyle() == Qt::ToolButtonTextBesideIcon, "Widening brings the names back");
+            require(bar->iconSize().width() == wide, "And the size with them");
+            require(picker->isVisible(), "And the picker");
+        }
+
+        // The raft's Pan locks on a double-click just as the toolbar's tools do,
+        // and a single click uses it once.
+        {
+            auto* pan = child<QToolButton>(window, "canvasPan");
+            const auto centre = QPoint(pan->width() / 2, pan->height() / 2);
+            QMouseEvent twice(QEvent::MouseButtonDblClick, QPointF(centre), QPointF(pan->mapToGlobal(centre)),
+                              Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+            const auto plain_hand = pan->icon().pixmap(18, 18).toImage();
+            QApplication::sendEvent(pan, &twice);
+            settle();
+            require(window.canvas()->tool() == desktop::Tool::Pan, "Double-clicking the raft's hand picks Pan");
+            require(window.canvas()->tool_locked(), "And locks it");
+            // The button has no name to hang a lock mark on, so the hand itself
+            // wears one while locked, and sheds it when the lock ends.
+            require(pan->icon().pixmap(18, 18).toImage() != plain_hand, "A locked hand shows its lock");
+            child<QAction>(window, "toolSelect")->trigger();
+            settle();
+            require(!window.canvas()->tool_locked(), "Choosing another tool clears the lock");
+            require(pan->icon().pixmap(18, 18).toImage() == plain_hand, "And the mark goes with it");
+
+            // Fitting the diagram brings scrollbars in or takes them out, and
+            // the raft must not shift when that happens.
+            auto* raft = child<QWidget>(window, "canvasControls");
+            const auto before = raft->pos();
+            child<QAction>(window, "viewFit")->trigger();
+            settle();
+            require(raft->pos() == before, "The raft holds its corner when the view is refitted");
+            child<QAction>(window, "toolPan")->trigger();
+            settle();
+            require(window.canvas()->tool() == desktop::Tool::Pan && !window.canvas()->tool_locked(),
+                    "A single press is one use, not a lock");
+            child<QAction>(window, "toolSelect")->trigger();
+            settle();
+        }
+
+        // An entity in the explorer opens to show the attributes that belong
+        // to it, while the group of all attributes still counts every one.
+        {
+            auto* tree = child<QTreeView>(window, "explorer");
+            auto* model = qobject_cast<QStandardItemModel*>(tree->model());
+            require(model != nullptr, "The explorer is backed by a standard model");
+            auto* project = model->item(0);
+            QStandardItem* entities = nullptr;
+            QStandardItem* attributes = nullptr;
+            for (int row = 0; row < project->rowCount(); ++row) {
+                auto* group = project->child(row);
+                if (group->text().startsWith("Entities")) entities = group;
+                if (group->text().startsWith("Attributes")) attributes = group;
+            }
+            require(entities && attributes, "Both groups are listed");
+            const auto& proj = window.editor().project();
+            require(attributes->rowCount() == static_cast<int>(proj.attributes.size()),
+                    "The attributes group still lists every attribute");
+            int nested = 0;
+            for (int row = 0; row < entities->rowCount(); ++row) nested += entities->child(row)->rowCount();
+            int owned_by_entities = 0;
+            for (const auto& [id, attribute] : proj.attributes)
+                if (attribute.owner && std::holds_alternative<domain::EntityId>(*attribute.owner)) ++owned_by_entities;
+            require(nested == owned_by_entities, "Each entity lists exactly the attributes it owns");
+            require(nested > 0, "The example has attributes on its entities to show");
+            // Entities start folded, so the tree is not the diagram spilt twice.
+            require(!tree->isExpanded(model->indexFromItem(entities->child(0))), "An entity starts folded");
+            require(tree->isExpanded(model->indexFromItem(entities)), "But its group starts open");
+            // What the user opens stays open through the rebuild an edit causes.
+            tree->expand(model->indexFromItem(entities->child(0)));
+            const auto opened_name = entities->child(0)->text();
+            editor.create_entity("Scratch", {900, 900, 160, 80});
+            settle();
+            model = qobject_cast<QStandardItemModel*>(tree->model());
+            for (int row = 0; row < model->item(0)->rowCount(); ++row)
+                if (model->item(0)->child(row)->text().startsWith("Entities")) entities = model->item(0)->child(row);
+            bool still_open = false;
+            for (int row = 0; row < entities->rowCount(); ++row)
+                if (entities->child(row)->text() == opened_name)
+                    still_open = tree->isExpanded(model->indexFromItem(entities->child(row)));
+            require(still_open, "An opened entity stays open after the tree is rebuilt");
+            require(bool(editor.undo()), "Undo the scratch entity");
+            settle();
+        }
 
         // The two menu buttons are added to the toolbar as widgets, so nothing
         // makes them follow it: they have to ask for the icon themselves.

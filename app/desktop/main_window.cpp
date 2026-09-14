@@ -28,6 +28,7 @@
 #include <QSignalBlocker>
 #include <QStandardItemModel>
 #include <QStatusBar>
+#include <QResizeEvent>
 #include <QToolBar>
 #include <QToolButton>
 #include <QTreeView>
@@ -51,6 +52,22 @@ QString kind_label(ElementRef ref) {
     if (std::holds_alternative<SpecializationId>(ref)) return QStringLiteral("Specialization");
     return QStringLiteral("Relationship");
 }
+// The colour an element is actually drawn with on the canvas: the one it was
+// given if it has one, and otherwise whatever the theme gives its kind. The
+// panel reads this so that it shows the element's own colour rather than only
+// the colours a user happened to choose by hand.
+QColor surface_of(const Project& project, const Theme& colors, ElementRef ref) {
+    if (const auto chosen = project.colours.find(ref); chosen != project.colours.end())
+        return QColor(chosen->second.red, chosen->second.green, chosen->second.blue);
+    if (std::holds_alternative<AttributeId>(ref)) return colors.attribute_fill;
+    if (std::holds_alternative<EntityId>(ref)) return colors.entity_fill;
+    if (std::holds_alternative<SpecializationId>(ref)) return colors.isa_fill;
+    // An associative relationship converts to a relation of its own and wears
+    // the entity palette on the canvas, so it wears it here too.
+    const auto& relationship = project.relationships.at(std::get<RelationshipId>(ref));
+    return relationship.associative ? colors.entity_fill : colors.relationship_fill;
+}
+
 QString display_name(const Project& project, ElementRef ref) {
     const auto value = text(name(project, ref));
     return value.isEmpty() ? QStringLiteral("(unnamed)") : value;
@@ -84,7 +101,10 @@ MainWindow::MainWindow(application::Editor& editor, application::ProjectStore& s
     : QMainWindow(parent), ids_(ids), editor_(editor), store_(store) {
     setObjectName("mainWindow");
     resize(1440, 920);
-    setMinimumSize(960, 620);
+    // Small enough to be useful on a narrow screen. What the window cannot do
+    // is stay this size and keep everything at full width, so the toolbar gives
+    // up its labels before the window gives up its tools.
+    setMinimumSize(560, 460);
     build_shell();
     build_actions();
     canvas_->on_edit = [this](const auto& result) { show_result(result); };
@@ -149,7 +169,7 @@ void MainWindow::build_shell() {
     explorer_->setHeaderHidden(true);
     explorer_->setSelectionMode(QAbstractItemView::ExtendedSelection);
     explorer_->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    explorer_->setMinimumWidth(200);
+    explorer_->setMinimumWidth(120);
     explorer_->setUniformRowHeights(true);
     explorer_model_ = new QStandardItemModel(this);
     explorer_->setModel(explorer_model_);
@@ -160,7 +180,10 @@ void MainWindow::build_shell() {
         std::vector<ElementRef> selected;
         for (const auto& index : explorer_->selectionModel()->selectedRows()) {
             const auto found = references_.find(index.data(Qt::UserRole).toString());
-            if (found != references_.end()) selected.push_back(found->second);
+            // One attribute may be selected through either of its rows; it is
+            // still one attribute.
+            if (found != references_.end() && std::find(selected.begin(), selected.end(), found->second) == selected.end())
+                selected.push_back(found->second);
         }
         canvas_->select_elements(selected, true);
         selection_changed(selected);
@@ -178,7 +201,7 @@ void MainWindow::build_shell() {
     properties_dock->setObjectName("propertiesDock");
     properties_ = new QScrollArea(properties_dock);
     properties_->setWidgetResizable(true);
-    properties_->setMinimumWidth(290);
+    properties_->setMinimumWidth(180);
     properties_->setFrameShape(QFrame::NoFrame);
     properties_dock->setWidget(properties_);
     addDockWidget(Qt::RightDockWidgetArea, properties_dock);
@@ -214,6 +237,12 @@ void MainWindow::build_shell() {
 }
 
 namespace {
+// Both pickers show a sample of a line. The sizes live here rather than at each
+// call site, which is what keeps the icon a widget asks for the same size as the
+// one it is later redrawn at when the theme changes.
+constexpr QSize line_style_sample{48, 24};
+constexpr QSize notation_sample{58, 22};
+
 QString isa_label(Tool mode) {
     return mode == Tool::Generalization ? QStringLiteral("Generalization") : QStringLiteral("Specialization");
 }
@@ -276,7 +305,10 @@ void MainWindow::build_actions() {
     // Icon beside text, the way an office application labels its toolbar: the
     // glyph carries recognition, the word removes any doubt.
     toolbar->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-    toolbar->setIconSize(QSize(22, 22));
+    // Big enough that the drawing in an icon can be read rather than guessed
+    // at. The toolbar runs out of width before it runs out of room in height,
+    // so anything past this pushes buttons into the overflow.
+    toolbar->setIconSize(QSize(34, 34));
     toolbar->addAction(action_save);
     toolbar->addSeparator();
     toolbar->addAction(undo_);
@@ -353,7 +385,7 @@ void MainWindow::build_actions() {
     auto* line_menu = new QMenu(this);
     for (const auto style : {LineStyle::Curved, LineStyle::Straight}) {
         const QString label = style == LineStyle::Straight ? "Straight lines" : "Curved lines";
-        auto* entry = line_menu->addAction(QIcon(canvas_->line_style_preview(style, QSize(34, 18))), label);
+        auto* entry = line_menu->addAction(QIcon(canvas_->line_style_preview(style, line_style_sample)), label);
         entry->setCheckable(true);
         entry->setChecked(style == canvas_->line_style());
         entry->setObjectName(style == LineStyle::Straight ? "lineStraight" : "lineCurved");
@@ -371,7 +403,40 @@ void MainWindow::build_actions() {
     tool_actions_[Tool::Connect] = connect_action;
     connect_button->installEventFilter(this);
 
-    auto* pan_action = toolbar->addAction("Pan");
+    // Notation follows Connect: it decides how the lines Connect draws are read.
+    // The picker draws each option, so the cardinality symbols can be recognised
+    // rather than remembered from a name.
+    notation_separator_ = toolbar->addSeparator();
+    // Named, so a reader who does not yet know the symbols knows what the
+    // picker is for. The label goes with the picker whenever the bar has to
+    // give it up.
+    auto* notation_label = new QLabel(" Notation ", toolbar);
+    notation_label->setObjectName("notationLabel");
+    notation_label_action_ = toolbar->addWidget(notation_label);
+    notation_box_ = new QComboBox(toolbar);
+    notation_box_->setObjectName("notationPicker");
+    notation_box_->setIconSize(notation_sample);
+    notation_box_->setToolTip("How each participant's minimum and maximum are drawn.");
+    // Held to the width of its drawings and a little text. The sample is what
+    // the choice is made on; the name is only there to confirm it, and letting
+    // it run to full length costs more of the toolbar than it is worth.
+    notation_box_->setMaximumWidth(notation_sample.width() + 62);
+    notation_box_->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    notation_box_->setMinimumContentsLength(4);
+    for (const auto& [style, label] : notation_styles())
+        notation_box_->addItem(QIcon(canvas_->notation_preview(style, notation_sample)), label,
+                               QVariant::fromValue(static_cast<int>(style)));
+    notation_box_->setCurrentIndex(static_cast<int>(canvas_->notation()));
+    connect(notation_box_, &QComboBox::currentIndexChanged, this, [this](int index) {
+        if (refreshing_ || index < 0) return;
+        choose_notation(static_cast<Notation>(index));
+    });
+    notation_action_ = toolbar->addWidget(notation_box_);
+
+
+    // Panning and framing are about looking rather than modelling, so they sit
+    // on the canvas by what they act on instead of in the row of drawing tools.
+    auto* pan_action = new QAction("Pan", this);
     pan_action->setCheckable(true);
     pan_action->setData("Pan");
     pan_action->setObjectName("toolPan");
@@ -379,37 +444,70 @@ void MainWindow::build_actions() {
     tool_actions_[Tool::Pan] = pan_action;
     action_glyphs_[pan_action] = Glyph::Pan;
     connect(pan_action, &QAction::triggered, this, [this] { choose_tool(Tool::Pan, false); });
-    if (auto* button = toolbar->widgetForAction(pan_action)) button->installEventFilter(this);
 
-    toolbar->addSeparator();
-    auto* fit = toolbar->addAction("Fit", canvas_, &DiagramView::fit_diagram);
+    auto* fit = new QAction("Fit", this);
+    fit->setObjectName("viewFit");
     fit->setShortcut(QKeySequence("Ctrl+0"));
+    connect(fit, &QAction::triggered, canvas_, &DiagramView::fit_diagram);
     action_glyphs_[fit] = Glyph::Fit;
+
+    // What follows lives in the right-hand corner rather than in the row of
+    // tools: checking the model and choosing a theme are about the whole
+    // diagram, not about the next thing drawn on it.
+    auto* stretch = new QWidget(toolbar);
+    stretch->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    toolbar->addWidget(stretch);
+    toolbar->addSeparator();
     auto* check = toolbar->addAction("Check model", this, [this] {
         finish_field_edit(); refresh_validation(); validation_dock_->show();
     });
     check->setObjectName("checkModel");
     action_glyphs_[check] = Glyph::Check;
-    // Notation is a reading choice people change often, and a submenu hides it.
-    // The picker sits in the toolbar and draws each option, so the cardinality
-    // symbols can be recognised rather than remembered from a name.
-    toolbar->addSeparator();
-    auto* notation_label = new QLabel("  Notation ", toolbar);
-    notation_label->setObjectName("hint");
-    toolbar->addWidget(notation_label);
-    notation_box_ = new QComboBox(toolbar);
-    notation_box_->setObjectName("notationPicker");
-    notation_box_->setIconSize(QSize(58, 18));
-    notation_box_->setToolTip("How each participant's minimum and maximum are drawn.");
-    for (const auto& [style, label] : notation_styles())
-        notation_box_->addItem(QIcon(canvas_->notation_preview(style, QSize(58, 18))), label,
-                               QVariant::fromValue(static_cast<int>(style)));
-    notation_box_->setCurrentIndex(static_cast<int>(canvas_->notation()));
-    connect(notation_box_, &QComboBox::currentIndexChanged, this, [this](int index) {
-        if (refreshing_ || index < 0) return;
-        choose_notation(static_cast<Notation>(index));
-    });
-    toolbar->addWidget(notation_box_);
+
+
+    // A small raft of view controls over the bottom-right of the canvas, where
+    // a diagram is framed and zoomed rather than across the window from it.
+    canvas_controls_ = new QWidget(canvas_);
+    canvas_controls_->setObjectName("canvasControls");
+    auto* stack = new QVBoxLayout(canvas_controls_);
+    stack->setContentsMargins(4, 4, 4, 4);
+    stack->setSpacing(2);
+    // Every button on the raft is the same size and sits on the same centre
+    // line, so the column reads as one control rather than as icons that
+    // happen to be near some signs.
+    stack->setAlignment(Qt::AlignHCenter);
+    const auto raft_button = [&](QAction* action, const char* named) {
+        auto* button = new QToolButton(canvas_controls_);
+        button->setObjectName(named);
+        button->setDefaultAction(action);
+        button->setToolButtonStyle(Qt::ToolButtonIconOnly);
+        button->setAutoRaise(true);
+        button->setIconSize(QSize(18, 18));
+        button->setFixedSize(26, 24);
+        stack->addWidget(button, 0, Qt::AlignHCenter);
+        return button;
+    };
+    raft_button(fit, "canvasFit");
+    // Pan locks on a double-click, exactly as the tools on the toolbar do, so
+    // a long look around the diagram does not need the button pressed again
+    // after every drag.
+    raft_button(pan_action, "canvasPan")->installEventFilter(this);
+    // Zooming has no glyph of its own in either set, and a pair of signs says
+    // what it does more plainly than a picture would at this size.
+    for (const auto& [text, name, step] : std::initializer_list<std::tuple<const char*, const char*, int>>{
+             {"+", "canvasZoomIn", 1}, {"\u2212", "canvasZoomOut", -1}}) {
+        auto* button = new QToolButton(canvas_controls_);
+        button->setObjectName(name);
+        button->setText(QString::fromUtf8(text));
+        button->setToolTip(step > 0 ? "Zoom in" : "Zoom out");
+        button->setAutoRaise(true);
+        button->setFixedSize(26, 24);
+        connect(button, &QToolButton::clicked, this,
+                [this, step] { if (step > 0) canvas_->zoom_in(); else canvas_->zoom_out(); });
+        stack->addWidget(button, 0, Qt::AlignHCenter);
+    }
+    canvas_->installEventFilter(this);
+    place_canvas_controls();
 
     auto* view = findChild<QMenu*>("viewMenu");
     view->addSeparator();
@@ -433,6 +531,7 @@ void MainWindow::build_actions() {
     // The same participants can be read in several notations. This is a display
     // choice, so it lives with the other view settings rather than in the file.
     auto* themes = view->addMenu("Theme");
+    themes->setObjectName("themeMenu");
     auto* theme_group = new QActionGroup(this);
     for (const auto& entry : erdflow::desktop::themes()) {
         auto* action = themes->addAction(entry.label);
@@ -442,7 +541,45 @@ void MainWindow::build_actions() {
         action->setActionGroup(theme_group);
         theme_actions_[entry.id] = action;
         connect(action, &QAction::triggered, this, [this, id = entry.id] { set_theme(id); });
+        // Hovering a name shows the theme on the whole window, which is the only
+        // way to judge one: a palette is about how the diagram reads, not about
+        // what it is called.
+        connect(action, &QAction::hovered, this, [this, id = entry.id] { preview_theme(id); });
     }
+    // Leaving the menu without choosing puts back what was chosen before.
+    connect(themes, &QMenu::aboutToHide, this, [this] {
+        if (theme_ != committed_theme_) apply_appearance(committed_theme_);
+    });
+    // Appearance is tried repeatedly rather than set once, so the same list is
+    // put on the toolbar behind a button. It is the menu itself, not a copy, so
+    // the two can never disagree about which theme is the current one.
+    theme_button_ = new QToolButton(toolbar);
+    theme_button_->setObjectName("themeButton");
+    theme_button_->setText("Theme");
+    theme_button_->setToolTip("Change the appearance of the window and the diagram.");
+    theme_button_->setMenu(themes);
+    theme_button_->setPopupMode(QToolButton::InstantPopup);
+    theme_button_->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    theme_button_->setIconSize(toolbar->iconSize());
+    // The icon set is a choice about appearance like the theme is, so it sits
+    // in the same menu rather than somewhere of its own.
+    auto* icon_menu = view->addMenu("Icons");
+    auto* icon_group = new QActionGroup(this);
+    for (const auto mode : {IconMode::Normal, IconMode::Modern}) {
+        auto* action = icon_menu->addAction(mode == IconMode::Modern ? "Modern — 3D artwork"
+                                                                     : "Normal — drawn from the theme");
+        action->setCheckable(true);
+        action->setChecked(mode == icon_mode_);
+        action->setObjectName("icons" + icon_mode_key(mode));
+        action->setActionGroup(icon_group);
+        icon_mode_actions_[mode] = action;
+        connect(action, &QAction::triggered, this, [this, mode] { set_icon_mode(mode); });
+    }
+
+    // Outermost on the right: the corner is where a choice about the whole
+    // window is looked for.
+    toolbar->addSeparator();
+    toolbar->addWidget(theme_button_);
     auto* notations = view->addMenu("Notation");
     auto* notation_group = new QActionGroup(this);
     for (const auto& [style, label] : notation_styles()) {
@@ -504,30 +641,96 @@ void MainWindow::refresh() {
 }
 
 void MainWindow::refresh_explorer() {
+    // The tree is rebuilt on every change, so what the user had opened is
+    // noted first and reopened after, or each edit would fold it all shut.
+    std::set<QString> opened;
+    const auto identity = [](const QModelIndex& index) {
+        const auto id = index.data(Qt::UserRole).toString();
+        return id.isEmpty() ? index.data(Qt::DisplayRole).toString() : id;
+    };
+    const auto remember = [&](auto&& self, const QModelIndex& parent) -> void {
+        for (int row = 0; row < explorer_model_->rowCount(parent); ++row) {
+            const auto index = explorer_model_->index(row, 0, parent);
+            if (explorer_->isExpanded(index)) opened.insert(identity(index));
+            self(self, index);
+        }
+    };
+    const bool first_build = explorer_model_->rowCount() == 0;
+    remember(remember, QModelIndex());
+
     explorer_model_->clear();
     references_.clear();
     auto* project = new QStandardItem(text(editor_.project().name));
     project->setData("project", Qt::UserRole);
     project->setEditable(false);
     explorer_model_->appendRow(project);
-    const auto append = [this, project](const QString& label, const auto& collection) {
-        auto* group = new QStandardItem(label + QString(" (%1)").arg(collection.size()));
+    // Each group and every row under it wears the same glyph the toolbar uses to
+    // place that kind of element, so the tree reads as the diagram does. They
+    // are built from the active theme and icon set, which is why the tree is
+    // rebuilt when either changes.
+    const auto& colors = theme(theme_);
+    const auto attribute_badge = glyph_icon(Glyph::Attribute, colors, 22, icon_mode_);
+    const auto& attributes = editor_.project().attributes;
+    const auto owned_by = [&](const ElementRef& owner) {
+        std::vector<AttributeId> owned;
+        for (const auto& [id, attribute] : attributes)
+            if (attribute.owner && *attribute.owner == owner) owned.push_back(id);
+        return owned;
+    };
+    // An element's own attributes are listed beneath it, one level in, so an
+    // entity can be opened to see what belongs to it. A composite attribute
+    // lists its parts the same way. These are the same attributes the group
+    // below counts; here they are shown by what they belong to.
+    const auto nest = [&](auto&& self, QStandardItem* under, const ElementRef& owner) -> void {
+        for (const auto id : owned_by(owner)) {
+            const ElementRef ref{id};
+            auto* row = new QStandardItem(attribute_badge, display_name(editor_.project(), ref));
+            row->setData(key(ref), Qt::UserRole);
+            row->setToolTip(kind_label(ref) + " · " + key(ref));
+            under->appendRow(row);
+            references_.emplace(key(ref), ref);
+            self(self, row, ref);
+        }
+    };
+    const auto append = [&](const QString& label, Glyph glyph, const auto& collection, bool with_owned) {
+        const auto badge = glyph_icon(glyph, colors, 22, icon_mode_);
+        auto* group = new QStandardItem(badge, label + QString(" (%1)").arg(collection.size()));
         group->setSelectable(false);
+        // The group is known by a key of its own rather than by its text, whose
+        // count changes with every element added: an open group that changed
+        // its number must still be the same open group.
+        group->setData("group:" + label, Qt::UserRole);
         project->appendRow(group);
         for (const auto& [id, item] : collection) {
             (void)item;
             const ElementRef ref{id};
-            auto* row = new QStandardItem(display_name(editor_.project(), ref));
+            auto* row = new QStandardItem(badge, display_name(editor_.project(), ref));
             row->setData(key(ref), Qt::UserRole);
             row->setToolTip(kind_label(ref) + " · " + key(ref));
             group->appendRow(row);
             references_.emplace(key(ref), ref);
+            if (with_owned) nest(nest, row, ref);
         }
     };
-    append("Entities", editor_.project().entities);
-    append("Attributes", editor_.project().attributes);
-    append("Relationships", editor_.project().relationships);
-    explorer_->expandAll();
+    append("Entities", Glyph::Entity, editor_.project().entities, true);
+    append("Attributes", Glyph::Attribute, attributes, false);
+    append("Relationships", Glyph::Relationship, editor_.project().relationships, true);
+
+    // The groups start open and the elements under them folded, so the tree
+    // shows what there is without spilling every attribute twice. After that
+    // it keeps whatever the user has opened.
+    if (first_build) {
+        explorer_->expandToDepth(1);
+    } else {
+        const auto reopen = [&](auto&& self, const QModelIndex& parent) -> void {
+            for (int row = 0; row < explorer_model_->rowCount(parent); ++row) {
+                const auto index = explorer_model_->index(row, 0, parent);
+                if (opened.contains(identity(index))) explorer_->expand(index);
+                self(self, index);
+            }
+        };
+        reopen(reopen, QModelIndex());
+    }
     highlight_explorer();
 }
 
@@ -535,9 +738,12 @@ void MainWindow::highlight_explorer() {
     const QSignalBlocker blocker(explorer_->selectionModel());
     explorer_->selectionModel()->clearSelection();
     for (const auto ref : selection_) {
+        // An attribute is listed both under its owner and in the group of all
+        // attributes, and both rows should light up for it.
         const auto matches = explorer_model_->match(explorer_model_->index(0, 0), Qt::UserRole,
-                                                    key(ref), 1, Qt::MatchExactly | Qt::MatchRecursive);
-        if (!matches.isEmpty()) explorer_->selectionModel()->select(matches.front(), QItemSelectionModel::Select | QItemSelectionModel::Rows);
+                                                    key(ref), -1, Qt::MatchExactly | Qt::MatchRecursive);
+        for (const auto& match : matches)
+            explorer_->selectionModel()->select(match, QItemSelectionModel::Select | QItemSelectionModel::Rows);
     }
 }
 
@@ -559,11 +765,28 @@ void MainWindow::refresh_properties() {
     const auto& project = editor_.project();
     auto* heading = new QLabel(kind_label(ref), panel);
     heading->setObjectName("propertyHeading");
+    // The heading says what kind of thing this is, so it stays a title and is
+    // left to the theme. Only the name carries the element's own colour: it is
+    // the box holding the thing being named, and colouring the kind as well
+    // would say the same thing twice and leave the panel shouting.
+    const auto surface = surface_of(project, theme(theme_), ref);
+    const auto ink = readable_on(surface);
     layout->addWidget(heading);
     auto* form = new QFormLayout;
     form->setRowWrapPolicy(QFormLayout::WrapAllRows);
     auto* name_edit = new QLineEdit(text(name(project, ref)), panel);
     name_edit->setObjectName("elementName");
+    // The name field carries the same colour. Its border is darkened from the
+    // fill rather than taken from the theme, which would otherwise draw a line
+    // the element's colour knows nothing about around it.
+    // The focus ring has to be restated: a style set on the widget wins over the
+    // application's, so the theme's focus rule no longer reaches this field, and
+    // it is drawn in the ink rather than the accent, which is the one colour
+    // already known to contrast with whatever fill the element carries.
+    name_edit->setStyleSheet(QStringLiteral(
+        "QLineEdit#elementName { background: %1; color: %2; border: 1px solid %3; }"
+        "QLineEdit#elementName:focus { border: 2px solid %2; }")
+        .arg(surface.name(), ink.name(), surface.darker(135).name()));
     name_edit->setMaxLength(512);
     form->addRow("Name", name_edit);
     connect(name_edit, &QLineEdit::editingFinished, this, [this, ref, name_edit] {
@@ -885,32 +1108,160 @@ void MainWindow::choose_tool(Tool tool, bool locked) {
     refresh_tool_labels();
 }
 
-void MainWindow::set_theme(ThemeId id) {
+void MainWindow::place_canvas_controls() {
+    if (!canvas_controls_) return;
+    canvas_controls_->adjustSize();
+    // Measured from the view's own edge and inset by a scrollbar's thickness
+    // whether or not one is showing, so fitting the diagram — which brings
+    // scrollbars in or takes them out — never moves the raft.
+    const auto bar = canvas_->style()->pixelMetric(QStyle::PM_ScrollBarExtent, nullptr, canvas_);
+    canvas_controls_->move(canvas_->width() - canvas_controls_->width() - bar - 12,
+                           canvas_->height() - canvas_controls_->height() - bar - 12);
+    canvas_controls_->raise();
+}
+
+int MainWindow::icon_pixels() const {
+    auto* toolbar = findChild<QToolBar*>("modelTools");
+    return toolbar ? toolbar->iconSize().width() : 34;
+}
+
+void MainWindow::resizeEvent(QResizeEvent* event) {
+    QMainWindow::resizeEvent(event);
+    fit_toolbar();
+}
+
+// A tool that has fallen off the end of the toolbar may as well not exist, so
+// the toolbar sheds what it can spare before it sheds a tool, and it sheds
+// the cheapest thing first: some of the icons' size, then the notation picker,
+// which the View menu also offers, and the names only when the window has been
+// made genuinely small.
+//
+// Which of those is needed is measured rather than guessed from the window's
+// width. What fits depends on how many tools there are and how long their names
+// read, and a threshold picked by hand goes wrong the moment either changes.
+void MainWindow::fit_toolbar() {
+    auto* toolbar = findChild<QToolBar*>("modelTools");
+    if (!toolbar || fitting_) return;
+    fitting_ = true;
+    struct Step {
+        Qt::ToolButtonStyle style;
+        int icon;
+        bool notation;
+        bool notation_named;
+    };
+    // Names stay for as long as they possibly can: a tool's lock mark hangs on
+    // its name, and a bar of bare icons is the state for a window that has
+    // been made small, not for one at an ordinary size. The icons give up
+    // size first, then the picker its word, then the picker, and only then
+    // the names.
+    static constexpr std::array<Step, 8> steps{{
+        {Qt::ToolButtonTextBesideIcon, 34, true, true},
+        {Qt::ToolButtonTextBesideIcon, 28, true, true},
+        {Qt::ToolButtonTextBesideIcon, 24, true, true},
+        {Qt::ToolButtonTextBesideIcon, 24, true, false},
+        {Qt::ToolButtonTextBesideIcon, 24, false, false},
+        {Qt::ToolButtonIconOnly, 28, true, false},
+        {Qt::ToolButtonIconOnly, 24, false, false},
+        {Qt::ToolButtonIconOnly, 20, false, false},
+    }};
+    for (std::size_t index = 0; index < steps.size(); ++index) {
+        const auto& step = steps[index];
+        toolbar->setToolButtonStyle(step.style);
+        toolbar->setIconSize(QSize(step.icon, step.icon));
+        for (const char* named : {"isaButton", "connectButton", "themeButton"})
+            if (auto* button = findChild<QToolButton*>(named)) {
+                button->setToolButtonStyle(step.style);
+                button->setIconSize(toolbar->iconSize());
+            }
+        // Hiding the widget would leave its room behind in the toolbar's layout;
+        // it is the action holding it that has to go.
+        for (auto* hidden : {notation_separator_, notation_action_})
+            if (hidden) hidden->setVisible(step.notation);
+        if (notation_label_action_) notation_label_action_->setVisible(step.notation && step.notation_named);
+        toolbar->adjustSize();
+        if (toolbar->sizeHint().width() <= width() || index + 1 == steps.size()) break;
+    }
+    fitting_ = false;
+    refresh_icons();
+}
+
+void MainWindow::set_icon_mode(IconMode mode) {
+    icon_mode_ = mode;
+    QSettings().setValue("iconMode", icon_mode_key(mode));
+    for (const auto& [candidate, action] : icon_mode_actions_) action->setChecked(candidate == mode);
+    refresh_icons();
+    refresh_explorer();
+}
+
+// Everything that has to change for the window to be wearing a theme. Choosing
+// one and merely looking at one do the same work; only what is remembered and
+// what is ticked differ between them.
+void MainWindow::apply_appearance(ThemeId id) {
     theme_ = id;
     if (auto* application = qobject_cast<QApplication*>(QCoreApplication::instance()))
         apply_theme(*application, id);
     canvas_->set_theme(id);
+    refresh_icons();
+    refresh_explorer();
+}
+
+void MainWindow::preview_theme(ThemeId id) { apply_appearance(id); }
+
+void MainWindow::set_theme(ThemeId id) {
+    committed_theme_ = id;
+    apply_appearance(id);
     QSettings().setValue("theme", theme(id).key);
     for (const auto& [candidate, action] : theme_actions_) action->setChecked(candidate == id);
-    refresh_icons();
 }
 
 // Icons are drawn from the theme, so they are rebuilt whenever it changes.
 void MainWindow::refresh_icons() {
     const auto& colors = theme(theme_);
-    for (const auto& [action, glyph] : action_glyphs_) action->setIcon(glyph_icon(glyph, colors));
+    for (const auto& [action, glyph] : action_glyphs_)
+        action->setIcon(glyph_icon(glyph, colors, icon_pixels(), icon_mode_));
+    if (theme_button_) theme_button_->setIcon(glyph_icon(Glyph::Theme, colors, icon_pixels(), icon_mode_));
     if (notation_box_) {
         for (int index = 0; index < notation_box_->count(); ++index)
             notation_box_->setItemIcon(index, QIcon(canvas_->notation_preview(
-                static_cast<Notation>(index), QSize(58, 18))));
+                static_cast<Notation>(index), notation_sample)));
     }
     for (const auto& [style, action] : line_actions_)
-        action->setIcon(QIcon(canvas_->line_style_preview(style, QSize(34, 18))));
+        action->setIcon(QIcon(canvas_->line_style_preview(style, line_style_sample)));
+    // The raft's hand carries a lock mark the action's own icon does not, so
+    // redrawing the icons has to redraw that too.
+    refresh_tool_labels();
+}
+
+// A small padlock in the corner of an icon, for a button that has no name to
+// hang the lock mark on.
+QIcon with_lock_badge(const QIcon& base, const Theme& colors, int size) {
+    QPixmap pixmap = base.pixmap(QSize(size, size) * 2);
+    pixmap.setDevicePixelRatio(2);
+    QPainter painter(&pixmap);
+    painter.setRenderHint(QPainter::Antialiasing);
+    const qreal s = size;
+    const QRectF body(s * 0.58, s * 0.66, s * 0.36, s * 0.28);
+    const QRectF shackle(body.left() + body.width() * 0.2, body.top() - body.height() * 0.6,
+                         body.width() * 0.6, body.height() * 0.9);
+    painter.setPen(QPen(colors.accent, s * 0.08));
+    painter.setBrush(Qt::NoBrush);
+    painter.drawArc(shackle, 0, 180 * 16);
+    painter.setPen(QPen(colors.selected_text, s * 0.04));
+    painter.setBrush(colors.accent);
+    painter.drawRoundedRect(body, s * 0.05, s * 0.05);
+    return QIcon(pixmap);
 }
 
 void MainWindow::refresh_tool_labels() {
     const auto active = canvas_->tool();
     const auto locked = canvas_->tool_locked();
+    if (auto* hand = findChild<QToolButton*>("canvasPan")) {
+        const auto plain = glyph_icon(Glyph::Pan, theme(theme_), 18, icon_mode_);
+        hand->setIcon(active == Tool::Pan && locked ? with_lock_badge(plain, theme(theme_), 18) : plain);
+        hand->setToolTip(active == Tool::Pan && locked
+            ? "Pan is locked. Drag as much as you like; choose another tool or press Escape to stop."
+            : "Pan. Double-click to lock it for a longer look around.");
+    }
     for (const auto& [tool, action] : tool_actions_) {
         // Generalization and specialization share one action, so only the mode
         // its button is actually set to should drive the label.
@@ -931,7 +1282,19 @@ QWidget* MainWindow::toolbar_widget(QAction* action) const {
 }
 
 bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
+    // The controls float over the view rather than in a layout, so they are put
+    // back in the corner whenever the view changes size under them.
+    if (canvas_ && watched == canvas_
+        && (event->type() == QEvent::Resize || event->type() == QEvent::Show
+            || event->type() == QEvent::LayoutRequest)) {
+        place_canvas_controls();
+        return false;
+    }
     if (event->type() == QEvent::MouseButtonDblClick) {
+        if (watched == static_cast<QObject*>(findChild<QToolButton*>("canvasPan"))) {
+            choose_tool(Tool::Pan, true);
+            return true;
+        }
         if (watched == static_cast<QObject*>(findChild<QToolButton*>("isaButton"))) {
             choose_tool(isa_mode_, true);
             return true;

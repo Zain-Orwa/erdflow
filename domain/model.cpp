@@ -316,15 +316,34 @@ std::vector<Issue> validate(const Project& project) {
         for (const auto& visited : path) inheritance_color[visited] = 2;
     }
     if (project.connectors.size() > max_elements) error("connector.limit", "The connector shapes exceed the element limit.");
-    for (const auto& [ref, offset] : project.connectors) {
+    for (const auto& [ref, connector] : project.connectors) {
         // Report against the owning element so the canvas can highlight it; a
         // connector has no element reference of its own.
         const std::optional<ElementRef> owner = std::holds_alternative<AttributeId>(ref)
             ? std::optional<ElementRef>{std::get<AttributeId>(ref)} : std::nullopt;
         if (!connector_exists(project, ref))
             error("connector.reference.missing", "A connector shape refers to a link that no longer exists.", owner);
-        if (!std::isfinite(offset) || std::abs(offset) > max_coordinate)
+        if (!std::isfinite(connector.offset) || std::abs(connector.offset) > max_coordinate)
             error("connector.bounds.invalid", "A connector bend must be finite and within the supported canvas.", owner);
+        // A pinned join is a direction, so anything that is not a finite angle
+        // would leave the line with nowhere to meet its shape.
+        for (const auto& anchor : {connector.owner_anchor, connector.child_anchor})
+            if (anchor && !std::isfinite(*anchor))
+                error("connector.anchor.invalid", "A pinned connector join must be a finite direction.", owner);
+        // A route is bounded the same way the layout is: each point has to be
+        // somewhere on the canvas, and a line cannot carry more corners than the
+        // document is allowed elements.
+        if (connector.waypoints.size() > max_elements)
+            error("connector.route.limit", "A connector route exceeds the element limit.", owner);
+        for (const auto& point : connector.waypoints)
+            if (!std::isfinite(point.x) || !std::isfinite(point.y)
+                || std::abs(point.x) > max_coordinate || std::abs(point.y) > max_coordinate)
+                error("connector.route.invalid", "A connector route point must be within the supported canvas.", owner);
+    }
+    if (project.colours.size() > max_elements) error("colour.limit", "The chosen colours exceed the element limit.");
+    for (const auto& [ref, colour] : project.colours) {
+        (void)colour; // Every channel is already a byte, so only the reference can be wrong.
+        if (!exists(project, ref)) error("colour.reference.missing", "A colour refers to a missing element.", ref);
     }
     if (project.layout.size() > max_elements) error("layout.limit", "The layout exceeds the element limit.");
     for (const auto& [ref, rect] : project.layout) {

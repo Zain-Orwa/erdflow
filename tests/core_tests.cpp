@@ -443,7 +443,7 @@ void connector_shapes_follow_their_link() {
     // Bending is stored per connector; absence means automatic routing.
     CHECK(editor.project().connectors.empty());
     CHECK(editor.bend_connector(ConnectorRef{side}, 40));
-    CHECK(editor.project().connectors.at(ConnectorRef{side}) == 40);
+    CHECK(editor.project().connectors.at(ConnectorRef{side}).offset == 40);
     CHECK(editor.bend_connector(ConnectorRef{grade}, -25));
     CHECK(editor.project().connectors.size() == 2);
 
@@ -451,7 +451,7 @@ void connector_shapes_follow_their_link() {
     CHECK(editor.bend_connector(ConnectorRef{grade}, {}));
     CHECK(!editor.project().connectors.contains(ConnectorRef{grade}));
     CHECK(editor.undo());
-    CHECK(editor.project().connectors.at(ConnectorRef{grade}) == -25);
+    CHECK(editor.project().connectors.at(ConnectorRef{grade}).offset == -25);
 
     // Re-bending the same connector to its current shape is not an edit.
     const auto revision = editor.revision();
@@ -463,13 +463,13 @@ void connector_shapes_follow_their_link() {
     CHECK(!editor.project().connectors.contains(ConnectorRef{grade}));
     CHECK(!blocks(editor.project()));
     CHECK(editor.undo());
-    CHECK(editor.project().connectors.at(ConnectorRef{grade}) == -25);
+    CHECK(editor.project().connectors.at(ConnectorRef{grade}).offset == -25);
 
     CHECK(editor.disconnect(enrolled, side));
     CHECK(!editor.project().connectors.contains(ConnectorRef{side}));
     CHECK(!blocks(editor.project()));
     CHECK(editor.undo());
-    CHECK(editor.project().connectors.at(ConnectorRef{side}) == 40);
+    CHECK(editor.project().connectors.at(ConnectorRef{side}).offset == 40);
 
     // Deleting the relationship drops every participant shape it drew.
     CHECK(editor.erase({ElementRef{enrolled}}));
@@ -487,7 +487,7 @@ void connector_shapes_follow_their_link() {
     for (const auto& participant : copied.participants) {
         CHECK(participant.id != side);
         if (editor.project().connectors.contains(ConnectorRef{participant.id})) {
-            CHECK(editor.project().connectors.at(ConnectorRef{participant.id}) == 40);
+            CHECK(editor.project().connectors.at(ConnectorRef{participant.id}).offset == 40);
             ++carried;
         }
     }
@@ -511,18 +511,25 @@ void hostile_connector_shapes_are_rejected() {
     CHECK(blocks(project));
 
     project = editor.project();
-    project.connectors.emplace(ConnectorRef{ParticipantId{}}, 10.0);
+    project.connectors.emplace(ConnectorRef{ParticipantId{}}, Connector{10.0, {}, {}});
     CHECK(blocks(project));
 
     for (const auto bad : {std::numeric_limits<double>::quiet_NaN(),
                            std::numeric_limits<double>::infinity(), 1e9}) {
         project = editor.project();
-        project.connectors.insert_or_assign(ConnectorRef{side}, bad);
+        project.connectors.insert_or_assign(ConnectorRef{side}, Connector{bad, {}, {}});
         CHECK(blocks(project));
+        // A pinned join is a direction, and must be a usable one: an angle that
+        // is not finite leaves the line nowhere to meet its shape. Unlike the
+        // bend it has no range to exceed, so a large angle is merely a wound-up
+        // one and stays acceptable.
+        project = editor.project();
+        project.connectors.insert_or_assign(ConnectorRef{side}, Connector{0, bad, {}});
+        CHECK(blocks(project) == !std::isfinite(bad));
     }
     // A bend the editor would accept must also survive validation directly.
     project = editor.project();
-    project.connectors.insert_or_assign(ConnectorRef{side}, -99999.0);
+    project.connectors.insert_or_assign(ConnectorRef{side}, Connector{-99999.0, {}, {}});
     CHECK(!blocks(project));
 }
 

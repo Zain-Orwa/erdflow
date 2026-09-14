@@ -50,7 +50,10 @@ std::size_t payload(const Specialization& value) {
     return value.name.capacity() + value.description.capacity() + value.subtypes.capacity() * sizeof(EntityId);
 }
 std::size_t payload(const Rect&) { return 0; }
+std::size_t payload(const Colour&) { return 0; }
 std::size_t payload(double) { return 0; }
+// A connector holds its bend and joins inline; only the route is on the heap.
+std::size_t payload(const Connector& value) { return value.waypoints.capacity() * sizeof(Point); }
 
 template<class Key, class Value>
 std::size_t cost(const Changes<Key, Value>& changes, const std::map<Key, Value>& live) {
@@ -74,7 +77,8 @@ struct Delta {
     Changes<RelationshipId, Relationship> relationships;
     Changes<SpecializationId, Specialization> specializations;
     Changes<ElementRef, Rect> layout;
-    Changes<ConnectorRef, double> connectors;
+    Changes<ConnectorRef, Connector> connectors;
+    Changes<ElementRef, Colour> colours;
     std::size_t bytes = 0;
     std::uint64_t before_state = 0;
     std::uint64_t after_state = 0;
@@ -82,7 +86,7 @@ struct Delta {
     [[nodiscard]] bool empty() const {
         return !project_name && entities.keys.empty() && attributes.keys.empty()
             && relationships.keys.empty() && specializations.keys.empty()
-            && layout.keys.empty() && connectors.keys.empty();
+            && layout.keys.empty() && connectors.keys.empty() && colours.keys.empty();
     }
     void toggle(Project& project) {
         if (project_name) project.name.swap(*project_name);
@@ -92,13 +96,15 @@ struct Delta {
         specializations.toggle(project.specializations);
         layout.toggle(project.layout);
         connectors.toggle(project.connectors);
+        colours.toggle(project.colours);
     }
     [[nodiscard]] std::size_t estimate(const Project& project) const {
         return sizeof(Delta) + sizeof(std::unique_ptr<Delta>) + label.capacity()
             + (project_name ? project_name->capacity() + project.name.capacity() : 0)
             + cost(entities, project.entities) + cost(attributes, project.attributes)
             + cost(relationships, project.relationships) + cost(specializations, project.specializations)
-            + cost(layout, project.layout) + cost(connectors, project.connectors);
+            + cost(layout, project.layout) + cost(connectors, project.connectors)
+            + cost(colours, project.colours);
     }
 };
 
@@ -444,6 +450,20 @@ EditResult Editor::update_participant(RelationshipId relationship, ParticipantId
         return EditResult{};
     });
 }
+EditResult Editor::show_participant_constraints(RelationshipId relationship, ParticipantId participant,
+                                                bool shown) {
+    return impl_->edit(shown ? "Show constraints" : "Hide constraints", [&](Delta& delta) {
+        const auto found = project().relationships.find(relationship);
+        if (found == project().relationships.end()) return failure("The relationship no longer exists.");
+        auto value = found->second;
+        const auto item = std::find_if(value.participants.begin(), value.participants.end(),
+                                       [&](const auto& entry) { return entry.id == participant; });
+        if (item == value.participants.end()) return failure("The participant does not belong to this relationship.");
+        item->show_constraints = shown;
+        if (value != found->second) delta.relationships.put(relationship, std::move(value));
+        return EditResult{};
+    });
+}
 EditResult Editor::set_ratio(RelationshipId relationship, Cardinality first, Cardinality second) {
     return impl_->edit("Change relationship ratio", [&](Delta& delta) {
         const auto found = project().relationships.find(relationship);
@@ -494,15 +514,77 @@ EditResult Editor::move(const std::map<ElementRef, Rect>& positions) {
         return EditResult{};
     });
 }
+// Writes a reshaped connector back, dropping the record entirely once nothing
+// on it differs from automatic routing. Both of the shaping commands end this
+// way, so neither can leave an entry behind that says nothing.
+namespace {
+EditResult store_connector(const Project& project, Delta& delta, const ConnectorRef& ref,
+                           const Connector& shaped) {
+    const auto found = project.connectors.find(ref);
+    const auto had = found != project.connectors.end();
+    if (shaped.automatic()) {
+        if (had) delta.connectors.remove(ref);
+        return EditResult{};
+    }
+    if (had && found->second == shaped) return EditResult{};
+    delta.connectors.put(ref, shaped);
+    return EditResult{};
+}
+} // namespace
+
 EditResult Editor::bend_connector(ConnectorRef ref, std::optional<double> offset) {
     return impl_->edit("Shape connector", [&](Delta& delta) {
         if (!connector_exists(project(), ref)) return failure("That connector no longer exists.");
         const auto found = project().connectors.find(ref);
-        const auto current = found == project().connectors.end() ? std::optional<double>{} : found->second;
-        if (current == offset) return EditResult{};
-        if (offset) delta.connectors.put(ref, *offset);
-        else delta.connectors.remove(ref);
+        auto shaped = found == project().connectors.end() ? Connector{} : found->second;
+        // A pinned join is a separate choice from the bend, so straightening
+        // the line must not quietly discard it.
+        shaped.offset = offset.value_or(0);
+        return store_connector(project(), delta, ref, shaped);
+    });
+}
+
+EditResult Editor::recolour(const std::vector<ElementRef>& elements, std::optional<Colour> colour) {
+    // One edit for the whole selection, so recolouring several elements is a
+    // single step to undo rather than one per element.
+    return impl_->edit(colour ? "Set colour" : "Clear colour", [&](Delta& delta) {
+        if (elements.empty()) return EditResult{};
+        for (const auto& ref : elements)
+            if (!exists(project(), ref)) return failure("One of those elements no longer exists.");
+        for (const auto& ref : elements) {
+            const auto found = project().colours.find(ref);
+            const auto current = found == project().colours.end() ? std::optional<Colour>{} : std::optional{found->second};
+            if (current == colour) continue;
+            if (colour) delta.colours.put(ref, *colour);
+            else delta.colours.remove(ref);
+        }
         return EditResult{};
+    });
+}
+
+EditResult Editor::route_connector(ConnectorRef ref, std::vector<domain::Point> waypoints) {
+    return impl_->edit(waypoints.empty() ? "Straighten connector" : "Route connector", [&](Delta& delta) {
+        if (!connector_exists(project(), ref)) return failure("That connector no longer exists.");
+        const auto found = project().connectors.find(ref);
+        auto shaped = found == project().connectors.end() ? Connector{} : found->second;
+        // A route replaces the single bend rather than combining with it, so a
+        // line never has two different opinions about its own shape.
+        if (!waypoints.empty()) shaped.offset = 0;
+        shaped.waypoints = std::move(waypoints);
+        return store_connector(project(), delta, ref, shaped);
+    });
+}
+
+EditResult Editor::pin_connector(ConnectorRef ref, std::optional<double> owner_anchor,
+                                 std::optional<double> child_anchor) {
+    const auto pinning = owner_anchor.has_value() || child_anchor.has_value();
+    return impl_->edit(pinning ? "Lock connector" : "Unlock connector", [&](Delta& delta) {
+        if (!connector_exists(project(), ref)) return failure("That connector no longer exists.");
+        const auto found = project().connectors.find(ref);
+        auto shaped = found == project().connectors.end() ? Connector{} : found->second;
+        shaped.owner_anchor = owner_anchor;
+        shaped.child_anchor = child_anchor;
+        return store_connector(project(), delta, ref, shaped);
     });
 }
 EditResult Editor::erase(const std::vector<ElementRef>& elements,
@@ -546,6 +628,10 @@ EditResult Editor::erase(const std::vector<ElementRef>& elements,
                 }
             }, ref);
             if (project().layout.contains(ref)) delta.layout.remove(ref);
+            // A chosen colour outlives nothing either: it goes in the same edit,
+            // so undo restores the element and its colour together and
+            // validation never sees one pointing at something that is gone.
+            if (project().colours.contains(ref)) delta.colours.remove(ref);
         }
         // A triangle without its supertype means nothing, so it goes with it;
         // a deleted subtype is simply detached from the ones that survive.
@@ -641,6 +727,10 @@ EditResult Editor::duplicate(const std::vector<ElementRef>& elements, double dx,
             rect.x += dx;
             rect.y += dy;
             delta.layout.put(replacement, rect);
+            // A copy looks like what it was copied from, so it carries the
+            // colour the original was given along with its shape.
+            const auto colour = project().colours.find(original);
+            if (colour != project().colours.end()) delta.colours.put(replacement, colour->second);
         }
         EditResult result;
         if (!elements.empty()) result.created = mapping.at(elements.front());

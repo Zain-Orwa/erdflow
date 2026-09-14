@@ -1,6 +1,6 @@
 # ERDX project format — versions 1 to 6
 
-**Status:** Implemented Conceptual ERD format; version 6 is current  
+**Status:** Implemented Conceptual ERD format; version 10 is current  
 **Date:** 2026-09-14
 
 ## What, why, and how
@@ -75,7 +75,26 @@ as `"specialization"`, which is how they were drawn.
 `supertype` may be `null`. Earlier versions always named one, and a document
 before version 6 carrying a null supertype is rejected rather than guessed at.
 
-Saving always writes version 6, so opening an earlier file and saving upgrades
+**Version 7** lets a connector pin where it meets each shape. A connector-shape
+object gains required `owner_anchor` and `child_anchor`, either of which may be
+`null`; earlier versions must not carry them and read as unpinned, which is how
+those links were drawn.
+
+**Version 8** lets a connector carry a route of its own. A connector-shape
+object gains a required `waypoints` array, which may be empty; earlier versions
+must not carry it and read as unrouted, which is the shape they were drawn with.
+
+**Version 9** lets an element carry a surface colour of its own. The project
+gains a required `colours` array, which may be empty; earlier versions must not
+carry it, and every element in such a file follows its theme, as they always did.
+
+**Version 10** lets one side of a relationship be drawn bare. A participant
+gains a required `show_constraints` boolean; earlier versions must not carry it
+and read as `true`, which is what every one of those diagrams meant. It changes
+only what is drawn: the side keeps its `maximum` and `participation` either way,
+and anything reasoning about the relationship still reads them.
+
+Saving always writes version 10, so opening an earlier file and saving upgrades
 it in place and an older build will then refuse the result. This one-way upgrade
 is acceptable only because no release has shipped. A future version that must
 stay readable by older builds needs a different policy, recorded before it is
@@ -99,6 +118,7 @@ The project object has exactly these fields:
 | `relationships` | Array of relationship objects |
 | `layout` | Array of layout objects |
 | `connectors` | Array of connector-shape objects; version 2 onwards |
+| `colours` | Array of element-colour objects; version 9 onwards |
 | `specializations` | Array of specialization objects; version 4 onwards |
 
 An **entity** object has `id`, `name`, and `description`, all strings.
@@ -201,13 +221,29 @@ a subtype detaches it from the specializations that survive.
 
 ## Connector shapes
 
+## Element colours
+
+An **element-colour** object has exactly `element`, `red`, `green` and `blue`:
+
+```json
+{"element": {"type": "entity", "id": "019947b9-7111-7000-8000-000000000001"},
+ "red": 255, "green": 168, "blue": 168}
+```
+
+Each channel is a whole number from 0 to 255; anything else is refused rather
+than clamped, since a document that cannot say what colour it means is broken
+rather than approximate. The `element` must reference an element that exists. At
+most one colour may be given per element, and an element with none is drawn in
+whatever colour the active theme gives its kind — which is why a document that
+has never been recoloured follows the theme everywhere.
+
 A connector is drawn from the record that creates it, so it has no identity of
 its own and is addressed by that record. A **connector-shape** object has exactly
-`link` and `offset`:
+`link`, `offset`, `owner_anchor`, `child_anchor` and `waypoints`:
 
 ```json
 {"link": {"type": "participant", "id": "019947b9-7111-7000-8000-000000000003"},
- "offset": 37.5}
+ "offset": 37.5, "owner_anchor": null, "child_anchor": null, "waypoints": []}
 ```
 
 The `link` type is `"attribute"` for an attribute's ownership link, or
@@ -220,6 +256,25 @@ the straight line between the two endpoints. Its magnitude is bounded by the
 canvas limit. An absent entry means the connector is routed automatically, so a
 straightened connector stores nothing rather than an offset of zero. At most one
 shape may exist per connector; a repeated link is rejected as contradictory.
+
+The two anchors pin where the line meets each shape. They name the ends of the
+drawn line rather than kinds of element: `owner_anchor` is the end the line is
+drawn from, being an attribute link's owning element or a participant link's
+relationship, and `child_anchor` is the far end, being the attribute or the
+entity. Either may be pinned without the other. Each is a finite
+angle in radians, measured from that shape's centre, and `null` when that end is
+left to route itself. An angle is stored rather than a point so the join keeps
+its place on the outline when the shape is moved or resized; it has no range to
+exceed, so a large value is merely a wound-up angle and is accepted. A connector
+that is neither bent, pinned nor routed stores nothing at all.
+
+`waypoints` lists the corners the line is routed through, each an object with
+finite `x` and `y` within the canvas limit, in the order they are met walking
+from the connector's source to its target. A connector with any waypoints is
+routed through them and its `offset` is not consulted; writing a route clears
+the bend in the same edit, so a line never carries two accounts of its own
+shape. The list is bounded by the same element limit as the rest of the
+document.
 
 Because a shape cannot outlive the record that draws it, deleting a relationship,
 disconnecting a participant, or detaching an attribute removes the shape in the

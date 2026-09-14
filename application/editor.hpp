@@ -74,6 +74,10 @@ public:
                                    domain::Cardinality maximum,
                                    domain::Participation participation,
                                    std::string role);
+    // Whether one side's constraints are drawn. This changes the diagram, not
+    // the model: the side keeps its maximum and minimum either way.
+    EditResult show_participant_constraints(domain::RelationshipId relationship,
+                                            domain::ParticipantId participant, bool shown);
     // A binary relationship's ratio is its two participants' maximums read
     // together, so 1:1, 1:M, M:1 and M:M are set as one edit rather than two.
     EditResult set_ratio(domain::RelationshipId relationship,
@@ -86,6 +90,20 @@ public:
     // A connector carries one signed perpendicular bend. Passing no offset
     // restores automatic routing rather than storing a zero-length bend.
     EditResult bend_connector(domain::ConnectorRef ref, std::optional<double> offset);
+    // Gives every named element the same surface colour, or clears the colour
+    // from all of them, as one edit. An element with no colour of its own is
+    // drawn in whatever its theme gives its kind.
+    EditResult recolour(const std::vector<domain::ElementRef>& elements,
+                        std::optional<domain::Colour> colour);
+    // Routes a connector through a list of points, in the order they are met
+    // walking from its source to its target. Passing none straightens it. A
+    // route supersedes the single bend, which is cleared in the same edit.
+    EditResult route_connector(domain::ConnectorRef ref, std::vector<domain::Point> waypoints);
+    // Pins where a connector meets each shape, as a direction in radians from
+    // that shape's centre, so the joins stop sliding as the shapes are moved.
+    // Passing no anchors unpins it. The bend is left alone either way.
+    EditResult pin_connector(domain::ConnectorRef ref, std::optional<double> owner_anchor,
+                             std::optional<double> child_anchor);
     EditResult erase(const std::vector<domain::ElementRef>& elements,
                      const std::vector<std::pair<domain::RelationshipId, domain::ParticipantId>>& participants = {},
                      const std::vector<domain::AttributeId>& detached_attributes = {});

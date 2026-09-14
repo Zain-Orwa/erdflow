@@ -236,6 +236,20 @@ void draw(QPainter& painter, Glyph glyph, const Theme& colors, qreal side) {
         painter.drawPath(pen);
         break;
     }
+    case Glyph::Theme: {
+        // Half the disc carries the page colour and half the ink, which is the
+        // one picture that says "appearance" without naming a single theme.
+        painter.setBrush(depth(box, colors.base));
+        painter.setPen(outline(colors.muted, weight * 0.8));
+        painter.drawEllipse(box);
+        QPainterPath half(QPointF(centre.x(), box.top()));
+        half.arcTo(box, 90, -180);
+        half.closeSubpath();
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(ink);
+        painter.drawPath(half);
+        break;
+    }
     case Glyph::Delete: {
         const auto lip = box.top() + box.height() * 0.26;
         const QColor rim(0xc0, 0x3b, 0x3b);
@@ -260,7 +274,56 @@ void draw(QPainter& painter, Glyph glyph, const Theme& colors, qreal side) {
 
 } // namespace
 
-QIcon glyph_icon(Glyph glyph, const Theme& colors, int size) {
+QString icon_mode_key(IconMode mode) {
+    return mode == IconMode::Modern ? QStringLiteral("modern") : QStringLiteral("normal");
+}
+IconMode icon_mode_from_key(const QString& key) {
+    return key == QStringLiteral("modern") ? IconMode::Modern : IconMode::Normal;
+}
+
+QString icon_name(Glyph glyph) {
+    switch (glyph) {
+    case Glyph::New: return QStringLiteral("new-project");
+    case Glyph::Open: return QStringLiteral("open");
+    case Glyph::Save: return QStringLiteral("save");
+    case Glyph::Undo: return QStringLiteral("undo");
+    case Glyph::Redo: return QStringLiteral("redo");
+    case Glyph::Select: return QStringLiteral("select");
+    case Glyph::Entity: return QStringLiteral("entity");
+    case Glyph::Attribute: return QStringLiteral("attribute");
+    case Glyph::Relationship: return QStringLiteral("relationship");
+    case Glyph::Isa: return QStringLiteral("isa");
+    case Glyph::Connect: return QStringLiteral("connect");
+    case Glyph::Pan: return QStringLiteral("pan");
+    case Glyph::Fit: return QStringLiteral("zoom");
+    case Glyph::Check: return QStringLiteral("validate");
+    case Glyph::Duplicate: return QStringLiteral("duplicate");
+    // The set has no pencil of its own, so renaming borrows the properties
+    // artwork: both are about the details of an element rather than its shape.
+    case Glyph::Rename: return QStringLiteral("properties");
+    case Glyph::Delete: return QStringLiteral("delete");
+    case Glyph::Theme: return QStringLiteral("theme");
+    }
+    return QStringLiteral("select");
+}
+
+QIcon glyph_icon(Glyph glyph, const Theme& colors, int size, IconMode mode) {
+    if (mode == IconMode::Modern) {
+        // The artwork is square and carries its own plate, so it is rendered at
+        // the pixel size it will be shown at rather than scaled from a pixmap.
+        // A flat icon has no plate to sit on, so the set comes in two inks and
+        // the theme's own panel decides which: the same rule that picks the
+        // lettering over a colour picks the lettering of the icons.
+        const bool on_dark = readable_on(colors.panel) == QColor(0xff, 0xff, 0xff);
+        // Scalable artwork reports no fixed sizes of its own, so whether it
+        // loaded is asked by rendering it rather than by listing what it offers.
+        QIcon artwork(QStringLiteral(":/erdflow/%1/%2.svg")
+                          .arg(on_dark ? QStringLiteral("icons-on-dark") : QStringLiteral("icons"),
+                               icon_name(glyph)));
+        if (!artwork.pixmap(size).isNull()) return artwork;
+        // A missing file must not leave a button blank, so the drawn glyph
+        // stands in. Nothing else in the window has to know it happened.
+    }
     QPixmap pixmap(QSize(size, size) * 3);
     pixmap.setDevicePixelRatio(3);
     pixmap.fill(Qt::transparent);

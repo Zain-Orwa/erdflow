@@ -38,6 +38,49 @@ using AttributeOwner = ElementRef;
 // or one relationship participant. Connectors are therefore never orphaned.
 using ConnectorRef = std::variant<AttributeId, ParticipantId>;
 
+// A colour the user has chosen for one element's surface, overriding the one
+// its theme would give it. Stored as channels rather than as text so that a
+// document carries a colour rather than a string that has to be parsed and
+// might not be one.
+struct Colour {
+    std::uint8_t red = 0;
+    std::uint8_t green = 0;
+    std::uint8_t blue = 0;
+    auto operator<=>(const Colour&) const = default;
+};
+
+struct Point {
+    double x = 0;
+    double y = 0;
+    auto operator<=>(const Point&) const = default;
+};
+
+// How the user has shaped a connector by hand. The bend is a signed
+// perpendicular offset in canvas units, used only while the line has no
+// waypoints of its own.
+//
+// The anchors, when present, pin where the line meets each shape. They name the
+// two ends of the drawn line rather than two kinds of element: owner_anchor is
+// the end the line is drawn from -- an attribute link's owning element, or a
+// participant link's relationship -- and child_anchor is the far end, being the
+// attribute or the entity. Each is a direction in radians from that shape's
+// centre rather than a point, so the join keeps its place on the outline when
+// the shape is moved or resized, and either end can be pinned on its own.
+struct Connector {
+    double offset = 0;
+    std::optional<double> owner_anchor;
+    std::optional<double> child_anchor;
+    // Points the line is routed through, in canvas coordinates and in the order
+    // they are met walking from the connector's source to its target. A
+    // connector with any of these is routed through them and its single bend is
+    // no longer consulted: the waypoints say everything about its shape.
+    std::vector<Point> waypoints;
+    [[nodiscard]] bool pinned() const { return owner_anchor.has_value() || child_anchor.has_value(); }
+    [[nodiscard]] bool routed() const { return !waypoints.empty(); }
+    [[nodiscard]] bool automatic() const { return offset == 0 && !pinned() && !routed(); }
+    auto operator<=>(const Connector&) const = default;
+};
+
 struct Rect {
     double x = 0;
     double y = 0;
@@ -83,6 +126,12 @@ struct Participant {
     Cardinality maximum = Cardinality::Many;
     Participation participation = Participation::Partial;
     std::string role;
+    // Whether this side's constraints are drawn on the line. The constraints
+    // themselves are unaffected: the model still holds them and anything that
+    // reasons about the relationship still reads them. This only says that the
+    // diagram is to show a bare connection at this end, which is how an ERD is
+    // often drawn when only one side is being made a point of.
+    bool show_constraints = true;
     auto operator<=>(const Participant&) const = default;
 };
 struct Relationship {
@@ -116,9 +165,13 @@ struct Project {
     std::map<RelationshipId, Relationship> relationships;
     std::map<SpecializationId, Specialization> specializations;
     std::map<ElementRef, Rect> layout;
-    // Signed perpendicular bend, in canvas units, for connectors the user has
-    // shaped. An absent entry means the connector is routed automatically.
-    std::map<ConnectorRef, double> connectors;
+    // How the user has shaped each connector they have touched. An absent entry
+    // means the connector is bent and joined entirely automatically.
+    std::map<ConnectorRef, Connector> connectors;
+    // Surface colours the user has chosen. An absent entry means the element is
+    // drawn in whatever colour the active theme gives its kind, which is what
+    // keeps a document that has never been recoloured following the theme.
+    std::map<ElementRef, Colour> colours;
     auto operator<=>(const Project&) const = default;
 };
 
