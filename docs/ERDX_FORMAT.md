@@ -1,7 +1,7 @@
-# ERDX project format — versions 1 to 6
+# ERDX project format — versions 1 to 10
 
 **Status:** Implemented Conceptual ERD format; version 10 is current  
-**Date:** 2026-09-14
+**Date:** 2026-09-15
 
 ## What, why, and how
 
@@ -26,7 +26,7 @@ The root object has exactly three fields:
 | Field | Value |
 | --- | --- |
 | `format` | String, exactly `"erdflow"` |
-| `format_version` | JSON number, exactly `1` to `6` |
+| `format_version` | JSON integer from `1` to `10` |
 | `project` | Project object described below |
 
 A file with an unsupported version, missing field, unknown
@@ -158,6 +158,7 @@ Each **participant** has these exact fields:
 | `maximum` | `"one"` or `"many"` |
 | `participation` | `"partial"` or `"total"` |
 | `role` | Role name string; may be empty |
+| `show_constraints` | Boolean controlling whether this side's constraints are drawn; version 10 onwards |
 
 Cardinality and participation belong to the participant record. The same entity
 may occur more than once in a relationship with distinct participant IDs. Empty
@@ -171,13 +172,14 @@ An **element reference** has exactly two string fields:
 {"type": "entity", "id": "019947b9-7111-7000-8000-000000000002"}
 ```
 
-The `type` is `"entity"`, `"attribute"`, or `"relationship"`. It determines which
-typed element store the ID must reference.
+The `type` is `"entity"`, `"attribute"`, `"relationship"`, or `"specialization"`.
+It determines which typed element store the ID must reference; each field also
+restricts which element kinds it accepts.
 
 A **layout** object has exactly `element`, `x`, `y`, `width`, and `height`.
 `element` is an element reference. The other fields are finite JSON numbers.
 Coordinates are canvas units; dimensions must be positive. There must be exactly
-one layout entry for every entity, attribute, and relationship. Layout references
+one layout entry for every entity, attribute, relationship, and specialization. Layout references
 must not dangle or repeat. Connectors are reconstructed from attribute owners and
 relationship participant records.
 
@@ -197,7 +199,7 @@ A **specialization** object has exactly `id`, `name`, `description`,
  "constraint": "disjoint", "completeness": "partial"}
 ```
 
-`supertype` is an entity reference, or `null` while the triangle has been
+`supertype` is an entity UUIDv7 string, or `null` while the triangle has been
 placed but not yet connected; that is work in progress rather than an error, the
 same as a relationship with too few participants. Every entry of `subtypes`
 references an existing entity. An entity
@@ -219,8 +221,6 @@ A specialization holds no attributes of its own; an attribute owned by one is
 rejected. Deleting a supertype removes the specialization with it, and deleting
 a subtype detaches it from the specializations that survive.
 
-## Connector shapes
-
 ## Element colours
 
 An **element-colour** object has exactly `element`, `red`, `green` and `blue`:
@@ -236,6 +236,8 @@ rather than approximate. The `element` must reference an element that exists. At
 most one colour may be given per element, and an element with none is drawn in
 whatever colour the active theme gives its kind — which is why a document that
 has never been recoloured follows the theme everywhere.
+
+## Connector shapes
 
 A connector is drawn from the record that creates it, so it has no identity of
 its own and is addressed by that record. A **connector-shape** object has exactly
@@ -285,7 +287,7 @@ same edit, and undo restores both together.
 | Item | Initial enforced limit or rule |
 | --- | --- |
 | File size | At most 8 MiB (8,388,608 bytes), including JSON formatting |
-| Elements | At most 10,000 entities + attributes + relationships combined |
+| Elements | At most 10,000 entities + attributes + relationships + specializations combined |
 | Participants | At most 10,000 participant records across the project |
 | JSON array size | At most 10,000 entries per array |
 | JSON nesting | At most 32 object/array levels |
@@ -321,7 +323,7 @@ An empty conceptual project is a valid saved draft:
 ```json
 {
   "format": "erdflow",
-  "format_version": 6,
+  "format_version": 10,
   "project": {
     "id": "019947b9-7111-7000-8000-000000000001",
     "name": "Untitled",
@@ -330,6 +332,7 @@ An empty conceptual project is a valid saved draft:
     "relationships": [],
     "layout": [],
     "connectors": [],
+    "colours": [],
     "specializations": []
   }
 }

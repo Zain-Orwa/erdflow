@@ -229,28 +229,37 @@ std::vector<Issue> validate(const Project& project) {
     // Associative relationships can take part in one another, so the same
     // iterative colouring used for composite attributes guards against a cycle
     // that no traversal could terminate on.
+    // Review 2026-09-15, finding 3: this followed only the first relationship a
+    // relationship took part in, so a loop through its second participant was
+    // never seen. It is now a full depth-first walk over every participant,
+    // with a node marked finished only once all of its onward edges are done:
+    // 1 means on the current path, 2 means fully explored.
     std::map<RelationshipId, unsigned char> relationship_color;
-    for (const auto& [id, relationship] : project.relationships) {
+    for (const auto& [start, relationship] : project.relationships) {
         (void)relationship;
-        if (relationship_color[id] == 2) continue;
-        std::vector<RelationshipId> path;
-        auto current = id;
-        while (true) {
-            const auto found = project.relationships.find(current);
-            if (found == project.relationships.end() || relationship_color[current] == 2) break;
-            if (relationship_color[current] == 1) {
-                error("participant.cycle", "Associative relationships must not take part in one another in a cycle.", ElementRef{current});
-                break;
+        if (relationship_color[start] != 0) continue;
+        std::vector<RelationshipId> stack{start};
+        while (!stack.empty()) {
+            const auto current = stack.back();
+            if (relationship_color[current] == 0) {
+                relationship_color[current] = 1;
+                const auto found = project.relationships.find(current);
+                if (found != project.relationships.end())
+                    for (const auto& participant : found->second.participants) {
+                        const auto* onward = std::get_if<RelationshipId>(&participant.target);
+                        if (!onward || !project.relationships.contains(*onward)) continue;
+                        if (relationship_color[*onward] == 1) {
+                            error("participant.cycle", "Associative relationships must not take part in one another in a cycle.", ElementRef{*onward});
+                            stack.clear();
+                            break;
+                        }
+                        if (relationship_color[*onward] == 0) stack.push_back(*onward);
+                    }
+                continue;
             }
-            relationship_color[current] = 1;
-            path.push_back(current);
-            std::optional<RelationshipId> next;
-            for (const auto& participant : found->second.participants)
-                if (const auto* onward = std::get_if<RelationshipId>(&participant.target)) { next = *onward; break; }
-            if (!next) break;
-            current = *next;
+            if (relationship_color[current] == 1) relationship_color[current] = 2;
+            stack.pop_back();
         }
-        for (const auto& visited : path) relationship_color[visited] = 2;
     }
     for (const auto& [id, specialization] : project.specializations) {
         const ElementRef ref = id;
@@ -288,17 +297,20 @@ std::vector<Issue> validate(const Project& project) {
         if (!specialization.supertype) continue;
         for (const auto& subtype : specialization.subtypes) supertypes_of[subtype].push_back(*specialization.supertype);
     }
+    // Review 2026-09-15, finding 2: a finished branch stayed marked as active
+    // until the whole walk ended, so a diamond — two parents sharing an
+    // ancestor — looked like a cycle when the ancestor was met the second
+    // time. An entity is now marked finished the moment it is popped, so only
+    // an entity still on the current path can close a loop.
     std::map<EntityId, unsigned char> inheritance_color;
     for (const auto& [start, entity] : project.entities) {
         (void)entity;
         if (inheritance_color[start] != 0) continue;
         std::vector<EntityId> stack{start};
-        std::vector<EntityId> path;
         while (!stack.empty()) {
             const auto current = stack.back();
             if (inheritance_color[current] == 0) {
                 inheritance_color[current] = 1;
-                path.push_back(current);
                 const auto found = supertypes_of.find(current);
                 if (found != supertypes_of.end())
                     for (const auto& parent : found->second) {
@@ -311,9 +323,9 @@ std::vector<Issue> validate(const Project& project) {
                     }
                 continue;
             }
+            if (inheritance_color[current] == 1) inheritance_color[current] = 2;
             stack.pop_back();
         }
-        for (const auto& visited : path) inheritance_color[visited] = 2;
     }
     if (project.connectors.size() > max_elements) error("connector.limit", "The connector shapes exceed the element limit.");
     for (const auto& [ref, connector] : project.connectors) {

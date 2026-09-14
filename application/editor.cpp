@@ -589,9 +589,21 @@ EditResult Editor::pin_connector(ConnectorRef ref, std::optional<double> owner_a
 }
 EditResult Editor::erase(const std::vector<ElementRef>& elements,
                           const std::vector<std::pair<RelationshipId, ParticipantId>>& participants,
-                          const std::vector<AttributeId>& detached_attributes) {
+                          const std::vector<AttributeId>& detached_attributes,
+                          const std::vector<InheritanceLink>& detached_inheritance) {
     return impl_->edit("Delete elements", [&](Delta& delta) {
         const auto removed = owned_closure(project(), elements);
+        // Review 2026-09-15, finding 1: gather the inheritance links to cut,
+        // per triangle, so they are applied in one pass with the cascade below
+        // rather than each overwriting the other's version of the triangle.
+        struct Cut { bool supertype = false; std::set<EntityId> subtypes; };
+        std::map<SpecializationId, Cut> cuts;
+        for (const auto& [specialization, subtype] : detached_inheritance) {
+            if (!project().specializations.contains(specialization))
+                return failure("A selected inheritance link no longer exists.");
+            if (subtype) cuts[specialization].subtypes.insert(*subtype);
+            else cuts[specialization].supertype = true;
+        }
         // A connector shape outlives nothing: dropping the attribute link or
         // participant that draws it must drop the stored bend in the same edit,
         // so undo restores both together and validation never sees a dangling one.
@@ -640,12 +652,22 @@ EditResult Editor::erase(const std::vector<ElementRef>& elements,
             if (specialization.supertype && removed.contains(ElementRef{*specialization.supertype})) {
                 delta.specializations.remove(id);
                 if (project().layout.contains(ElementRef{id})) delta.layout.remove(ElementRef{id});
+                // Review 2026-09-15, finding 4: the cascade dropped the triangle
+                // and its layout but left its colour, and validation then
+                // refused the whole deletion for a colour with no element.
+                if (project().colours.contains(ElementRef{id})) delta.colours.remove(ElementRef{id});
                 continue;
             }
-            const auto gone = [&](const EntityId& subtype) { return removed.contains(ElementRef{subtype}); };
-            if (std::none_of(specialization.subtypes.begin(), specialization.subtypes.end(), gone)) continue;
+            const auto cut = cuts.find(id);
+            const auto gone = [&](const EntityId& subtype) {
+                return removed.contains(ElementRef{subtype})
+                    || (cut != cuts.end() && cut->second.subtypes.contains(subtype));
+            };
+            const bool cut_supertype = cut != cuts.end() && cut->second.supertype;
+            if (!cut_supertype && std::none_of(specialization.subtypes.begin(), specialization.subtypes.end(), gone)) continue;
             auto value = specialization;
             std::erase_if(value.subtypes, gone);
+            if (cut_supertype) value.supertype.reset();
             delta.specializations.put(id, std::move(value));
         }
         for (const auto& [id, relationship] : project().relationships) {

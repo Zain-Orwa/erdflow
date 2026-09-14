@@ -1147,6 +1147,97 @@ void inheritance_connection_tests() {
     require(editor.project().specializations.at(isa).supertype == person, "Undo restores the supertype");
 }
 
+void inheritance_deletion_tests() {
+    SequentialIds ids;
+    application::Editor editor(ids);
+    const auto person = std::get<domain::EntityId>(*editor.create_entity("Person", {0, 0, 160, 80}).created);
+    const auto student = std::get<domain::EntityId>(*editor.create_entity("Student", {-260, 420, 160, 80}).created);
+    const auto employee = std::get<domain::EntityId>(*editor.create_entity("Employee", {260, 420, 160, 80}).created);
+    const auto isa = std::get<domain::SpecializationId>(
+        *editor.create_specialization("IS A", {32, 200, 96, 74}, domain::Inheritance::Specialization).created);
+    require(editor.set_supertype(isa, person), "Connect supertype for deletion");
+    require(editor.attach_subtype(isa, student), "Connect first subtype for deletion");
+    require(editor.attach_subtype(isa, employee), "Connect second subtype for deletion");
+    const auto attribute = std::get<domain::AttributeId>(
+        *editor.create_attribute("Name", {-260, 0, 130, 60}, person).created);
+    const auto relationship = std::get<domain::RelationshipId>(
+        *editor.create_relationship("Works", {440, 0, 180, 100}).created);
+    require(editor.connect(relationship, person), "Connect participant for mixed deletion");
+    const auto unrelated = *editor.create_entity("Unrelated", {600, 400, 160, 80}).created;
+    require(editor.recolour({isa}, domain::Colour{255, 180, 100}), "Colour the ISA triangle");
+    const auto original = editor.project();
+    desktop::DiagramView view(editor);
+    view.resize(1000, 700);
+    view.show();
+    view.fit_diagram();
+    QApplication::processEvents();
+
+    const auto restore = [&] {
+        const auto deleted = editor.project();
+        require(editor.undo(), "Undo selected links in one step");
+        view.synchronize();
+        require(editor.project() == original, "Undo restores exact graph, layout and colours");
+        require(editor.redo(), "Redo selected links in one step");
+        view.synchronize();
+        require(editor.project() == deleted, "Redo restores the complete deletion");
+        require(editor.undo(), "Restore deletion fixture");
+        view.synchronize();
+        view.scene()->clearSelection();
+    };
+
+    find_edge(view, QStringLiteral("Inheritance — supertype"))->setSelected(true);
+    auto revision = editor.revision();
+    key(view, Qt::Key_Delete);
+    require(editor.revision() == revision + 1, "Deleting a supertype link is one command");
+    require(!editor.project().specializations.at(isa).supertype, "Deleting a supertype link detaches it");
+    require(editor.project().specializations.at(isa).subtypes.size() == 2, "Supertype detach preserves subtypes");
+    require(editor.project().entities.size() == 4 && !blocks(editor.project()), "Link deletion preserves entities and validity");
+    restore();
+
+    find_edge(view, QStringLiteral("Inheritance — subtype"))->setSelected(true);
+    key(view, Qt::Key_Backspace);
+    require(editor.project().specializations.at(isa).subtypes.size() == 1, "Backspace detaches only the selected subtype link");
+    require(editor.project().specializations.at(isa).supertype == person, "Subtype detach preserves supertype");
+    require(editor.project().entities.size() == 4 && !blocks(editor.project()), "Subtype link deletion preserves entities");
+    restore();
+
+    // All edge kinds and a node share the same atomic delete operation.
+    view.select_elements({unrelated});
+    for (auto* item : view.scene()->items())
+        if (item->zValue() < 0) item->setSelected(true);
+    revision = editor.revision();
+    key(view, Qt::Key_Delete);
+    require(editor.revision() == revision + 1, "Mixed deletion is one history entry");
+    require(!editor.project().specializations.at(isa).supertype
+            && editor.project().specializations.at(isa).subtypes.empty(), "Mixed deletion detaches all ISA links");
+    require(!editor.project().attributes.at(attribute).owner, "Mixed deletion detaches attribute ownership");
+    require(editor.project().relationships.at(relationship).participants.empty(), "Mixed deletion detaches participant");
+    require(!domain::exists(editor.project(), unrelated) && !blocks(editor.project()), "Mixed deletion removes only the selected node");
+    restore();
+
+    // Deleting a coloured supertype cascades to its triangle even when those
+    // same links are also selected; it must not leave a colour behind.
+    view.select_elements({person});
+    for (auto* item : view.scene()->items())
+        if (item->toolTip().startsWith(QStringLiteral("Inheritance —"))) item->setSelected(true);
+    revision = editor.revision();
+    key(view, Qt::Key_Delete);
+    require(editor.revision() == revision + 1, "Cascade and selected links delete together");
+    require(!editor.project().specializations.contains(isa), "Deleting the supertype removes its triangle");
+    require(!editor.project().colours.contains(isa), "Cascade removes the triangle's colour");
+    require(editor.project().entities.contains(student) && editor.project().entities.contains(employee)
+            && !blocks(editor.project()), "Cascade preserves subtype entities and validity");
+    restore();
+
+    view.select_elements({isa});
+    for (auto* item : view.scene()->items())
+        if (item->toolTip().startsWith(QStringLiteral("Inheritance —"))) item->setSelected(true);
+    key(view, Qt::Key_Delete);
+    require(!editor.project().specializations.contains(isa), "Triangle and its selected links delete together");
+    require(editor.project().entities.size() == 4 && !blocks(editor.project()), "Deleting a triangle preserves its entities");
+    restore();
+}
+
 // The ISA triangle points the way the hierarchy was read, so the two directions
 // must not draw the same shape.
 void inheritance_orientation_tests() {
@@ -1558,6 +1649,7 @@ int main(int argc, char** argv) {
         selection_highlight_tests();
         tool_locking_tests();
         inheritance_connection_tests();
+        inheritance_deletion_tests();
         inheritance_orientation_tests();
         std::cout << "Canvas tests passed\n";
     } catch (const std::exception& exception) {

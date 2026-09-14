@@ -3,7 +3,7 @@
 ## Build and run
 
 Requirements: a C++20 compiler, CMake 3.21 or newer, and Qt 6.9 or newer with
-Core/Gui/Widgets development files. The UUID adapter uses Qt's UUIDv7 generator.
+Core/Gui/Widgets and Svg development files. The UUID adapter uses Qt's UUIDv7 generator.
 No Boost or separate UUID library is required.
 
 From the repository root:
@@ -87,9 +87,12 @@ main.cpp (composition root)
 ```
 
 Themes carry the application palette and the diagram colours together, so the
-chrome and the canvas cannot disagree. Icons are painted from the active theme
-in `icons.cpp` rather than shipped as files, which keeps them consistent with
-whatever theme is chosen and avoids a resource pipeline.
+chrome and the canvas cannot disagree. `icons.cpp` supports two icon modes:
+glyphs painted from the active theme, and SVG artwork embedded as Qt resources
+from `assets/icons` and `assets/icons-on-dark`. The SVG mode picks a light/dark
+variant using the panel colour and falls back to a painted glyph if artwork is
+unavailable. `tools/generate-icons.py` generates both SVG sets; CMake embeds them
+and links Qt Svg. The user chooses the mode under **View → Icons**.
 
 `erdflow_domain` and `erdflow_application` have no Qt dependency. The desktop
 receives Application interfaces; only the composition root assembles concrete
