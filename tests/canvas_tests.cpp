@@ -402,6 +402,22 @@ void tool_locking_tests() {
     key(view, Qt::Key_Escape);
     require(view.tool() == desktop::Tool::Select && !view.tool_locked(), "Escape leaves a locked tool");
 
+    // The ISA tools lock like any other, in either direction.
+    for (const auto direction : {desktop::Tool::Specialization, desktop::Tool::Generalization}) {
+        const auto before = editor.project().specializations.size();
+        view.set_tool(direction, true);
+        for (const auto& at : {QPointF(-200, 360), QPointF(0, 360), QPointF(200, 360)}) click(view, at);
+        require(editor.project().specializations.size() == before + 3, "A locked ISA tool keeps placing");
+        require(view.tool() == direction && view.tool_locked(), "It stays on the chosen direction");
+    }
+    // Each was placed with the direction its tool was set to.
+    std::size_t generalisations = 0;
+    for (const auto& [id, specialization] : editor.project().specializations) {
+        (void)id;
+        if (specialization.direction == domain::Inheritance::Generalization) ++generalisations;
+    }
+    require(generalisations == 3, "A locked tool keeps its direction for every element it places");
+
     // Select cannot be locked: it has nothing to repeat.
     view.set_tool(desktop::Tool::Select, true);
     require(!view.tool_locked(), "Select is never locked");
