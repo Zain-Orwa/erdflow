@@ -41,7 +41,7 @@ geometry changes use **Apply position and size**.
 | Phase | Evidence and remaining work |
 | --- | --- |
 | 0 — Architecture | Completed review; ADR-001–013 accepted. ADR-014 records implementation choices. |
-| 1 — Build foundation | Layered CMake targets, warning flags, Debug/Release, tests, and macOS launch verified. Changes are in the working tree; the commit exit criterion remains outstanding. Windows/Linux instructions exist but those platforms are unverified. |
+| 1 — Build foundation | Exit criteria met: layered CMake targets, warning flags, Debug/Release, five passing suites, macOS launch, and committed repository state. Windows/Linux instructions exist but those platforms are unverified. |
 | 2 — Shell | Functional desktop shell delivered. Future Schema/Table/SQL/Data navigation waits for usable destinations. |
 | 3 — Commands | Implemented Qt-free semantic operations, atomic deltas, dirty state, bounded undo/redo. |
 | 4 — Minimal domain | Implemented and independently tested without Qt. |
