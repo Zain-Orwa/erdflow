@@ -480,7 +480,7 @@ public:
     void paint(QPainter* painter, const QStyleOptionGraphicsItem*, QWidget*) override {
         painter->setRenderHint(QPainter::Antialiasing);
         const QColor ink = isSelected() ? selection_ : highlighted ? text_ : connector_;
-        const qreal weight = isSelected() ? 2.2 : highlighted ? 2.4 : 1.6;
+        const qreal weight = isSelected() ? 3.4 : highlighted ? 3.0 : 1.6;
         painter->setPen(QPen(ink, weight));
         painter->setBrush(Qt::NoBrush);
         if (descriptor.relationship && notation == Notation::Chen && descriptor.participation == Participation::Total) {
