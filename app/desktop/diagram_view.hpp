@@ -90,6 +90,13 @@ protected:
     void contextMenuEvent(QContextMenuEvent*) override;
 
 private:
+    // The connector menu. It finds the line itself rather than being handed one,
+    // since the item type is private to the implementation and has no name here.
+    void participant_menu(QContextMenuEvent* event);
+
+protected:
+
+private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

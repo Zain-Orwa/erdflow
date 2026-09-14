@@ -808,6 +808,74 @@ void picker_sample_tests() {
     require(curved != straight, "The curved and straight samples are told apart");
 }
 
+
+// A side's constraints can be read off the line, so they can be changed there
+// too. The canvas menu drives the same commands the properties panel does.
+void participant_menu_tests() {
+    SequentialIds ids;
+    application::Editor editor(ids);
+    const auto student = std::get<domain::EntityId>(*editor.create_entity("Student", {-320, 0, 160, 80}).created);
+    const auto enrolled = std::get<domain::RelationshipId>(*editor.create_relationship("Enrolled", {220, 0, 190, 110}).created);
+    require(editor.connect(enrolled, student), "Connect student");
+    const auto side = editor.project().relationships.at(enrolled).participants.front().id;
+
+    desktop::DiagramView view(editor);
+    view.resize(1000, 700);
+    view.show();
+    view.actual_size();
+    view.centerOn(0, 0);
+    QApplication::processEvents();
+
+    const auto constraints = [&] {
+        const auto& participants = editor.project().relationships.at(enrolled).participants;
+        const auto found = std::find_if(participants.begin(), participants.end(),
+                                        [&](const auto& item) { return item.id == side; });
+        require(found != participants.end(), "The side is still there");
+        return std::pair{found->maximum, found->participation};
+    };
+    // The menu carries the role through rather than editing it, so a role set
+    // beforehand must survive a change of constraint.
+    require(editor.update_participant(enrolled, side, domain::Cardinality::Many,
+                                      domain::Participation::Partial, "student"), "Give the side a role");
+    require(constraints() == std::pair{domain::Cardinality::Many, domain::Participation::Partial},
+            "It starts optional and many");
+
+    // The menu opens on a line and its entries stand for these edits.
+    const auto apply = [&](domain::Cardinality maximum, domain::Participation participation) {
+        const auto& participants = editor.project().relationships.at(enrolled).participants;
+        const auto found = std::find_if(participants.begin(), participants.end(),
+                                        [&](const auto& item) { return item.id == side; });
+        return editor.update_participant(enrolled, side, maximum, participation, found->role);
+    };
+    require(apply(domain::Cardinality::One, domain::Participation::Partial), "Set the maximum to one");
+    require(constraints().first == domain::Cardinality::One, "The maximum changed");
+    require(constraints().second == domain::Participation::Partial, "And the minimum was carried through");
+    require(apply(domain::Cardinality::One, domain::Participation::Total), "Set the minimum to total");
+    require(constraints() == std::pair{domain::Cardinality::One, domain::Participation::Total},
+            "Both now hold what was chosen");
+    const auto& participants = editor.project().relationships.at(enrolled).participants;
+    require(std::find_if(participants.begin(), participants.end(),
+                         [&](const auto& item) { return item.id == side; })->role == "student",
+            "And the role was never touched");
+
+    // What the line draws has to follow, or the menu and the diagram disagree.
+    view.synchronize();
+    QApplication::processEvents();
+    const auto total = view.viewport()->grab().toImage();
+    require(apply(domain::Cardinality::Many, domain::Participation::Partial), "Set it back to optional many");
+    view.synchronize();
+    QApplication::processEvents();
+    require(view.viewport()->grab().toImage() != total, "The line is redrawn for the new constraints");
+
+    // Reversing and disconnecting are offered on the same menu.
+    require(editor.connect(enrolled, std::get<domain::EntityId>(*editor.create_entity("Course", {220, 300, 160, 80}).created)),
+            "Connect a second side");
+    require(editor.reverse_participants(enrolled), "Reverse the two sides");
+    require(editor.disconnect(enrolled, side), "Disconnect one side");
+    require(editor.project().relationships.at(enrolled).participants.size() == 1, "Only the other side is left");
+    (void)student;
+}
+
 // A name must be editable on the element itself, not only in the properties
 // panel, and the in-place editor must go through the same command path.
 void inline_rename_tests() {
@@ -1458,6 +1526,7 @@ int main(int argc, char** argv) {
         element_colour_tests();
         extend_selection_tests();
         picker_sample_tests();
+        participant_menu_tests();
         inline_rename_tests();
         notation_tests();
         attribute_trunk_and_line_style_tests();

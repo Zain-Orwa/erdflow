@@ -1461,7 +1461,10 @@ void DiagramView::drawBackground(QPainter* painter, const QRectF& rect) {
 // be given one colour in a single step.
 void DiagramView::contextMenuEvent(QContextMenuEvent* event) {
     auto* node = impl_->node_at(event->pos());
-    if (!node) { QGraphicsView::contextMenuEvent(event); return; }
+    if (!node) {
+        participant_menu(event);
+        return;
+    }
     // Right-clicking outside the selection acts on what was clicked, which is
     // what anyone expects; right-clicking inside it keeps the selection whole.
     auto chosen = selected_elements();
@@ -1515,6 +1518,69 @@ void DiagramView::contextMenuEvent(QContextMenuEvent* event) {
     impl_->publish(impl_->editor.recolour(chosen, domain::Colour{
         static_cast<std::uint8_t>(colour.red()), static_cast<std::uint8_t>(colour.green()),
         static_cast<std::uint8_t>(colour.blue())}));
+}
+
+
+// The constraints on one side of a relationship, offered where that side is
+// drawn. They can be read off the line, so this is where the hand goes to
+// change them; the properties panel says the same thing in words.
+void DiagramView::participant_menu(QContextMenuEvent* event) {
+    auto* edge = impl_->edge_at(event->pos());
+    if (!edge) { QGraphicsView::contextMenuEvent(event); return; }
+    const auto* participant_key = std::get_if<ParticipantId>(&edge->descriptor.key);
+    if (!participant_key || !edge->descriptor.relationship) { QGraphicsView::contextMenuEvent(event); return; }
+    const auto relationship_id = *edge->descriptor.relationship;
+    const auto& project = impl_->editor.project();
+    const auto found = project.relationships.find(relationship_id);
+    if (found == project.relationships.end()) { QGraphicsView::contextMenuEvent(event); return; }
+    const auto side = std::find_if(found->second.participants.begin(), found->second.participants.end(),
+                                   [&](const auto& item) { return item.id == *participant_key; });
+    if (side == found->second.participants.end()) { QGraphicsView::contextMenuEvent(event); return; }
+
+    // Showing the line as selected makes it plain which side is being changed,
+    // which matters when a relationship has two ends a short way apart.
+    edge->setSelected(true);
+    QMenu menu(this);
+    // The same words as the properties panel, so the two never disagree about
+    // what a constraint is called.
+    auto* maximum = menu.addMenu("Maximum");
+    maximum->setObjectName("sideMaximum");
+    auto* minimum = menu.addMenu("Minimum");
+    minimum->setObjectName("sideMinimum");
+    const auto entry = [](QMenu* parent, const QString& text, const QString& name, bool current) {
+        auto* action = parent->addAction(text);
+        action->setObjectName(name);
+        action->setCheckable(true);
+        action->setChecked(current);
+        return action;
+    };
+    auto* one = entry(maximum, "1 — One", "sideOne", side->maximum == Cardinality::One);
+    auto* many = entry(maximum, "M — Many", "sideMany", side->maximum == Cardinality::Many);
+    auto* partial = entry(minimum, "Partial — optional", "sidePartial", side->participation == Participation::Partial);
+    auto* total = entry(minimum, "Total — required", "sideTotal", side->participation == Participation::Total);
+    menu.addSeparator();
+    auto* reverse = menu.addAction("Reverse sides");
+    reverse->setObjectName("sideReverse");
+    auto* disconnect = menu.addAction("Disconnect this side");
+    disconnect->setObjectName("sideDisconnect");
+
+    auto* picked = menu.exec(event->globalPos());
+    if (!picked) return;
+    if (picked == reverse) { impl_->publish(impl_->editor.reverse_participants(relationship_id)); return; }
+    if (picked == disconnect) {
+        impl_->publish(impl_->editor.disconnect(relationship_id, *participant_key));
+        return;
+    }
+    // Only the one constraint the user named changes; the other and the role
+    // are carried through, since this menu is not where they are being edited.
+    auto chosen_maximum = side->maximum;
+    auto chosen_participation = side->participation;
+    if (picked == one) chosen_maximum = Cardinality::One;
+    else if (picked == many) chosen_maximum = Cardinality::Many;
+    else if (picked == partial) chosen_participation = Participation::Partial;
+    else if (picked == total) chosen_participation = Participation::Total;
+    impl_->publish(impl_->editor.update_participant(relationship_id, *participant_key,
+                                                    chosen_maximum, chosen_participation, side->role));
 }
 
 void DiagramView::mousePressEvent(QMouseEvent* event) {
