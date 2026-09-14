@@ -153,12 +153,12 @@ def build_all():
         <path d="M64 82 V18 M40 42 L64 18 L88 42"/>''')
 
     G["undo"] = ("blue", f'''
-    <path d="M86.6 90.6 A32 32 0 1 0 32.0 68.0" stroke-width="8"/>
-    <path d="M32.0 86.0 L17.0 64.0 L47.0 64.0 Z" fill="{(INK_DARK if on_dark else INK)["blue"]}" stroke-width="3"/>''')
+    <path d="M95.9 85.6 A34 34 0 0 0 32.1 62.4" stroke-width="6"/>
+    <path d="M24.5 83.0 L18.0 57.2 L46.1 67.5 Z" fill="{(INK_DARK if on_dark else INK)["blue"]}" stroke-width="2"/>''')
 
     G["redo"] = ("purple", f'''
-    <path d="M41.4 90.6 A32 32 0 1 1 96.0 68.0" stroke-width="8"/>
-    <path d="M96.0 86.0 L81.0 64.0 L111.0 64.0 Z" fill="{(INK_DARK if on_dark else INK)["purple"]}" stroke-width="3"/>''')
+    <path d="M32.1 85.6 A34 34 0 0 1 95.9 62.4" stroke-width="6"/>
+    <path d="M103.5 83.0 L81.9 67.5 L110.0 57.2 Z" fill="{(INK_DARK if on_dark else INK)["purple"]}" stroke-width="2"/>''')
 
     G["duplicate"] = ("slate", f'''
         <rect x="16" y="16" width="66" height="66" rx="12" {F}/>
