@@ -359,6 +359,15 @@ public:
     // An inheritance link is anchored to the triangle, so it carries no bend and
     // must not offer a handle that would do nothing.
     [[nodiscard]] bool shapeable() const { return !std::holds_alternative<InheritanceKey>(descriptor.key); }
+    // A link touching the selection is drawn heavier and above the other links,
+    // so what an element connects to can be read without tracing each line.
+    void set_highlighted(bool value) {
+        if (highlighted == value) return;
+        highlighted = value;
+        setZValue(value ? -0.5 : -1);
+        update();
+    }
+    bool highlighted = false;
     // The bend handle only exists while the connector is selected, so an
     // unselected diagram stays free of grab targets.
     [[nodiscard]] QRectF handle_rect() const { return handle_rect_; }
@@ -470,7 +479,9 @@ public:
     }
     void paint(QPainter* painter, const QStyleOptionGraphicsItem*, QWidget*) override {
         painter->setRenderHint(QPainter::Antialiasing);
-        painter->setPen(QPen(isSelected() ? selection_ : connector_, isSelected() ? 2.2 : 1.6));
+        const QColor ink = isSelected() ? selection_ : highlighted ? text_ : connector_;
+        const qreal weight = isSelected() ? 2.2 : highlighted ? 2.4 : 1.6;
+        painter->setPen(QPen(ink, weight));
         painter->setBrush(Qt::NoBrush);
         if (descriptor.relationship && notation == Notation::Chen && descriptor.participation == Participation::Total) {
             painter->save();
@@ -494,7 +505,7 @@ public:
         };
         if (const auto label = end_label(); !label.isEmpty()) draw_label(cardinality_rect_, label);
         if (!descriptor.role.isEmpty()) draw_label(role_rect_, descriptor.role);
-        paint_end_symbols(painter, isSelected() ? selection_ : connector_, canvas_);
+        paint_end_symbols(painter, ink, canvas_);
         if (isSelected() && shapeable()) {
             painter->setPen(QPen(selection_, 1.4));
             painter->setBrush(canvas_);
@@ -560,8 +571,24 @@ struct DiagramView::Impl {
         if (view.on_edit) view.on_edit(result);
         if (!result) status(QString::fromStdString(result.error));
     }
-    void selection_changed() const {
-        if (!synchronizing && view.on_selection) view.on_selection(view.selected_elements());
+    void selection_changed() {
+        // Selection changes also arrive while the scene is being rebuilt or torn
+        // down, when the item containers still name items that are going away.
+        // The projection refreshes the highlight itself once it has finished.
+        if (synchronizing) return;
+        refresh_highlight();
+        if (view.on_selection) view.on_selection(view.selected_elements());
+    }
+    void refresh_highlight() {
+        std::set<EdgeItem*> touching;
+        for (const auto& ref : view.selected_elements()) {
+            const auto found = incident.find(ref);
+            if (found != incident.end()) touching.insert(found->second.begin(), found->second.end());
+        }
+        for (auto& [key, edge] : edges) {
+            (void)key;
+            edge->set_highlighted(touching.contains(edge));
+        }
     }
     void refresh_incident(NodeItem* item) {
         if (synchronizing) return;
@@ -646,9 +673,12 @@ struct DiagramView::Impl {
         auto* edge = iterator->second;
         incident[edge->descriptor.from].erase(edge);
         incident[edge->descriptor.to].erase(edge);
+        // Drop it from the lookup before destroying it. Deleting a graphics item
+        // can emit selectionChanged, which walks these containers; a pointer left
+        // in one of them would be read after it was freed.
+        iterator = edges.erase(iterator);
         scene->removeItem(edge);
         delete edge;
-        iterator = edges.erase(iterator);
     }
     void zoom(qreal requested) {
         const auto bounded = std::clamp(requested, minimum_zoom, maximum_zoom);
@@ -828,9 +858,10 @@ void DiagramView::synchronize() {
     for (auto it = impl_->nodes.begin(); it != impl_->nodes.end();) {
         if (!exists(project, it->first)) {
             impl_->incident.erase(it->first);
-            impl_->scene->removeItem(it->second);
-            delete it->second;
+            auto* node = it->second;
             it = impl_->nodes.erase(it);
+            impl_->scene->removeItem(node);
+            delete node;
         } else ++it;
     }
     for (auto& [ref, node] : impl_->nodes) { (void)ref; node->attribute_children.clear(); }
@@ -934,6 +965,7 @@ void DiagramView::synchronize() {
     // An element can disappear under an open editor through undo or a reload.
     if (impl_->renaming && !exists(project, *impl_->renaming)) impl_->cancel_inline_edit();
     impl_->place_inline_editor();
+    // Also reapplies the highlight to whatever items this projection rebuilt.
     impl_->selection_changed();
 }
 

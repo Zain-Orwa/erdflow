@@ -38,6 +38,8 @@ not been built yet. Their presence in those documents is not a completion claim.
   element and returns to Select. Double-clicking the tool locks it, marking the
   button with a padlock, so it keeps placing until another tool is chosen or
   Escape is pressed. Select cannot be locked.
+- Selecting an element draws every link touching it heavier and lifts it above
+  the other links, so what it connects to can be read at a glance.
 - Single/multiple/rubber-band selection, Select All, zoom, pan, fit, grid/snap,
   selection navigation, and cancellation of an uncommitted drag.
 - One drag or duplicate/delete group is one history entry. Deletion restores

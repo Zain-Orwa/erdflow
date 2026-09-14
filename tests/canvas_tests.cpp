@@ -610,6 +610,72 @@ void attribute_trunk_and_line_style_tests() {
     require(link->shape().contains(link->mapFromScene(moved_above)), "The exit point moves with the owner");
 }
 
+// Selecting an element must show what it connects to, so its links are drawn
+// heavier and lifted above the rest rather than left to be traced by eye.
+void selection_highlight_tests() {
+    SequentialIds ids;
+    application::Editor editor(ids);
+    const auto student = std::get<domain::EntityId>(*editor.create_entity("Student", {-330, 240, 170, 84}).created);
+    const auto course = std::get<domain::EntityId>(*editor.create_entity("Course", {330, 240, 170, 84}).created);
+    const auto enrolled = std::get<domain::RelationshipId>(*editor.create_relationship("Enrolled", {-40, 235, 180, 100}).created);
+    require(editor.connect(enrolled, domain::ParticipantTarget{student}), "Connect student");
+    require(editor.connect(enrolled, domain::ParticipantTarget{course}), "Connect course");
+    const auto owner = domain::AttributeOwner{domain::ElementRef{student}};
+    editor.create_attribute("StudentID", {-440, 60, 140, 58}, owner);
+    editor.create_attribute("Name", {-230, 30, 140, 58}, owner);
+    editor.create_attribute("Title", {470, 30, 140, 58}, domain::AttributeOwner{domain::ElementRef{course}});
+
+    desktop::DiagramView view(editor);
+    view.resize(1000, 600);
+    view.show();
+    view.fit_diagram();
+    QApplication::processEvents();
+
+    // Links sit below the elements; a highlighted one is lifted but stays below.
+    const auto raised = [&] {
+        std::size_t count = 0;
+        for (auto* item : view.scene()->items())
+            if (item->zValue() < 0 && item->zValue() > -1) ++count;
+        return count;
+    };
+    require(raised() == 0, "Nothing is highlighted with no selection");
+
+    view.select_elements({domain::ElementRef{student}});
+    QApplication::processEvents();
+    require(raised() == 3, "Selecting an entity raises its two attributes and its participant link");
+
+    // A relationship raises both its participant links and its own attribute.
+    view.select_elements({domain::ElementRef{enrolled}});
+    QApplication::processEvents();
+    require(raised() == 2, "Selecting a relationship raises both of its participant links");
+
+    // Selecting both ends raises every link between and around them.
+    view.select_elements({domain::ElementRef{student}, domain::ElementRef{course}});
+    QApplication::processEvents();
+    require(raised() == 5, "A multiple selection raises every link it touches");
+
+    view.select_elements({});
+    QApplication::processEvents();
+    require(raised() == 0, "Clearing the selection clears the highlight");
+
+    // A rebuilt link must be highlighted too. Detaching an attribute destroys
+    // its link and undoing creates a fresh one, so this exercises a new item
+    // rather than an existing one being updated in place.
+    view.select_elements({domain::ElementRef{student}});
+    QApplication::processEvents();
+    domain::AttributeId detached{};
+    for (const auto& [id, attribute] : editor.project().attributes)
+        if (attribute.name == "Name") detached = id;
+    require(editor.set_attribute_owner(detached, {}), "Detach an attribute");
+    view.synchronize();
+    QApplication::processEvents();
+    require(raised() == 2, "The destroyed link is no longer highlighted");
+    require(editor.undo(), "Undo the detach");
+    view.synchronize();
+    QApplication::processEvents();
+    require(raised() == 3, "The rebuilt link is highlighted again");
+}
+
 void synchronization_lifetime_tests() {
     SequentialIds ids;
     application::Editor editor(ids);
@@ -784,6 +850,7 @@ int main(int argc, char** argv) {
         inline_rename_tests();
         notation_tests();
         attribute_trunk_and_line_style_tests();
+        selection_highlight_tests();
         tool_locking_tests();
         inheritance_connection_tests();
         inheritance_orientation_tests();
