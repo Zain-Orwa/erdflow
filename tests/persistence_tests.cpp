@@ -190,7 +190,7 @@ void malformed_json_and_text() {
 
 void strict_version_and_field_contract() {
     Fixture fixture;
-    for (const auto& version : {QJsonValue(0), QJsonValue(4), QJsonValue(1.5), QJsonValue("1"), QJsonValue(true)}) {
+    for (const auto& version : {QJsonValue(0), QJsonValue(5), QJsonValue(1.5), QJsonValue("1"), QJsonValue(true)}) {
         auto root = fixture.document();
         root["format_version"] = version;
         reject(bytes(root));
@@ -289,7 +289,7 @@ void connector_shapes_persist_and_older_versions_still_open() {
 
     const auto encoded = ErdxProjectStore::encode(fixture.editor.project());
     const auto root = QJsonDocument::fromJson(encoded).object();
-    CHECK(root["format_version"].toInt() == 3);
+    CHECK(root["format_version"].toInt() == 4);
     CHECK(root["project"].toObject()["connectors"].toArray().size() == 2);
 
     const auto reopened = ErdxProjectStore::decode(encoded);
@@ -306,6 +306,7 @@ void connector_shapes_persist_and_older_versions_still_open() {
         QJsonArray relationships;
         for (const auto& value : project["relationships"].toArray()) {
             auto relationship = value.toObject();
+            if (version >= 3) { relationships.append(relationship); continue; }
             relationship.remove("associative");
             QJsonArray participants;
             for (const auto& item : relationship["participants"].toArray()) {
@@ -318,13 +319,14 @@ void connector_shapes_persist_and_older_versions_still_open() {
             relationships.append(relationship);
         }
         project["relationships"] = relationships;
+        if (version < 4) project.remove("specializations");
         if (version < 2) project.remove("connectors");
         document["project"] = project;
         document["format_version"] = version;
         return document;
     };
 
-    for (const int version : {1, 2}) {
+    for (const int version : {1, 2, 3}) {
         const auto opened = ErdxProjectStore::decode(bytes(downgrade(version)));
         CHECK(opened);
         CHECK(opened.project->entities == fixture.editor.project().entities);
@@ -336,16 +338,17 @@ void connector_shapes_persist_and_older_versions_still_open() {
                 CHECK(std::holds_alternative<EntityId>(participant.target));
         }
         // Saving an older document upgrades it to the current version.
-        CHECK(QJsonDocument::fromJson(ErdxProjectStore::encode(*opened.project)).object()["format_version"].toInt() == 3);
+        CHECK(opened.project->specializations.empty());
+        CHECK(QJsonDocument::fromJson(ErdxProjectStore::encode(*opened.project)).object()["format_version"].toInt() == 4);
     }
 
     // A document whose shape contradicts its declared version is refused rather
     // than read leniently, in both directions.
     auto smuggled = fixture.document();
-    smuggled["format_version"] = 2;
+    smuggled["format_version"] = 3;
     reject(bytes(smuggled));
-    auto stale = downgrade(2);
-    stale["format_version"] = 3;
+    auto stale = downgrade(3);
+    stale["format_version"] = 4;
     reject(bytes(stale));
     auto missing = fixture.document();
     auto project = missing["project"].toObject();

@@ -25,8 +25,13 @@ using ProjectId = Id<struct ProjectTag>;
 using EntityId = Id<struct EntityTag>;
 using AttributeId = Id<struct AttributeTag>;
 using RelationshipId = Id<struct RelationshipTag>;
+using SpecializationId = Id<struct SpecializationTag>;
 using ParticipantId = Id<struct ParticipantTag>;
-using ElementRef = std::variant<EntityId, AttributeId, RelationshipId>;
+// A specialization is a placed element of its own: it carries the ISA triangle
+// on the canvas and the constraints that decide how it converts to relations.
+using ElementRef = std::variant<EntityId, AttributeId, RelationshipId, SpecializationId>;
+// An attribute belongs to an entity, a relationship, or a composite attribute;
+// never to a specialization, which owns no data of its own.
 using AttributeOwner = ElementRef;
 // A connector is drawn from the record that creates it, so it is identified by
 // that record rather than by its own identity: an attribute's ownership link,
@@ -44,6 +49,11 @@ struct Rect {
 enum class AttributeKind { Normal, Key, Composite, Multivalued, Derived };
 enum class Cardinality { One, Many };
 enum class Participation { Partial, Total };
+// Whether an instance of the supertype may belong to more than one subtype,
+// and whether it must belong to at least one. Together these choose the
+// relational mapping strategy when the model is converted.
+enum class Disjointness { Disjoint, Overlapping };
+enum class Completeness { Partial, Total };
 
 struct Entity {
     EntityId id;
@@ -81,12 +91,23 @@ struct Relationship {
     std::vector<Participant> participants;
     auto operator<=>(const Relationship&) const = default;
 };
+struct Specialization {
+    SpecializationId id;
+    std::string name;
+    std::string description;
+    EntityId supertype;
+    std::vector<EntityId> subtypes;
+    Disjointness constraint = Disjointness::Disjoint;
+    Completeness completeness = Completeness::Partial;
+    auto operator<=>(const Specialization&) const = default;
+};
 struct Project {
     ProjectId id;
     std::string name = "Untitled";
     std::map<EntityId, Entity> entities;
     std::map<AttributeId, Attribute> attributes;
     std::map<RelationshipId, Relationship> relationships;
+    std::map<SpecializationId, Specialization> specializations;
     std::map<ElementRef, Rect> layout;
     // Signed perpendicular bend, in canvas units, for connectors the user has
     // shaped. An absent entry means the connector is routed automatically.

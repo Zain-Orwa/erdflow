@@ -45,6 +45,7 @@ QString key(ElementRef ref) {
 QString kind_label(ElementRef ref) {
     if (std::holds_alternative<EntityId>(ref)) return QStringLiteral("Entity");
     if (std::holds_alternative<AttributeId>(ref)) return QStringLiteral("Attribute");
+    if (std::holds_alternative<SpecializationId>(ref)) return QStringLiteral("Specialization");
     return QStringLiteral("Relationship");
 }
 QString display_name(const Project& project, ElementRef ref) {
@@ -264,9 +265,9 @@ void MainWindow::build_actions() {
     toolbar->addAction(redo_);
     toolbar->addSeparator();
     auto* group = new QActionGroup(this);
-    const std::array<std::pair<Tool, QString>, 6> tools{{
+    const std::array<std::pair<Tool, QString>, 7> tools{{
         {Tool::Select, "Select"}, {Tool::Entity, "Entity"}, {Tool::Attribute, "Attribute"},
-        {Tool::Relationship, "Relationship"}, {Tool::Connect, "Connect"}, {Tool::Pan, "Pan"}
+        {Tool::Relationship, "Relationship"}, {Tool::Isa, "ISA"}, {Tool::Connect, "Connect"}, {Tool::Pan, "Pan"}
     }};
     for (const auto& [tool, label] : tools) {
         auto* action = toolbar->addAction(label);
@@ -487,9 +488,55 @@ void MainWindow::refresh_properties() {
         layout->addLayout(attr_form);
         layout->addWidget(hint("Composite attributes can own other attributes. Key attributes belong to entities.", panel));
     }
+    if (const auto* specialization_id = std::get_if<SpecializationId>(&ref)) {
+        const auto& specialization = project.specializations.at(*specialization_id);
+        layout->addWidget(hint("An ISA triangle. Its supertype is fixed when it is created; connect entities to it "
+                               "to make them subtypes. The two rules below decide how it converts to relations.", panel));
+        auto* super = new QLabel("Supertype: " + display_name(project, ElementRef{specialization.supertype}), panel);
+        super->setObjectName("specializationSupertype");
+        layout->addWidget(super);
+        // Disjoint or overlapping, and total or partial, are exactly the inputs
+        // a later Conceptual to Relational conversion needs to choose a mapping.
+        auto* constraint = new QComboBox(panel);
+        constraint->setObjectName("specializationConstraint");
+        constraint->addItem("Disjoint — at most one subtype");
+        constraint->addItem("Overlapping — may be several subtypes");
+        constraint->setCurrentIndex(specialization.constraint == Disjointness::Overlapping ? 1 : 0);
+        auto* completeness = new QComboBox(panel);
+        completeness->setObjectName("specializationCompleteness");
+        completeness->addItem("Partial — need not be any subtype");
+        completeness->addItem("Total — must be some subtype");
+        completeness->setCurrentIndex(specialization.completeness == Completeness::Total ? 1 : 0);
+        const auto apply_rules = [this, id = *specialization_id, constraint, completeness] {
+            if (refreshing_) return;
+            show_result(editor_.set_specialization_rules(id,
+                constraint->currentIndex() == 1 ? Disjointness::Overlapping : Disjointness::Disjoint,
+                completeness->currentIndex() == 1 ? Completeness::Total : Completeness::Partial));
+        };
+        connect(constraint, &QComboBox::activated, this, [apply_rules](int) { apply_rules(); });
+        connect(completeness, &QComboBox::activated, this, [apply_rules](int) { apply_rules(); });
+        auto* rules = new QFormLayout;
+        rules->setRowWrapPolicy(QFormLayout::WrapAllRows);
+        rules->addRow("Constraint", constraint);
+        rules->addRow("Completeness", completeness);
+        layout->addLayout(rules);
+        for (const auto& subtype : specialization.subtypes) {
+            auto* card = new QWidget(panel);
+            card->setObjectName("participantCard");
+            auto* row = new QFormLayout(card);
+            row->setRowWrapPolicy(QFormLayout::WrapAllRows);
+            row->addRow(new QLabel(display_name(project, ElementRef{subtype}), card));
+            auto* detach = new QPushButton("Detach subtype", card);
+            connect(detach, &QPushButton::clicked, this, [this, id = *specialization_id, subtype] {
+                show_result(editor_.detach_subtype(id, subtype));
+            });
+            row->addRow(detach);
+            layout->addWidget(card);
+        }
+    }
     if (const auto* id = std::get_if<RelationshipId>(&ref)) {
         const auto relationship_id = *id;
-        const auto relationship = project.relationships.at(*id);
+        const auto& relationship = project.relationships.at(*id);
         // An associative relationship keeps its own identity, so it can take
         // part in further relationships exactly as an entity does.
         auto* associative = new QCheckBox("Associative entity", panel);

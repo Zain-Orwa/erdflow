@@ -120,6 +120,9 @@ public:
         if (std::holds_alternative<EntityId>(ref)) {
             fill_ = colors.entity_fill;
             border_ = colors.entity_border;
+        } else if (std::holds_alternative<SpecializationId>(ref)) {
+            fill_ = colors.relationship_fill;
+            border_ = colors.relationship_border;
         } else if (std::holds_alternative<RelationshipId>(ref)) {
             // An associative entity converts to a relation of its own, so it
             // wears the entity palette. Its unfilled surrounding rectangle,
@@ -143,6 +146,12 @@ public:
             path.addRect(bounds_);
         } else if (std::holds_alternative<AttributeId>(ref)) {
             path.addEllipse(bounds_);
+        } else if (std::holds_alternative<SpecializationId>(ref)) {
+            // The ISA triangle points at the supertype, which sits above it.
+            path.moveTo(bounds_.center().x(), bounds_.top());
+            path.lineTo(bounds_.right(), bounds_.bottom());
+            path.lineTo(bounds_.left(), bounds_.bottom());
+            path.closeSubpath();
         } else {
             path.moveTo(bounds_.center().x(), bounds_.top());
             path.lineTo(bounds_.right(), bounds_.center().y());
@@ -179,6 +188,8 @@ public:
         qreal divisor;
         if (std::holds_alternative<AttributeId>(ref)) {
             divisor = std::hypot(delta.x() / rx, delta.y() / ry);
+        } else if (std::holds_alternative<SpecializationId>(ref)) {
+            divisor = std::max(std::abs(delta.x()) / rx, std::abs(delta.y()) / ry);
         } else if (std::holds_alternative<RelationshipId>(ref) && !associative) {
             divisor = std::abs(delta.x()) / rx + std::abs(delta.y()) / ry;
         } else {
@@ -209,7 +220,10 @@ public:
         painter->setFont(font);
         painter->setPen(text_);
         const auto inset = std::holds_alternative<RelationshipId>(ref) ? bounds_.width() * 0.22 : 15.0;
-        const auto text_rect = bounds_.adjusted(inset, 8, -inset, -8);
+        auto text_rect = bounds_.adjusted(inset, 8, -inset, -8);
+        // A triangle only has room for text across its base.
+        if (std::holds_alternative<SpecializationId>(ref))
+            text_rect = QRectF(bounds_.left() + 6, bounds_.center().y(), bounds_.width() - 12, bounds_.height() / 2 - 4);
         const auto text = QFontMetricsF(font).elidedText(label, Qt::ElideRight, text_rect.width());
         painter->drawText(text_rect, Qt::AlignCenter, text);
     }
@@ -226,9 +240,16 @@ private:
     QColor fill_, border_, text_, selection_;
 };
 
-// An edge is keyed by the record that draws it, which is exactly the Domain's
-// connector identity, so a canvas edge and a stored bend share one key.
-using EdgeKey = ConnectorRef;
+// An edge is keyed by the record that draws it. Attribute and participant links
+// use the Domain's connector identity, so a canvas edge and a stored bend share
+// one key. An inheritance link is keyed by its specialization and the entity it
+// reaches, and carries no stored bend.
+struct InheritanceKey {
+    SpecializationId specialization;
+    std::optional<EntityId> subtype;  // absent for the link up to the supertype
+    auto operator<=>(const InheritanceKey&) const = default;
+};
+using EdgeKey = std::variant<AttributeId, ParticipantId, InheritanceKey>;
 struct EdgeDescription {
     EdgeKey key;
     ElementRef from;
@@ -601,6 +622,15 @@ struct DiagramView::Impl {
                 return [this, id = first, target = second] { return editor.connect(id, ParticipantTarget{target}); };
             return {};
         }
+        // Connecting an entity to a triangle makes it a subtype; the supertype
+        // is fixed when the triangle is created.
+        if (const auto* isa = std::get_if<SpecializationId>(&from); isa && std::holds_alternative<EntityId>(to)) {
+            return [this, id = *isa, subtype = std::get<EntityId>(to)] { return editor.attach_subtype(id, subtype); };
+        }
+        if (const auto* isa = std::get_if<SpecializationId>(&to); isa && std::holds_alternative<EntityId>(from)) {
+            return [this, id = *isa, subtype = std::get<EntityId>(from)] { return editor.attach_subtype(id, subtype); };
+        }
+        if (std::holds_alternative<SpecializationId>(from) || std::holds_alternative<SpecializationId>(to)) return {};
         if (std::holds_alternative<AttributeId>(from) && std::holds_alternative<AttributeId>(to)
             && project.attributes.at(std::get<AttributeId>(from)).kind == AttributeKind::Composite
             && project.attributes.at(std::get<AttributeId>(to)).kind != AttributeKind::Composite) {
@@ -653,7 +683,7 @@ void DiagramView::synchronize() {
     const auto& project = impl_->editor.project();
     std::map<EdgeKey, EdgeDescription> desired_edges;
     // A stored bend is the user's choice and overrides automatic routing.
-    const auto shaped = [&](const EdgeKey& key, qreal automatic) {
+    const auto shaped = [&](const ConnectorRef& key, qreal automatic) {
         const auto found = project.connectors.find(key);
         return found == project.connectors.end() ? automatic : found->second;
     };
@@ -673,6 +703,18 @@ void DiagramView::synchronize() {
             desired_edges.emplace(participant.id, EdgeDescription{participant.id, id, target_ref(participant.target), id,
                 participant.maximum, participant.participation, QString::fromStdString(participant.role),
                 shaped(participant.id, offset)});
+        }
+    }
+    for (const auto& [id, specialization] : project.specializations) {
+        if (project.entities.contains(specialization.supertype))
+            desired_edges.emplace(EdgeKey{InheritanceKey{id, {}}},
+                EdgeDescription{EdgeKey{InheritanceKey{id, {}}}, id, ElementRef{specialization.supertype}, {},
+                                Cardinality::Many, Participation::Partial, {}, 0});
+        for (const auto& subtype : specialization.subtypes) {
+            if (!project.entities.contains(subtype)) continue;
+            const EdgeKey key{InheritanceKey{id, subtype}};
+            desired_edges.emplace(key, EdgeDescription{key, id, ElementRef{subtype}, {},
+                                                      Cardinality::Many, Participation::Partial, {}, 0});
         }
     }
     for (auto it = impl_->edges.begin(); it != impl_->edges.end();) {
@@ -745,6 +787,7 @@ void DiagramView::synchronize() {
     for (const auto& [id, entity] : project.entities) { (void)entity; sync_node(id); }
     for (const auto& [id, attribute] : project.attributes) { (void)attribute; sync_node(id); }
     for (const auto& [id, relationship] : project.relationships) { (void)relationship; sync_node(id); }
+    for (const auto& [id, specialization] : project.specializations) { (void)specialization; sync_node(id); }
     for (const auto& [key, description] : desired_edges) {
         auto found = impl_->edges.find(key);
         if (found == impl_->edges.end()) {
@@ -787,7 +830,8 @@ void DiagramView::set_tool(Tool tool) {
     case Tool::Entity: impl_->status(QStringLiteral("Click the canvas to create an entity.")); break;
     case Tool::Attribute: impl_->status(QStringLiteral("Click to add an attribute to the selected owner, or an unattached attribute.")); break;
     case Tool::Relationship: impl_->status(QStringLiteral("Click the canvas to create a relationship, then use Connect to add participants.")); break;
-    case Tool::Connect: impl_->status(QStringLiteral("Select an entity and relationship, or an attribute and its owner.")); break;
+    case Tool::Isa: impl_->status(QStringLiteral("Click the entity to generalise; then connect its subtypes to the triangle.")); break;
+    case Tool::Connect: impl_->status(QStringLiteral("Select an entity and relationship, an attribute and its owner, or a subtype and its triangle.")); break;
     case Tool::Pan: impl_->status(QStringLiteral("Drag to pan. The middle mouse button pans in every tool.")); break;
     }
 }
@@ -963,6 +1007,28 @@ void DiagramView::mousePressEvent(QMouseEvent* event) {
         event->accept();
         return;
     }
+    if (impl_->active_tool == Tool::Isa) {
+        // A specialization needs a supertype, so it is placed by clicking the
+        // entity it generalises rather than empty canvas.
+        auto* node = impl_->node_at(event->position().toPoint());
+        const auto* supertype = node ? std::get_if<EntityId>(&node->ref) : nullptr;
+        if (!supertype) {
+            impl_->status(QStringLiteral("Click the entity to generalise. Its ISA triangle appears below it."));
+            event->accept();
+            return;
+        }
+        const auto box = node->sceneBoundingRect();
+        const auto result = impl_->editor.create_specialization(
+            "IS A", centred(QPointF(box.center().x(), box.bottom() + 110), isa_body), *supertype);
+        impl_->publish(result);
+        if (result && result.created) {
+            select_elements({*result.created});
+            set_tool(Tool::Select);
+            impl_->status(QStringLiteral("Now connect the subtypes to this triangle."));
+        }
+        event->accept();
+        return;
+    }
     if (impl_->active_tool == Tool::Entity || impl_->active_tool == Tool::Attribute || impl_->active_tool == Tool::Relationship) {
         auto center = mapToScene(event->position().toPoint());
         if (impl_->snap) center = {std::round(center.x() / grid_spacing) * grid_spacing, std::round(center.y() / grid_spacing) * grid_spacing};
@@ -1086,7 +1152,11 @@ void DiagramView::mouseDoubleClickEvent(QMouseEvent* event) {
     if (event->button() == Qt::LeftButton && impl_->active_tool == Tool::Select
         && !impl_->node_at(event->position().toPoint())) {
         if (auto* edge = impl_->edge_at(event->position().toPoint())) {
-            impl_->publish(impl_->editor.bend_connector(edge->descriptor.key, {}));
+            if (std::holds_alternative<InheritanceKey>(edge->descriptor.key)) { event->accept(); return; }
+            const auto& key = edge->descriptor.key;
+            const auto connector = std::holds_alternative<AttributeId>(key)
+                ? ConnectorRef{std::get<AttributeId>(key)} : ConnectorRef{std::get<ParticipantId>(key)};
+            impl_->publish(impl_->editor.bend_connector(connector, {}));
             event->accept();
             return;
         }
@@ -1149,7 +1219,10 @@ void DiagramView::mouseReleaseEvent(QMouseEvent* event) {
         setCursor(impl_->active_tool == Tool::Select ? Qt::ArrowCursor : Qt::CrossCursor);
         const auto found = impl_->edges.find(key);
         if (found != impl_->edges.end()) {
-            const auto result = impl_->editor.bend_connector(key, found->second->descriptor.offset);
+            if (std::holds_alternative<InheritanceKey>(key)) { event->accept(); return; }
+            const auto connector = std::holds_alternative<AttributeId>(key)
+                ? ConnectorRef{std::get<AttributeId>(key)} : ConnectorRef{std::get<ParticipantId>(key)};
+            const auto result = impl_->editor.bend_connector(connector, found->second->descriptor.offset);
             if (!result) impl_->displayed_revision.reset(); // Restore the projection after a rejected bend.
             impl_->publish(result);
         }

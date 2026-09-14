@@ -592,6 +592,78 @@ void associative_relationships_act_as_entities() {
     CHECK(has_issue(plain, "participant.not_associative"));
 }
 
+// Generalization and specialization: one supertype, its subtypes, and the two
+// rules a later conversion needs in order to choose a relational mapping.
+void specializations_carry_inheritance_rules() {
+    TestIds ids;
+    Editor editor(ids);
+    const auto person = entity(editor, "Person");
+    const auto student = entity(editor, "Student");
+    const auto employee = entity(editor, "Employee");
+    const auto teacher = entity(editor, "Teacher");
+
+    const auto created = editor.create_specialization("IS A", {0, 200, 96, 74}, person);
+    CHECK(created);
+    const auto role = std::get<SpecializationId>(*created.created);
+    // A triangle with no subtypes yet is work in progress, not an error.
+    CHECK(!blocks(editor.project()));
+    CHECK(has_issue(editor.project(), "specialization.subtypes.incomplete"));
+    CHECK(name(editor.project(), ElementRef{role}) == "IS A");
+
+    CHECK(editor.attach_subtype(role, student));
+    CHECK(editor.attach_subtype(role, employee));
+    CHECK(editor.project().specializations.at(role).subtypes.size() == 2);
+    CHECK(!blocks(editor.project()));
+    // The same entity cannot be attached twice, and the edit is refused whole.
+    CHECK(!editor.attach_subtype(role, student));
+    CHECK(editor.project().specializations.at(role).subtypes.size() == 2);
+
+    // Disjoint/partial by default; both rules are editable together.
+    const auto& defaults = editor.project().specializations.at(role);
+    CHECK(defaults.constraint == Disjointness::Disjoint);
+    CHECK(defaults.completeness == Completeness::Partial);
+    CHECK(editor.set_specialization_rules(role, Disjointness::Overlapping, Completeness::Total));
+    CHECK(editor.project().specializations.at(role).constraint == Disjointness::Overlapping);
+    CHECK(editor.project().specializations.at(role).completeness == Completeness::Total);
+    CHECK(editor.undo());
+    CHECK(editor.project().specializations.at(role).constraint == Disjointness::Disjoint);
+
+    // Specialization nests: an Employee may itself be generalised further.
+    const auto job = std::get<SpecializationId>(*editor.create_specialization("IS A", {0, 400, 96, 74}, employee).created);
+    CHECK(editor.attach_subtype(job, teacher));
+    CHECK(!blocks(editor.project()));
+
+    // An entity cannot be its own subtype, nor inherit from itself in a cycle.
+    auto malformed = editor.project();
+    malformed.specializations.at(role).subtypes.push_back(person);
+    CHECK(has_issue(malformed, "specialization.self"));
+    malformed = editor.project();
+    malformed.specializations.at(job).subtypes.push_back(person);
+    CHECK(has_issue(malformed, "specialization.cycle"));
+
+    // A specialization holds no attributes of its own.
+    malformed = editor.project();
+    const auto loose = attribute(editor, "Stray");
+    malformed = editor.project();
+    malformed.attributes.at(loose).owner = ElementRef{role};
+    CHECK(has_issue(malformed, "attribute.owner.specialization"));
+
+    // Detaching and deleting both leave the model valid and are undoable.
+    CHECK(editor.detach_subtype(role, employee));
+    CHECK(editor.project().specializations.at(role).subtypes.size() == 1);
+    CHECK(editor.undo());
+    CHECK(editor.project().specializations.at(role).subtypes.size() == 2);
+    CHECK(editor.erase({ElementRef{role}}));
+    CHECK(!editor.project().specializations.contains(role));
+    CHECK(!blocks(editor.project()));
+    CHECK(editor.undo());
+    CHECK(editor.project().specializations.at(role).subtypes.size() == 2);
+
+    // Deleting a subtype entity must not leave the triangle pointing at nothing.
+    CHECK(editor.erase({ElementRef{student}}));
+    CHECK(!blocks(editor.project()));
+}
+
 } // namespace
 
 int main() {
@@ -609,6 +681,7 @@ int main() {
         {"connector shapes follow their link", connector_shapes_follow_their_link},
         {"hostile connector shapes", hostile_connector_shapes_are_rejected},
         {"associative relationships act as entities", associative_relationships_act_as_entities},
+        {"specializations carry inheritance rules", specializations_carry_inheritance_rules},
     };
     std::size_t failures = 0;
     for (const auto& [name, test] : tests) {

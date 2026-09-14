@@ -46,6 +46,13 @@ public:
     EditResult create_attribute(std::string name, domain::Rect rect,
                                 std::optional<domain::AttributeOwner> owner = {});
     EditResult create_relationship(std::string name, domain::Rect rect);
+    // An ISA triangle: one supertype, and the subtypes attached to it. The
+    // constraint and completeness decide how it converts to relations later.
+    EditResult create_specialization(std::string name, domain::Rect rect, domain::EntityId supertype);
+    EditResult attach_subtype(domain::SpecializationId specialization, domain::EntityId subtype);
+    EditResult detach_subtype(domain::SpecializationId specialization, domain::EntityId subtype);
+    EditResult set_specialization_rules(domain::SpecializationId specialization,
+                                        domain::Disjointness constraint, domain::Completeness completeness);
     EditResult rename(domain::ElementRef ref, std::string name);
     EditResult describe(domain::ElementRef ref, std::string description);
     EditResult set_attribute_kind(domain::AttributeId id, domain::AttributeKind kind);

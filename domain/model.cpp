@@ -26,9 +26,12 @@ template<class Visitor> auto visit_element(const Project& project, const Element
         } else if constexpr (std::is_same_v<T, AttributeId>) {
             const auto found = project.attributes.find(id);
             return visitor(found == project.attributes.end() ? nullptr : &found->second);
-        } else {
+        } else if constexpr (std::is_same_v<T, RelationshipId>) {
             const auto found = project.relationships.find(id);
             return visitor(found == project.relationships.end() ? nullptr : &found->second);
+        } else {
+            const auto found = project.specializations.find(id);
+            return visitor(found == project.specializations.end() ? nullptr : &found->second);
         }
     }, ref);
 }
@@ -103,7 +106,8 @@ std::vector<Issue> validate(const Project& project) {
     auto warning = [&](std::string code, std::string message, std::optional<ElementRef> ref = {}) {
         issues.push_back({Severity::Warning, std::move(code), std::move(message), ref, false});
     };
-    const auto elements = project.entities.size() + project.attributes.size() + project.relationships.size();
+    const auto elements = project.entities.size() + project.attributes.size()
+        + project.relationships.size() + project.specializations.size();
     std::size_t participants = 0;
     for (const auto& [id, relationship] : project.relationships) {
         (void)id;
@@ -152,6 +156,8 @@ std::vector<Issue> validate(const Project& project) {
             if (project.attributes.at(*parent).kind != AttributeKind::Composite)
                 error("attribute.owner.not_composite", "Only a composite attribute can own other attributes.", ref);
         }
+        if (attribute.owner && std::holds_alternative<SpecializationId>(*attribute.owner))
+            error("attribute.owner.specialization", "A specialization holds no attributes of its own.", ref);
         if (attribute.kind == AttributeKind::Key && attribute.owner && std::holds_alternative<RelationshipId>(*attribute.owner))
             error("attribute.key.relationship", "A relationship-owned attribute cannot be an entity identifier.", ref);
     }
@@ -245,6 +251,64 @@ std::vector<Issue> validate(const Project& project) {
             current = *next;
         }
         for (const auto& visited : path) relationship_color[visited] = 2;
+    }
+    for (const auto& [id, specialization] : project.specializations) {
+        const ElementRef ref = id;
+        if (!project.layout.contains(ref)) error("layout.element.missing", "The specialization has no canvas layout.", ref);
+        identity(id.value, ref);
+        if (specialization.id != id) error("identity.key_mismatch", "The specialization key and identifier differ.", ref);
+        text_fields(specialization.name, specialization.description, ref);
+        if (!project.entities.contains(specialization.supertype))
+            error("specialization.supertype.missing", "The specialization refers to a missing supertype.", ref);
+        if (specialization.subtypes.empty())
+            warning("specialization.subtypes.incomplete", "Connect at least one subtype to complete this specialization.", ref);
+        std::set<EntityId> seen;
+        for (const auto& subtype : specialization.subtypes) {
+            if (!project.entities.contains(subtype))
+                error("specialization.subtype.missing", "The specialization refers to a missing subtype.", ref);
+            if (subtype == specialization.supertype)
+                error("specialization.self", "An entity cannot be a subtype of itself.", ref);
+            if (!seen.insert(subtype).second)
+                error("specialization.subtype.duplicate", "An entity can appear only once among a specialization's subtypes.", ref);
+        }
+        if (specialization.constraint != Disjointness::Disjoint && specialization.constraint != Disjointness::Overlapping)
+            error("specialization.constraint.invalid", "A specialization constraint must be disjoint or overlapping.", ref);
+        if (specialization.completeness != Completeness::Partial && specialization.completeness != Completeness::Total)
+            error("specialization.completeness.invalid", "Specialization completeness must be partial or total.", ref);
+    }
+    // An entity that is its own ancestor could not be converted to relations at
+    // all, so inheritance is checked for cycles the same iterative way.
+    std::map<EntityId, std::vector<EntityId>> supertypes_of;
+    for (const auto& [id, specialization] : project.specializations) {
+        (void)id;
+        for (const auto& subtype : specialization.subtypes) supertypes_of[subtype].push_back(specialization.supertype);
+    }
+    std::map<EntityId, unsigned char> inheritance_color;
+    for (const auto& [start, entity] : project.entities) {
+        (void)entity;
+        if (inheritance_color[start] != 0) continue;
+        std::vector<EntityId> stack{start};
+        std::vector<EntityId> path;
+        while (!stack.empty()) {
+            const auto current = stack.back();
+            if (inheritance_color[current] == 0) {
+                inheritance_color[current] = 1;
+                path.push_back(current);
+                const auto found = supertypes_of.find(current);
+                if (found != supertypes_of.end())
+                    for (const auto& parent : found->second) {
+                        if (inheritance_color[parent] == 1) {
+                            error("specialization.cycle", "Inheritance must not form a cycle.", ElementRef{parent});
+                            stack.clear();
+                            break;
+                        }
+                        if (inheritance_color[parent] == 0) stack.push_back(parent);
+                    }
+                continue;
+            }
+            stack.pop_back();
+        }
+        for (const auto& visited : path) inheritance_color[visited] = 2;
     }
     if (project.connectors.size() > max_elements) error("connector.limit", "The connector shapes exceed the element limit.");
     for (const auto& [ref, offset] : project.connectors) {

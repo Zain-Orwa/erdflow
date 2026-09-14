@@ -46,6 +46,9 @@ std::size_t payload(const Relationship& value) {
     for (const auto& participant : value.participants) result += participant.role.capacity();
     return result;
 }
+std::size_t payload(const Specialization& value) {
+    return value.name.capacity() + value.description.capacity() + value.subtypes.capacity() * sizeof(EntityId);
+}
 std::size_t payload(const Rect&) { return 0; }
 std::size_t payload(double) { return 0; }
 
@@ -69,6 +72,7 @@ struct Delta {
     Changes<EntityId, Entity> entities;
     Changes<AttributeId, Attribute> attributes;
     Changes<RelationshipId, Relationship> relationships;
+    Changes<SpecializationId, Specialization> specializations;
     Changes<ElementRef, Rect> layout;
     Changes<ConnectorRef, double> connectors;
     std::size_t bytes = 0;
@@ -77,13 +81,15 @@ struct Delta {
 
     [[nodiscard]] bool empty() const {
         return !project_name && entities.keys.empty() && attributes.keys.empty()
-            && relationships.keys.empty() && layout.keys.empty() && connectors.keys.empty();
+            && relationships.keys.empty() && specializations.keys.empty()
+            && layout.keys.empty() && connectors.keys.empty();
     }
     void toggle(Project& project) {
         if (project_name) project.name.swap(*project_name);
         entities.toggle(project.entities);
         attributes.toggle(project.attributes);
         relationships.toggle(project.relationships);
+        specializations.toggle(project.specializations);
         layout.toggle(project.layout);
         connectors.toggle(project.connectors);
     }
@@ -91,8 +97,8 @@ struct Delta {
         return sizeof(Delta) + sizeof(std::unique_ptr<Delta>) + label.capacity()
             + (project_name ? project_name->capacity() + project.name.capacity() : 0)
             + cost(entities, project.entities) + cost(attributes, project.attributes)
-            + cost(relationships, project.relationships) + cost(layout, project.layout)
-            + cost(connectors, project.connectors);
+            + cost(relationships, project.relationships) + cost(specializations, project.specializations)
+            + cost(layout, project.layout) + cost(connectors, project.connectors);
     }
 };
 
@@ -266,6 +272,53 @@ EditResult Editor::create_relationship(std::string name, Rect rect) {
     });
 }
 
+EditResult Editor::create_specialization(std::string name, Rect rect, EntityId supertype) {
+    return impl_->edit("Create specialization", [&](Delta& delta) {
+        if (!project().entities.contains(supertype)) return failure("The supertype no longer exists.");
+        const SpecializationId id{impl_->next_id()};
+        delta.specializations.put(id, Specialization{id, std::move(name), {}, supertype, {},
+                                                     Disjointness::Disjoint, Completeness::Partial});
+        delta.layout.put(ElementRef{id}, rect);
+        return EditResult{true, {}, ElementRef{id}, {}};
+    });
+}
+EditResult Editor::attach_subtype(SpecializationId specialization, EntityId subtype) {
+    return impl_->edit("Attach subtype", [&](Delta& delta) {
+        const auto found = project().specializations.find(specialization);
+        if (found == project().specializations.end() || !project().entities.contains(subtype))
+            return failure("The specialization or entity no longer exists.");
+        auto value = found->second;
+        if (std::find(value.subtypes.begin(), value.subtypes.end(), subtype) != value.subtypes.end())
+            return failure("That entity is already a subtype here.");
+        value.subtypes.push_back(subtype);
+        delta.specializations.put(specialization, std::move(value));
+        return EditResult{};
+    });
+}
+EditResult Editor::detach_subtype(SpecializationId specialization, EntityId subtype) {
+    return impl_->edit("Detach subtype", [&](Delta& delta) {
+        const auto found = project().specializations.find(specialization);
+        if (found == project().specializations.end()) return failure("The specialization no longer exists.");
+        auto value = found->second;
+        if (std::erase(value.subtypes, subtype) == 0) return failure("That entity is not a subtype here.");
+        delta.specializations.put(specialization, std::move(value));
+        return EditResult{};
+    });
+}
+EditResult Editor::set_specialization_rules(SpecializationId specialization,
+                                            Disjointness constraint, Completeness completeness) {
+    return impl_->edit("Change specialization rules", [&](Delta& delta) {
+        const auto found = project().specializations.find(specialization);
+        if (found == project().specializations.end()) return failure("The specialization no longer exists.");
+        if (found->second.constraint == constraint && found->second.completeness == completeness) return EditResult{};
+        auto value = found->second;
+        value.constraint = constraint;
+        value.completeness = completeness;
+        delta.specializations.put(specialization, std::move(value));
+        return EditResult{};
+    });
+}
+
 namespace {
 template<class Edit> EditResult edit_element(const Project& project, Delta& delta, ElementRef ref, Edit edit) {
     if (!exists(project, ref)) return failure("The element no longer exists.");
@@ -279,6 +332,10 @@ template<class Edit> EditResult edit_element(const Project& project, Delta& delt
             auto value = project.attributes.at(id);
             edit(value);
             if (value != project.attributes.at(id)) delta.attributes.put(id, std::move(value));
+        } else if constexpr (std::is_same_v<T, SpecializationId>) {
+            auto value = project.specializations.at(id);
+            edit(value);
+            if (value != project.specializations.at(id)) delta.specializations.put(id, std::move(value));
         } else {
             auto value = project.relationships.at(id);
             edit(value);
@@ -430,6 +487,7 @@ EditResult Editor::erase(const std::vector<ElementRef>& elements,
                 using T = std::decay_t<decltype(id)>;
                 if constexpr (std::is_same_v<T, EntityId>) delta.entities.remove(id);
                 else if constexpr (std::is_same_v<T, AttributeId>) { delta.attributes.remove(id); drop_connector(id); }
+                else if constexpr (std::is_same_v<T, SpecializationId>) delta.specializations.remove(id);
                 else {
                     delta.relationships.remove(id);
                     for (const auto& participant : project().relationships.at(id).participants)
@@ -437,6 +495,21 @@ EditResult Editor::erase(const std::vector<ElementRef>& elements,
                 }
             }, ref);
             if (project().layout.contains(ref)) delta.layout.remove(ref);
+        }
+        // A triangle without its supertype means nothing, so it goes with it;
+        // a deleted subtype is simply detached from the ones that survive.
+        for (const auto& [id, specialization] : project().specializations) {
+            if (removed.contains(ElementRef{id})) continue;
+            if (removed.contains(ElementRef{specialization.supertype})) {
+                delta.specializations.remove(id);
+                if (project().layout.contains(ElementRef{id})) delta.layout.remove(ElementRef{id});
+                continue;
+            }
+            const auto gone = [&](const EntityId& subtype) { return removed.contains(ElementRef{subtype}); };
+            if (std::none_of(specialization.subtypes.begin(), specialization.subtypes.end(), gone)) continue;
+            auto value = specialization;
+            std::erase_if(value.subtypes, gone);
+            delta.specializations.put(id, std::move(value));
         }
         for (const auto& [id, relationship] : project().relationships) {
             if (removed.contains(ElementRef{id})) continue;
@@ -482,6 +555,17 @@ EditResult Editor::duplicate(const std::vector<ElementRef>& elements, double dx,
                     const auto shape = project().connectors.find(ConnectorRef{id});
                     if (shape != project().connectors.end() && value.owner)
                         delta.connectors.put(ConnectorRef{new_id}, shape->second);
+                } else if constexpr (std::is_same_v<T, SpecializationId>) {
+                    auto value = project().specializations.at(id);
+                    value.id = new_id;
+                    // Point the copy at copied supertype and subtypes where the
+                    // selection included them, and at the originals otherwise.
+                    if (const auto found = mapping.find(ElementRef{value.supertype}); found != mapping.end())
+                        value.supertype = std::get<EntityId>(found->second);
+                    for (auto& subtype : value.subtypes)
+                        if (const auto found = mapping.find(ElementRef{subtype}); found != mapping.end())
+                            subtype = std::get<EntityId>(found->second);
+                    delta.specializations.put(new_id, std::move(value));
                 } else {
                     auto value = project().relationships.at(id);
                     value.id = new_id;

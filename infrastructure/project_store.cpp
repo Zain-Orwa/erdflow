@@ -17,10 +17,11 @@
 namespace erdflow::infrastructure {
 using namespace domain;
 namespace {
-// Version 2 added connector shapes; version 3 adds associative relationships
-// and participants that may target one. Earlier versions remain readable; the
-// format specification states the compatibility rule for each.
-constexpr int current_format_version = 3;
+// Version 2 added connector shapes; version 3 added associative relationships
+// and participants that may target one; version 4 adds specializations.
+// Earlier versions remain readable; the format specification states the
+// compatibility rule for each.
+constexpr int current_format_version = 4;
 QString text(const std::string& value) { return QString::fromUtf8(value.data(), static_cast<qsizetype>(value.size())); }
 Uuid bytes_of(const QUuid& value) {
     Uuid result;
@@ -60,7 +61,9 @@ Uuid parse_id(const QJsonValue& value) {
     return result;
 }
 QJsonObject reference(const ElementRef& ref) {
-    const char* type = std::holds_alternative<EntityId>(ref) ? "entity" : std::holds_alternative<AttributeId>(ref) ? "attribute" : "relationship";
+    const char* type = std::holds_alternative<EntityId>(ref) ? "entity"
+        : std::holds_alternative<AttributeId>(ref) ? "attribute"
+        : std::holds_alternative<SpecializationId>(ref) ? "specialization" : "relationship";
     return {{"type", QLatin1String(type)}, {"id", uuid_text(uuid(ref))}};
 }
 QJsonObject connector_reference(const ConnectorRef& ref) {
@@ -83,6 +86,7 @@ ElementRef parse_ref(const QJsonValue& value) {
     if (type == "entity") return EntityId{id};
     if (type == "attribute") return AttributeId{id};
     if (type == "relationship") return RelationshipId{id};
+    if (type == "specialization") return SpecializationId{id};
     invalid("Unsupported element type.");
 }
 QString kind_name(AttributeKind kind) {
@@ -268,13 +272,24 @@ QByteArray ErdxProjectStore::encode(const Project& project) {
     }
     for (const auto& [ref, rect] : project.layout)
         layout.append(QJsonObject{{"element", reference(ref)}, {"x", rect.x}, {"y", rect.y}, {"width", rect.width}, {"height", rect.height}});
+    QJsonArray specializations;
+    for (const auto& [id, specialization] : project.specializations) {
+        QJsonArray subtypes;
+        for (const auto& subtype : specialization.subtypes) subtypes.append(uuid_text(subtype.value));
+        specializations.append(QJsonObject{{"id", uuid_text(id.value)}, {"name", text(specialization.name)},
+            {"description", text(specialization.description)}, {"supertype", uuid_text(specialization.supertype.value)},
+            {"subtypes", subtypes},
+            {"constraint", specialization.constraint == Disjointness::Overlapping ? "overlapping" : "disjoint"},
+            {"completeness", specialization.completeness == Completeness::Total ? "total" : "partial"}});
+    }
     QJsonArray connectors;
     for (const auto& [ref, offset] : project.connectors)
         connectors.append(QJsonObject{{"link", connector_reference(ref)}, {"offset", offset}});
     auto bytes = QJsonDocument(QJsonObject{{"format", "erdflow"}, {"format_version", current_format_version},
         {"project", QJsonObject{{"id", uuid_text(project.id.value)}, {"name", text(project.name)},
         {"entities", entities}, {"attributes", attributes}, {"relationships", relationships},
-        {"layout", layout}, {"connectors", connectors}}}}).toJson(QJsonDocument::Indented);
+        {"layout", layout}, {"connectors", connectors},
+        {"specializations", specializations}}}}).toJson(QJsonDocument::Indented);
     if (bytes.size() > max_file_bytes) invalid("The project exceeds the 8 MiB file limit.");
     return bytes;
 }
@@ -292,11 +307,14 @@ application::LoadResult ErdxProjectStore::decode(const QByteArray& input) {
         // routed automatically; saving then writes the current version.
         const auto version = root["format_version"];
         const auto number_version = version.isDouble() ? version.toDouble() : 0;
-        if (number_version != 1 && number_version != 2 && number_version != 3)
+        if (number_version < 1 || number_version > 4 || number_version != std::floor(number_version))
             invalid("Unsupported project version. Use a compatible ERDFlow release.");
         const bool shaped_connectors = number_version >= 2;
         const bool associative_entities = number_version >= 3;
-        const auto data = shaped_connectors
+        const bool inheritance = number_version >= 4;
+        const auto data = inheritance
+            ? object(root["project"], {"id", "name", "entities", "attributes", "relationships", "layout", "connectors", "specializations"})
+            : shaped_connectors
             ? object(root["project"], {"id", "name", "entities", "attributes", "relationships", "layout", "connectors"})
             : object(root["project"], {"id", "name", "entities", "attributes", "relationships", "layout"});
         Project project;
@@ -353,6 +371,23 @@ application::LoadResult ErdxProjectStore::decode(const QByteArray& input) {
             const auto o = object(value, {"element", "x", "y", "width", "height"});
             if (!project.layout.emplace(parse_ref(o["element"]), Rect{number(o["x"]), number(o["y"]), number(o["width"]), number(o["height"])}).second)
                 invalid("Duplicate element layout.");
+        }
+        if (inheritance) {
+            for (const auto& value : array(data["specializations"])) {
+                const auto o = object(value, {"id", "name", "description", "supertype", "subtypes", "constraint", "completeness"});
+                Specialization specialization{SpecializationId{parse_id(o["id"])}, string(o["name"]),
+                    string(o["description"], max_description_bytes), EntityId{parse_id(o["supertype"])}, {},
+                    Disjointness::Disjoint, Completeness::Partial};
+                for (const auto& subtype : array(o["subtypes"])) specialization.subtypes.push_back(EntityId{parse_id(subtype)});
+                const auto constraint = string(o["constraint"]);
+                const auto completeness = string(o["completeness"]);
+                if (constraint != "disjoint" && constraint != "overlapping") invalid("Invalid specialization constraint.");
+                if (completeness != "partial" && completeness != "total") invalid("Invalid specialization completeness.");
+                specialization.constraint = constraint == "overlapping" ? Disjointness::Overlapping : Disjointness::Disjoint;
+                specialization.completeness = completeness == "total" ? Completeness::Total : Completeness::Partial;
+                if (!project.specializations.emplace(specialization.id, specialization).second)
+                    invalid("Duplicate specialization identifier.");
+            }
         }
         if (shaped_connectors) {
             for (const auto& value : array(data["connectors"])) {

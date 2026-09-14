@@ -34,6 +34,11 @@ not been built yet. Their presence in those documents is not a completion claim.
 - One drag or duplicate/delete group is one history entry. Deletion restores
   dependent attributes and participant records on undo. Duplicate generates new
   IDs, including participant IDs, and remaps the copied subgraph.
+- Generalization and specialization: the **ISA** tool places a triangle under
+  the entity it generalises, and connecting entities to it makes them subtypes.
+  Each carries a disjoint/overlapping constraint and total/partial completeness,
+  the two inputs a later conversion needs to choose a relational mapping.
+  Hierarchies nest, and inheritance cycles are rejected.
 - Associative entities: mark a relationship associative in Properties and it
   takes the entity body size and palette, since it converts to a relation of its
   own, and is drawn as a filled diamond inside an unfilled rectangle, which is
@@ -50,7 +55,7 @@ not been built yet. Their presence in those documents is not a completion claim.
 - Connector shaping: select a link, drag its handle to bend it aside, double-click
   to straighten. The bend is one undoable edit, is saved, and is dropped with the
   link it belongs to. Dragging nodes follows the pointer; snap to grid is opt-in.
-- Versioned `.erdx` JSON save/load, currently format version 3. Versions 1 and 2
+- Versioned `.erdx` JSON save/load, currently format version 4. Versions 1 to 3
   still open and upgrade on save. Incomplete but structurally valid diagrams
   can be saved. Invalid/unsupported files leave the open project intact.
 - Safe file replacement, Save/Discard/Cancel protection, focused text committed
@@ -74,7 +79,7 @@ geometry changes use **Apply position and size**.
 | 7 — Cardinality | Implemented per participant, with correct entity-side labels. |
 | 8 — Participation | Implemented partial/total and one/many combinations on the same participant. A separate min/max text notation toggle is not implemented. |
 | 9 — Advanced attributes | Partial: composite, multivalued, derived implemented. Partial keys and combined kind semantics remain open with weak entities. |
-| 10–12 — Weak/ISA/associative | Partial: associative entities implemented, including participation in further relationships. Weak entities, identifying relationships and ISA remain. |
+| 10–12 — Weak/ISA/associative | Partial: associative entities and ISA generalization/specialization implemented, including nesting and the disjoint/total rules. Weak entities and identifying relationships remain. |
 | 13–14 — Modes/readiness | Basic properties and structural checks exist. Convertible mode, logical types, key groups, and conversion-readiness policy are not implemented. |
 | 15 — Project files | Single-page native format foundation delivered early to protect the current editor's work. No historical migration or recovery system. |
 | 16–17 — Pages/editor milestone | Not complete; multiple pages and the remaining conceptual semantics are required. |
@@ -113,8 +118,8 @@ group snap/bounds; stale gesture cancellation; and incident-only live connector 
 
 ## Still to build in Part 1
 
-Weak entities/identifying relationships/partial keys; ISA and specialization
-constraints; logical metadata and conversion readiness;
+Weak entities/identifying relationships/partial keys; logical metadata and
+conversion readiness;
 multiple pages; cross-project clipboard; alignment/distribution; drag resize
 handles; connector endpoint handles and multi-point routing; search; export;
 autosave and recovery. Connectors carry one bend each, which is enough to route

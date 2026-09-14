@@ -1,6 +1,6 @@
-# ERDX project format — versions 1 to 3
+# ERDX project format — versions 1 to 4
 
-**Status:** Implemented Conceptual ERD format; version 3 is current  
+**Status:** Implemented Conceptual ERD format; version 4 is current  
 **Date:** 2026-09-14
 
 ## What, why, and how
@@ -26,7 +26,7 @@ The root object has exactly three fields:
 | Field | Value |
 | --- | --- |
 | `format` | String, exactly `"erdflow"` |
-| `format_version` | JSON number, exactly `1`, `2` or `3` |
+| `format_version` | JSON number, exactly `1`, `2`, `3` or `4` |
 | `project` | Project object described below |
 
 A file with an unsupported version, missing field, unknown
@@ -63,7 +63,11 @@ associative relationship instead of an entity:
   associative and every participant as targeting an entity, which is exactly
   what those versions could express.
 
-Saving always writes version 3, so opening an earlier file and saving upgrades
+**Version 4** adds specializations, the ISA triangles that carry inheritance.
+A version 4 document has one further project field, `specializations`; earlier
+versions must not carry it and open with none, which is what they could express.
+
+Saving always writes version 4, so opening an earlier file and saving upgrades
 it in place and an older build will then refuse the result. This one-way upgrade
 is acceptable only because no release has shipped. A future version that must
 stay readable by older builds needs a different policy, recorded before it is
@@ -87,6 +91,7 @@ The project object has exactly these fields:
 | `relationships` | Array of relationship objects |
 | `layout` | Array of layout objects |
 | `connectors` | Array of connector-shape objects; version 2 onwards |
+| `specializations` | Array of specialization objects; version 4 onwards |
 
 An **entity** object has `id`, `name`, and `description`, all strings.
 
@@ -150,6 +155,32 @@ relationship participant records.
 
 Semantic and layout state are stored separately. Moving an element changes its
 layout entry and preserves its semantic identity.
+
+## Specializations
+
+A **specialization** object has exactly `id`, `name`, `description`, `supertype`,
+`subtypes`, `constraint`, and `completeness`:
+
+```json
+{"id": "019947b9-7111-7000-8000-000000000004", "name": "IS A", "description": "",
+ "supertype": "019947b9-7111-7000-8000-000000000002",
+ "subtypes": ["019947b9-7111-7000-8000-000000000005"],
+ "constraint": "disjoint", "completeness": "partial"}
+```
+
+`supertype` and every entry of `subtypes` reference existing entities. An entity
+may not be its own subtype, may appear only once among one specialization's
+subtypes, and inheritance may not form a cycle. A specialization with no
+subtypes yet is valid work in progress.
+
+`constraint` is `"disjoint"` or `"overlapping"`, and `completeness` is
+`"partial"` or `"total"`. These are not decoration: together they choose which
+relational mapping a later Conceptual → Relational conversion applies, so they
+are stored with the model rather than treated as display state.
+
+A specialization holds no attributes of its own; an attribute owned by one is
+rejected. Deleting a supertype removes the specialization with it, and deleting
+a subtype detaches it from the specializations that survive.
 
 ## Connector shapes
 
@@ -218,7 +249,7 @@ An empty conceptual project is a valid saved draft:
 ```json
 {
   "format": "erdflow",
-  "format_version": 3,
+  "format_version": 4,
   "project": {
     "id": "019947b9-7111-7000-8000-000000000001",
     "name": "Untitled",
@@ -226,7 +257,8 @@ An empty conceptual project is a valid saved draft:
     "attributes": [],
     "relationships": [],
     "layout": [],
-    "connectors": []
+    "connectors": [],
+    "specializations": []
   }
 }
 ```

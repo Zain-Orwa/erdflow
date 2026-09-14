@@ -10,7 +10,7 @@
 
 namespace erdflow::desktop {
 
-enum class Tool { Select, Entity, Attribute, Relationship, Connect, Pan };
+enum class Tool { Select, Entity, Attribute, Relationship, Isa, Connect, Pan };
 
 // How each participant end is drawn. The model is the same in every notation:
 // participation supplies the minimum (0 or 1) and cardinality the maximum
@@ -23,6 +23,7 @@ struct BodySize { double width, height; };
 inline constexpr BodySize entity_body{160, 80};
 inline constexpr BodySize attribute_body{150, 60};
 inline constexpr BodySize relationship_body{190, 110};
+inline constexpr BodySize isa_body{96, 74};
 
 class DiagramView : public QGraphicsView {
 public:
