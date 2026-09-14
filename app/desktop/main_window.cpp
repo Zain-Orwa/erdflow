@@ -461,15 +461,15 @@ void MainWindow::build_actions() {
     canvas_controls_ = new QWidget(canvas_->viewport());
     canvas_controls_->setObjectName("canvasControls");
     auto* stack = new QVBoxLayout(canvas_controls_);
-    stack->setContentsMargins(5, 5, 5, 5);
-    stack->setSpacing(3);
+    stack->setContentsMargins(4, 4, 4, 4);
+    stack->setSpacing(2);
     const auto raft_button = [&](QAction* action, const char* named) {
         auto* button = new QToolButton(canvas_controls_);
         button->setObjectName(named);
         button->setDefaultAction(action);
         button->setToolButtonStyle(Qt::ToolButtonIconOnly);
         button->setAutoRaise(true);
-        button->setIconSize(QSize(22, 22));
+        button->setIconSize(QSize(18, 18));
         stack->addWidget(button);
         return button;
     };
@@ -484,7 +484,7 @@ void MainWindow::build_actions() {
         button->setText(QString::fromUtf8(text));
         button->setToolTip(step > 0 ? "Zoom in" : "Zoom out");
         button->setAutoRaise(true);
-        button->setFixedSize(30, 26);
+        button->setFixedSize(26, 22);
         connect(button, &QToolButton::clicked, this,
                 [this, step] { if (step > 0) canvas_->zoom_in(); else canvas_->zoom_out(); });
         stack->addWidget(button);
@@ -1049,9 +1049,10 @@ void MainWindow::resizeEvent(QResizeEvent* event) {
 }
 
 // A tool that has fallen off the end of the toolbar may as well not exist, so
-// the toolbar sheds what it can spare before it sheds a tool: first the notation
-// picker, which is far the widest thing on it and is in the View menu anyway,
-// then the labels, then some of the icons' size.
+// the toolbar sheds what it can spare before it sheds a tool. The labels go
+// first: a tool's icon says what it is, where its name only repeats it. The
+// notation picker is given up last, being the control reached for most often
+// and the one thing here that cannot be read off anything else.
 //
 // Which of those is needed is measured rather than guessed from the window's
 // width. What fits depends on how many tools there are and how long their names
@@ -1067,10 +1068,10 @@ void MainWindow::fit_toolbar() {
     };
     static constexpr std::array<Step, 5> steps{{
         {Qt::ToolButtonTextBesideIcon, 34, true},
-        {Qt::ToolButtonTextBesideIcon, 34, false},
-        {Qt::ToolButtonTextBesideIcon, 26, false},
-        {Qt::ToolButtonIconOnly, 34, false},
+        {Qt::ToolButtonIconOnly, 34, true},
+        {Qt::ToolButtonIconOnly, 26, true},
         {Qt::ToolButtonIconOnly, 24, false},
+        {Qt::ToolButtonIconOnly, 20, false},
     }};
     for (std::size_t index = 0; index < steps.size(); ++index) {
         const auto& step = steps[index];
@@ -1161,7 +1162,9 @@ QWidget* MainWindow::toolbar_widget(QAction* action) const {
 bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
     // The controls float over the view rather than in a layout, so they are put
     // back in the corner whenever the view changes size under them.
-    if (event->type() == QEvent::Resize && canvas_ && watched == canvas_->viewport()) {
+    if (canvas_ && watched == canvas_->viewport()
+        && (event->type() == QEvent::Resize || event->type() == QEvent::Show
+            || event->type() == QEvent::LayoutRequest)) {
         place_canvas_controls();
         return false;
     }

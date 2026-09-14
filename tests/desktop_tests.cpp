@@ -452,32 +452,37 @@ int main(int argc, char** argv) {
         }
 
         // A narrow window must shed what it can spare rather than let tools run
-        // off the end of the toolbar where they cannot be reached.
+        // off the end of the toolbar where they cannot be reached, and it must
+        // shed them in order of what can best be done without.
         {
             auto* bar = child<QToolBar>(window, "modelTools");
+            auto* picker = child<QComboBox>(window, "notationPicker");
             const auto tools = bar->actions().size();
-            window.resize(1400, 820);
+
+            window.resize(1800, 820);
             settle();
             require(bar->toolButtonStyle() == Qt::ToolButtonTextBesideIcon, "A wide window shows the names");
+            require(picker->isVisible(), "And the notation picker with them");
             const auto wide = bar->iconSize().width();
+
+            // The labels go before the picker: an icon says what a tool is,
+            // where its name only repeats it, and the picker cannot be read off
+            // anything else on the bar.
+            window.resize(1300, 820);
+            settle();
+            require(bar->toolButtonStyle() == Qt::ToolButtonIconOnly, "A tighter one drops the names first");
+            require(picker->isVisible(), "But keeps the notation picker");
 
             window.resize(700, 620);
             settle();
-            require(bar->toolButtonStyle() == Qt::ToolButtonIconOnly, "A narrow one drops the names first");
-            require(bar->iconSize().width() < wide, "And then some of the icons' size");
+            require(bar->iconSize().width() < wide, "A narrow one also gives up some of the icons' size");
             require(bar->actions().size() == tools, "But loses no tool on the way down");
 
-            window.resize(1400, 820);
+            window.resize(1800, 820);
             settle();
             require(bar->toolButtonStyle() == Qt::ToolButtonTextBesideIcon, "Widening brings the names back");
             require(bar->iconSize().width() == wide, "And the size with them");
-
-            // The notation picker is the first thing given up and the last
-            // brought back, so a window with room for it must show it.
-            window.resize(1800, 820);
-            settle();
-            require(child<QComboBox>(window, "notationPicker")->isVisible(),
-                    "A window with room for the notation picker shows it");
+            require(picker->isVisible(), "And the picker");
         }
 
         // The two menu buttons are added to the toolbar as widgets, so nothing
