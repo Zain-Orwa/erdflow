@@ -10,6 +10,7 @@
 #include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMenu>
 #include <QMessageBox>
 #include <QMouseEvent>
 #include <QPlainTextEdit>
@@ -416,6 +417,38 @@ int main(int argc, char** argv) {
             settle();
             require(child<QAction>(window, "toolEntity")->icon().pixmap(22, 22).toImage() == drawn,
                     "Going back restores the drawn glyphs");
+        }
+
+        // A theme can be seen on the window before it is chosen, and looking at
+        // one without choosing it must leave nothing behind.
+        {
+            const auto chosen = window.canvas()->theme_id();
+            auto* dracula = child<QAction>(window, "themedracula");
+            emit dracula->hovered();
+            settle();
+            require(window.canvas()->theme_id() == desktop::ThemeId::Dracula,
+                    "Hovering a theme shows it on the window");
+            require(QSettings().value("theme").toString() != "dracula",
+                    "But looking at one does not remember it");
+            require(!dracula->isChecked(), "Nor tick it as the chosen one");
+
+            // Closing the menu without choosing puts the window back.
+            emit child<QMenu>(window, "themeMenu")->aboutToHide();
+            settle();
+            require(window.canvas()->theme_id() == chosen, "Leaving the menu restores the chosen theme");
+
+            // Choosing one while previewing keeps it, rather than being undone
+            // by the same closing that would have reverted a mere look.
+            emit dracula->hovered();
+            settle();
+            dracula->trigger();
+            settle();
+            emit child<QMenu>(window, "themeMenu")->aboutToHide();
+            settle();
+            require(window.canvas()->theme_id() == desktop::ThemeId::Dracula, "Choosing one keeps it");
+            require(QSettings().value("theme").toString() == "dracula", "And remembers it");
+            child<QAction>(window, "themeofficelight")->trigger();
+            settle();
         }
 
         // The two menu buttons are added to the toolbar as widgets, so nothing

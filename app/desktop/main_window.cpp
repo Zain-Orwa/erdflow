@@ -455,6 +455,7 @@ void MainWindow::build_actions() {
     // The same participants can be read in several notations. This is a display
     // choice, so it lives with the other view settings rather than in the file.
     auto* themes = view->addMenu("Theme");
+    themes->setObjectName("themeMenu");
     auto* theme_group = new QActionGroup(this);
     for (const auto& entry : erdflow::desktop::themes()) {
         auto* action = themes->addAction(entry.label);
@@ -464,7 +465,15 @@ void MainWindow::build_actions() {
         action->setActionGroup(theme_group);
         theme_actions_[entry.id] = action;
         connect(action, &QAction::triggered, this, [this, id = entry.id] { set_theme(id); });
+        // Hovering a name shows the theme on the whole window, which is the only
+        // way to judge one: a palette is about how the diagram reads, not about
+        // what it is called.
+        connect(action, &QAction::hovered, this, [this, id = entry.id] { preview_theme(id); });
     }
+    // Leaving the menu without choosing puts back what was chosen before.
+    connect(themes, &QMenu::aboutToHide, this, [this] {
+        if (theme_ != committed_theme_) apply_appearance(committed_theme_);
+    });
     // Appearance is tried repeatedly rather than set once, so the same list is
     // put on the toolbar behind a button. It is the menu itself, not a copy, so
     // the two can never disagree about which theme is the current one.
@@ -969,15 +978,25 @@ void MainWindow::set_icon_mode(IconMode mode) {
     refresh_explorer();
 }
 
-void MainWindow::set_theme(ThemeId id) {
+// Everything that has to change for the window to be wearing a theme. Choosing
+// one and merely looking at one do the same work; only what is remembered and
+// what is ticked differ between them.
+void MainWindow::apply_appearance(ThemeId id) {
     theme_ = id;
     if (auto* application = qobject_cast<QApplication*>(QCoreApplication::instance()))
         apply_theme(*application, id);
     canvas_->set_theme(id);
-    QSettings().setValue("theme", theme(id).key);
-    for (const auto& [candidate, action] : theme_actions_) action->setChecked(candidate == id);
     refresh_icons();
     refresh_explorer();
+}
+
+void MainWindow::preview_theme(ThemeId id) { apply_appearance(id); }
+
+void MainWindow::set_theme(ThemeId id) {
+    committed_theme_ = id;
+    apply_appearance(id);
+    QSettings().setValue("theme", theme(id).key);
+    for (const auto& [candidate, action] : theme_actions_) action->setChecked(candidate == id);
 }
 
 // Icons are drawn from the theme, so they are rebuilt whenever it changes.

@@ -26,6 +26,9 @@ public:
     bool open_path(const QString& path);
     // Applies a theme to the window and its canvas, and remembers it.
     void set_theme(ThemeId id);
+    // Shows a theme without choosing it, so one can be judged on the window
+    // itself rather than on its name. Leaving the menu puts back the chosen one.
+    void preview_theme(ThemeId id);
     // Which icon set the window draws its actions with, and remembers it.
     void set_icon_mode(IconMode mode);
     [[nodiscard]] IconMode icon_mode() const { return icon_mode_; }
@@ -60,7 +63,11 @@ private:
     std::map<Notation, QAction*> notation_actions_;
     std::map<ThemeId, QAction*> theme_actions_;
     std::map<QAction*, Glyph> action_glyphs_;
+    // What the window is currently showing, and what the user actually chose.
+    // They differ only while a theme is being previewed under the pointer.
     ThemeId theme_ = ThemeId::OfficeLight;
+    ThemeId committed_theme_ = ThemeId::OfficeLight;
+    void apply_appearance(ThemeId id);
     IconMode icon_mode_ = IconMode::Normal;
     std::map<IconMode, QAction*> icon_mode_actions_;
     // Generalization and specialization share one toolbar entry; this is the
