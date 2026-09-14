@@ -492,13 +492,26 @@ int main(int argc, char** argv) {
             const auto centre = QPoint(pan->width() / 2, pan->height() / 2);
             QMouseEvent twice(QEvent::MouseButtonDblClick, QPointF(centre), QPointF(pan->mapToGlobal(centre)),
                               Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+            const auto plain_hand = pan->icon().pixmap(18, 18).toImage();
             QApplication::sendEvent(pan, &twice);
             settle();
             require(window.canvas()->tool() == desktop::Tool::Pan, "Double-clicking the raft's hand picks Pan");
             require(window.canvas()->tool_locked(), "And locks it");
+            // The button has no name to hang a lock mark on, so the hand itself
+            // wears one while locked, and sheds it when the lock ends.
+            require(pan->icon().pixmap(18, 18).toImage() != plain_hand, "A locked hand shows its lock");
             child<QAction>(window, "toolSelect")->trigger();
             settle();
             require(!window.canvas()->tool_locked(), "Choosing another tool clears the lock");
+            require(pan->icon().pixmap(18, 18).toImage() == plain_hand, "And the mark goes with it");
+
+            // Fitting the diagram brings scrollbars in or takes them out, and
+            // the raft must not shift when that happens.
+            auto* raft = child<QWidget>(window, "canvasControls");
+            const auto before = raft->pos();
+            child<QAction>(window, "viewFit")->trigger();
+            settle();
+            require(raft->pos() == before, "The raft holds its corner when the view is refitted");
             child<QAction>(window, "toolPan")->trigger();
             settle();
             require(window.canvas()->tool() == desktop::Tool::Pan && !window.canvas()->tool_locked(),

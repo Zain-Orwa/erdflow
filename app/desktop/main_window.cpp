@@ -464,7 +464,7 @@ void MainWindow::build_actions() {
 
     // A small raft of view controls over the bottom-right of the canvas, where
     // a diagram is framed and zoomed rather than across the window from it.
-    canvas_controls_ = new QWidget(canvas_->viewport());
+    canvas_controls_ = new QWidget(canvas_);
     canvas_controls_->setObjectName("canvasControls");
     auto* stack = new QVBoxLayout(canvas_controls_);
     stack->setContentsMargins(4, 4, 4, 4);
@@ -503,7 +503,7 @@ void MainWindow::build_actions() {
                 [this, step] { if (step > 0) canvas_->zoom_in(); else canvas_->zoom_out(); });
         stack->addWidget(button, 0, Qt::AlignHCenter);
     }
-    canvas_->viewport()->installEventFilter(this);
+    canvas_->installEventFilter(this);
     place_canvas_controls();
 
     auto* view = findChild<QMenu*>("viewMenu");
@@ -1045,9 +1045,12 @@ void MainWindow::choose_tool(Tool tool, bool locked) {
 void MainWindow::place_canvas_controls() {
     if (!canvas_controls_) return;
     canvas_controls_->adjustSize();
-    auto* viewport = canvas_->viewport();
-    canvas_controls_->move(viewport->width() - canvas_controls_->width() - 14,
-                           viewport->height() - canvas_controls_->height() - 14);
+    // Measured from the view's own edge and inset by a scrollbar's thickness
+    // whether or not one is showing, so fitting the diagram — which brings
+    // scrollbars in or takes them out — never moves the raft.
+    const auto bar = canvas_->style()->pixelMetric(QStyle::PM_ScrollBarExtent, nullptr, canvas_);
+    canvas_controls_->move(canvas_->width() - canvas_controls_->width() - bar - 12,
+                           canvas_->height() - canvas_controls_->height() - bar - 12);
     canvas_controls_->raise();
 }
 
@@ -1148,11 +1151,41 @@ void MainWindow::refresh_icons() {
     }
     for (const auto& [style, action] : line_actions_)
         action->setIcon(QIcon(canvas_->line_style_preview(style, line_style_sample)));
+    // The raft's hand carries a lock mark the action's own icon does not, so
+    // redrawing the icons has to redraw that too.
+    refresh_tool_labels();
+}
+
+// A small padlock in the corner of an icon, for a button that has no name to
+// hang the lock mark on.
+QIcon with_lock_badge(const QIcon& base, const Theme& colors, int size) {
+    QPixmap pixmap = base.pixmap(QSize(size, size) * 2);
+    pixmap.setDevicePixelRatio(2);
+    QPainter painter(&pixmap);
+    painter.setRenderHint(QPainter::Antialiasing);
+    const qreal s = size;
+    const QRectF body(s * 0.58, s * 0.66, s * 0.36, s * 0.28);
+    const QRectF shackle(body.left() + body.width() * 0.2, body.top() - body.height() * 0.6,
+                         body.width() * 0.6, body.height() * 0.9);
+    painter.setPen(QPen(colors.accent, s * 0.08));
+    painter.setBrush(Qt::NoBrush);
+    painter.drawArc(shackle, 0, 180 * 16);
+    painter.setPen(QPen(colors.selected_text, s * 0.04));
+    painter.setBrush(colors.accent);
+    painter.drawRoundedRect(body, s * 0.05, s * 0.05);
+    return QIcon(pixmap);
 }
 
 void MainWindow::refresh_tool_labels() {
     const auto active = canvas_->tool();
     const auto locked = canvas_->tool_locked();
+    if (auto* hand = findChild<QToolButton*>("canvasPan")) {
+        const auto plain = glyph_icon(Glyph::Pan, theme(theme_), 18, icon_mode_);
+        hand->setIcon(active == Tool::Pan && locked ? with_lock_badge(plain, theme(theme_), 18) : plain);
+        hand->setToolTip(active == Tool::Pan && locked
+            ? "Pan is locked. Drag as much as you like; choose another tool or press Escape to stop."
+            : "Pan. Double-click to lock it for a longer look around.");
+    }
     for (const auto& [tool, action] : tool_actions_) {
         // Generalization and specialization share one action, so only the mode
         // its button is actually set to should drive the label.
@@ -1175,7 +1208,7 @@ QWidget* MainWindow::toolbar_widget(QAction* action) const {
 bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
     // The controls float over the view rather than in a layout, so they are put
     // back in the corner whenever the view changes size under them.
-    if (canvas_ && watched == canvas_->viewport()
+    if (canvas_ && watched == canvas_
         && (event->type() == QEvent::Resize || event->type() == QEvent::Show
             || event->type() == QEvent::LayoutRequest)) {
         place_canvas_controls();
