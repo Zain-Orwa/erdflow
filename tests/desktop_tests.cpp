@@ -16,6 +16,7 @@
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSettings>
+#include <QStandardItemModel>
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QToolBar>
@@ -518,6 +519,51 @@ int main(int argc, char** argv) {
             require(window.canvas()->tool() == desktop::Tool::Pan && !window.canvas()->tool_locked(),
                     "A single press is one use, not a lock");
             child<QAction>(window, "toolSelect")->trigger();
+            settle();
+        }
+
+        // An entity in the explorer opens to show the attributes that belong
+        // to it, while the group of all attributes still counts every one.
+        {
+            auto* tree = child<QTreeView>(window, "explorer");
+            auto* model = qobject_cast<QStandardItemModel*>(tree->model());
+            require(model != nullptr, "The explorer is backed by a standard model");
+            auto* project = model->item(0);
+            QStandardItem* entities = nullptr;
+            QStandardItem* attributes = nullptr;
+            for (int row = 0; row < project->rowCount(); ++row) {
+                auto* group = project->child(row);
+                if (group->text().startsWith("Entities")) entities = group;
+                if (group->text().startsWith("Attributes")) attributes = group;
+            }
+            require(entities && attributes, "Both groups are listed");
+            const auto& proj = window.editor().project();
+            require(attributes->rowCount() == static_cast<int>(proj.attributes.size()),
+                    "The attributes group still lists every attribute");
+            int nested = 0;
+            for (int row = 0; row < entities->rowCount(); ++row) nested += entities->child(row)->rowCount();
+            int owned_by_entities = 0;
+            for (const auto& [id, attribute] : proj.attributes)
+                if (attribute.owner && std::holds_alternative<domain::EntityId>(*attribute.owner)) ++owned_by_entities;
+            require(nested == owned_by_entities, "Each entity lists exactly the attributes it owns");
+            require(nested > 0, "The example has attributes on its entities to show");
+            // Entities start folded, so the tree is not the diagram spilt twice.
+            require(!tree->isExpanded(model->indexFromItem(entities->child(0))), "An entity starts folded");
+            require(tree->isExpanded(model->indexFromItem(entities)), "But its group starts open");
+            // What the user opens stays open through the rebuild an edit causes.
+            tree->expand(model->indexFromItem(entities->child(0)));
+            const auto opened_name = entities->child(0)->text();
+            editor.create_entity("Scratch", {900, 900, 160, 80});
+            settle();
+            model = qobject_cast<QStandardItemModel*>(tree->model());
+            for (int row = 0; row < model->item(0)->rowCount(); ++row)
+                if (model->item(0)->child(row)->text().startsWith("Entities")) entities = model->item(0)->child(row);
+            bool still_open = false;
+            for (int row = 0; row < entities->rowCount(); ++row)
+                if (entities->child(row)->text() == opened_name)
+                    still_open = tree->isExpanded(model->indexFromItem(entities->child(row)));
+            require(still_open, "An opened entity stays open after the tree is rebuilt");
+            require(bool(editor.undo()), "Undo the scratch entity");
             settle();
         }
 

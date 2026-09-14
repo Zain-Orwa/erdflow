@@ -180,7 +180,10 @@ void MainWindow::build_shell() {
         std::vector<ElementRef> selected;
         for (const auto& index : explorer_->selectionModel()->selectedRows()) {
             const auto found = references_.find(index.data(Qt::UserRole).toString());
-            if (found != references_.end()) selected.push_back(found->second);
+            // One attribute may be selected through either of its rows; it is
+            // still one attribute.
+            if (found != references_.end() && std::find(selected.begin(), selected.end(), found->second) == selected.end())
+                selected.push_back(found->second);
         }
         canvas_->select_elements(selected, true);
         selection_changed(selected);
@@ -638,6 +641,23 @@ void MainWindow::refresh() {
 }
 
 void MainWindow::refresh_explorer() {
+    // The tree is rebuilt on every change, so what the user had opened is
+    // noted first and reopened after, or each edit would fold it all shut.
+    std::set<QString> opened;
+    const auto identity = [](const QModelIndex& index) {
+        const auto id = index.data(Qt::UserRole).toString();
+        return id.isEmpty() ? index.data(Qt::DisplayRole).toString() : id;
+    };
+    const auto remember = [&](auto&& self, const QModelIndex& parent) -> void {
+        for (int row = 0; row < explorer_model_->rowCount(parent); ++row) {
+            const auto index = explorer_model_->index(row, 0, parent);
+            if (explorer_->isExpanded(index)) opened.insert(identity(index));
+            self(self, index);
+        }
+    };
+    const bool first_build = explorer_model_->rowCount() == 0;
+    remember(remember, QModelIndex());
+
     explorer_model_->clear();
     references_.clear();
     auto* project = new QStandardItem(text(editor_.project().name));
@@ -649,10 +669,37 @@ void MainWindow::refresh_explorer() {
     // are built from the active theme and icon set, which is why the tree is
     // rebuilt when either changes.
     const auto& colors = theme(theme_);
-    const auto append = [&](const QString& label, Glyph glyph, const auto& collection) {
+    const auto attribute_badge = glyph_icon(Glyph::Attribute, colors, 22, icon_mode_);
+    const auto& attributes = editor_.project().attributes;
+    const auto owned_by = [&](const ElementRef& owner) {
+        std::vector<AttributeId> owned;
+        for (const auto& [id, attribute] : attributes)
+            if (attribute.owner && *attribute.owner == owner) owned.push_back(id);
+        return owned;
+    };
+    // An element's own attributes are listed beneath it, one level in, so an
+    // entity can be opened to see what belongs to it. A composite attribute
+    // lists its parts the same way. These are the same attributes the group
+    // below counts; here they are shown by what they belong to.
+    const auto nest = [&](auto&& self, QStandardItem* under, const ElementRef& owner) -> void {
+        for (const auto id : owned_by(owner)) {
+            const ElementRef ref{id};
+            auto* row = new QStandardItem(attribute_badge, display_name(editor_.project(), ref));
+            row->setData(key(ref), Qt::UserRole);
+            row->setToolTip(kind_label(ref) + " · " + key(ref));
+            under->appendRow(row);
+            references_.emplace(key(ref), ref);
+            self(self, row, ref);
+        }
+    };
+    const auto append = [&](const QString& label, Glyph glyph, const auto& collection, bool with_owned) {
         const auto badge = glyph_icon(glyph, colors, 22, icon_mode_);
         auto* group = new QStandardItem(badge, label + QString(" (%1)").arg(collection.size()));
         group->setSelectable(false);
+        // The group is known by a key of its own rather than by its text, whose
+        // count changes with every element added: an open group that changed
+        // its number must still be the same open group.
+        group->setData("group:" + label, Qt::UserRole);
         project->appendRow(group);
         for (const auto& [id, item] : collection) {
             (void)item;
@@ -662,12 +709,28 @@ void MainWindow::refresh_explorer() {
             row->setToolTip(kind_label(ref) + " · " + key(ref));
             group->appendRow(row);
             references_.emplace(key(ref), ref);
+            if (with_owned) nest(nest, row, ref);
         }
     };
-    append("Entities", Glyph::Entity, editor_.project().entities);
-    append("Attributes", Glyph::Attribute, editor_.project().attributes);
-    append("Relationships", Glyph::Relationship, editor_.project().relationships);
-    explorer_->expandAll();
+    append("Entities", Glyph::Entity, editor_.project().entities, true);
+    append("Attributes", Glyph::Attribute, attributes, false);
+    append("Relationships", Glyph::Relationship, editor_.project().relationships, true);
+
+    // The groups start open and the elements under them folded, so the tree
+    // shows what there is without spilling every attribute twice. After that
+    // it keeps whatever the user has opened.
+    if (first_build) {
+        explorer_->expandToDepth(1);
+    } else {
+        const auto reopen = [&](auto&& self, const QModelIndex& parent) -> void {
+            for (int row = 0; row < explorer_model_->rowCount(parent); ++row) {
+                const auto index = explorer_model_->index(row, 0, parent);
+                if (opened.contains(identity(index))) explorer_->expand(index);
+                self(self, index);
+            }
+        };
+        reopen(reopen, QModelIndex());
+    }
     highlight_explorer();
 }
 
@@ -675,9 +738,12 @@ void MainWindow::highlight_explorer() {
     const QSignalBlocker blocker(explorer_->selectionModel());
     explorer_->selectionModel()->clearSelection();
     for (const auto ref : selection_) {
+        // An attribute is listed both under its owner and in the group of all
+        // attributes, and both rows should light up for it.
         const auto matches = explorer_model_->match(explorer_model_->index(0, 0), Qt::UserRole,
-                                                    key(ref), 1, Qt::MatchExactly | Qt::MatchRecursive);
-        if (!matches.isEmpty()) explorer_->selectionModel()->select(matches.front(), QItemSelectionModel::Select | QItemSelectionModel::Rows);
+                                                    key(ref), -1, Qt::MatchExactly | Qt::MatchRecursive);
+        for (const auto& match : matches)
+            explorer_->selectionModel()->select(match, QItemSelectionModel::Select | QItemSelectionModel::Rows);
     }
 }
 
