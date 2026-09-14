@@ -1065,10 +1065,10 @@ void MainWindow::resizeEvent(QResizeEvent* event) {
 }
 
 // A tool that has fallen off the end of the toolbar may as well not exist, so
-// the toolbar sheds what it can spare before it sheds a tool. The labels go
-// first: a tool's icon says what it is, where its name only repeats it. The
-// notation picker is given up last, being the control reached for most often
-// and the one thing here that cannot be read off anything else.
+// the toolbar sheds what it can spare before it sheds a tool, and it sheds
+// the cheapest thing first: some of the icons' size, then the notation picker,
+// which the View menu also offers, and the names only when the window has been
+// made genuinely small.
 //
 // Which of those is needed is measured rather than guessed from the window's
 // width. What fits depends on how many tools there are and how long their names
@@ -1081,13 +1081,22 @@ void MainWindow::fit_toolbar() {
         Qt::ToolButtonStyle style;
         int icon;
         bool notation;
+        bool notation_named;
     };
-    static constexpr std::array<Step, 5> steps{{
-        {Qt::ToolButtonTextBesideIcon, 34, true},
-        {Qt::ToolButtonIconOnly, 34, true},
-        {Qt::ToolButtonIconOnly, 26, true},
-        {Qt::ToolButtonIconOnly, 24, false},
-        {Qt::ToolButtonIconOnly, 20, false},
+    // Names stay for as long as they possibly can: a tool's lock mark hangs on
+    // its name, and a bar of bare icons is the state for a window that has
+    // been made small, not for one at an ordinary size. The icons give up
+    // size first, then the picker its word, then the picker, and only then
+    // the names.
+    static constexpr std::array<Step, 8> steps{{
+        {Qt::ToolButtonTextBesideIcon, 34, true, true},
+        {Qt::ToolButtonTextBesideIcon, 28, true, true},
+        {Qt::ToolButtonTextBesideIcon, 24, true, true},
+        {Qt::ToolButtonTextBesideIcon, 24, true, false},
+        {Qt::ToolButtonTextBesideIcon, 24, false, false},
+        {Qt::ToolButtonIconOnly, 28, true, false},
+        {Qt::ToolButtonIconOnly, 24, false, false},
+        {Qt::ToolButtonIconOnly, 20, false, false},
     }};
     for (std::size_t index = 0; index < steps.size(); ++index) {
         const auto& step = steps[index];
@@ -1100,8 +1109,9 @@ void MainWindow::fit_toolbar() {
             }
         // Hiding the widget would leave its room behind in the toolbar's layout;
         // it is the action holding it that has to go.
-        for (auto* hidden : {notation_separator_, notation_label_action_, notation_action_})
+        for (auto* hidden : {notation_separator_, notation_action_})
             if (hidden) hidden->setVisible(step.notation);
+        if (notation_label_action_) notation_label_action_->setVisible(step.notation && step.notation_named);
         toolbar->adjustSize();
         if (toolbar->sizeHint().width() <= width() || index + 1 == steps.size()) break;
     }

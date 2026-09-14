@@ -465,18 +465,19 @@ int main(int argc, char** argv) {
             require(picker->isVisible(), "And the notation picker with them");
             const auto wide = bar->iconSize().width();
 
-            // The labels go before the picker: an icon says what a tool is,
-            // where its name only repeats it, and the picker cannot be read off
-            // anything else on the bar.
+            // The names stay as long as they can: a tool's lock mark hangs on
+            // its name. The icons shrink first, and the picker goes before the
+            // names do.
             window.resize(1300, 820);
             settle();
-            require(bar->toolButtonStyle() == Qt::ToolButtonIconOnly, "A tighter one drops the names first");
-            require(picker->isVisible(), "But keeps the notation picker");
+            require(bar->toolButtonStyle() == Qt::ToolButtonTextBesideIcon, "A tighter one keeps the names");
+            require(bar->iconSize().width() < wide, "And gives up some of the icons' size instead");
 
             window.resize(700, 620);
             settle();
-            require(bar->iconSize().width() < wide, "A narrow one also gives up some of the icons' size");
+            require(bar->toolButtonStyle() == Qt::ToolButtonIconOnly, "Only a small window drops the names");
             require(bar->actions().size() == tools, "But loses no tool on the way down");
+            require(!picker->isVisible(), "The picker has gone by then, and is in the View menu");
 
             window.resize(1800, 820);
             settle();
