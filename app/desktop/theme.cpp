@@ -209,7 +209,8 @@ QToolButton:focus { border-color: @accent@; }
 QToolButton:disabled { color: @muted@; }
 QToolBar#diagramTools { background: @panel@; spacing: 2px; padding: 4px; }
 QToolBar#diagramTools QToolButton { text-align: left; padding: 6px 8px; }
-QToolButton#themeButton { border-color: @border@; background: @panel@; padding: 5px 9px; }
+QToolButton#themeButton { border-color: @border@; background: @panel@; padding: 5px 22px 5px 9px; }
+QToolButton#themeButton::menu-indicator { subcontrol-origin: padding; subcontrol-position: center right; right: 4px; width: 12px; }
 QToolButton#themeButton:hover, QToolButton#themeButton:pressed { border-color: @accent@; background: @base@; color: @text@; }
 QDockWidget { background: @panel@; color: @text@; }
 QDockWidget::title { background: @window@; color: @text@; padding: 6px 8px; border-bottom: 1px solid @border@; font-weight: 600; }
