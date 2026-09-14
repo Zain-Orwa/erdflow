@@ -400,37 +400,10 @@ void MainWindow::build_actions() {
     tool_actions_[Tool::Connect] = connect_action;
     connect_button->installEventFilter(this);
 
-
-    // Panning and framing are about looking rather than modelling, so they sit
-    // on the canvas by what they act on instead of in the row of drawing tools.
-    auto* pan_action = new QAction("Pan", this);
-    pan_action->setCheckable(true);
-    pan_action->setData("Pan");
-    pan_action->setObjectName("toolPan");
-    pan_action->setActionGroup(group);
-    tool_actions_[Tool::Pan] = pan_action;
-    action_glyphs_[pan_action] = Glyph::Pan;
-    connect(pan_action, &QAction::triggered, this, [this] { choose_tool(Tool::Pan, false); });
-
-    auto* fit = new QAction("Fit", this);
-    fit->setObjectName("viewFit");
-    fit->setShortcut(QKeySequence("Ctrl+0"));
-    connect(fit, &QAction::triggered, canvas_, &DiagramView::fit_diagram);
-    action_glyphs_[fit] = Glyph::Fit;
-
-    toolbar->addSeparator();
-    auto* check = toolbar->addAction("Check model", this, [this] {
-        finish_field_edit(); refresh_validation(); validation_dock_->show();
-    });
-    check->setObjectName("checkModel");
-    action_glyphs_[check] = Glyph::Check;
-
-    // Notation is a reading choice rather than a drawing tool, so it closes the
-    // toolbar rather than sitting among the tools. The picker draws each option,
-    // so the cardinality symbols can be recognised rather than remembered from a
-    // name, and the Theme button settles just ahead of it.
+    // Notation follows Connect: it decides how the lines Connect draws are read.
+    // The picker draws each option, so the cardinality symbols can be recognised
+    // rather than remembered from a name.
     notation_separator_ = toolbar->addSeparator();
-    auto* notation_separator = notation_separator_;
     // No written label: each entry draws the notation it stands for, which says
     // more than the word would, and the width it saves is what lets the picker
     // stay on the toolbar at an ordinary window size.
@@ -457,6 +430,38 @@ void MainWindow::build_actions() {
         choose_notation(static_cast<Notation>(index));
     });
     notation_action_ = toolbar->addWidget(notation_box_);
+
+
+    // Panning and framing are about looking rather than modelling, so they sit
+    // on the canvas by what they act on instead of in the row of drawing tools.
+    auto* pan_action = new QAction("Pan", this);
+    pan_action->setCheckable(true);
+    pan_action->setData("Pan");
+    pan_action->setObjectName("toolPan");
+    pan_action->setActionGroup(group);
+    tool_actions_[Tool::Pan] = pan_action;
+    action_glyphs_[pan_action] = Glyph::Pan;
+    connect(pan_action, &QAction::triggered, this, [this] { choose_tool(Tool::Pan, false); });
+
+    auto* fit = new QAction("Fit", this);
+    fit->setObjectName("viewFit");
+    fit->setShortcut(QKeySequence("Ctrl+0"));
+    connect(fit, &QAction::triggered, canvas_, &DiagramView::fit_diagram);
+    action_glyphs_[fit] = Glyph::Fit;
+
+    // What follows lives in the right-hand corner rather than in the row of
+    // tools: checking the model and choosing a theme are about the whole
+    // diagram, not about the next thing drawn on it.
+    auto* stretch = new QWidget(toolbar);
+    stretch->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    toolbar->addWidget(stretch);
+    toolbar->addSeparator();
+    auto* check = toolbar->addAction("Check model", this, [this] {
+        finish_field_edit(); refresh_validation(); validation_dock_->show();
+    });
+    check->setObjectName("checkModel");
+    action_glyphs_[check] = Glyph::Check;
+
 
     // A small raft of view controls over the bottom-right of the canvas, where
     // a diagram is framed and zoomed rather than across the window from it.
@@ -561,11 +566,10 @@ void MainWindow::build_actions() {
         connect(action, &QAction::triggered, this, [this, mode] { set_icon_mode(mode); });
     }
 
-    // It goes before the notation picker rather than at the end: the toolbar
-    // runs out of width on a narrow window, and anything added last is the
-    // first thing to disappear into the overflow.
-    toolbar->insertSeparator(notation_separator);
-    toolbar->insertWidget(notation_separator, theme_button_);
+    // Outermost on the right: the corner is where a choice about the whole
+    // window is looked for.
+    toolbar->addSeparator();
+    toolbar->addWidget(theme_button_);
     auto* notations = view->addMenu("Notation");
     auto* notation_group = new QActionGroup(this);
     for (const auto& [style, label] : notation_styles()) {
