@@ -100,7 +100,9 @@ struct Specialization {
     std::string name;
     std::string description;
     Inheritance direction = Inheritance::Specialization;
-    EntityId supertype;
+    // Absent while the triangle has been placed but not yet connected. Like a
+    // relationship with too few participants, that is work in progress.
+    std::optional<EntityId> supertype;
     std::vector<EntityId> subtypes;
     Disjointness constraint = Disjointness::Disjoint;
     Completeness completeness = Completeness::Partial;

@@ -258,7 +258,9 @@ std::vector<Issue> validate(const Project& project) {
         identity(id.value, ref);
         if (specialization.id != id) error("identity.key_mismatch", "The specialization key and identifier differ.", ref);
         text_fields(specialization.name, specialization.description, ref);
-        if (!project.entities.contains(specialization.supertype))
+        if (!specialization.supertype)
+            warning("specialization.supertype.incomplete", "Connect the entity this triangle generalises.", ref);
+        else if (!project.entities.contains(*specialization.supertype))
             error("specialization.supertype.missing", "The specialization refers to a missing supertype.", ref);
         if (specialization.subtypes.empty())
             warning("specialization.subtypes.incomplete", "Connect at least one subtype to complete this specialization.", ref);
@@ -266,7 +268,7 @@ std::vector<Issue> validate(const Project& project) {
         for (const auto& subtype : specialization.subtypes) {
             if (!project.entities.contains(subtype))
                 error("specialization.subtype.missing", "The specialization refers to a missing subtype.", ref);
-            if (subtype == specialization.supertype)
+            if (specialization.supertype && subtype == *specialization.supertype)
                 error("specialization.self", "An entity cannot be a subtype of itself.", ref);
             if (!seen.insert(subtype).second)
                 error("specialization.subtype.duplicate", "An entity can appear only once among a specialization's subtypes.", ref);
@@ -283,7 +285,8 @@ std::vector<Issue> validate(const Project& project) {
     std::map<EntityId, std::vector<EntityId>> supertypes_of;
     for (const auto& [id, specialization] : project.specializations) {
         (void)id;
-        for (const auto& subtype : specialization.subtypes) supertypes_of[subtype].push_back(specialization.supertype);
+        if (!specialization.supertype) continue;
+        for (const auto& subtype : specialization.subtypes) supertypes_of[subtype].push_back(*specialization.supertype);
     }
     std::map<EntityId, unsigned char> inheritance_color;
     for (const auto& [start, entity] : project.entities) {

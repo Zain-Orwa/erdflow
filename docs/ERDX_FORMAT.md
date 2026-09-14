@@ -1,6 +1,6 @@
-# ERDX project format — versions 1 to 5
+# ERDX project format — versions 1 to 6
 
-**Status:** Implemented Conceptual ERD format; version 5 is current  
+**Status:** Implemented Conceptual ERD format; version 6 is current  
 **Date:** 2026-09-14
 
 ## What, why, and how
@@ -26,7 +26,7 @@ The root object has exactly three fields:
 | Field | Value |
 | --- | --- |
 | `format` | String, exactly `"erdflow"` |
-| `format_version` | JSON number, exactly `1` to `5` |
+| `format_version` | JSON number, exactly `1` to `6` |
 | `project` | Project object described below |
 
 A file with an unsupported version, missing field, unknown
@@ -71,7 +71,11 @@ versions must not carry it and open with none, which is what they could express.
 object gains a required `direction`; earlier versions must not carry it and read
 as `"specialization"`, which is how they were drawn.
 
-Saving always writes version 5, so opening an earlier file and saving upgrades
+**Version 6** lets a placed ISA triangle wait for its supertype, so
+`supertype` may be `null`. Earlier versions always named one, and a document
+before version 6 carrying a null supertype is rejected rather than guessed at.
+
+Saving always writes version 6, so opening an earlier file and saving upgrades
 it in place and an older build will then refuse the result. This one-way upgrade
 is acceptable only because no release has shipped. A future version that must
 stay readable by older builds needs a different policy, recorded before it is
@@ -173,7 +177,10 @@ A **specialization** object has exactly `id`, `name`, `description`,
  "constraint": "disjoint", "completeness": "partial"}
 ```
 
-`supertype` and every entry of `subtypes` reference existing entities. An entity
+`supertype` is an entity reference, or `null` while the triangle has been
+placed but not yet connected; that is work in progress rather than an error, the
+same as a relationship with too few participants. Every entry of `subtypes`
+references an existing entity. An entity
 may not be its own subtype, may appear only once among one specialization's
 subtypes, and inheritance may not form a cycle. A specialization with no
 subtypes yet is valid work in progress.
@@ -259,7 +266,7 @@ An empty conceptual project is a valid saved draft:
 ```json
 {
   "format": "erdflow",
-  "format_version": 5,
+  "format_version": 6,
   "project": {
     "id": "019947b9-7111-7000-8000-000000000001",
     "name": "Untitled",

@@ -57,10 +57,10 @@ struct Fixture {
         // without one, stripping its fields from a document changes nothing.
         const auto manager = editor.create_entity("Manager", {320, 420, 160, 80});
         CHECK(manager);
-        const auto isa = editor.create_specialization("IS A", {120, 360, 96, 74}, employee,
-                                                      Inheritance::Generalization);
+        const auto isa = editor.create_specialization("IS A", {120, 360, 96, 74}, Inheritance::Generalization);
         CHECK(isa);
         specialisation = std::get<SpecializationId>(*isa.created);
+        CHECK(editor.set_supertype(specialisation, employee));
         CHECK(editor.attach_subtype(specialisation, std::get<EntityId>(*manager.created)));
         CHECK(editor.set_specialization_rules(specialisation, Disjointness::Overlapping, Completeness::Total));
         CHECK(editor.rename_project("University design"));
@@ -201,7 +201,7 @@ void malformed_json_and_text() {
 
 void strict_version_and_field_contract() {
     Fixture fixture;
-    for (const auto& version : {QJsonValue(0), QJsonValue(6), QJsonValue(1.5), QJsonValue("1"), QJsonValue(true)}) {
+    for (const auto& version : {QJsonValue(0), QJsonValue(7), QJsonValue(1.5), QJsonValue("1"), QJsonValue(true)}) {
         auto root = fixture.document();
         root["format_version"] = version;
         reject(bytes(root));
@@ -300,7 +300,7 @@ void connector_shapes_persist_and_older_versions_still_open() {
 
     const auto encoded = ErdxProjectStore::encode(fixture.editor.project());
     const auto root = QJsonDocument::fromJson(encoded).object();
-    CHECK(root["format_version"].toInt() == 5);
+    CHECK(root["format_version"].toInt() == 6);
     CHECK(root["project"].toObject()["connectors"].toArray().size() == 2);
 
     const auto reopened = ErdxProjectStore::decode(encoded);
@@ -332,6 +332,14 @@ void connector_shapes_persist_and_older_versions_still_open() {
             relationships.append(relationship);
         }
         project["relationships"] = relationships;
+        if (version < 6) {
+            // Before version 6 a specialization always named its supertype, so
+            // any triangle still waiting for one cannot be represented.
+            QJsonArray specializations;
+            for (const auto& value : project["specializations"].toArray())
+                if (!value.toObject()["supertype"].isNull()) specializations.append(value);
+            project["specializations"] = specializations;
+        }
         if (version < 5) {
             QJsonArray specializations;
             for (const auto& value : project["specializations"].toArray()) {
@@ -358,7 +366,7 @@ void connector_shapes_persist_and_older_versions_still_open() {
         return document;
     };
 
-    for (const int version : {1, 2, 3, 4}) {
+    for (const int version : {1, 2, 3, 4, 5}) {
         const auto opened = ErdxProjectStore::decode(bytes(downgrade(version)));
         if (!opened) throw std::runtime_error("version " + std::to_string(version) + ": " + opened.error);
         CHECK(opened.project->entities == fixture.editor.project().entities);
@@ -373,9 +381,15 @@ void connector_shapes_persist_and_older_versions_still_open() {
         CHECK(opened.project->specializations.size() == (version < 4 ? 0u : 1u));
         for (const auto& [id, specialization] : opened.project->specializations) {
             (void)id;
-            CHECK(specialization.direction == Inheritance::Specialization);
+            CHECK(specialization.supertype.has_value());
         }
-        CHECK(QJsonDocument::fromJson(ErdxProjectStore::encode(*opened.project)).object()["format_version"].toInt() == 5);
+        for (const auto& [id, specialization] : opened.project->specializations) {
+            (void)id;
+            // Version 5 onwards records the direction; before that it is lost
+            // and reads as specialization, which is how those files were drawn.
+            CHECK(specialization.direction == (version >= 5 ? Inheritance::Generalization : Inheritance::Specialization));
+        }
+        CHECK(QJsonDocument::fromJson(ErdxProjectStore::encode(*opened.project)).object()["format_version"].toInt() == 6);
     }
 
     // A document whose shape contradicts its declared version is refused rather
@@ -386,6 +400,12 @@ void connector_shapes_persist_and_older_versions_still_open() {
     auto stale = downgrade(4);
     stale["format_version"] = 5;
     reject(bytes(stale));
+    // A triangle still waiting for its supertype cannot be written as version 5.
+    auto waiting = fixture.document();
+    change_first(waiting, "specializations", [](QJsonObject& item) { item["supertype"] = QJsonValue::Null; });
+    CHECK(ErdxProjectStore::decode(bytes(waiting)));
+    waiting["format_version"] = 5;
+    reject(bytes(waiting));
     auto missing = fixture.document();
     auto project = missing["project"].toObject();
     project.remove("connectors");

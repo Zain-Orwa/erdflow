@@ -602,9 +602,13 @@ void specializations_carry_inheritance_rules() {
     const auto employee = entity(editor, "Employee");
     const auto teacher = entity(editor, "Teacher");
 
-    const auto created = editor.create_specialization("IS A", {0, 200, 96, 74}, person, Inheritance::Specialization);
+    const auto created = editor.create_specialization("IS A", {0, 200, 96, 74}, Inheritance::Specialization);
     CHECK(created);
     const auto role = std::get<SpecializationId>(*created.created);
+    // A placed triangle waits to be wired up; that is a warning, not an error.
+    CHECK(!blocks(editor.project()));
+    CHECK(has_issue(editor.project(), "specialization.supertype.incomplete"));
+    CHECK(editor.set_supertype(role, person));
     // A triangle with no subtypes yet is work in progress, not an error.
     CHECK(!blocks(editor.project()));
     CHECK(has_issue(editor.project(), "specialization.subtypes.incomplete"));
@@ -639,7 +643,8 @@ void specializations_carry_inheritance_rules() {
     CHECK(has_issue(wrong, "specialization.direction.invalid"));
 
     // Specialization nests: an Employee may itself be generalised further.
-    const auto job = std::get<SpecializationId>(*editor.create_specialization("IS A", {0, 400, 96, 74}, employee, Inheritance::Generalization).created);
+    const auto job = std::get<SpecializationId>(*editor.create_specialization("IS A", {0, 400, 96, 74}, Inheritance::Generalization).created);
+    CHECK(editor.set_supertype(job, employee));
     CHECK(editor.attach_subtype(job, teacher));
     CHECK(!blocks(editor.project()));
 

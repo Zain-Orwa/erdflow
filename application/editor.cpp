@@ -272,12 +272,11 @@ EditResult Editor::create_relationship(std::string name, Rect rect) {
     });
 }
 
-EditResult Editor::create_specialization(std::string name, Rect rect, EntityId supertype, Inheritance direction) {
+EditResult Editor::create_specialization(std::string name, Rect rect, Inheritance direction) {
     return impl_->edit(direction == Inheritance::Generalization ? "Create generalization" : "Create specialization",
                        [&](Delta& delta) {
-        if (!project().entities.contains(supertype)) return failure("The supertype no longer exists.");
         const SpecializationId id{impl_->next_id()};
-        delta.specializations.put(id, Specialization{id, std::move(name), {}, direction, supertype, {},
+        delta.specializations.put(id, Specialization{id, std::move(name), {}, direction, {}, {},
                                                      Disjointness::Disjoint, Completeness::Partial});
         delta.layout.put(ElementRef{id}, rect);
         return EditResult{true, {}, ElementRef{id}, {}};
@@ -290,6 +289,18 @@ EditResult Editor::set_inheritance_direction(SpecializationId specialization, In
         if (found->second.direction == direction) return EditResult{};
         auto value = found->second;
         value.direction = direction;
+        delta.specializations.put(specialization, std::move(value));
+        return EditResult{};
+    });
+}
+EditResult Editor::set_supertype(SpecializationId specialization, std::optional<EntityId> supertype) {
+    return impl_->edit("Set supertype", [&](Delta& delta) {
+        const auto found = project().specializations.find(specialization);
+        if (found == project().specializations.end()) return failure("The specialization no longer exists.");
+        if (supertype && !project().entities.contains(*supertype)) return failure("That entity no longer exists.");
+        if (found->second.supertype == supertype) return EditResult{};
+        auto value = found->second;
+        value.supertype = supertype;
         delta.specializations.put(specialization, std::move(value));
         return EditResult{};
     });
@@ -512,7 +523,7 @@ EditResult Editor::erase(const std::vector<ElementRef>& elements,
         // a deleted subtype is simply detached from the ones that survive.
         for (const auto& [id, specialization] : project().specializations) {
             if (removed.contains(ElementRef{id})) continue;
-            if (removed.contains(ElementRef{specialization.supertype})) {
+            if (specialization.supertype && removed.contains(ElementRef{*specialization.supertype})) {
                 delta.specializations.remove(id);
                 if (project().layout.contains(ElementRef{id})) delta.layout.remove(ElementRef{id});
                 continue;
@@ -572,8 +583,9 @@ EditResult Editor::duplicate(const std::vector<ElementRef>& elements, double dx,
                     value.id = new_id;
                     // Point the copy at copied supertype and subtypes where the
                     // selection included them, and at the originals otherwise.
-                    if (const auto found = mapping.find(ElementRef{value.supertype}); found != mapping.end())
-                        value.supertype = std::get<EntityId>(found->second);
+                    if (value.supertype)
+                        if (const auto found = mapping.find(ElementRef{*value.supertype}); found != mapping.end())
+                            value.supertype = std::get<EntityId>(found->second);
                     for (auto& subtype : value.subtypes)
                         if (const auto found = mapping.find(ElementRef{subtype}); found != mapping.end())
                             subtype = std::get<EntityId>(found->second);

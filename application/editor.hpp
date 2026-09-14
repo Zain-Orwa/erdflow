@@ -48,8 +48,10 @@ public:
     EditResult create_relationship(std::string name, domain::Rect rect);
     // An ISA triangle: one supertype, and the subtypes attached to it. The
     // constraint and completeness decide how it converts to relations later.
-    EditResult create_specialization(std::string name, domain::Rect rect, domain::EntityId supertype,
-                                     domain::Inheritance direction);
+    // The triangle is placed first and wired up afterwards, so it starts with
+    // neither a supertype nor subtypes.
+    EditResult create_specialization(std::string name, domain::Rect rect, domain::Inheritance direction);
+    EditResult set_supertype(domain::SpecializationId specialization, std::optional<domain::EntityId> supertype);
     EditResult set_inheritance_direction(domain::SpecializationId specialization, domain::Inheritance direction);
     EditResult attach_subtype(domain::SpecializationId specialization, domain::EntityId subtype);
     EditResult detach_subtype(domain::SpecializationId specialization, domain::EntityId subtype);

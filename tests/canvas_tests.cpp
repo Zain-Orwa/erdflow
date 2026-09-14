@@ -407,69 +407,58 @@ void tool_locking_tests() {
     require(!view.tool_locked(), "Select is never locked");
 }
 
-// Generalization and specialization build the same ISA structure from opposite
-// directions: specialization names the supertype first, generalization adopts
-// the entities already selected as the subtypes.
-void inheritance_direction_tests() {
+// The triangle is placed like any other element and wired up by hand. The first
+// entity connected is what it generalises; every one after that is a subtype.
+void inheritance_connection_tests() {
     SequentialIds ids;
     application::Editor editor(ids);
     const auto person = std::get<domain::EntityId>(*editor.create_entity("Person", {0, 0, 160, 80}).created);
-    const auto student = std::get<domain::EntityId>(*editor.create_entity("Student", {-260, 320, 160, 80}).created);
-    const auto employee = std::get<domain::EntityId>(*editor.create_entity("Employee", {260, 320, 160, 80}).created);
+    editor.create_entity("Student", {-260, 420, 160, 80});
+    editor.create_entity("Employee", {260, 420, 160, 80});
 
     desktop::DiagramView view(editor);
     view.resize(900, 700);
     view.show();
     view.actual_size();
-    view.centerOn(0, 160);
+    view.centerOn(0, 200);
     QApplication::processEvents();
     const auto at = [&](const QString& name) {
         return find_node(view, name)->sceneBoundingRect().center();
     };
 
-    // Top-down: the clicked entity becomes the supertype, subtypes come later.
+    // Placing needs no entity under the pointer, and connects nothing.
     view.set_tool(desktop::Tool::Specialization);
-    click(view, at("Person"));
-    require(editor.project().specializations.size() == 1, "Specialization places one triangle");
-    const auto& top_down = editor.project().specializations.begin()->second;
-    require(top_down.supertype == person, "The clicked entity is the supertype");
-    require(top_down.subtypes.empty(), "Specialization starts with no subtypes");
-    require(view.tool() == desktop::Tool::Select, "The tool is one-shot");
-    require(editor.undo(), "Undo the triangle");
+    click(view, QPointF(0, 210));
+    require(editor.project().specializations.size() == 1, "A triangle is placed on empty canvas");
+    const auto isa = editor.project().specializations.begin()->first;
+    require(!editor.project().specializations.at(isa).supertype, "It starts with no supertype");
+    require(editor.project().specializations.at(isa).subtypes.empty(), "It starts with no subtypes");
+    require(!blocks(editor.project()), "An unconnected triangle is work in progress, not an error");
 
-    // Bottom-up without a selection has nothing to generalise, so it does nothing.
-    view.select_elements({});
-    view.set_tool(desktop::Tool::Generalization);
-    const auto before = editor.revision();
+    // The first entity connected becomes the supertype.
+    view.set_tool(desktop::Tool::Connect, true);
+    click(view, at("IS A"));
     click(view, at("Person"));
-    require(editor.revision() == before, "Generalization needs the subtypes selected first");
-    require(view.tool() == desktop::Tool::Generalization, "A refused click does not consume the tool");
+    require(editor.project().specializations.at(isa).supertype == person, "The first connection is the supertype");
+    require(editor.project().specializations.at(isa).subtypes.empty(), "It is not also a subtype");
 
-    // Bottom-up with a selection adopts it, in one gesture.
-    view.select_elements({domain::ElementRef{student}, domain::ElementRef{employee}});
-    click(view, at("Person"));
-    require(editor.project().specializations.size() == 1, "Generalization places one triangle");
-    const auto& bottom_up = editor.project().specializations.begin()->second;
-    require(bottom_up.supertype == person, "The clicked entity generalises the selection");
-    require(bottom_up.subtypes.size() == 2, "The selected entities became subtypes");
-    require(!blocks(editor.project()), "The result is a valid hierarchy");
+    // Every one after that is a subtype.
+    click(view, at("IS A"));
+    click(view, at("Student"));
+    click(view, at("IS A"));
+    click(view, at("Employee"));
+    const auto& wired = editor.project().specializations.at(isa);
+    require(wired.subtypes.size() == 2, "Later connections are subtypes");
+    require(wired.supertype == person, "The supertype is unchanged by them");
+    require(!blocks(editor.project()), "The wired hierarchy is valid");
 
-    // The supertype is never adopted as its own subtype, even when selected.
-    for (int step = 0; step < 3; ++step) require(editor.undo(), "Unwind");
-    view.select_elements({domain::ElementRef{student}, domain::ElementRef{person}});
-    view.set_tool(desktop::Tool::Generalization);
-    // The Domain refuses an entity as its own subtype, so the outcome would be
-    // the same either way. What the filter buys is silence: the user chose a
-    // sensible selection and must not be told off for including the supertype.
-    int refusals = 0;
-    view.on_edit = [&refusals](const application::EditResult& result) { if (!result) ++refusals; };
-    click(view, at("Person"));
-    view.on_edit = {};
-    const auto& guarded = editor.project().specializations.begin()->second;
-    require(guarded.subtypes.size() == 1 && guarded.subtypes.front() == student,
-            "The supertype is excluded from its own subtypes");
-    require(refusals == 0, "Including the supertype in the selection reports no error");
-    require(!blocks(editor.project()), "Selecting the supertype too is still valid");
+    // Detaching the supertype leaves the triangle and its subtypes in place.
+    require(editor.set_supertype(isa, {}), "Detach the supertype");
+    require(!editor.project().specializations.at(isa).supertype, "The supertype is cleared");
+    require(editor.project().specializations.at(isa).subtypes.size() == 2, "The subtypes are untouched");
+    require(!blocks(editor.project()), "A detached triangle is still valid");
+    require(editor.undo(), "Undo the detach");
+    require(editor.project().specializations.at(isa).supertype == person, "Undo restores the supertype");
 }
 
 // The ISA triangle points the way the hierarchy was read, so the two directions
@@ -479,7 +468,8 @@ void inheritance_orientation_tests() {
     application::Editor editor(ids);
     const auto person = std::get<domain::EntityId>(*editor.create_entity("Person", {0, 0, 160, 80}).created);
     const auto isa = std::get<domain::SpecializationId>(
-        *editor.create_specialization("IS A", {32, 200, 96, 74}, person, domain::Inheritance::Specialization).created);
+        *editor.create_specialization("IS A", {32, 200, 96, 74}, domain::Inheritance::Specialization).created);
+    require(editor.set_supertype(isa, person), "Connect the supertype");
 
     desktop::DiagramView view(editor);
     view.resize(520, 420);
@@ -712,7 +702,7 @@ int main(int argc, char** argv) {
         inline_rename_tests();
         notation_tests();
         tool_locking_tests();
-        inheritance_direction_tests();
+        inheritance_connection_tests();
         inheritance_orientation_tests();
         std::cout << "Canvas tests passed\n";
     } catch (const std::exception& exception) {

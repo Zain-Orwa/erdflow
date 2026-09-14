@@ -19,10 +19,11 @@ using namespace domain;
 namespace {
 // Version 2 added connector shapes; version 3 added associative relationships
 // and participants that may target one; version 4 added specializations, and
-// version 5 records which way each one was read.
+// version 5 recorded which way each one was read; version 6 lets a placed
+// triangle wait for its supertype.
 // Earlier versions remain readable; the format specification states the
 // compatibility rule for each.
-constexpr int current_format_version = 5;
+constexpr int current_format_version = 6;
 QString text(const std::string& value) { return QString::fromUtf8(value.data(), static_cast<qsizetype>(value.size())); }
 Uuid bytes_of(const QUuid& value) {
     Uuid result;
@@ -280,7 +281,8 @@ QByteArray ErdxProjectStore::encode(const Project& project) {
         specializations.append(QJsonObject{{"id", uuid_text(id.value)}, {"name", text(specialization.name)},
             {"description", text(specialization.description)},
             {"direction", specialization.direction == Inheritance::Generalization ? "generalization" : "specialization"},
-            {"supertype", uuid_text(specialization.supertype.value)},
+            {"supertype", specialization.supertype ? QJsonValue(uuid_text(specialization.supertype->value))
+                                                   : QJsonValue(QJsonValue::Null)},
             {"subtypes", subtypes},
             {"constraint", specialization.constraint == Disjointness::Overlapping ? "overlapping" : "disjoint"},
             {"completeness", specialization.completeness == Completeness::Total ? "total" : "partial"}});
@@ -310,12 +312,13 @@ application::LoadResult ErdxProjectStore::decode(const QByteArray& input) {
         // routed automatically; saving then writes the current version.
         const auto version = root["format_version"];
         const auto number_version = version.isDouble() ? version.toDouble() : 0;
-        if (number_version < 1 || number_version > 5 || number_version != std::floor(number_version))
+        if (number_version < 1 || number_version > 6 || number_version != std::floor(number_version))
             invalid("Unsupported project version. Use a compatible ERDFlow release.");
         const bool shaped_connectors = number_version >= 2;
         const bool associative_entities = number_version >= 3;
         const bool inheritance = number_version >= 4;
         const bool inheritance_direction = number_version >= 5;
+        const bool detachable_supertype = number_version >= 6;
         const auto data = inheritance
             ? object(root["project"], {"id", "name", "entities", "attributes", "relationships", "layout", "connectors", "specializations"})
             : shaped_connectors
@@ -383,7 +386,9 @@ application::LoadResult ErdxProjectStore::decode(const QByteArray& input) {
                     : object(value, {"id", "name", "description", "supertype", "subtypes", "constraint", "completeness"});
                 Specialization specialization{SpecializationId{parse_id(o["id"])}, string(o["name"]),
                     string(o["description"], max_description_bytes), Inheritance::Specialization,
-                    EntityId{parse_id(o["supertype"])}, {}, Disjointness::Disjoint, Completeness::Partial};
+                    {}, {}, Disjointness::Disjoint, Completeness::Partial};
+                if (!o["supertype"].isNull()) specialization.supertype = EntityId{parse_id(o["supertype"])};
+                else if (!detachable_supertype) invalid("A specialization before version 6 must name its supertype.");
                 if (inheritance_direction) {
                     const auto direction = string(o["direction"]);
                     if (direction != "generalization" && direction != "specialization") invalid("Invalid ISA direction.");

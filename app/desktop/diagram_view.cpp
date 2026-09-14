@@ -671,14 +671,20 @@ struct DiagramView::Impl {
                 return [this, id = first, target = second] { return editor.connect(id, ParticipantTarget{target}); };
             return {};
         }
-        // Connecting an entity to a triangle makes it a subtype; the supertype
-        // is fixed when the triangle is created.
-        if (const auto* isa = std::get_if<SpecializationId>(&from); isa && std::holds_alternative<EntityId>(to)) {
-            return [this, id = *isa, subtype = std::get<EntityId>(to)] { return editor.attach_subtype(id, subtype); };
-        }
-        if (const auto* isa = std::get_if<SpecializationId>(&to); isa && std::holds_alternative<EntityId>(from)) {
-            return [this, id = *isa, subtype = std::get<EntityId>(from)] { return editor.attach_subtype(id, subtype); };
-        }
+        // The first entity connected to a triangle is what it generalises; every
+        // one after that is a subtype. Properties can change either afterwards.
+        const auto isa_link = [this, &project](SpecializationId id, EntityId entity)
+            -> std::optional<std::function<application::EditResult()>> {
+            const auto found = project.specializations.find(id);
+            if (found == project.specializations.end()) return {};
+            if (!found->second.supertype)
+                return [this, id, entity] { return editor.set_supertype(id, entity); };
+            return [this, id, entity] { return editor.attach_subtype(id, entity); };
+        };
+        if (const auto* isa = std::get_if<SpecializationId>(&from); isa && std::holds_alternative<EntityId>(to))
+            return isa_link(*isa, std::get<EntityId>(to));
+        if (const auto* isa = std::get_if<SpecializationId>(&to); isa && std::holds_alternative<EntityId>(from))
+            return isa_link(*isa, std::get<EntityId>(from));
         if (std::holds_alternative<SpecializationId>(from) || std::holds_alternative<SpecializationId>(to)) return {};
         if (std::holds_alternative<AttributeId>(from) && std::holds_alternative<AttributeId>(to)
             && project.attributes.at(std::get<AttributeId>(from)).kind == AttributeKind::Composite
@@ -755,9 +761,9 @@ void DiagramView::synchronize() {
         }
     }
     for (const auto& [id, specialization] : project.specializations) {
-        if (project.entities.contains(specialization.supertype))
+        if (specialization.supertype && project.entities.contains(*specialization.supertype))
             desired_edges.emplace(EdgeKey{InheritanceKey{id, {}}},
-                EdgeDescription{EdgeKey{InheritanceKey{id, {}}}, id, ElementRef{specialization.supertype}, {},
+                EdgeDescription{EdgeKey{InheritanceKey{id, {}}}, id, ElementRef{*specialization.supertype}, {},
                                 Cardinality::Many, Participation::Partial, {}, 0});
         for (const auto& subtype : specialization.subtypes) {
             if (!project.entities.contains(subtype)) continue;
@@ -890,8 +896,8 @@ void DiagramView::set_tool(Tool tool, bool locked) {
     case Tool::Entity: impl_->status(QStringLiteral("Click the canvas to create an entity.")); break;
     case Tool::Attribute: impl_->status(QStringLiteral("Click to add an attribute to the selected owner, or an unattached attribute.")); break;
     case Tool::Relationship: impl_->status(QStringLiteral("Click the canvas to create a relationship, then use Connect to add participants.")); break;
-    case Tool::Specialization: impl_->status(QStringLiteral("Click the entity to specialise; then connect its subtypes to the triangle.")); break;
-    case Tool::Generalization: impl_->status(QStringLiteral("Select the subtypes, then click the entity that generalises them.")); break;
+    case Tool::Specialization: impl_->status(QStringLiteral("Click the canvas to place an ISA triangle pointing down, then connect its supertype and subtypes.")); break;
+    case Tool::Generalization: impl_->status(QStringLiteral("Click the canvas to place an ISA triangle pointing up, then connect its supertype and subtypes.")); break;
     case Tool::Connect: impl_->status(QStringLiteral("Select an entity and relationship, an attribute and its owner, or a subtype and its triangle.")); break;
     case Tool::Pan: impl_->status(QStringLiteral("Drag to pan. The middle mouse button pans in every tool.")); break;
     }
@@ -1070,43 +1076,16 @@ void DiagramView::mousePressEvent(QMouseEvent* event) {
         return;
     }
     if (impl_->active_tool == Tool::Specialization || impl_->active_tool == Tool::Generalization) {
-        const bool bottom_up = impl_->active_tool == Tool::Generalization;
-        // Either way the supertype is the entity clicked; the triangle hangs
-        // below it. Generalization additionally adopts the current selection as
-        // subtypes, which is the whole point of working bottom-up.
-        auto* node = impl_->node_at(event->position().toPoint());
-        const auto* supertype = node ? std::get_if<EntityId>(&node->ref) : nullptr;
-        if (!supertype) {
-            impl_->status(bottom_up
-                ? QStringLiteral("Select the subtypes first, then click the entity that generalises them.")
-                : QStringLiteral("Click the entity to specialise. Its ISA triangle appears below it."));
-            event->accept();
-            return;
-        }
-        std::vector<EntityId> subtypes;
-        if (bottom_up) {
-            for (const auto& selected : selected_elements())
-                if (const auto* candidate = std::get_if<EntityId>(&selected); candidate && *candidate != *supertype)
-                    subtypes.push_back(*candidate);
-            if (subtypes.empty()) {
-                impl_->status(QStringLiteral("Select the subtypes first, then click the entity that generalises them."));
-                event->accept();
-                return;
-            }
-        }
-        const auto box = node->sceneBoundingRect();
-        const auto result = impl_->editor.create_specialization(
-            "IS A", centred(QPointF(box.center().x(), box.bottom() + 110), isa_body), *supertype,
-            bottom_up ? Inheritance::Generalization : Inheritance::Specialization);
+        // The triangle is placed like any other element and wired up by hand,
+        // so the tool only decides which way its apex points.
+        const auto centre = mapToScene(event->position().toPoint());
+        const auto result = impl_->editor.create_specialization("IS A", centred(centre, isa_body),
+            impl_->active_tool == Tool::Generalization ? Inheritance::Generalization : Inheritance::Specialization);
         impl_->publish(result);
         if (result && result.created) {
-            const auto id = std::get<SpecializationId>(*result.created);
-            for (const auto& subtype : subtypes) impl_->publish(impl_->editor.attach_subtype(id, subtype));
             select_elements({*result.created});
             if (!impl_->tool_locked) set_tool(Tool::Select);
-            impl_->status(bottom_up
-                ? QStringLiteral("Generalised. Connect further subtypes to this triangle if you need them.")
-                : QStringLiteral("Now connect the subtypes to this triangle."));
+            impl_->status(QStringLiteral("Connect the supertype first, then each subtype."));
         }
         event->accept();
         return;

@@ -533,8 +533,8 @@ void MainWindow::refresh_properties() {
     }
     if (const auto* specialization_id = std::get_if<SpecializationId>(&ref)) {
         const auto& specialization = project.specializations.at(*specialization_id);
-        layout->addWidget(hint("An ISA triangle. Its supertype is fixed when it is created; connect entities to it "
-                               "to make them subtypes. The two rules below decide how it converts to relations.", panel));
+        layout->addWidget(hint("An ISA triangle. Connect the entity it generalises first; every entity connected "
+                               "after that becomes a subtype. The two rules below decide how it converts to relations.", panel));
         // The triangle points the way the hierarchy is read, so the direction is
         // an editable property rather than only a choice made at creation.
         auto* direction = new QComboBox(panel);
@@ -552,9 +552,19 @@ void MainWindow::refresh_properties() {
         direction_form->setRowWrapPolicy(QFormLayout::WrapAllRows);
         direction_form->addRow("Direction", direction);
         layout->addLayout(direction_form);
-        auto* super = new QLabel("Supertype: " + display_name(project, ElementRef{specialization.supertype}), panel);
+        auto* super = new QLabel(specialization.supertype
+            ? "Supertype: " + display_name(project, ElementRef{*specialization.supertype})
+            : QStringLiteral("Supertype: not connected yet"), panel);
         super->setObjectName("specializationSupertype");
         layout->addWidget(super);
+        if (specialization.supertype) {
+            auto* detach_super = new QPushButton("Detach supertype", panel);
+            detach_super->setObjectName("detachSupertype");
+            connect(detach_super, &QPushButton::clicked, this, [this, id = *specialization_id] {
+                show_result(editor_.set_supertype(id, {}));
+            });
+            layout->addWidget(detach_super);
+        }
         // Disjoint or overlapping, and total or partial, are exactly the inputs
         // a later Conceptual to Relational conversion needs to choose a mapping.
         auto* constraint = new QComboBox(panel);
