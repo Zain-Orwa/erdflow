@@ -516,6 +516,26 @@ void inheritance_orientation_tests() {
     require(editor.set_inheritance_direction(isa, domain::Inheritance::Specialization), "Flip it back");
     view.synchronize();
     require(render() == pointing_down, "Returning to a direction reproduces its drawing");
+
+    // The link holds the triangle's point. Moving the entity it reaches must
+    // bend the line rather than slide the attachment around the triangle.
+    const auto subtype = std::get<domain::EntityId>(*editor.create_entity("Student", {0, 420, 160, 80}).created);
+    require(editor.attach_subtype(isa, subtype), "Attach a subtype");
+    view.synchronize();
+    QApplication::processEvents();
+    auto* link = find_edge(view, QStringLiteral("Inheritance — subtype"));
+    const auto apex = [&] {
+        const auto box = find_node(view, "IS A")->sceneBoundingRect();
+        return QPointF(box.center().x(), box.bottom() - 1);
+    };
+    require(link->shape().contains(link->mapFromScene(apex())), "The link starts at the apex");
+    // Far enough sideways that a boundary-following attachment would have left
+    // the point entirely and moved onto the triangle's edge.
+    require(editor.move({{domain::ElementRef{subtype}, {900, 420, 160, 80}}}), "Move the subtype aside");
+    view.synchronize();
+    QApplication::processEvents();
+    link = find_edge(view, QStringLiteral("Inheritance — subtype"));
+    require(link->shape().contains(link->mapFromScene(apex())), "The link still starts at the apex after the move");
 }
 
 void synchronization_lifetime_tests() {

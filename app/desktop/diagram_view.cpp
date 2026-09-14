@@ -187,6 +187,14 @@ public:
         bounds_ = next;
         update();
     }
+    // The ISA triangle attaches at fixed points rather than wherever a ray
+    // happens to cross it: the supertype meets its top, the subtypes its bottom.
+    // Which of those is the apex follows the direction the triangle points, so
+    // the line never slides off the point as things move around it.
+    QPointF isa_anchor(bool toward_supertype) const {
+        const QPointF centre = scenePos() + bounds_.center();
+        return {centre.x(), scenePos().y() + (toward_supertype ? bounds_.top() : bounds_.bottom())};
+    }
     // Intersection of a ray from the node center with its actual Chen shape.
     QPointF boundary_toward(const QPointF& target) const {
         const QPointF center = scenePos() + bounds_.center();
@@ -324,9 +332,12 @@ public:
         auto hit = stroker.createStroke(path_);
         if (descriptor.relationship) hit.addRect(cardinality_rect_);
         if (!descriptor.role.isEmpty()) hit.addRect(role_rect_);
-        if (isSelected()) hit.addRect(handle_rect_);
+        if (isSelected() && shapeable()) hit.addRect(handle_rect_);
         return hit;
     }
+    // An inheritance link is anchored to the triangle, so it carries no bend and
+    // must not offer a handle that would do nothing.
+    [[nodiscard]] bool shapeable() const { return !std::holds_alternative<InheritanceKey>(descriptor.key); }
     // The bend handle only exists while the connector is selected, so an
     // unselected diagram stays free of grab targets.
     [[nodiscard]] QRectF handle_rect() const { return handle_rect_; }
@@ -334,6 +345,7 @@ public:
     [[nodiscard]] QPointF perpendicular() const { return perpendicular_; }
     void refresh() {
         prepareGeometryChange();
+        const auto* inheritance = std::get_if<InheritanceKey>(&descriptor.key);
         const auto first = source->scenePos() + source->body_rect().center();
         const auto last = target->scenePos() + target->body_rect().center();
         perpendicular_ = normal(last - first);
@@ -341,12 +353,29 @@ public:
         auto bend = midpoint_ + perpendicular_ * descriptor.offset;
         if (std::hypot(last.x() - first.x(), last.y() - first.y()) < 1)
             bend = first + QPointF(80, -80);
+        QPointF start;
+        QPointF end;
+        if (inheritance) {
+            // Anchored at the triangle and curved to wherever the entity is, so
+            // moving either one bends the line instead of dragging the anchor.
+            const bool to_supertype = !inheritance->subtype.has_value();
+            start = source->isa_anchor(to_supertype);
+            end = target->boundary_toward(start);
+            const qreal reach = std::clamp(std::abs(end.y() - start.y()) * 0.55, 26.0, 110.0);
+            const qreal away = to_supertype ? -1.0 : 1.0;
+            path_ = QPainterPath(start);
+            path_.cubicTo(start + QPointF(0, away * reach), end - QPointF(0, away * reach), end);
+            bend = path_.pointAtPercent(0.5);
+            midpoint_ = bend;
+            perpendicular_ = normal(end - start);
+        } else {
+            start = source->boundary_toward(bend);
+            end = target->boundary_toward(bend);
+            path_ = QPainterPath(start);
+            path_.lineTo(bend);
+            path_.lineTo(end);
+        }
         handle_rect_ = QRectF(bend - QPointF(5, 5), QSizeF(10, 10));
-        const auto start = source->boundary_toward(bend);
-        const auto end = target->boundary_toward(bend);
-        path_ = QPainterPath(start);
-        path_.lineTo(bend);
-        path_.lineTo(end);
         const auto entity_direction = bend - end;
         const auto distance = std::hypot(entity_direction.x(), entity_direction.y());
         // Labels are filled, so one overlapping the line hides it and the
@@ -380,12 +409,17 @@ public:
         bounds_ = path_.boundingRect().adjusted(-14, -14, 14, 14);
         if (descriptor.relationship && !end_label().isEmpty()) bounds_ = bounds_.united(cardinality_rect_);
         if (!descriptor.role.isEmpty()) bounds_ = bounds_.united(role_rect_);
-        bounds_ = bounds_.united(handle_rect_.adjusted(-2, -2, 2, 2));
-        setToolTip(descriptor.relationship
-            ? QStringLiteral("Participant: %1 · %2%3").arg(descriptor.cardinality == Cardinality::One ? "One" : "Many",
+        if (shapeable()) bounds_ = bounds_.united(handle_rect_.adjusted(-2, -2, 2, 2));
+        if (inheritance) {
+            setToolTip(inheritance->subtype ? QStringLiteral("Inheritance — subtype")
+                                            : QStringLiteral("Inheritance — supertype"));
+        } else if (descriptor.relationship) {
+            setToolTip(QStringLiteral("Participant: %1 · %2%3").arg(descriptor.cardinality == Cardinality::One ? "One" : "Many",
                 descriptor.participation == Participation::Total ? "total participation" : "partial participation",
-                descriptor.role.isEmpty() ? QString{} : QStringLiteral(" · ") + descriptor.role)
-            : QStringLiteral("Attribute ownership — select and delete to detach"));
+                descriptor.role.isEmpty() ? QString{} : QStringLiteral(" · ") + descriptor.role));
+        } else {
+            setToolTip(QStringLiteral("Attribute ownership — select and delete to detach"));
+        }
         update();
     }
     void paint(QPainter* painter, const QStyleOptionGraphicsItem*, QWidget*) override {
@@ -415,7 +449,7 @@ public:
         if (const auto label = end_label(); !label.isEmpty()) draw_label(cardinality_rect_, label);
         if (!descriptor.role.isEmpty()) draw_label(role_rect_, descriptor.role);
         paint_end_symbols(painter, isSelected() ? selection_ : connector_, canvas_);
-        if (isSelected()) {
+        if (isSelected() && shapeable()) {
             painter->setPen(QPen(selection_, 1.4));
             painter->setBrush(canvas_);
             painter->drawEllipse(handle_rect_);

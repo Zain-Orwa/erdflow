@@ -45,6 +45,9 @@ not been built yet. Their presence in those documents is not a completion claim.
   adopted in one gesture. The ISA triangle points the way the hierarchy is read,
   up at the supertype when generalising and down at the subtypes when
   specialising, so the direction is stored and can be changed in Properties.
+  Inheritance links are anchored to the triangle's points — the supertype at its
+  top, the subtypes at its bottom — and curve to reach whatever they connect,
+  so moving an entity bends the line instead of sliding the attachment.
   Each carries a disjoint/overlapping constraint and total/partial completeness,
   the two inputs a later conversion needs to choose a relational mapping.
   Hierarchies nest, and inheritance cycles are rejected.
