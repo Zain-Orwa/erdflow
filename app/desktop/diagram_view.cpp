@@ -919,16 +919,13 @@ struct DiagramView::Impl {
     }
     void connect_node(NodeItem* node) {
         if (!node) {
-            // Abandoning a half-made connection spends the tool's one use just
-            // as completing it does. Otherwise Connect stays armed after the
-            // gesture the user gave up on, and their next click on an element
-            // starts another connection when they meant to select it. A click
-            // on empty canvas with nothing yet armed is only a miss, so it
-            // leaves the tool alone.
-            const bool abandoned = connect_start.has_value();
+            // A click on empty canvas spends the tool's one use, whether it
+            // abandons a half-made connection or lands before one was started.
+            // Every other tool hands back to Select on such a click, and this
+            // one behaving differently was read as it being stuck.
             connect_start.reset();
             connect_pointer.reset();
-            if (abandoned && !tool_locked) { view.set_tool(Tool::Select); return; }
+            if (!tool_locked) { view.set_tool(Tool::Select); return; }
             status(QStringLiteral("Connection cancelled. Select the first object."));
             return;
         }

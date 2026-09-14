@@ -275,10 +275,17 @@ void connect_returns_to_select_tests() {
     click(view, view.mapToScene(QPoint(8, 8)));
     require(view.tool() == desktop::Tool::Select, "Abandoning a half-made connection hands the tool back");
 
-    // A missed first click is only a miss, and must not cost the tool.
+    // A click on empty canvas hands back even before anything is armed, as
+    // every other tool does on such a click.
     view.set_tool(desktop::Tool::Connect);
     click(view, view.mapToScene(QPoint(8, 8)));
-    require(view.tool() == desktop::Tool::Connect, "Clicking past an element with nothing armed keeps the tool");
+    require(view.tool() == desktop::Tool::Select, "Clicking empty canvas hands the tool back");
+
+    // Locked, it stays through the same click.
+    view.set_tool(desktop::Tool::Connect, true);
+    click(view, view.mapToScene(QPoint(8, 8)));
+    require(view.tool() == desktop::Tool::Connect, "A locked Connect survives a click on empty canvas");
+    view.set_tool(desktop::Tool::Select);
 
     // An illegal pair is still an attempt. The tool goes back, and the reason
     // the pair was refused has to survive the handover rather than being
