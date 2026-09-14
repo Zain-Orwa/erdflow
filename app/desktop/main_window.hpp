@@ -73,6 +73,8 @@ private:
     // the end of the window.
     void fit_toolbar();
     [[nodiscard]] int icon_pixels() const;
+    // Keeps the canvas's own controls in the corner of the view as it resizes.
+    void place_canvas_controls();
     IconMode icon_mode_ = IconMode::Normal;
     std::map<IconMode, QAction*> icon_mode_actions_;
     // Generalization and specialization share one toolbar entry; this is the
@@ -81,6 +83,11 @@ private:
     QAction* isa_action_ = nullptr;
     std::map<LineStyle, QAction*> line_actions_;
     QComboBox* notation_box_ = nullptr;
+    QWidget* canvas_controls_ = nullptr;
+    QAction* notation_action_ = nullptr;
+    QAction* notation_label_action_ = nullptr;
+    QAction* notation_separator_ = nullptr;
+    bool fitting_ = false;
     QToolButton* theme_button_ = nullptr;
     std::map<QString, domain::ElementRef> references_;
     std::vector<domain::ElementRef> selection_;

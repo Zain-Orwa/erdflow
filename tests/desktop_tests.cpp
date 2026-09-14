@@ -471,6 +471,13 @@ int main(int argc, char** argv) {
             settle();
             require(bar->toolButtonStyle() == Qt::ToolButtonTextBesideIcon, "Widening brings the names back");
             require(bar->iconSize().width() == wide, "And the size with them");
+
+            // The notation picker is the first thing given up and the last
+            // brought back, so a window with room for it must show it.
+            window.resize(1800, 820);
+            settle();
+            require(child<QComboBox>(window, "notationPicker")->isVisible(),
+                    "A window with room for the notation picker shows it");
         }
 
         // The two menu buttons are added to the toolbar as widgets, so nothing

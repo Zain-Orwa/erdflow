@@ -238,7 +238,7 @@ namespace {
 // call site, which is what keeps the icon a widget asks for the same size as the
 // one it is later redrawn at when the theme changes.
 constexpr QSize line_style_sample{48, 24};
-constexpr QSize notation_sample{72, 24};
+constexpr QSize notation_sample{58, 22};
 
 QString isa_label(Tool mode) {
     return mode == Tool::Generalization ? QStringLiteral("Generalization") : QStringLiteral("Specialization");
@@ -400,36 +400,28 @@ void MainWindow::build_actions() {
     tool_actions_[Tool::Connect] = connect_action;
     connect_button->installEventFilter(this);
 
-    auto* pan_action = toolbar->addAction("Pan");
-    pan_action->setCheckable(true);
-    pan_action->setData("Pan");
-    pan_action->setObjectName("toolPan");
-    pan_action->setActionGroup(group);
-    tool_actions_[Tool::Pan] = pan_action;
-    action_glyphs_[pan_action] = Glyph::Pan;
-    connect(pan_action, &QAction::triggered, this, [this] { choose_tool(Tool::Pan, false); });
-    if (auto* button = toolbar->widgetForAction(pan_action)) button->installEventFilter(this);
-
-    toolbar->addSeparator();
-    auto* fit = toolbar->addAction("Fit", canvas_, &DiagramView::fit_diagram);
-    fit->setShortcut(QKeySequence("Ctrl+0"));
-    action_glyphs_[fit] = Glyph::Fit;
-    auto* check = toolbar->addAction("Check model", this, [this] {
-        finish_field_edit(); refresh_validation(); validation_dock_->show();
-    });
-    check->setObjectName("checkModel");
-    action_glyphs_[check] = Glyph::Check;
     // Notation is a reading choice people change often, and a submenu hides it.
     // The picker sits in the toolbar and draws each option, so the cardinality
     // symbols can be recognised rather than remembered from a name.
-    auto* notation_separator = toolbar->addSeparator();
-    auto* notation_label = new QLabel("  Notation ", toolbar);
+    notation_separator_ = toolbar->addSeparator();
+    auto* notation_separator = notation_separator_;
+    // No written label: each entry draws the notation it stands for, which says
+    // more than the word would, and the width it saves is what lets the picker
+    // stay on the toolbar at an ordinary window size.
+    auto* notation_label = new QLabel(QString{}, toolbar);
     notation_label->setObjectName("notationLabel");
-    toolbar->addWidget(notation_label);
+    notation_label_action_ = toolbar->addWidget(notation_label);
+    notation_label_action_->setVisible(false);
     notation_box_ = new QComboBox(toolbar);
     notation_box_->setObjectName("notationPicker");
     notation_box_->setIconSize(notation_sample);
     notation_box_->setToolTip("How each participant's minimum and maximum are drawn.");
+    // Held to the width of its drawings and a little text. The sample is what
+    // the choice is made on; the name is only there to confirm it, and letting
+    // it run to full length costs more of the toolbar than it is worth.
+    notation_box_->setMaximumWidth(notation_sample.width() + 62);
+    notation_box_->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    notation_box_->setMinimumContentsLength(4);
     for (const auto& [style, label] : notation_styles())
         notation_box_->addItem(QIcon(canvas_->notation_preview(style, notation_sample)), label,
                                QVariant::fromValue(static_cast<int>(style)));
@@ -438,7 +430,67 @@ void MainWindow::build_actions() {
         if (refreshing_ || index < 0) return;
         choose_notation(static_cast<Notation>(index));
     });
-    toolbar->addWidget(notation_box_);
+    notation_action_ = toolbar->addWidget(notation_box_);
+
+    // Panning and framing are about looking rather than modelling, so they sit
+    // on the canvas by what they act on instead of in the row of drawing tools.
+    auto* pan_action = new QAction("Pan", this);
+    pan_action->setCheckable(true);
+    pan_action->setData("Pan");
+    pan_action->setObjectName("toolPan");
+    pan_action->setActionGroup(group);
+    tool_actions_[Tool::Pan] = pan_action;
+    action_glyphs_[pan_action] = Glyph::Pan;
+    connect(pan_action, &QAction::triggered, this, [this] { choose_tool(Tool::Pan, false); });
+
+    auto* fit = new QAction("Fit", this);
+    fit->setObjectName("viewFit");
+    fit->setShortcut(QKeySequence("Ctrl+0"));
+    connect(fit, &QAction::triggered, canvas_, &DiagramView::fit_diagram);
+    action_glyphs_[fit] = Glyph::Fit;
+
+    toolbar->addSeparator();
+    auto* check = toolbar->addAction("Check model", this, [this] {
+        finish_field_edit(); refresh_validation(); validation_dock_->show();
+    });
+    check->setObjectName("checkModel");
+    action_glyphs_[check] = Glyph::Check;
+
+    // A small raft of view controls over the bottom-right of the canvas, where
+    // a diagram is framed and zoomed rather than across the window from it.
+    canvas_controls_ = new QWidget(canvas_->viewport());
+    canvas_controls_->setObjectName("canvasControls");
+    auto* stack = new QVBoxLayout(canvas_controls_);
+    stack->setContentsMargins(5, 5, 5, 5);
+    stack->setSpacing(3);
+    const auto raft_button = [&](QAction* action, const char* named) {
+        auto* button = new QToolButton(canvas_controls_);
+        button->setObjectName(named);
+        button->setDefaultAction(action);
+        button->setToolButtonStyle(Qt::ToolButtonIconOnly);
+        button->setAutoRaise(true);
+        button->setIconSize(QSize(22, 22));
+        stack->addWidget(button);
+        return button;
+    };
+    raft_button(fit, "canvasFit");
+    raft_button(pan_action, "canvasPan");
+    // Zooming has no glyph of its own in either set, and a pair of signs says
+    // what it does more plainly than a picture would at this size.
+    for (const auto& [text, name, step] : std::initializer_list<std::tuple<const char*, const char*, int>>{
+             {"+", "canvasZoomIn", 1}, {"\u2212", "canvasZoomOut", -1}}) {
+        auto* button = new QToolButton(canvas_controls_);
+        button->setObjectName(name);
+        button->setText(QString::fromUtf8(text));
+        button->setToolTip(step > 0 ? "Zoom in" : "Zoom out");
+        button->setAutoRaise(true);
+        button->setFixedSize(30, 26);
+        connect(button, &QToolButton::clicked, this,
+                [this, step] { if (step > 0) canvas_->zoom_in(); else canvas_->zoom_out(); });
+        stack->addWidget(button);
+    }
+    canvas_->viewport()->installEventFilter(this);
+    place_canvas_controls();
 
     auto* view = findChild<QMenu*>("viewMenu");
     view->addSeparator();
@@ -977,6 +1029,15 @@ void MainWindow::choose_tool(Tool tool, bool locked) {
     refresh_tool_labels();
 }
 
+void MainWindow::place_canvas_controls() {
+    if (!canvas_controls_) return;
+    canvas_controls_->adjustSize();
+    auto* viewport = canvas_->viewport();
+    canvas_controls_->move(viewport->width() - canvas_controls_->width() - 14,
+                           viewport->height() - canvas_controls_->height() - 14);
+    canvas_controls_->raise();
+}
+
 int MainWindow::icon_pixels() const {
     auto* toolbar = findChild<QToolBar*>("modelTools");
     return toolbar ? toolbar->iconSize().width() : 34;
@@ -988,26 +1049,46 @@ void MainWindow::resizeEvent(QResizeEvent* event) {
 }
 
 // A tool that has fallen off the end of the toolbar may as well not exist, so
-// the toolbar sheds what it can spare before it sheds a tool: first the labels,
-// which cost the most width, and then some of the icons' size. The thresholds
-// are on the window rather than on the toolbar's own width, which changes as a
-// result of this and would otherwise chase itself.
+// the toolbar sheds what it can spare before it sheds a tool: first the notation
+// picker, which is far the widest thing on it and is in the View menu anyway,
+// then the labels, then some of the icons' size.
+//
+// Which of those is needed is measured rather than guessed from the window's
+// width. What fits depends on how many tools there are and how long their names
+// read, and a threshold picked by hand goes wrong the moment either changes.
 void MainWindow::fit_toolbar() {
     auto* toolbar = findChild<QToolBar*>("modelTools");
-    if (!toolbar) return;
-    const auto available = width();
-    const auto style = available >= 1180 ? Qt::ToolButtonTextBesideIcon : Qt::ToolButtonIconOnly;
-    const auto size = available >= 900 ? 34 : 26;
-    if (toolbar->toolButtonStyle() == style && toolbar->iconSize().width() == size) return;
-    toolbar->setToolButtonStyle(style);
-    toolbar->setIconSize(QSize(size, size));
-    for (const char* named : {"isaButton", "connectButton", "themeButton"})
-        if (auto* button = findChild<QToolButton*>(named)) {
-            button->setToolButtonStyle(style);
-            button->setIconSize(toolbar->iconSize());
-        }
-    if (notation_box_) notation_box_->setVisible(style == Qt::ToolButtonTextBesideIcon);
-    if (auto* label = findChild<QLabel*>("notationLabel")) label->setVisible(notation_box_ && notation_box_->isVisible());
+    if (!toolbar || fitting_) return;
+    fitting_ = true;
+    struct Step {
+        Qt::ToolButtonStyle style;
+        int icon;
+        bool notation;
+    };
+    static constexpr std::array<Step, 5> steps{{
+        {Qt::ToolButtonTextBesideIcon, 34, true},
+        {Qt::ToolButtonTextBesideIcon, 34, false},
+        {Qt::ToolButtonTextBesideIcon, 26, false},
+        {Qt::ToolButtonIconOnly, 34, false},
+        {Qt::ToolButtonIconOnly, 24, false},
+    }};
+    for (std::size_t index = 0; index < steps.size(); ++index) {
+        const auto& step = steps[index];
+        toolbar->setToolButtonStyle(step.style);
+        toolbar->setIconSize(QSize(step.icon, step.icon));
+        for (const char* named : {"isaButton", "connectButton", "themeButton"})
+            if (auto* button = findChild<QToolButton*>(named)) {
+                button->setToolButtonStyle(step.style);
+                button->setIconSize(toolbar->iconSize());
+            }
+        // Hiding the widget would leave its room behind in the toolbar's layout;
+        // it is the action holding it that has to go.
+        for (auto* hidden : {notation_separator_, notation_action_})
+            if (hidden) hidden->setVisible(step.notation);
+        toolbar->adjustSize();
+        if (toolbar->sizeHint().width() <= width() || index + 1 == steps.size()) break;
+    }
+    fitting_ = false;
     refresh_icons();
 }
 
@@ -1078,6 +1159,12 @@ QWidget* MainWindow::toolbar_widget(QAction* action) const {
 }
 
 bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
+    // The controls float over the view rather than in a layout, so they are put
+    // back in the corner whenever the view changes size under them.
+    if (event->type() == QEvent::Resize && canvas_ && watched == canvas_->viewport()) {
+        place_canvas_controls();
+        return false;
+    }
     if (event->type() == QEvent::MouseButtonDblClick) {
         if (watched == static_cast<QObject*>(findChild<QToolButton*>("isaButton"))) {
             choose_tool(isa_mode_, true);

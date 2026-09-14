@@ -223,6 +223,10 @@ QTreeView::item:selected { background: @accent@; color: @selected@; }
 QTreeView::item:focus { border-color: @accent@; }
 QHeaderView::section { background: @window@; color: @text@; border: none; border-bottom: 1px solid @border@; border-right: 1px solid @border@; padding: 5px 7px; }
 QScrollArea { background: @panel@; border: none; }
+QWidget#canvasControls { background: @panel@; border: 1px solid @border@; border-radius: 8px; }
+QWidget#canvasControls QToolButton { background: transparent; color: @text@; border: 1px solid transparent; border-radius: 5px; font-size: 16px; font-weight: 700; }
+QWidget#canvasControls QToolButton:hover { background: @hover@; border-color: @hoveredge@; }
+QWidget#canvasControls QToolButton:checked { background: @accent@; color: @selected@; border-color: @accent@; }
 QGraphicsView#diagramCanvas { background: @canvas@; border: 1px solid @border@; }
 QLineEdit, QComboBox, QDoubleSpinBox, QSpinBox, QPlainTextEdit { background: @base@; color: @text@; border: 1px solid @border@; border-radius: 2px; padding: 4px 6px; }
 QLineEdit:focus, QComboBox:focus, QDoubleSpinBox:focus, QSpinBox:focus, QPlainTextEdit:focus { border-color: @accent@; }
