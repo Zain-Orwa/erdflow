@@ -469,6 +469,10 @@ void MainWindow::build_actions() {
     auto* stack = new QVBoxLayout(canvas_controls_);
     stack->setContentsMargins(4, 4, 4, 4);
     stack->setSpacing(2);
+    // Every button on the raft is the same size and sits on the same centre
+    // line, so the column reads as one control rather than as icons that
+    // happen to be near some signs.
+    stack->setAlignment(Qt::AlignHCenter);
     const auto raft_button = [&](QAction* action, const char* named) {
         auto* button = new QToolButton(canvas_controls_);
         button->setObjectName(named);
@@ -476,11 +480,15 @@ void MainWindow::build_actions() {
         button->setToolButtonStyle(Qt::ToolButtonIconOnly);
         button->setAutoRaise(true);
         button->setIconSize(QSize(18, 18));
-        stack->addWidget(button);
+        button->setFixedSize(26, 24);
+        stack->addWidget(button, 0, Qt::AlignHCenter);
         return button;
     };
     raft_button(fit, "canvasFit");
-    raft_button(pan_action, "canvasPan");
+    // Pan locks on a double-click, exactly as the tools on the toolbar do, so
+    // a long look around the diagram does not need the button pressed again
+    // after every drag.
+    raft_button(pan_action, "canvasPan")->installEventFilter(this);
     // Zooming has no glyph of its own in either set, and a pair of signs says
     // what it does more plainly than a picture would at this size.
     for (const auto& [text, name, step] : std::initializer_list<std::tuple<const char*, const char*, int>>{
@@ -490,10 +498,10 @@ void MainWindow::build_actions() {
         button->setText(QString::fromUtf8(text));
         button->setToolTip(step > 0 ? "Zoom in" : "Zoom out");
         button->setAutoRaise(true);
-        button->setFixedSize(26, 22);
+        button->setFixedSize(26, 24);
         connect(button, &QToolButton::clicked, this,
                 [this, step] { if (step > 0) canvas_->zoom_in(); else canvas_->zoom_out(); });
-        stack->addWidget(button);
+        stack->addWidget(button, 0, Qt::AlignHCenter);
     }
     canvas_->viewport()->installEventFilter(this);
     place_canvas_controls();
@@ -1174,6 +1182,10 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
         return false;
     }
     if (event->type() == QEvent::MouseButtonDblClick) {
+        if (watched == static_cast<QObject*>(findChild<QToolButton*>("canvasPan"))) {
+            choose_tool(Tool::Pan, true);
+            return true;
+        }
         if (watched == static_cast<QObject*>(findChild<QToolButton*>("isaButton"))) {
             choose_tool(isa_mode_, true);
             return true;

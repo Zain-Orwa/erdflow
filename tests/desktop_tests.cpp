@@ -485,6 +485,28 @@ int main(int argc, char** argv) {
             require(picker->isVisible(), "And the picker");
         }
 
+        // The raft's Pan locks on a double-click just as the toolbar's tools do,
+        // and a single click uses it once.
+        {
+            auto* pan = child<QToolButton>(window, "canvasPan");
+            const auto centre = QPoint(pan->width() / 2, pan->height() / 2);
+            QMouseEvent twice(QEvent::MouseButtonDblClick, QPointF(centre), QPointF(pan->mapToGlobal(centre)),
+                              Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+            QApplication::sendEvent(pan, &twice);
+            settle();
+            require(window.canvas()->tool() == desktop::Tool::Pan, "Double-clicking the raft's hand picks Pan");
+            require(window.canvas()->tool_locked(), "And locks it");
+            child<QAction>(window, "toolSelect")->trigger();
+            settle();
+            require(!window.canvas()->tool_locked(), "Choosing another tool clears the lock");
+            child<QAction>(window, "toolPan")->trigger();
+            settle();
+            require(window.canvas()->tool() == desktop::Tool::Pan && !window.canvas()->tool_locked(),
+                    "A single press is one use, not a lock");
+            child<QAction>(window, "toolSelect")->trigger();
+            settle();
+        }
+
         // The two menu buttons are added to the toolbar as widgets, so nothing
         // makes them follow it: they have to ask for the icon themselves.
         for (const char* menu_button : {"isaButton", "connectButton"}) {
