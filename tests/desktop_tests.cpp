@@ -8,6 +8,7 @@
 #include <QDockWidget>
 #include <QFile>
 #include <QKeyEvent>
+#include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QMouseEvent>
@@ -362,6 +363,27 @@ int main(int argc, char** argv) {
         for (int index = 0; index <= static_cast<int>(desktop::Glyph::Delete); ++index)
             share_of_fill(static_cast<desktop::Glyph>(index));
         require(share_of_fill(desktop::Glyph::Pan) > 0.3, "The hand keeps an open palm rather than filling in");
+
+        // An element given a colour of its own wears it in the properties panel,
+        // so the panel and the shape on the canvas read as the same object.
+        {
+            const auto entity = window.editor().project().entities.begin()->first;
+            window.canvas()->select_elements({domain::ElementRef{entity}});
+            settle();
+            const auto plain_heading = child<QLabel>(window, "propertyHeading")->styleSheet();
+            require(plain_heading.isEmpty(), "An uncoloured element leaves the heading to the theme");
+
+            require(bool(editor.recolour({domain::ElementRef{entity}}, domain::Colour{0x20, 0x20, 0x30})),
+                    "Colour the entity a dark shade");
+            window.canvas()->select_elements({});
+            settle();
+            window.canvas()->select_elements({domain::ElementRef{entity}});
+            settle();
+            const auto sheet = child<QLabel>(window, "propertyHeading")->styleSheet();
+            require(sheet.contains("#202030"), "The heading is filled with the element's own colour");
+            require(sheet.contains("#ffffff"), "And written in ink chosen against it, not against the theme");
+            require(bool(editor.undo()), "Undo the colour");
+        }
 
         // The two menu buttons are added to the toolbar as widgets, so nothing
         // makes them follow it: they have to ask for the icon themselves.

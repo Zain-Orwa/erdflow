@@ -4,6 +4,7 @@
 #include <QPalette>
 
 #include <algorithm>
+#include <cmath>
 
 namespace erdflow::desktop {
 namespace {
@@ -246,6 +247,15 @@ QToolTip { background: @panel@; color: @text@; border: 1px solid @border@; paddi
 }
 
 } // namespace
+
+QColor readable_on(const QColor& surface) {
+    const auto channel = [](double value) {
+        return value <= 0.04045 ? value / 12.92 : std::pow((value + 0.055) / 1.055, 2.4);
+    };
+    const auto luminance = 0.2126 * channel(surface.redF()) + 0.7152 * channel(surface.greenF())
+                         + 0.0722 * channel(surface.blueF());
+    return luminance > 0.36 ? QColor(0x1a, 0x1a, 0x1a) : QColor(0xff, 0xff, 0xff);
+}
 
 const std::array<Theme, theme_count>& themes() { return theme_table; }
 

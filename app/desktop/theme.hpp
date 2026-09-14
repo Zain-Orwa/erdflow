@@ -30,6 +30,12 @@ struct Theme {
     QColor valid, warning, error;
 };
 
+// Black or white, whichever the eye can actually read on a given surface. The
+// threshold is on relative luminance rather than on plain brightness, so a
+// saturated yellow is treated as the light colour it is. Anything that draws a
+// label over a colour the theme did not choose needs this.
+[[nodiscard]] QColor readable_on(const QColor& surface);
+
 const std::array<Theme, theme_count>& themes();
 const Theme& theme(ThemeId id);
 ThemeId theme_from_key(const QString& key);

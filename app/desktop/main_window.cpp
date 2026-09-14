@@ -581,6 +581,17 @@ void MainWindow::refresh_properties() {
     const auto& project = editor_.project();
     auto* heading = new QLabel(kind_label(ref), panel);
     heading->setObjectName("propertyHeading");
+    // An element given a colour of its own wears it here too, so the panel and
+    // the shape on the canvas are obviously the same object. The heading becomes
+    // a chip of that colour rather than text in it: a colour chosen to fill a
+    // shape is not one that can be read as small type against the panel, and the
+    // ink over it is picked against the colour itself.
+    if (const auto colour = project.colours.find(ref); colour != project.colours.end()) {
+        const QColor surface(colour->second.red, colour->second.green, colour->second.blue);
+        heading->setStyleSheet(QStringLiteral(
+            "QLabel#propertyHeading { background: %1; color: %2; border-radius: 4px; padding: 4px 9px; }")
+            .arg(surface.name(), readable_on(surface).name()));
+    }
     layout->addWidget(heading);
     auto* form = new QFormLayout;
     form->setRowWrapPolicy(QFormLayout::WrapAllRows);

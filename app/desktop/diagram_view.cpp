@@ -37,18 +37,6 @@ Rect centred(const QPointF& centre, const BodySize& size) {
 constexpr qreal minimum_zoom = 0.15;
 constexpr qreal maximum_zoom = 3.0;
 
-// Black or white, whichever the eye can actually read on a given surface. The
-// threshold is on relative luminance rather than on plain brightness, so a
-// saturated yellow is treated as the light colour it is.
-QColor readable_on(const QColor& surface) {
-    const auto channel = [](double value) {
-        return value <= 0.04045 ? value / 12.92 : std::pow((value + 0.055) / 1.055, 2.4);
-    };
-    const auto luminance = 0.2126 * channel(surface.redF()) + 0.7152 * channel(surface.greenF())
-                         + 0.0722 * channel(surface.blueF());
-    return luminance > 0.36 ? QColor(0x1a, 0x1a, 0x1a) : QColor(0xff, 0xff, 0xff);
-}
-
 
 // The palette offered on the canvas. These are surface colours rather than ink,
 // so each is light enough to write on and distinct from its neighbours at the
