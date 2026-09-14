@@ -1,6 +1,9 @@
 # ADR-008 — Cross-Level Mapping and Provenance
 
-**Status:** Proposed  
+**Status:** Accepted
+
+**Reviewed:** 2026-09-14
+
 **Date:** 2026-08-31  
 **Project:** ERDFlow  
 **Decision Scope:** How ERDFlow records lineage between Conceptual, Relational, and Physical model elements
@@ -1073,6 +1076,13 @@ Baseline
 ```
 
 This is necessary for safe three-way comparison later.
+
+Baseline references are historical references validated against the baseline's
+captured identity context. They need not resolve to objects that still exist
+in the live source model. Deleting a live source removes invalid live mappings
+but must not erase the historical lineage required to review a downstream
+removal. The baseline representation must retain sufficient source identity
+and rule context; this does not require a general tombstone/history system.
 
 ---
 
@@ -2190,3 +2200,13 @@ Conceptual
 ## 108. Final Principle
 
 > ERDFlow must never have to guess which downstream object came from which upstream idea when that lineage can be known and recorded explicitly.
+
+---
+
+## 109. Review Record — 2026-09-14
+
+Outcome: accepted. Confirmed explicit indexed lineage and separate IDs per level; clarified historical baseline references after deletion of live sources.
+
+See [Phase 0 review](../PHASE_0_REVIEW.md) for cross-document findings,
+quality requirements, and deferred implementation gates. Acceptance records
+the architecture contract, not completion of its implementation or tests.

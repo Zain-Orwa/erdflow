@@ -1,6 +1,9 @@
 # ADR-013 — Future Rust Boundary
 
-**Status:** Proposed  
+**Status:** Accepted
+
+**Reviewed:** 2026-09-14
+
 **Date:** 2026-08-31  
 **Project:** ERDFlow  
 **Decision Scope:** Architectural boundary for any future Rust modules, including data exchange, ABI safety, ownership, errors, threading, versioning, and migration strategy
@@ -471,15 +474,19 @@ large cached index
 
 A Rust panic must never unwind across the C ABI into C++.
 
-Rust FFI entry points must contain panic behavior.
-
-Unexpected Rust failure becomes:
+Rust FFI entry points must define and test their panic behavior. With an
+unwinding panic strategy, catch Rust panics on the Rust side before returning
+across the boundary and translate recoverable failures into:
 
 ```text
 structured fatal/internal error
 ```
 
-rather than undefined cross-language unwinding.
+Do not assume every native failure can become a result: `catch_unwind` does
+not catch aborting panics, and `panic=abort` terminates the process. Native
+crashes and allocation aborts are not made recoverable by this boundary.
+If host-process survival is required for such failures, evaluate process
+isolation. See the [Rust FFI unwinding guidance](https://doc.rust-lang.org/nomicon/ffi.html#ffi-and-unwinding).
 
 ---
 
@@ -657,6 +664,11 @@ callback
 ```
 
 Exact mechanism is deferred.
+
+An atomic flag is conceptual, not permission to share the memory layout of
+`std::atomic` with a Rust atomic type. Define a compatible accessor/opaque
+token or callback contract with explicit lifetime, thread, and memory-order
+rules when selecting the bridge.
 
 ---
 
@@ -2166,3 +2178,13 @@ parity testing
 The architecture decides the contract.
 
 The language implements it.
+
+---
+
+## 125. Review Record — 2026-09-14
+
+Outcome: accepted. Confirmed optional coarse-grained Rust integration; corrected panic-recovery guarantees and clarified cancellation ABI requirements. No Rust implementation or bridge is selected.
+
+See [Phase 0 review](../PHASE_0_REVIEW.md) for cross-document findings,
+quality requirements, and deferred implementation gates. Acceptance records
+the architecture contract, not completion of its implementation or tests.

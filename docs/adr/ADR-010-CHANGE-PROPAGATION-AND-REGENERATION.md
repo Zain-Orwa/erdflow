@@ -1,6 +1,9 @@
 # ADR-010 — Change Propagation and Regeneration
 
-**Status:** Proposed  
+**Status:** Accepted
+
+**Reviewed:** 2026-09-14
+
 **Date:** 2026-08-31  
 **Project:** ERDFlow  
 **Decision Scope:** Forward regeneration, downstream manual edits, three-way comparison, conflict handling, and optional Schema → Conceptual propagation
@@ -885,6 +888,17 @@ After a new accepted generation, the updated baseline should reflect the newly a
 
 Exact baseline representation is deferred.
 
+The implementation must distinguish the generated reference accepted during
+review from the merged live target that retains manual changes. Copying the
+merged target wholesale into the baseline would hide those manual changes.
+For example, a retained manual `SearchKey` must not become generator-owned
+merely because a reviewed `BirthDate` addition was applied.
+
+Initially apply one fully resolved review atomically. Separate partial-apply
+transactions require a defined baseline-scope and retained-choice policy
+before they are supported; an unreviewed portion must not advance its
+baseline. Exact storage is deferred to Phases 25–26.
+
 ---
 
 ## 37. Baseline Persistence
@@ -1084,7 +1098,9 @@ Even if ERDFlow is very confident:
 Schema → Conceptual
 ```
 
-must not silently change upstream meaning unless a future explicit project setting intentionally enables a narrowly defined safe behavior.
+requires explicit approval of the proposed upstream change. This ADR does
+not authorize a setting that silently enables future back-propagation; such
+a policy would require a separate product and architecture decision.
 
 Default:
 
@@ -1391,15 +1407,13 @@ Check revisions
       ↓
 Check proposal still valid
       ↓
-Apply selected change set
+Prepare target, mapping, baseline, and undo changes together
       ↓
-Validate resulting target
+Validate the complete proposed state
       ↓
-Commit command
+Commit all changes and history atomically
       ↓
-Update mapping/provenance
-      ↓
-Update baseline
+Notify views
 ```
 
 If any critical step fails:
@@ -1412,7 +1426,8 @@ do not leave partial state
 
 ## 69. Atomicity
 
-Applying a reviewed proposal should be atomic from the user's perspective where practical.
+Applying a reviewed structural proposal must be atomic across the target,
+mappings, baseline, and undo history.
 
 Either:
 
@@ -2078,7 +2093,7 @@ Technical-only changes remain downstream.
 
 ### Invariant 12
 
-Back-propagation requires explicit user approval by default.
+Back-propagation requires explicit approval of the proposed upstream change.
 
 ### Invariant 13
 
@@ -2161,3 +2176,13 @@ instead of live bidirectional synchronization.
 ## 108. Final Principle
 
 > Generate forward confidently, preserve downstream intent carefully, and never move meaning upstream without understanding and user approval.
+
+---
+
+## 109. Review Record — 2026-09-14
+
+Outcome: accepted. Confirmed three-way review and explicit upstream approval; clarified generated baseline ownership, partial-apply prerequisites, and atomic target/mapping/baseline/history application.
+
+See [Phase 0 review](../PHASE_0_REVIEW.md) for cross-document findings,
+quality requirements, and deferred implementation gates. Acceptance records
+the architecture contract, not completion of its implementation or tests.

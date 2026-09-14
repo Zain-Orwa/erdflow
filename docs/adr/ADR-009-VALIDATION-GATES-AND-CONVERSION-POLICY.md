@@ -1,6 +1,9 @@
 # ADR-009 — Validation Gates and Conversion Policy
 
-**Status:** Proposed  
+**Status:** Accepted
+
+**Reviewed:** 2026-09-14
+
 **Date:** 2026-08-31  
 **Project:** ERDFlow  
 **Decision Scope:** Validation severity, conversion readiness, blocking vs non-blocking issues, unresolved decisions, and when deterministic transformations may proceed
@@ -686,6 +689,12 @@ ERDFlow should produce the same semantic target result.
 
 Thread scheduling must not change meaning.
 
+Semantic determinism does not require independently generated fresh UUIDv7
+values to be identical. Continuing targets reuse IDs only when lineage proves
+continuity under ADR-001 and ADR-008. New targets use the ID-generation
+boundary; tests may inject repeatable IDs. Identity allocation must not change
+the generated structure or depend on names as authoritative identity.
+
 ---
 
 ## 31. Rule Versioning
@@ -1201,6 +1210,11 @@ other conversion metadata
 for selected transformations.
 
 Both modes still use one underlying Conceptual Model.
+
+Changing display mode cannot bypass an operation's validation gate. The same
+snapshot and conversion options have the same blockers in either mode; Basic
+Mode may hide engineering fields but must expose required issues when the
+user requests conversion.
 
 ---
 
@@ -2039,3 +2053,13 @@ as the policy for deterministic model conversion.
 ## 107. Final Principle
 
 > ERDFlow should never confuse "unfinished", "questionable", and "invalid". Each state deserves a different response.
+
+---
+
+## 108. Review Record — 2026-09-14
+
+Outcome: accepted. Confirmed operation-specific gates; clarified semantic determinism with generated IDs and consistent conversion policy across Basic/Convertible modes.
+
+See [Phase 0 review](../PHASE_0_REVIEW.md) for cross-document findings,
+quality requirements, and deferred implementation gates. Acceptance records
+the architecture contract, not completion of its implementation or tests.

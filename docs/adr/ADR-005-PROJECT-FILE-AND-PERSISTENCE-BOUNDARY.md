@@ -1,6 +1,9 @@
 # ADR-005 — Project File and Persistence Boundary
 
-**Status:** Proposed  
+**Status:** Accepted
+
+**Reviewed:** 2026-09-14
+
 **Date:** 2026-08-31  
 **Project:** ERDFlow  
 **Decision Scope:** Native `.erdx` project persistence, serialization boundaries, versioning, loading, saving, and migration responsibilities
@@ -497,6 +500,15 @@ belongs in Infrastructure.
 
 It must not leak into the Domain.
 
+If selected, keep direct-write fallback disabled for `.erdx` saves, check
+write and `commit()` results, and report failure if a temporary destination
+cannot be created. Enabling fallback would forfeit the previous-file
+protection. See [QSaveFile documentation](https://doc.qt.io/qt-6/qsavefile.html).
+
+Atomic replacement is not a backup or a universal power-loss durability
+guarantee. Filesystem-specific durability and recovery checks belong to the
+persistence and release implementation.
+
 ---
 
 ## 18. Save Is a Use Case
@@ -637,6 +649,10 @@ However, ERDFlow must not blindly ignore unknown structural data if doing so
 could change database meaning.
 
 Exact compatibility policy is defined with the concrete encoding.
+
+An editable round trip must preserve any accepted unknown data. If a reader
+cannot preserve it safely, it must reject the document or explicitly offer
+a read-only inspection mode; it must not silently discard that data on save.
 
 ---
 
@@ -1318,11 +1334,17 @@ Project state changed
 dirty = true
 ```
 
-successful save:
+successful save of the current persisted state:
 
 ```text
 dirty = false
 ```
+
+If the user edits while a snapshot is being saved, successful completion
+records that snapshot as saved but leaves newer changes dirty, as specified
+in ADR-007. This check includes persisted layout and local data, not only
+the Conceptual model revision. Save failure never advances the saved-state
+marker.
 
 The dirty flag is Application/session state.
 
@@ -2169,3 +2191,13 @@ implementation phase.
 That rule allows the project format, Domain model, UI, and future
 implementation languages to evolve independently without sacrificing user
 projects.
+
+---
+
+## 102. Review Record — 2026-09-14
+
+Outcome: accepted. Confirmed versioned document mapping and work-in-progress saving; clarified safe-save fallback, unknown-data preservation, and saved-state tracking for concurrent edits.
+
+See [Phase 0 review](../PHASE_0_REVIEW.md) for cross-document findings,
+quality requirements, and deferred implementation gates. Acceptance records
+the architecture contract, not completion of its implementation or tests.

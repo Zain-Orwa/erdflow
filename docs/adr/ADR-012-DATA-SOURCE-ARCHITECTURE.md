@@ -1,6 +1,9 @@
 # ADR-012 — Data Source Architecture
 
-**Status:** Proposed  
+**Status:** Accepted
+
+**Reviewed:** 2026-09-14
+
 **Date:** 2026-08-31  
 **Project:** ERDFlow  
 **Decision Scope:** Data Workspace abstraction, local/imported/live data sources, paging, sorting/filtering, editing, capabilities, and database write-back boundaries
@@ -303,6 +306,10 @@ Insert
 should not appear enabled merely because the Data Grid knows how to draw editable cells.
 
 Presentation follows source capabilities.
+
+Application and the source adapter must also enforce capabilities on every
+request; disabled UI controls are not an authorization boundary. Permissions
+may change after a page is loaded.
 
 ---
 
@@ -736,6 +743,11 @@ Future database filters/searches must use safe parameterization or equivalent dr
 
 Do not construct queries by blindly concatenating user-entered values.
 
+Resolve requested table/column references against known source metadata and
+use dialect-aware identifier quoting. Sort directions and operators come
+from supported structured values. Parameter binding for data values does not
+replace validation of identifiers or SQL syntax choices.
+
 ---
 
 ## 35. Search
@@ -924,9 +936,8 @@ Exact optimistic/pessimistic UI behavior is deferred.
 
 ## 46. Local Data Editing
 
-For LocalProjectDataSource, editing may become a normal project mutation.
-
-It may participate in:
+For accepted project-owned local data, editing is a normal Application
+mutation and participates in:
 
 ```text
 project dirty state
@@ -934,7 +945,10 @@ save
 undo
 ```
 
-depending on how local data persistence is defined.
+Temporary import previews remain separate and do not dirty the project until
+accepted. The row storage and undo representation are selected before local
+editing ships; local-data schema changes must preserve values by stable
+association and support undo for destructive changes.
 
 ---
 
@@ -1071,6 +1085,9 @@ structured result
 UI/application update
 ```
 
+Route results by session, source, view, and query generation as applicable.
+A late response for an old sort/filter/page must not replace the current
+query's rows even when the Project revision is unchanged.
 ---
 
 ## 55. Cancellation
@@ -2143,7 +2160,7 @@ This ADR intentionally leaves open:
 - exact transaction/write-back policy,
 - exact optimistic concurrency strategy,
 - exact database deployment workflow,
-- exact local-data undo policy.
+- exact local-data undo representation and memory budget.
 
 These should be decided when implementation reaches the corresponding feature.
 
@@ -2182,3 +2199,13 @@ and no assumption that every source is an in-memory editable table.
 ## 122. Final Principle
 
 > The Data Workspace should feel like a spreadsheet, but its architecture must behave like a serious data-access system.
+
+---
+
+## 123. Review Record — 2026-09-14
+
+Outcome: accepted. Confirmed capability-aware paged data access and read-only-first live connections; clarified request enforcement, query freshness, safe SQL construction, and local-data editing guarantees.
+
+See [Phase 0 review](../PHASE_0_REVIEW.md) for cross-document findings,
+quality requirements, and deferred implementation gates. Acceptance records
+the architecture contract, not completion of its implementation or tests.

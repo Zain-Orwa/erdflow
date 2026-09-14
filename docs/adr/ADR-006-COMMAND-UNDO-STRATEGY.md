@@ -1,6 +1,9 @@
 # ADR-006 — Command / Undo Strategy
 
-**Status:** Proposed  
+**Status:** Accepted
+
+**Reviewed:** 2026-09-14
+
 **Date:** 2026-08-31  
 **Project:** ERDFlow  
 **Decision Scope:** User-driven mutations, semantic commands, undo/redo behavior, command grouping, and Qt integration
@@ -926,6 +929,13 @@ on ERDFlow behavior.
 
 Exact design is deferred.
 
+There must be one authoritative history and exactly one execution of each
+edit. If a Qt stack adapter is selected, account for the fact that
+[`QUndoStack::push()` calls `redo()`](https://doc.qt.io/qt-6/qundostack.html#push).
+Do not execute a command and then push an adapter that executes it again.
+The adapter must also preserve structured failure handling; failed commands
+must not advance history or emit success notifications.
+
 ---
 
 ## 42. Alternative Integration
@@ -1665,6 +1675,11 @@ or use a safe rollback strategy.
 
 Atomicity is especially important for bulk commands.
 
+Prepare required undo data before committing the mutation. A failure to
+record history must not leave an apparently undoable edit without its undo
+payload. Apply, history bookkeeping, and success notification form one
+controlled operation; notify views only after it succeeds.
+
 ---
 
 ## 86. Bulk Mutation Strategy
@@ -2083,3 +2098,13 @@ atomic composite commands for multi-object operations
 ## 108. Final Principle
 
 > If a user intentionally changes the project, ERDFlow should know what they meant, be able to test it, and—when appropriate—be able to reverse it safely.
+
+---
+
+## 109. Review Record — 2026-09-14
+
+Outcome: accepted. Confirmed semantic commands, stable identities, and compact undo; clarified single execution, authoritative history, failure atomicity, and notification ordering.
+
+See [Phase 0 review](../PHASE_0_REVIEW.md) for cross-document findings,
+quality requirements, and deferred implementation gates. Acceptance records
+the architecture contract, not completion of its implementation or tests.

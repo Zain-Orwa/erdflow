@@ -1,6 +1,9 @@
 # ADR-011 — Import Architecture
 
-**Status:** Proposed  
+**Status:** Accepted
+
+**Reviewed:** 2026-09-14
+
 **Date:** 2026-08-31  
 **Project:** ERDFlow  
 **Decision Scope:** Import boundaries, parsing, normalization, validation, preview/review, provenance, and safe application of external SQL/CSV/JSON data
@@ -806,6 +809,10 @@ are data operations, not schema definition.
 
 If future Data Workspace import supports them, that should be an explicit separate workflow.
 
+SQL import parses input; it never executes DDL, DML, stored procedures, or
+embedded commands against a database or shell. Database execution/deployment
+belongs to a separate, explicitly designed workflow.
+
 ---
 
 ## 37. CSV Schema Inference
@@ -1191,7 +1198,8 @@ memory exhaustion
 
 ## 57. Resource Limits
 
-Importers should eventually enforce reasonable limits or streaming strategies for:
+From the first external-input implementation, importers must enforce bounded
+work through documented limits and, where useful, streaming for:
 
 ```text
 file size
@@ -1201,6 +1209,11 @@ field size
 ```
 
 Exact thresholds must be evidence-driven.
+
+Streaming alone does not bound nesting, oversized fields, diagnostic counts,
+or the resulting candidate/undo payload. Bound those allocations as well.
+Preview and apply must use the same captured input, or detect source changes
+and require a refreshed review rather than silently reparsing different data.
 
 ---
 
@@ -1877,9 +1890,12 @@ Recommended order:
 3. JSON data/schema-inference import
 ```
 
-But each importer should be added only when the target model/workspace it feeds already exists.
-
-Do not implement all parsers before their destination workflows exist.
+Phases 18–21 establish parsing, bounded previews, and intermediate candidates.
+They do not require the future Schema, Physical, or Data workspaces to exist.
+Applying an import is enabled only when its destination model, validation,
+command/undo path, and persistence support exist. Wire Schema application in
+Phase 24, Physical application in Phase 29, and local data application in
+Phases 32–33. Until then, unsupported destinations remain preview-only.
 
 ---
 
@@ -2073,3 +2089,13 @@ and no silent semantic invention.
 ## 113. Final Principle
 
 > Parse what the source actually says, label what ERDFlow only infers, and never modify the user's project until the proposed import is understood and accepted.
+
+---
+
+## 114. Review Record — 2026-09-14
+
+Outcome: accepted. Confirmed deterministic parsing with explicit inference and review; clarified non-execution of SQL, bounded input handling, source consistency, and destination prerequisites in the roadmap.
+
+See [Phase 0 review](../PHASE_0_REVIEW.md) for cross-document findings,
+quality requirements, and deferred implementation gates. Acceptance records
+the architecture contract, not completion of its implementation or tests.

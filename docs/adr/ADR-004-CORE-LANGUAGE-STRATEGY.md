@@ -1,6 +1,9 @@
 # ADR-004 — Core Language Strategy
 
-**Status:** Proposed  
+**Status:** Accepted
+
+**Reviewed:** 2026-09-14
+
 **Date:** 2026-08-31  
 **Project:** ERDFlow  
 **Decision Scope:** Primary implementation language for the current core and strategy for future Rust adoption
@@ -387,6 +390,12 @@ non-owning references where lifetime is clear
 ```
 
 Do not use raw owning pointers.
+
+This rule applies to reusable Application/Domain ownership. In Qt adapters,
+parent-owned QObjects may use Qt's
+[parent-child lifetime model](https://doc.qt.io/qt-6/objecttrees.html);
+raw pointers held by views are non-owning references. Do not give the same
+object competing Qt-parent and smart-pointer owners.
 
 The exact object graph is defined during Domain implementation.
 
@@ -1436,3 +1445,13 @@ a permanent promise that Rust can never be used
 > Use one language while the product is young. Preserve clean boundaries so a second language can earn its place later.
 
 ERDFlow's architecture should make future Rust adoption possible without making present-day Rust adoption mandatory.
+
+---
+
+## 70. Review Record — 2026-09-14
+
+Outcome: accepted. Confirmed C++20 with evidence-driven optional Rust; clarified parent-owned Qt lifetimes at outer adapters while retaining explicit ownership in reusable code.
+
+See [Phase 0 review](../PHASE_0_REVIEW.md) for cross-document findings,
+quality requirements, and deferred implementation gates. Acceptance records
+the architecture contract, not completion of its implementation or tests.

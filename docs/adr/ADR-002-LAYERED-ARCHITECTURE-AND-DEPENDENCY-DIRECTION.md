@@ -1,7 +1,10 @@
 # ADR-002 — Layered Architecture and Dependency Direction
 
-**Status:** Proposed  
+**Status:** Accepted
+
 **Date:** 2026-08-31  
+**Reviewed:** 2026-09-14
+
 **Project:** ERDFlow  
 **Decision Scope:** Core architectural boundaries and allowed dependency direction
 
@@ -124,6 +127,20 @@ Domain → AI provider
 ```
 
 The Domain is the most stable inner layer.
+
+### 3.1 Application Assembly
+
+The desktop startup code is the composition root: it constructs concrete
+Infrastructure adapters and supplies them to Application use cases through
+their ports. This assembly code may reference Presentation, Application,
+Domain, and Infrastructure to connect them.
+
+Widgets still use Application-facing APIs. Application code does not construct
+concrete Infrastructure adapters or depend on desktop startup code. Runtime
+calls through a port do not reverse the source-code dependency direction.
+
+Add this wiring only as actual capabilities need it; no dependency-injection
+framework is required.
 
 ---
 
@@ -689,7 +706,9 @@ QUndoCommand
 QUndoStack
 ```
 
-ERDFlow may use them in Presentation/Application integration.
+ERDFlow may use them in desktop adapters that connect Presentation to
+Application commands. These adapters remain outside the reusable Application
+layer.
 
 But core semantic commands must not require Qt.
 
@@ -717,7 +736,9 @@ future web/service layer
 
 ## 22. Background Work Boundary
 
-The UI thread must not own heavy work.
+The UI thread must not execute known heavy computations that can be safely
+isolated. The Application/UI coordination thread initially owns live project
+mutation; workers compute on consistent snapshots or isolated inputs.
 
 Application coordinates:
 
@@ -746,6 +767,11 @@ Domain operations remain callable synchronously as normal functions.
 Threading is orchestration.
 
 It is not part of Domain meaning.
+
+Workers return structured results without mutating the live Project or Qt
+widgets. Application checks whether a result is still applicable before
+applying it through the normal command path. ADR-007 defines the detailed
+concurrency policy.
 
 ---
 
@@ -1421,14 +1447,19 @@ Domain
 Application-owned ports/interfaces
 ```
 
-It should avoid depending directly on:
+The reusable Application layer must not depend directly on:
 
 ```text
-Qt Widgets
+Qt, including QtCore and Qt undo classes
+concrete Infrastructure adapters
 database drivers
 filesystem implementation
 AI SDKs
 ```
+
+Qt-specific integration belongs in desktop or Infrastructure adapters. Ports
+and use-case results use framework-independent types so Application behavior
+can be tested without Qt.
 
 ---
 
@@ -1831,3 +1862,33 @@ and Infrastructure implementing outward-facing mechanisms without creating a Dom
 > Keep database meaning in the Domain, coordinate user intent in the Application, render interaction in Presentation, and keep external mechanisms behind adapters.
 
 That dependency direction must remain stable as ERDFlow grows.
+
+---
+
+## 71. Review Record — 2026-09-14
+
+Outcome: accepted after checking the dependency rules against the product
+requirements, Architecture v0.1, accepted ADR-001, and the proposed command
+and concurrency directions in ADR-006 and ADR-007. Their subsequent reviews
+are recorded in the [completed Phase 0 review](../PHASE_0_REVIEW.md).
+
+This review clarified application assembly, Qt-independent Application code,
+and the boundary between background computation and live project mutation.
+
+The decision supports the five qualities in
+[Product §4.1](../1.ERDFlow_PRODUCT.md#41-system-quality-requirements):
+
+- **Sustainable:** Introduce only the boundaries needed for current features;
+  avoid unnecessary frameworks and speculative adapters.
+- **Scalable:** Isolate expensive computation and keep live mutation controlled;
+  measure actual performance during implementation.
+- **Secure:** Keep external mechanisms behind adapters, validate their results
+  before application, and avoid logging sensitive values by default.
+- **Maintainable:** Give each responsibility one owner and test Domain and
+  Application behavior independently of Qt.
+- **Usable:** Keep UI feedback and interaction in Presentation, backed by
+  structured results and recoverable Application commands.
+
+Acceptance records the architecture decision, not implementation completion or
+proof that performance and security targets have been met. Build boundaries
+and behavioral checks will be added with the relevant implementation phases.

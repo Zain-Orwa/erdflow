@@ -1,6 +1,9 @@
 # ADR-007 — Background Work / Concurrency Strategy
 
-**Status:** Proposed  
+**Status:** Accepted
+
+**Reviewed:** 2026-09-14
+
 **Date:** 2026-08-31  
 **Project:** ERDFlow  
 **Decision Scope:** UI-thread ownership, background work, task execution, cancellation, progress, consistency, and safe application of asynchronous results
@@ -369,6 +372,7 @@ Conceptually:
 ```text
 TaskInput
 ├── ProjectId
+├── SessionToken
 ├── SourceRevision
 └── Snapshot
 ```
@@ -378,11 +382,17 @@ Result:
 ```text
 TaskResult
 ├── ProjectId
+├── SessionToken
 ├── SourceRevision
 └── Payload
 ```
 
 Exact revision representation is deferred.
+
+Revision/context tokens must not be reused for different states in the same
+session. Undo restores model content but does not rewind the task-validity
+token. A history index alone is insufficient because editing after undo can
+create a different state at the same index.
 
 ---
 
@@ -396,8 +406,15 @@ Result application must verify:
 ```text
 ProjectId
 +
+SessionToken
++
 relevant revision/context
 ```
+
+Create a fresh session token whenever a project is opened or replaced,
+including reopening the same ProjectId. Closing invalidates the old token;
+late results cannot become applicable merely because the same file is open
+again. The token is operational state and need not be persisted in `.erdx`.
 
 ---
 
@@ -856,6 +873,11 @@ live project is revision 101
 dirty remains true
 ```
 
+Application must serialize saves to the same destination, or provide an
+equivalent ordering guarantee, so an older save cannot overwrite a newer
+one after finishing late. Save completion also checks the session and
+destination context before updating the active document's saved-state marker.
+
 This is safer than incorrectly marking revision 101 as saved.
 
 ---
@@ -888,11 +910,16 @@ Late results must not mutate destroyed state.
 On application shutdown:
 
 - cancel cancellable tasks,
-- wait or terminate according to safe task semantics,
+- join workers or finish them cooperatively according to safe task semantics,
 - do not leave unsafe writes half-completed,
 - do not allow callbacks into destroyed UI.
 
 Exact shutdown policy is implementation-specific.
+
+Do not forcibly terminate an in-process worker thread. Cancellation must
+respect a save's commit boundary; cancelling after a successful commit does
+not roll back the file. Isolated subprocess termination, if ever introduced,
+requires its own cleanup and failure policy.
 
 ---
 
@@ -1653,3 +1680,13 @@ with Qt concurrency used only as the desktop execution adapter.
 ## 85. Final Principle
 
 > Compute in the background. Mutate deliberately. Never let concurrency make project meaning ambiguous.
+
+---
+
+## 86. Review Record — 2026-09-14
+
+Outcome: accepted. Confirmed snapshot-based background computation; added session/state validity, ordered saves, and cooperative shutdown safeguards.
+
+See [Phase 0 review](../PHASE_0_REVIEW.md) for cross-document findings,
+quality requirements, and deferred implementation gates. Acceptance records
+the architecture contract, not completion of its implementation or tests.

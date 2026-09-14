@@ -1,6 +1,9 @@
 # ADR-003 — Desktop UI Technology
 
-**Status:** Proposed  
+**Status:** Accepted
+
+**Reviewed:** 2026-09-14
+
 **Date:** 2026-08-31  
 **Project:** ERDFlow  
 **Decision Scope:** Primary desktop UI framework and UI programming model
@@ -631,7 +634,7 @@ application to glow or behave like a marketing illustration.
 Qt provides accessibility infrastructure, but ERDFlow must still design
 for accessible interaction.
 
-Later reviews should include:
+Reviews from the first desktop-shell milestone onward should include:
 
 - keyboard navigation,
 - focus visibility,
@@ -642,6 +645,11 @@ Later reviews should include:
 - screen-reader behavior where practical.
 
 Accessibility is not solved merely by choosing Qt.
+
+Check keyboard navigation, visible focus, labels, and readable contrast as
+each control is added. Broader assistive-technology and platform coverage
+expands with production testing; basic accessibility is not deferred until
+final polish.
 
 ---
 
@@ -1548,3 +1556,13 @@ database model to the UI framework.
 ERDFlow's user interface may evolve significantly over time.
 
 Its Domain meaning must remain stable underneath it.
+
+---
+
+## 66. Review Record — 2026-09-14
+
+Outcome: accepted. Confirmed Qt Widgets/C++20 and model/view separation; clarified that basic accessibility checks start with the shell. Canvas and release-version choices remain implementation gates.
+
+See [Phase 0 review](../PHASE_0_REVIEW.md) for cross-document findings,
+quality requirements, and deferred implementation gates. Acceptance records
+the architecture contract, not completion of its implementation or tests.
