@@ -11,13 +11,13 @@ namespace erdflow::desktop {
 enum class ThemeId {
     // ERDFlow's own set leads: Office Light is the default appearance, and
     // these are the only light themes and the only high-contrast one.
-    OfficeLight, WarmLight, Graphite, Midnight, DraculaClassic, HighContrast,
+    OfficeLight, WarmLight, Plain, Graphite, Midnight, DraculaClassic, HighContrast,
     // The imported palette families, all dark.
     Forest, Mono, Dracula, OneDarkPro, TokyoNight, CatppuccinMocha,
     Gruvbox, Solarized, GitHubDark, MaterialOcean, Nord, Monokai
 };
 
-inline constexpr std::size_t theme_count = 18;
+inline constexpr std::size_t theme_count = 19;
 
 struct Theme {
     ThemeId id;

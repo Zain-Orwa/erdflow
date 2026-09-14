@@ -95,6 +95,14 @@ const std::array<Theme, theme_count> theme_table{{
            "#EEE8D5", "#F4EFDE", "#FFFBEF", "#3D494A", "#60676A", "#BAB4A3", "#006B68", "#FFFFFF",
            "#FFFDF5", "#DFD9C6", "#EBD5A0", "#665535", "#F4E9CC", "#665535", "#D8E6CC", "#4C6240",
            "#263532", "#526260", "#3D6B2E", "#8A5A00", "#A8322A"),
+    // Paper and ink, the way an ERD is drawn on a board or printed in a book.
+    // The shapes are told apart by how grey they are rather than by hue, so the
+    // diagram survives being photocopied or read by anyone who cannot rely on
+    // colour, and nothing on it competes with the model for attention.
+    legacy(ThemeId::Plain, "plain", "Plain",
+           "#ECECEC", "#F4F4F4", "#FFFFFF", "#000000", "#595959", "#9A9A9A", "#333333", "#FFFFFF",
+           "#FFFFFF", "#E0E0E0", "#DCDCDC", "#000000", "#F2F2F2", "#000000", "#E7E7E7", "#000000",
+           "#000000", "#000000", "#3C3C3C", "#6E6E6E", "#1A1A1A"),
     legacy(ThemeId::Graphite, "graphite", "Graphite",
            "#272B31", "#30353D", "#20242A", "#ECEFF4", "#B4BDC9", "#5C6775", "#7DB7ED", "#17212B",
            "#20242A", "#353C45", "#414B58", "#BDCADD", "#303A45", "#ADBFD1", "#354C59", "#A4C3D1",
