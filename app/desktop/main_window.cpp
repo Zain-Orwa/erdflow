@@ -404,13 +404,12 @@ void MainWindow::build_actions() {
     // The picker draws each option, so the cardinality symbols can be recognised
     // rather than remembered from a name.
     notation_separator_ = toolbar->addSeparator();
-    // No written label: each entry draws the notation it stands for, which says
-    // more than the word would, and the width it saves is what lets the picker
-    // stay on the toolbar at an ordinary window size.
-    auto* notation_label = new QLabel(QString{}, toolbar);
+    // Named, so a reader who does not yet know the symbols knows what the
+    // picker is for. The label goes with the picker whenever the bar has to
+    // give it up.
+    auto* notation_label = new QLabel(" Notation ", toolbar);
     notation_label->setObjectName("notationLabel");
     notation_label_action_ = toolbar->addWidget(notation_label);
-    notation_label_action_->setVisible(false);
     notation_box_ = new QComboBox(toolbar);
     notation_box_->setObjectName("notationPicker");
     notation_box_->setIconSize(notation_sample);
@@ -1090,7 +1089,7 @@ void MainWindow::fit_toolbar() {
             }
         // Hiding the widget would leave its room behind in the toolbar's layout;
         // it is the action holding it that has to go.
-        for (auto* hidden : {notation_separator_, notation_action_})
+        for (auto* hidden : {notation_separator_, notation_label_action_, notation_action_})
             if (hidden) hidden->setVisible(step.notation);
         toolbar->adjustSize();
         if (toolbar->sizeHint().width() <= width() || index + 1 == steps.size()) break;
