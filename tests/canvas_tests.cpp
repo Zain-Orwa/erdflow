@@ -186,7 +186,8 @@ void drag_to_connect_tests() {
     view.show();
     view.actual_size();
     view.centerOn(0, 0);
-    view.set_tool(desktop::Tool::Connect);
+    // This case makes several connections in a row, so it locks the tool.
+    view.set_tool(desktop::Tool::Connect, true);
     QApplication::processEvents();
 
     const auto at = [&](const QString& name) {
@@ -356,6 +357,49 @@ void notation_tests() {
             for (std::size_t b = a + 1; b < combinations.size(); ++b)
                 require(combinations[a] != combinations[b], "Every minimum/maximum pair is drawn distinctly");
     }
+}
+
+// A tool used once returns to Select; a locked tool stays, so several elements
+// can be placed without going back to the toolbar between each one.
+void tool_locking_tests() {
+    SequentialIds ids;
+    application::Editor editor(ids);
+    desktop::DiagramView view(editor);
+    view.resize(800, 600);
+    view.show();
+    view.actual_size();
+    view.centerOn(0, 0);
+    QApplication::processEvents();
+
+    require(!view.tool_locked(), "Tools start unlocked");
+    view.set_tool(desktop::Tool::Entity);
+    click(view, QPointF(-200, -120));
+    require(editor.project().entities.size() == 1, "One click places one entity");
+    require(view.tool() == desktop::Tool::Select, "An unlocked tool returns to Select");
+    click(view, QPointF(0, -120));
+    require(editor.project().entities.size() == 1, "The next click no longer places anything");
+
+    view.set_tool(desktop::Tool::Entity, true);
+    require(view.tool_locked(), "The tool reports being locked");
+    for (const auto& at : {QPointF(-200, 40), QPointF(0, 40), QPointF(200, 40)}) click(view, at);
+    require(editor.project().entities.size() == 4, "A locked tool keeps placing");
+    require(view.tool() == desktop::Tool::Entity, "A locked tool stays selected");
+
+    // Choosing any tool afresh clears the lock unless it is asked for again.
+    view.set_tool(desktop::Tool::Relationship);
+    require(!view.tool_locked(), "Choosing a tool normally clears the lock");
+    click(view, QPointF(-200, 200));
+    require(editor.project().relationships.size() == 1, "One click places one relationship");
+    require(view.tool() == desktop::Tool::Select, "The relationship tool is one-shot too");
+
+    // Escape leaves a locked tool, which is how the status line says to stop.
+    view.set_tool(desktop::Tool::Entity, true);
+    key(view, Qt::Key_Escape);
+    require(view.tool() == desktop::Tool::Select && !view.tool_locked(), "Escape leaves a locked tool");
+
+    // Select cannot be locked: it has nothing to repeat.
+    view.set_tool(desktop::Tool::Select, true);
+    require(!view.tool_locked(), "Select is never locked");
 }
 
 void synchronization_lifetime_tests() {
@@ -531,6 +575,7 @@ int main(int argc, char** argv) {
         drag_to_connect_tests();
         inline_rename_tests();
         notation_tests();
+        tool_locking_tests();
         std::cout << "Canvas tests passed\n";
     } catch (const std::exception& exception) {
         std::cerr << "Canvas test failed: " << exception.what() << '\n';

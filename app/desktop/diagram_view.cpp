@@ -436,6 +436,7 @@ struct DiagramView::Impl {
     Tool active_tool = Tool::Select;
     ThemeId theme_id = ThemeId::OfficeLight;
     Notation notation = Notation::Chen;
+    bool tool_locked = false;
     bool grid = true;
     bool snap = false;
     bool synchronizing = false;
@@ -596,7 +597,11 @@ struct DiagramView::Impl {
             result = (*plan)();
         }
         publish(result);
-        if (result) status(QStringLiteral("Connected. Select the first object to make another connection."));
+        if (result) {
+            // One connection completes the tool unless it has been locked.
+            if (!tool_locked) view.set_tool(Tool::Select);
+            else status(QStringLiteral("Connected. Locked: select the first object of the next connection."));
+        }
     }
     // The edit a pair of elements would produce, or nothing when the pair means
     // nothing. The hover highlight and the committed connection read the same
@@ -819,12 +824,18 @@ void DiagramView::synchronize() {
     impl_->selection_changed();
 }
 
-void DiagramView::set_tool(Tool tool) {
+void DiagramView::set_tool(Tool tool, bool locked) {
     cancel_interaction();
     impl_->active_tool = tool;
+    // Select has nothing to repeat, so it is never a locked tool.
+    impl_->tool_locked = locked && tool != Tool::Select;
     setDragMode(tool == Tool::Select ? RubberBandDrag : NoDrag);
     setCursor(tool == Tool::Pan ? Qt::OpenHandCursor : tool == Tool::Select ? Qt::ArrowCursor : Qt::CrossCursor);
     if (on_tool) on_tool(tool);
+    if (impl_->tool_locked) {
+        impl_->status(QStringLiteral("Locked. Keep placing; choose another tool or press Escape to stop."));
+        return;
+    }
     switch (tool) {
     case Tool::Select: impl_->status(QStringLiteral("Select objects to edit. Drag to move; Shift-click to extend selection.")); break;
     case Tool::Entity: impl_->status(QStringLiteral("Click the canvas to create an entity.")); break;
@@ -835,6 +846,7 @@ void DiagramView::set_tool(Tool tool) {
     case Tool::Pan: impl_->status(QStringLiteral("Drag to pan. The middle mouse button pans in every tool.")); break;
     }
 }
+bool DiagramView::tool_locked() const { return impl_->tool_locked; }
 Tool DiagramView::tool() const { return impl_->active_tool; }
 
 std::vector<ElementRef> DiagramView::selected_elements() const {
@@ -1023,7 +1035,7 @@ void DiagramView::mousePressEvent(QMouseEvent* event) {
         impl_->publish(result);
         if (result && result.created) {
             select_elements({*result.created});
-            set_tool(Tool::Select);
+            if (!impl_->tool_locked) set_tool(Tool::Select);
             impl_->status(QStringLiteral("Now connect the subtypes to this triangle."));
         }
         event->accept();
@@ -1049,7 +1061,7 @@ void DiagramView::mousePressEvent(QMouseEvent* event) {
         impl_->publish(result);
         if (result && result.created) {
             select_elements({*result.created});
-            set_tool(Tool::Select);
+            if (!impl_->tool_locked) set_tool(Tool::Select);
         }
         event->accept();
         return;
@@ -1199,6 +1211,11 @@ void DiagramView::mouseMoveEvent(QMouseEvent* event) {
 void DiagramView::mouseReleaseEvent(QMouseEvent* event) {
     if (impl_->panning && (event->button() == Qt::MiddleButton || event->button() == Qt::LeftButton)) {
         impl_->panning = false;
+        if (impl_->active_tool == Tool::Pan && !impl_->tool_locked && event->button() == Qt::LeftButton) {
+            set_tool(Tool::Select);
+            event->accept();
+            return;
+        }
         setCursor(impl_->active_tool == Tool::Pan ? Qt::OpenHandCursor : impl_->active_tool == Tool::Select ? Qt::ArrowCursor : Qt::CrossCursor);
         event->accept();
         return;

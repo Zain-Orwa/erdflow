@@ -199,10 +199,32 @@ int main(int argc, char** argv) {
         require(!window.open_path(invalid.fileName()), "Malformed file is rejected by shell");
         require(window.editor().project() == before_failed_load, "Failed open leaves current model intact");
 
-        child<QAction>(window, "toolEntity")->trigger();
+        auto* entity_tool = child<QAction>(window, "toolEntity");
+        entity_tool->trigger();
         click_canvas(*window.canvas(), QPointF(200, 250));
         require(window.editor().project().entities.size() == 3 && window.canvas()->tool() == desktop::Tool::Select,
                 "Toolbar create routes through canvas and returns to Select");
+        require(entity_tool->text() == "Entity", "An unlocked tool button carries no mark");
+
+        // Double-clicking the button locks the tool, and the button says so.
+        auto* button = child<QToolBar>(window, "modelTools")->widgetForAction(entity_tool);
+        require(button != nullptr, "The entity tool has a toolbar button");
+        QMouseEvent double_click(QEvent::MouseButtonDblClick, QPointF(5, 5), QPointF(5, 5),
+                                 Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(button, &double_click);
+        settle();
+        require(window.canvas()->tool_locked(), "Double-clicking the button locks the tool");
+        require(entity_tool->text().startsWith("Entity") && entity_tool->text() != "Entity",
+                "A locked tool button is marked");
+        click_canvas(*window.canvas(), QPointF(360, 250));
+        click_canvas(*window.canvas(), QPointF(520, 250));
+        require(window.editor().project().entities.size() == 5, "A locked tool keeps placing");
+        require(window.canvas()->tool() == desktop::Tool::Isa || window.canvas()->tool() == desktop::Tool::Entity,
+                "A locked tool stays selected");
+        child<QAction>(window, "toolSelect")->trigger();
+        require(!window.canvas()->tool_locked(), "Choosing another tool clears the lock");
+        require(entity_tool->text() == "Entity", "The mark is removed when the lock ends");
+        while (window.editor().project().entities.size() > 3) child<QAction>(window, "undoCommand")->trigger();
         child<QAction>(window, "undoCommand")->trigger();
         require(window.editor().project().entities.size() == 2, "Create is undoable from shell");
         child<QAction>(window, "checkModel")->trigger();

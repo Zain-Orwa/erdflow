@@ -29,6 +29,10 @@ not been built yet. Their presence in those documents is not a completion claim.
   and editable roles. Cardinality labels follow their entity endpoint.
 - Create, rename, describe, move, set size through Properties, delete, duplicate,
   connect/disconnect, change owner/kind/cardinality/participation, and undo/redo.
+- Tools are one-shot by default: a single click on a toolbar tool places one
+  element and returns to Select. Double-clicking the tool locks it, marking the
+  button with a padlock, so it keeps placing until another tool is chosen or
+  Escape is pressed. Select cannot be locked.
 - Single/multiple/rubber-band selection, Select All, zoom, pan, fit, grid/snap,
   selection navigation, and cancellation of an uncommitted drag.
 - One drag or duplicate/delete group is one history entry. Deletion restores

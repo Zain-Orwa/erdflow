@@ -30,7 +30,10 @@ public:
     explicit DiagramView(application::Editor& editor, QWidget* parent = nullptr);
     ~DiagramView() override;
     void synchronize();
-    void set_tool(Tool tool);
+    // A tool used once returns to Select; a locked tool stays until changed, so
+    // several elements can be placed without reaching for the toolbar each time.
+    void set_tool(Tool tool, bool locked = false);
+    [[nodiscard]] bool tool_locked() const;
     [[nodiscard]] Tool tool() const;
     [[nodiscard]] std::vector<domain::ElementRef> selected_elements() const;
     void select_elements(const std::vector<domain::ElementRef>& elements, bool bring_into_view = false);

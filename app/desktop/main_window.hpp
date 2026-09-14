@@ -28,6 +28,7 @@ public:
 
 protected:
     void closeEvent(QCloseEvent* event) override;
+    bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
     application::IdGenerator& ids_;
@@ -58,6 +59,9 @@ private:
 
     void build_shell();
     void build_actions();
+    void choose_tool(Tool tool, bool locked);
+    void refresh_tool_labels();
+    [[nodiscard]] QWidget* toolbar_widget(QAction* action) const;
     void choose_notation(Notation notation);
     void refresh();
     void refresh_explorer();

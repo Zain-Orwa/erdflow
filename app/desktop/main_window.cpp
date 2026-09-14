@@ -86,7 +86,10 @@ MainWindow::MainWindow(application::Editor& editor, application::ProjectStore& s
     build_actions();
     canvas_->on_edit = [this](const auto& result) { show_result(result); };
     canvas_->on_selection = [this](const auto& selected) { selection_changed(selected); };
-    canvas_->on_tool = [this](Tool tool) { tool_actions_.at(tool)->setChecked(true); };
+    canvas_->on_tool = [this](Tool tool) {
+        tool_actions_.at(tool)->setChecked(true);
+        refresh_tool_labels();
+    };
     canvas_->on_status = [this](const QString& message) { statusBar()->showMessage(message, 7000); };
     canvas_->on_zoom = [this](double factor) {
         zoom_label_->setText(QString::number(qRound(factor * 100)) + "%");
@@ -272,13 +275,15 @@ void MainWindow::build_actions() {
     for (const auto& [tool, label] : tools) {
         auto* action = toolbar->addAction(label);
         action->setCheckable(true);
+        action->setData(label);
         action->setObjectName("tool" + label);
         action->setActionGroup(group);
         action->setChecked(tool == Tool::Select);
         tool_actions_[tool] = action;
-        connect(action, &QAction::triggered, this, [this, tool] {
-            finish_field_edit(); canvas_->set_tool(tool); canvas_->setFocus();
-        });
+        connect(action, &QAction::triggered, this, [this, tool] { choose_tool(tool, false); });
+        // A double click locks the tool. The button itself has to report it,
+        // because the click that locks is also an ordinary click that selects.
+        if (auto* button = toolbar->widgetForAction(action)) button->installEventFilter(this);
     }
     toolbar->addSeparator();
     auto* fit = toolbar->addAction("Fit", canvas_, &DiagramView::fit_diagram);
@@ -685,6 +690,45 @@ void MainWindow::choose_notation(Notation notation) {
         found->second->setChecked(true);
     if (notation_box_) notation_box_->setCurrentIndex(static_cast<int>(notation));
     refreshing_ = previous;
+}
+
+// Choosing a tool and reporting the choice happen in one place, so the button
+// label can never disagree with what the canvas will actually do.
+void MainWindow::choose_tool(Tool tool, bool locked) {
+    finish_field_edit();
+    canvas_->set_tool(tool, locked);
+    canvas_->setFocus();
+    refresh_tool_labels();
+}
+
+void MainWindow::refresh_tool_labels() {
+    const auto active = canvas_->tool();
+    const auto locked = canvas_->tool_locked();
+    for (const auto& [tool, action] : tool_actions_) {
+        const auto plain = action->data().toString();
+        // A locked tool is marked on the button, since nothing else on screen
+        // would explain why placing does not stop after the first element.
+        action->setText(tool == active && locked ? plain + " 🔒" : plain);
+        action->setToolTip(tool == active && locked
+            ? plain + " is locked. Keep placing; choose another tool or press Escape to stop."
+            : "Double-click to lock " + plain.toLower() + " for placing several.");
+    }
+}
+
+QWidget* MainWindow::toolbar_widget(QAction* action) const {
+    auto* toolbar = findChild<QToolBar*>("modelTools");
+    return toolbar ? toolbar->widgetForAction(action) : nullptr;
+}
+
+bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
+    if (event->type() == QEvent::MouseButtonDblClick) {
+        for (const auto& [tool, action] : tool_actions_)
+            if (watched == static_cast<QObject*>(toolbar_widget(action))) {
+                choose_tool(tool, true);
+                return true;
+            }
+    }
+    return QMainWindow::eventFilter(watched, event);
 }
 
 void MainWindow::rename_selection() {
