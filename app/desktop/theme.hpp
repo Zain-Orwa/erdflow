@@ -36,6 +36,13 @@ struct Theme {
 // label over a colour the theme did not choose needs this.
 [[nodiscard]] QColor readable_on(const QColor& surface);
 
+// The surface a row or card takes while the pointer is over it: the panel
+// carried a little way towards the theme's accent. It is derived rather than
+// chosen so that every theme gets one without having to name it, and it is a
+// tint rather than the accent itself so that hovering something never looks
+// like having selected it.
+[[nodiscard]] QColor hover_surface(const Theme& colors);
+
 const std::array<Theme, theme_count>& themes();
 const Theme& theme(ThemeId id);
 ThemeId theme_from_key(const QString& key);

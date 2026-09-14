@@ -99,6 +99,15 @@ void contrast_tests() {
         require_contrast(candidate, "selection label", candidate.selected_text, candidate.accent, 4.5);
         require_contrast(candidate, "isa label", candidate.node_text, candidate.isa_fill, 4.5);
         require_contrast(candidate, "connector on canvas", candidate.connector, candidate.canvas, 3.0);
+        // A row under the pointer is still a row to be read, and the tint must
+        // stay clear of the accent itself or hovering would look like selecting.
+        require_contrast(candidate, "text on a hovered row", candidate.text, hover_surface(candidate), 4.5);
+        require_contrast(candidate, "hovered row against the panel", hover_surface(candidate), candidate.panel, 1.03);
+        require(hover_surface(candidate) != candidate.accent,
+                candidate.key.toStdString() + ": a hovered row must not wear the selection colour");
+        // The tint has to be visible, or hovering says nothing at all.
+        require(hover_surface(candidate) != candidate.panel,
+                candidate.key.toStdString() + ": a hovered row must differ from an unhovered one");
         // A rule's verdict is read off the canvas, so its colour has to carry
         // there as well as any element does.
         for (const auto& [use, colour] : {std::pair{"valid", candidate.valid},

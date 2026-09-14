@@ -14,6 +14,22 @@ QColor color(const char* value) { return QColor(QString::fromLatin1(value)); }
 // Blends one colour into another. A shape needs a surface of its own, not just
 // a coloured edge, but a palette's accent used neat is far too bright to carry
 // a label, so the accent is mixed into a panel shade instead.
+// How bright a colour is to the eye, and how far apart two of them are. Both
+// are the definitions the theme tests hold every palette to, kept here so that
+// anything deriving a colour can check its own work against the same rule.
+double relative_luminance(const QColor& colour) {
+    const auto channel = [](double value) {
+        return value <= 0.04045 ? value / 12.92 : std::pow((value + 0.055) / 1.055, 2.4);
+    };
+    return 0.2126 * channel(colour.redF()) + 0.7152 * channel(colour.greenF())
+         + 0.0722 * channel(colour.blueF());
+}
+double contrast(const QColor& first, const QColor& second) {
+    const auto one = relative_luminance(first);
+    const auto other = relative_luminance(second);
+    return (std::max(one, other) + 0.05) / (std::min(one, other) + 0.05);
+}
+
 QColor mix(const QColor& base, const QColor& tint, double amount) {
     return QColor::fromRgbF(base.redF() * (1 - amount) + tint.redF() * amount,
                             base.greenF() * (1 - amount) + tint.greenF() * amount,
@@ -187,7 +203,7 @@ QMenu::separator { height: 1px; background: @border@; margin: 4px 5px; }
 QToolBar { background: @window@; color: @text@; border: none; border-bottom: 1px solid @border@; spacing: 3px; padding: 4px 6px; }
 QToolBar::separator { background: @border@; width: 1px; margin: 4px 7px; }
 QToolButton { background: transparent; color: @text@; border: 1px solid transparent; border-radius: 2px; padding: 5px 8px; }
-QToolButton:hover { background: @base@; border-color: @border@; }
+QToolButton:hover { background: @hover@; border-color: @hoveredge@; }
 QToolButton:checked, QToolButton:pressed { background: @accent@; color: @selected@; border-color: @accent@; }
 QToolButton:focus { border-color: @accent@; }
 QToolButton:disabled { color: @muted@; }
@@ -201,8 +217,8 @@ QDockWidget::close-button, QDockWidget::float-button { border: 1px solid transpa
 QDockWidget::close-button:hover, QDockWidget::float-button:hover { background: @base@; border-color: @border@; }
 QMainWindow::separator { background: @border@; width: 1px; height: 1px; }
 QTreeView { background: @panel@; alternate-background-color: @base@; color: @text@; border: none; padding: 3px; outline: 0; }
-QTreeView::item { padding: 4px 2px; border: 1px solid transparent; }
-QTreeView::item:hover { border-color: @border@; }
+QTreeView::item { padding: 5px 3px; border: 1px solid transparent; border-radius: 2px; }
+QTreeView::item:hover { background: @hover@; border-color: @hoveredge@; }
 QTreeView::item:selected { background: @accent@; color: @selected@; }
 QTreeView::item:focus { border-color: @accent@; }
 QHeaderView::section { background: @window@; color: @text@; border: none; border-bottom: 1px solid @border@; border-right: 1px solid @border@; padding: 5px 7px; }
@@ -225,7 +241,8 @@ QWidget#workspaceHeader { background: @panel@; border-bottom: 1px solid @border@
 QLabel#workspaceBadge { color: @accent@; font-size: 11px; font-weight: 700; padding-right: 10px; }
 QLabel#documentTitle { color: @text@; font-size: 13px; font-weight: 600; }
 QLabel#propertyHeading { color: @accent@; font-size: 15px; font-weight: 800; padding-bottom: 2px; }
-QWidget#participantCard { background: @panel@; border: 1px solid @border@; border-radius: 2px; }
+QWidget#participantCard { background: @panel@; border: 1px solid @border@; border-radius: 3px; margin-bottom: 4px; }
+QWidget#participantCard:hover { background: @hover@; border-color: @hoveredge@; }
 QTabBar::tab { background: @window@; color: @text@; border: 1px solid @border@; padding: 6px 14px; }
 QTabBar::tab:selected { background: @base@; color: @text@; border-bottom: 2px solid @accent@; }
 QTabBar::tab:hover { color: @accent@; }
@@ -235,12 +252,14 @@ QStatusBar::item { border: none; }
 QStatusBar QLabel { color: @muted@; padding: 2px 6px; }
 QToolTip { background: @panel@; color: @text@; border: 1px solid @border@; padding: 4px 6px; }
 )");
-    const std::array<std::pair<QString, QColor>, 9> replacements{{
+    const std::array<std::pair<QString, QColor>, 11> replacements{{
         {QStringLiteral("@window@"), colors.window}, {QStringLiteral("@panel@"), colors.panel},
         {QStringLiteral("@base@"), colors.base}, {QStringLiteral("@text@"), colors.text},
         {QStringLiteral("@muted@"), colors.muted}, {QStringLiteral("@border@"), colors.border},
         {QStringLiteral("@accent@"), colors.accent}, {QStringLiteral("@selected@"), colors.selected_text},
         {QStringLiteral("@canvas@"), colors.canvas},
+        {QStringLiteral("@hover@"), hover_surface(colors)},
+        {QStringLiteral("@hoveredge@"), mix(colors.border, colors.accent, 0.6)},
     }};
     for (const auto& [placeholder, value] : replacements) sheet.replace(placeholder, value.name());
     return sheet;
@@ -248,13 +267,21 @@ QToolTip { background: @panel@; color: @text@; border: 1px solid @border@; paddi
 
 } // namespace
 
+// How far a hovered row is carried towards the accent. A strong tint is wanted,
+// but a theme whose text is already dim cannot afford one, so the strongest
+// that still leaves the row readable is taken rather than one figure being
+// imposed on every palette and pitched to the weakest of them.
+QColor hover_surface(const Theme& colors) {
+    constexpr double readable = 4.5;
+    for (double amount = 0.20; amount > 0.04; amount -= 0.02) {
+        const auto candidate = mix(colors.panel, colors.accent, amount);
+        if (contrast(colors.text, candidate) >= readable) return candidate;
+    }
+    return mix(colors.panel, colors.accent, 0.04);
+}
+
 QColor readable_on(const QColor& surface) {
-    const auto channel = [](double value) {
-        return value <= 0.04045 ? value / 12.92 : std::pow((value + 0.055) / 1.055, 2.4);
-    };
-    const auto luminance = 0.2126 * channel(surface.redF()) + 0.7152 * channel(surface.greenF())
-                         + 0.0722 * channel(surface.blueF());
-    return luminance > 0.36 ? QColor(0x1a, 0x1a, 0x1a) : QColor(0xff, 0xff, 0xff);
+    return relative_luminance(surface) > 0.36 ? QColor(0x1a, 0x1a, 0x1a) : QColor(0xff, 0xff, 0xff);
 }
 
 const std::array<Theme, theme_count>& themes() { return theme_table; }
