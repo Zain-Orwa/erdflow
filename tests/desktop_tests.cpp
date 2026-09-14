@@ -13,6 +13,7 @@
 #include <QPushButton>
 #include <QTemporaryDir>
 #include <QTimer>
+#include <QToolBar>
 #include <QTreeView>
 
 #include <iostream>
@@ -77,8 +78,17 @@ int main(int argc, char** argv) {
         settle();
         require(window.editor().project().entities.at(student).name == "UniversityStudent", "Name commits through properties on focus loss");
         require(window.editor().dirty() && window.isWindowModified(), "Applied field edit marks project dirty");
-        const auto* undo = child<QAction>(window, "undoCommand");
+        auto* undo = child<QAction>(window, "undoCommand");
         require(undo->isEnabled(), "Undo action reflects history");
+        // Undo and redo must be reachable without opening a menu, and the
+        // toolbar button must not resize as the named edit changes.
+        auto* tools = child<QToolBar>(window, "modelTools");
+        require(tools->actions().contains(undo), "Undo is on the toolbar");
+        require(tools->actions().contains(child<QAction>(window, "redoCommand")), "Redo is on the toolbar");
+        require(undo->text().startsWith("Undo ") && undo->text() != "Undo",
+                "The menu entry names the edit that will be reversed");
+        require(undo->iconText() == "Undo", "The toolbar button keeps fixed wording");
+        require(undo->toolTip().contains(undo->text()), "The toolbar tooltip explains the edit");
         child<QAction>(window, "undoCommand")->trigger();
         require(window.editor().project() == original && !window.editor().dirty(), "Shell undo restores clean save point");
         child<QAction>(window, "redoCommand")->trigger();

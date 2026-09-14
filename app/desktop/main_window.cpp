@@ -226,6 +226,11 @@ void MainWindow::build_actions() {
         finish_field_edit(); canvas_->cancel_interaction(); show_result(editor_.redo());
     });
     redo_->setObjectName("redoCommand");
+    // The menu entry names the edit that will be reversed, which makes the
+    // label change width on every command. A toolbar button must not resize
+    // as you work, so it keeps a fixed icon text and explains itself by tooltip.
+    undo_->setIconText("Undo");
+    redo_->setIconText("Redo");
     edit->addSeparator();
     rename_ = edit->addAction("Rename…", this, &MainWindow::rename_selection);
     duplicate_ = edit->addAction("Duplicate", QKeySequence("Ctrl+D"), this, [this] {
@@ -240,6 +245,9 @@ void MainWindow::build_actions() {
     toolbar->setMovable(false);
     toolbar->setToolButtonStyle(Qt::ToolButtonTextOnly);
     toolbar->addAction(action_save);
+    toolbar->addSeparator();
+    toolbar->addAction(undo_);
+    toolbar->addAction(redo_);
     toolbar->addSeparator();
     auto* group = new QActionGroup(this);
     const std::array<std::pair<Tool, QString>, 6> tools{{
@@ -313,6 +321,10 @@ void MainWindow::refresh() {
     redo_->setEnabled(editor_.can_redo());
     undo_->setText(editor_.can_undo() ? "Undo " + text(editor_.undo_label()) : "Undo");
     redo_->setText(editor_.can_redo() ? "Redo " + text(editor_.redo_label()) : "Redo");
+    // An explicitly set icon text survives setText, so the toolbar keeps its
+    // fixed wording and only the tooltip follows the named edit.
+    undo_->setToolTip(undo_->text() + "\t" + undo_->shortcut().toString(QKeySequence::NativeText));
+    redo_->setToolTip(redo_->text() + "\t" + redo_->shortcut().toString(QKeySequence::NativeText));
     duplicate_->setEnabled(!selection_.empty());
     rename_->setEnabled(selection_.size() == 1);
     auto title = text(editor_.project().name);
