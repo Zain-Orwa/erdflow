@@ -451,6 +451,28 @@ int main(int argc, char** argv) {
             settle();
         }
 
+        // A narrow window must shed what it can spare rather than let tools run
+        // off the end of the toolbar where they cannot be reached.
+        {
+            auto* bar = child<QToolBar>(window, "modelTools");
+            const auto tools = bar->actions().size();
+            window.resize(1400, 820);
+            settle();
+            require(bar->toolButtonStyle() == Qt::ToolButtonTextBesideIcon, "A wide window shows the names");
+            const auto wide = bar->iconSize().width();
+
+            window.resize(700, 620);
+            settle();
+            require(bar->toolButtonStyle() == Qt::ToolButtonIconOnly, "A narrow one drops the names first");
+            require(bar->iconSize().width() < wide, "And then some of the icons' size");
+            require(bar->actions().size() == tools, "But loses no tool on the way down");
+
+            window.resize(1400, 820);
+            settle();
+            require(bar->toolButtonStyle() == Qt::ToolButtonTextBesideIcon, "Widening brings the names back");
+            require(bar->iconSize().width() == wide, "And the size with them");
+        }
+
         // The two menu buttons are added to the toolbar as widgets, so nothing
         // makes them follow it: they have to ask for the icon themselves.
         for (const char* menu_button : {"isaButton", "connectButton"}) {

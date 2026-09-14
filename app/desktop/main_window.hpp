@@ -38,6 +38,7 @@ public:
 
 protected:
     void closeEvent(QCloseEvent* event) override;
+    void resizeEvent(QResizeEvent* event) override;
     bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
@@ -68,6 +69,10 @@ private:
     ThemeId theme_ = ThemeId::OfficeLight;
     ThemeId committed_theme_ = ThemeId::OfficeLight;
     void apply_appearance(ThemeId id);
+    // Fits the toolbar to the width there is, rather than letting it run off
+    // the end of the window.
+    void fit_toolbar();
+    [[nodiscard]] int icon_pixels() const;
     IconMode icon_mode_ = IconMode::Normal;
     std::map<IconMode, QAction*> icon_mode_actions_;
     // Generalization and specialization share one toolbar entry; this is the

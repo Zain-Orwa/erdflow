@@ -28,6 +28,7 @@
 #include <QSignalBlocker>
 #include <QStandardItemModel>
 #include <QStatusBar>
+#include <QResizeEvent>
 #include <QToolBar>
 #include <QToolButton>
 #include <QTreeView>
@@ -100,7 +101,10 @@ MainWindow::MainWindow(application::Editor& editor, application::ProjectStore& s
     : QMainWindow(parent), ids_(ids), editor_(editor), store_(store) {
     setObjectName("mainWindow");
     resize(1440, 920);
-    setMinimumSize(960, 620);
+    // Small enough to be useful on a narrow screen. What the window cannot do
+    // is stay this size and keep everything at full width, so the toolbar gives
+    // up its labels before the window gives up its tools.
+    setMinimumSize(560, 460);
     build_shell();
     build_actions();
     canvas_->on_edit = [this](const auto& result) { show_result(result); };
@@ -165,7 +169,7 @@ void MainWindow::build_shell() {
     explorer_->setHeaderHidden(true);
     explorer_->setSelectionMode(QAbstractItemView::ExtendedSelection);
     explorer_->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    explorer_->setMinimumWidth(200);
+    explorer_->setMinimumWidth(120);
     explorer_->setUniformRowHeights(true);
     explorer_model_ = new QStandardItemModel(this);
     explorer_->setModel(explorer_model_);
@@ -194,7 +198,7 @@ void MainWindow::build_shell() {
     properties_dock->setObjectName("propertiesDock");
     properties_ = new QScrollArea(properties_dock);
     properties_->setWidgetResizable(true);
-    properties_->setMinimumWidth(290);
+    properties_->setMinimumWidth(180);
     properties_->setFrameShape(QFrame::NoFrame);
     properties_dock->setWidget(properties_);
     addDockWidget(Qt::RightDockWidgetArea, properties_dock);
@@ -420,7 +424,7 @@ void MainWindow::build_actions() {
     // symbols can be recognised rather than remembered from a name.
     auto* notation_separator = toolbar->addSeparator();
     auto* notation_label = new QLabel("  Notation ", toolbar);
-    notation_label->setObjectName("hint");
+    notation_label->setObjectName("notationLabel");
     toolbar->addWidget(notation_label);
     notation_box_ = new QComboBox(toolbar);
     notation_box_->setObjectName("notationPicker");
@@ -973,6 +977,40 @@ void MainWindow::choose_tool(Tool tool, bool locked) {
     refresh_tool_labels();
 }
 
+int MainWindow::icon_pixels() const {
+    auto* toolbar = findChild<QToolBar*>("modelTools");
+    return toolbar ? toolbar->iconSize().width() : 34;
+}
+
+void MainWindow::resizeEvent(QResizeEvent* event) {
+    QMainWindow::resizeEvent(event);
+    fit_toolbar();
+}
+
+// A tool that has fallen off the end of the toolbar may as well not exist, so
+// the toolbar sheds what it can spare before it sheds a tool: first the labels,
+// which cost the most width, and then some of the icons' size. The thresholds
+// are on the window rather than on the toolbar's own width, which changes as a
+// result of this and would otherwise chase itself.
+void MainWindow::fit_toolbar() {
+    auto* toolbar = findChild<QToolBar*>("modelTools");
+    if (!toolbar) return;
+    const auto available = width();
+    const auto style = available >= 1180 ? Qt::ToolButtonTextBesideIcon : Qt::ToolButtonIconOnly;
+    const auto size = available >= 900 ? 34 : 26;
+    if (toolbar->toolButtonStyle() == style && toolbar->iconSize().width() == size) return;
+    toolbar->setToolButtonStyle(style);
+    toolbar->setIconSize(QSize(size, size));
+    for (const char* named : {"isaButton", "connectButton", "themeButton"})
+        if (auto* button = findChild<QToolButton*>(named)) {
+            button->setToolButtonStyle(style);
+            button->setIconSize(toolbar->iconSize());
+        }
+    if (notation_box_) notation_box_->setVisible(style == Qt::ToolButtonTextBesideIcon);
+    if (auto* label = findChild<QLabel*>("notationLabel")) label->setVisible(notation_box_ && notation_box_->isVisible());
+    refresh_icons();
+}
+
 void MainWindow::set_icon_mode(IconMode mode) {
     icon_mode_ = mode;
     QSettings().setValue("iconMode", icon_mode_key(mode));
@@ -1006,8 +1044,8 @@ void MainWindow::set_theme(ThemeId id) {
 void MainWindow::refresh_icons() {
     const auto& colors = theme(theme_);
     for (const auto& [action, glyph] : action_glyphs_)
-        action->setIcon(glyph_icon(glyph, colors, 34, icon_mode_));
-    if (theme_button_) theme_button_->setIcon(glyph_icon(Glyph::Theme, colors, 34, icon_mode_));
+        action->setIcon(glyph_icon(glyph, colors, icon_pixels(), icon_mode_));
+    if (theme_button_) theme_button_->setIcon(glyph_icon(Glyph::Theme, colors, icon_pixels(), icon_mode_));
     if (notation_box_) {
         for (int index = 0; index < notation_box_->count(); ++index)
             notation_box_->setItemIcon(index, QIcon(canvas_->notation_preview(
