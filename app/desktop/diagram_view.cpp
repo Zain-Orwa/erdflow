@@ -666,7 +666,10 @@ public:
     void paint(QPainter* painter, const QStyleOptionGraphicsItem*, QWidget*) override {
         painter->setRenderHint(QPainter::Antialiasing);
         const QColor ink = isSelected() ? selection_ : highlighted ? text_ : connector_;
-        const qreal weight = isSelected() ? 3.4 : highlighted ? 3.0 : 1.6;
+        // A connector is the thing a reader traces with their eye, so it is
+        // drawn heavily enough to follow across a crowded diagram rather than
+        // as the hairline it used to be.
+        const qreal weight = isSelected() ? 4.0 : highlighted ? 3.4 : 2.2;
         painter->setPen(QPen(ink, weight));
         painter->setBrush(Qt::NoBrush);
         if (descriptor.relationship && notation == Notation::Chen && descriptor.participation == Participation::Total) {
@@ -1318,6 +1321,14 @@ void DiagramView::set_line_style(LineStyle style) {
 }
 LineStyle DiagramView::line_style() const { return impl_->style; }
 
+// Both pickers draw a sample of a line. Drawn in the connector's own muted
+// grey at the canvas weight, those samples came out as hairlines that could not
+// be told apart in a menu, so they use the theme's accent and a heavier stroke:
+// a sample has to read as the thing it stands for, not match it pixel for pixel.
+namespace {
+constexpr qreal preview_weight = 2.8;
+}
+
 QPixmap DiagramView::line_style_preview(LineStyle style, QSize size) const {
     const auto& colors = theme(impl_->theme_id);
     QPixmap pixmap(size * devicePixelRatioF());
@@ -1325,8 +1336,8 @@ QPixmap DiagramView::line_style_preview(LineStyle style, QSize size) const {
     pixmap.fill(Qt::transparent);
     QPainter painter(&pixmap);
     painter.setRenderHint(QPainter::Antialiasing);
-    QPen pen(colors.connector, 1.6);
-    pen.setCosmetic(true);
+    QPen pen(colors.accent, preview_weight);
+    pen.setCapStyle(Qt::RoundCap);
     painter.setPen(pen);
     painter.setBrush(Qt::NoBrush);
     const QPointF from(4, size.height() - 4.0);
@@ -1351,11 +1362,11 @@ QPixmap DiagramView::notation_preview(Notation notation, QSize size) const {
     const qreal middle = size.height() / 2.0;
     // A mandatory "many" end exercises both symbols in every notation.
     const QPointF end(size.width() - 6.0, middle);
-    QPen line(colors.connector, 1.6);
-    line.setCosmetic(true);
+    QPen line(colors.accent, preview_weight);
+    line.setCapStyle(Qt::RoundCap);
     painter.setPen(line);
     painter.drawLine(QPointF(4, middle), end);
-    draw_participant_end(&painter, notation, true, true, end, QPointF(-1, 0), colors.connector, colors.canvas);
+    draw_participant_end(&painter, notation, true, true, end, QPointF(-1, 0), colors.accent, colors.canvas);
     if (notation == Notation::Chen || notation == Notation::MinMax) {
         auto font = painter.font();
         font.setPointSizeF(9);

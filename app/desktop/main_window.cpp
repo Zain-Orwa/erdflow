@@ -214,6 +214,12 @@ void MainWindow::build_shell() {
 }
 
 namespace {
+// Both pickers show a sample of a line. The sizes live here rather than at each
+// call site, which is what keeps the icon a widget asks for the same size as the
+// one it is later redrawn at when the theme changes.
+constexpr QSize line_style_sample{48, 24};
+constexpr QSize notation_sample{72, 24};
+
 QString isa_label(Tool mode) {
     return mode == Tool::Generalization ? QStringLiteral("Generalization") : QStringLiteral("Specialization");
 }
@@ -353,7 +359,7 @@ void MainWindow::build_actions() {
     auto* line_menu = new QMenu(this);
     for (const auto style : {LineStyle::Curved, LineStyle::Straight}) {
         const QString label = style == LineStyle::Straight ? "Straight lines" : "Curved lines";
-        auto* entry = line_menu->addAction(QIcon(canvas_->line_style_preview(style, QSize(34, 18))), label);
+        auto* entry = line_menu->addAction(QIcon(canvas_->line_style_preview(style, line_style_sample)), label);
         entry->setCheckable(true);
         entry->setChecked(style == canvas_->line_style());
         entry->setObjectName(style == LineStyle::Straight ? "lineStraight" : "lineCurved");
@@ -399,10 +405,10 @@ void MainWindow::build_actions() {
     toolbar->addWidget(notation_label);
     notation_box_ = new QComboBox(toolbar);
     notation_box_->setObjectName("notationPicker");
-    notation_box_->setIconSize(QSize(58, 18));
+    notation_box_->setIconSize(notation_sample);
     notation_box_->setToolTip("How each participant's minimum and maximum are drawn.");
     for (const auto& [style, label] : notation_styles())
-        notation_box_->addItem(QIcon(canvas_->notation_preview(style, QSize(58, 18))), label,
+        notation_box_->addItem(QIcon(canvas_->notation_preview(style, notation_sample)), label,
                                QVariant::fromValue(static_cast<int>(style)));
     notation_box_->setCurrentIndex(static_cast<int>(canvas_->notation()));
     connect(notation_box_, &QComboBox::currentIndexChanged, this, [this](int index) {
@@ -919,10 +925,10 @@ void MainWindow::refresh_icons() {
     if (notation_box_) {
         for (int index = 0; index < notation_box_->count(); ++index)
             notation_box_->setItemIcon(index, QIcon(canvas_->notation_preview(
-                static_cast<Notation>(index), QSize(58, 18))));
+                static_cast<Notation>(index), notation_sample)));
     }
     for (const auto& [style, action] : line_actions_)
-        action->setIcon(QIcon(canvas_->line_style_preview(style, QSize(34, 18))));
+        action->setIcon(QIcon(canvas_->line_style_preview(style, line_style_sample)));
 }
 
 void MainWindow::refresh_tool_labels() {

@@ -40,6 +40,14 @@ bool blocks(const domain::Project& project) {
     const auto issues = validate(project);
     return std::any_of(issues.begin(), issues.end(), [](const auto& issue) { return issue.blocks_save; });
 }
+// A grab is in device pixels, which on a high-density display is not the same
+// as the widget coordinates a scene point maps to. Indexing one with the other
+// reads the wrong pixel, and only on such a display, so every pixel probe goes
+// through here rather than depending on the machine running the test.
+QPoint device_point(const QImage& image, const QPoint& widget_point) {
+    const auto ratio = image.devicePixelRatio();
+    return QPoint(static_cast<int>(widget_point.x() * ratio), static_cast<int>(widget_point.y() * ratio));
+}
 QGraphicsItem* find_node(desktop::DiagramView& view, const QString& name) {
     for (auto* item : view.scene()->items())
         if (item->zValue() > 0 && item->toolTip() == name) return item;
@@ -629,7 +637,8 @@ void element_colour_tests() {
         auto* node = find_node(view, name);
         const auto box = node->sceneBoundingRect();
         const auto image = view.viewport()->grab().toImage();
-        return image.pixelColor(view.mapFromScene(box.center()) + QPoint(0, box.height() / 4));
+        return image.pixelColor(device_point(image, view.mapFromScene(box.center())
+                                                 + QPoint(0, static_cast<int>(box.height() / 4))));
     };
     const auto before = surface("Student");
 
@@ -674,7 +683,7 @@ void element_colour_tests() {
     const auto centre = view.mapFromScene(box.center());
     for (int dx = -50; dx <= 50 && !light_ink; ++dx)
         for (int dy = -8; dy <= 8 && !light_ink; ++dy) {
-            const auto pixel = image.pixelColor(centre + QPoint(dx, dy));
+            const auto pixel = image.pixelColor(device_point(image, centre + QPoint(dx, dy)));
             if (pixel.red() > 200 && pixel.green() > 200 && pixel.blue() > 200) light_ink = true;
         }
     require(light_ink, "A label on a dark surface is written in light ink");
@@ -741,6 +750,62 @@ void extend_selection_tests() {
     require(editor.project().entities.size() == 1, "Delete removes everything selected");
     require(editor.project().entities.begin()->first == tutor, "And leaves what was not");
     (void)student;
+}
+
+
+// The two pickers show a sample of a line. Drawn at the canvas weight in the
+// connector's muted grey they came out as hairlines that could not be told
+// apart in a menu, so they are checked for being visible at all.
+void picker_sample_tests() {
+    SequentialIds ids;
+    application::Editor editor(ids);
+    desktop::DiagramView view(editor);
+    view.resize(800, 600);
+    view.show();
+    QApplication::processEvents();
+
+    // How much of a sample is actually drawn, and in what colour.
+    const auto drawn = [](const QPixmap& sample) {
+        const auto image = sample.toImage().convertToFormat(QImage::Format_ARGB32);
+        int opaque = 0;
+        for (int y = 0; y < image.height(); ++y)
+            for (int x = 0; x < image.width(); ++x)
+                if (qAlpha(image.pixel(x, y)) > 200) ++opaque;
+        return opaque;
+    };
+    const auto carries = [](const QPixmap& sample, const QColor& ink) {
+        const auto image = sample.toImage().convertToFormat(QImage::Format_ARGB32);
+        for (int y = 0; y < image.height(); ++y)
+            for (int x = 0; x < image.width(); ++x) {
+                const auto pixel = image.pixel(x, y);
+                if (qAlpha(pixel) < 200) continue;
+                if (std::abs(qRed(pixel) - ink.red()) < 24 && std::abs(qGreen(pixel) - ink.green()) < 24
+                    && std::abs(qBlue(pixel) - ink.blue()) < 24) return true;
+            }
+        return false;
+    };
+
+    for (const auto id : {desktop::ThemeId::OfficeLight, desktop::ThemeId::Dracula, desktop::ThemeId::Forest}) {
+        view.set_theme(id);
+        QApplication::processEvents();
+        const auto accent = desktop::theme(id).accent;
+        for (const auto style : {desktop::LineStyle::Curved, desktop::LineStyle::Straight}) {
+            const auto sample = view.line_style_preview(style, QSize(48, 24));
+            require(drawn(sample) > 60, "A line style sample is drawn heavily enough to see");
+            require(carries(sample, accent), "And in the theme's own accent, not a muted grey");
+        }
+        for (int notation = 0; notation <= static_cast<int>(desktop::Notation::MinMax); ++notation) {
+            const auto sample = view.notation_preview(static_cast<desktop::Notation>(notation), QSize(72, 24));
+            require(drawn(sample) > 60, "A notation sample is drawn heavily enough to see");
+            require(carries(sample, accent), "And in the theme's own accent");
+        }
+    }
+
+    // The two styles have to be distinguishable from one another, or the picker
+    // shows two samples that say the same thing.
+    const auto curved = view.line_style_preview(desktop::LineStyle::Curved, QSize(48, 24)).toImage();
+    const auto straight = view.line_style_preview(desktop::LineStyle::Straight, QSize(48, 24)).toImage();
+    require(curved != straight, "The curved and straight samples are told apart");
 }
 
 // A name must be editable on the element itself, not only in the properties
@@ -1023,12 +1088,14 @@ void inheritance_orientation_tests() {
     const auto background = render().pixel(2, 2);
 
     const auto pointing_down = render();
-    require(pointing_down.pixel(corner()) != background, "Specialising fills the top corner: the apex is at the bottom");
+    require(pointing_down.pixel(device_point(pointing_down, corner())) != background,
+            "Specialising fills the top corner: the apex is at the bottom");
 
     require(editor.set_inheritance_direction(isa, domain::Inheritance::Generalization), "Flip the direction");
     view.synchronize();
     const auto pointing_up = render();
-    require(pointing_up.pixel(corner()) == background, "Generalising leaves the top corner empty: the apex is at the top");
+    require(pointing_up.pixel(device_point(pointing_up, corner())) == background,
+            "Generalising leaves the top corner empty: the apex is at the top");
     require(pointing_down != pointing_up, "The two ISA directions are drawn differently");
 
     require(editor.set_inheritance_direction(isa, domain::Inheritance::Specialization), "Flip it back");
@@ -1390,6 +1457,7 @@ int main(int argc, char** argv) {
         lock_participant_tests();
         element_colour_tests();
         extend_selection_tests();
+        picker_sample_tests();
         inline_rename_tests();
         notation_tests();
         attribute_trunk_and_line_style_tests();
