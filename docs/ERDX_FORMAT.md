@@ -121,6 +121,7 @@ layout entry and preserves its semantic identity.
 | Participants | At most 10,000 participant records across the project |
 | JSON array size | At most 10,000 entries per array |
 | JSON nesting | At most 32 object/array levels |
+| JSON object fields | At most 16 distinct keys per object before parsing |
 | Names and roles | At most 512 UTF-8 bytes each |
 | Descriptions | At most 16,384 UTF-8 bytes each |
 | Canvas bounds | All rectangle edges between −100,000 and +100,000 |
@@ -195,3 +196,11 @@ identities, recursive participant IDs, incomplete drafts, unsupported fields and
 versions, duplicate keys, malformed Unicode, invalid references and enums,
 resource limits, failed-save destination preservation, and failed-open session
 preservation. These tests use temporary directories and the real Qt adapter.
+
+Field names are unescaped by the loader rather than by a parser call per key,
+so `escaped field name decoding` pins that decoder against JSON: escaped and
+plain spellings of one name collide as duplicates, a surrogate pair is refused
+for being an unsupported field, and unpaired surrogates and truncated,
+non-hexadecimal or unknown escapes are each refused by their own reported
+reason. See the [performance baseline](PERFORMANCE_BASELINE.md) for why the
+preflight avoids the parser.

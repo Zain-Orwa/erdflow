@@ -94,23 +94,96 @@ double number(const QJsonValue& value) {
 void require_valid(const Project& project) {
     for (const auto& issue : validate(project)) if (issue.blocks_save) invalid(text(issue.message));
 }
-void check_structure(const QByteArray& input) {
-    struct Scope {
-        char opener;
-        std::set<QString> keys;
+int hex_digit(char value) {
+    if (value >= '0' && value <= '9') return value - '0';
+    if (value >= 'a' && value <= 'f') return value - 'a' + 10;
+    if (value >= 'A' && value <= 'F') return value - 'A' + 10;
+    return -1;
+}
+
+// Canonical UTF-8 form of one object key, scanned within the token itself.
+// Invoking the JSON parser per key made rejecting a hostile 8 MiB file cost
+// about seventeen times a parse-only pass, so keys are unescaped directly.
+// The authoritative document parse below still validates JSON syntax, values,
+// and text encoding; this pass only has to agree on key identity.
+QByteArray key_text(const QByteArray& input, qsizetype open_quote, qsizetype close_quote) {
+    const auto* begin = input.constData() + open_quote + 1;
+    const auto length = close_quote - open_quote - 1;
+    if (!QByteArray::fromRawData(begin, length).contains('\\')) return {begin, length};
+    QString decoded;
+    decoded.reserve(length);
+    auto code_unit = [&](qsizetype at) {
+        int value = 0;
+        for (qsizetype digit = 0; digit < 4; ++digit) {
+            const auto parsed = hex_digit(begin[at + digit]);
+            if (parsed < 0) invalid("Invalid project JSON field name.");
+            value = value * 16 + parsed;
+        }
+        return static_cast<char16_t>(value);
     };
-    std::vector<Scope> scopes;
-    scopes.reserve(32);
+    for (qsizetype at = 0; at < length;) {
+        if (begin[at] != '\\') {
+            const auto run = at;
+            while (at < length && begin[at] != '\\') ++at;
+            decoded += QString::fromUtf8(begin + run, at - run);
+            continue;
+        }
+        if (++at >= length) invalid("Invalid project JSON field name.");
+        switch (const auto escape = begin[at++]; escape) {
+        case '"': decoded += QChar(u'"'); break;
+        case '\\': decoded += QChar(u'\\'); break;
+        case '/': decoded += QChar(u'/'); break;
+        case 'b': decoded += QChar(u'\b'); break;
+        case 'f': decoded += QChar(u'\f'); break;
+        case 'n': decoded += QChar(u'\n'); break;
+        case 'r': decoded += QChar(u'\r'); break;
+        case 't': decoded += QChar(u'\t'); break;
+        case 'u': {
+            if (length - at < 4) invalid("Invalid project JSON field name.");
+            const auto leading = code_unit(at);
+            at += 4;
+            if (QChar::isLowSurrogate(leading))
+                invalid("A project field name contains an unpaired Unicode surrogate.");
+            decoded += QChar(leading);
+            if (!QChar::isHighSurrogate(leading)) break;
+            if (length - at < 6 || begin[at] != '\\' || begin[at + 1] != 'u')
+                invalid("A project field name contains an unpaired Unicode surrogate.");
+            const auto trailing = code_unit(at + 2);
+            if (!QChar::isLowSurrogate(trailing))
+                invalid("A project field name contains an unpaired Unicode surrogate.");
+            at += 6;
+            decoded += QChar(trailing);
+            break;
+        }
+        default: invalid("Invalid project JSON field name.");
+        }
+    }
+    return decoded.toUtf8();
+}
+
+void check_structure(const QByteArray& input) {
+    // Objects are capped at sixteen keys, so a linear scan over a reused buffer
+    // settles duplicates without building an ordered container per object. A
+    // hostile file can contain a million objects; the scopes are therefore
+    // pooled by depth and only their contents are cleared.
+    struct Scope {
+        char opener = 0;
+        std::vector<QByteArray> keys;
+    };
+    std::vector<Scope> scopes(32);
+    std::size_t depth = 0;
     auto whitespace = [](char ch) { return ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r'; };
     for (qsizetype i = 0; i < input.size(); ++i) {
         const char ch = input[i];
         if (ch == '{' || ch == '[') {
-            if (scopes.size() == 32) invalid("Project nesting exceeds the supported limit.");
-            scopes.push_back({ch, {}});
+            if (depth == 32) invalid("Project nesting exceeds the supported limit.");
+            scopes[depth].opener = ch;
+            scopes[depth].keys.clear();
+            ++depth;
         } else if (ch == '}' || ch == ']') {
-            if (scopes.empty() || scopes.back().opener != (ch == '}' ? '{' : '['))
+            if (depth == 0 || scopes[depth - 1].opener != (ch == '}' ? '{' : '['))
                 invalid("Invalid project JSON structure.");
-            scopes.pop_back();
+            --depth;
         } else if (ch == '"') {
             const qsizetype start = i++;
             while (i < input.size() && input[i] != '"') {
@@ -121,20 +194,17 @@ void check_structure(const QByteArray& input) {
             auto next = i + 1;
             while (next < input.size() && whitespace(input[next])) ++next;
             if (next == input.size() || input[next] != ':') continue;
-            if (scopes.empty() || scopes.back().opener != '{') invalid("Invalid project JSON field.");
-            // QJson normalizes duplicate object keys. Inspect keys first, using
-            // Qt's parser only to unescape each small key token; the full parse
-            // below remains authoritative for JSON syntax and value parsing.
-            QJsonParseError error;
-            const auto token = QByteArray("[") + input.mid(start, i - start + 1) + ']';
-            const auto decoded = QJsonDocument::fromJson(token, &error);
-            if (error.error != QJsonParseError::NoError || !decoded.isArray()) invalid("Invalid project JSON field name.");
-            const auto key = decoded.array().first().toString();
-            if (!key.isValidUtf16()) invalid("A project field name contains an unpaired Unicode surrogate.");
-            if (!scopes.back().keys.insert(key).second) invalid("Duplicate project JSON field.");
+            if (depth == 0 || scopes[depth - 1].opener != '{') invalid("Invalid project JSON field.");
+            auto& keys = scopes[depth - 1].keys;
+            // QJson normalizes duplicate object keys, so they are detected here
+            // before the authoritative parse discards the collision.
+            auto key = key_text(input, start, i);
+            if (std::find(keys.begin(), keys.end(), key) != keys.end())
+                invalid("Duplicate project JSON field.");
+            keys.push_back(std::move(key));
             // Current objects have at most six fields. This conservative cap
             // bounds preflight bookkeeping for hostile objects before parsing.
-            if (scopes.back().keys.size() > 16) invalid("Unsupported project fields.");
+            if (keys.size() > 16) invalid("Unsupported project fields.");
         }
     }
 }

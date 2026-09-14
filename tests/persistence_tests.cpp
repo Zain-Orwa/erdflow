@@ -63,6 +63,13 @@ void reject(const QByteArray& input) {
     CHECK(!result);
     CHECK(!result.error.empty());
 }
+// Several unrelated rules can refuse the same document, so cases that pin one
+// specific rule assert the reported reason instead of only the refusal.
+void reject_because(const QByteArray& input, const std::string& reason) {
+    const auto result = ErdxProjectStore::decode(input);
+    CHECK(!result);
+    CHECK(result.error.find(reason) != std::string::npos);
+}
 void change_project(QJsonObject& root, const std::function<void(QJsonObject&)>& change) {
     auto project = root["project"].toObject();
     change(project);
@@ -232,6 +239,40 @@ void strict_version_and_field_contract() {
     reject(duplicate);
 }
 
+// Field names are unescaped by the loader itself rather than by a parser
+// invocation per key. These cases pin that decoder's agreement with JSON.
+void escaped_field_names() {
+    Fixture fixture;
+    // Every simple escape decodes to the documented character, so an escaped
+    // spelling of a supported name stays a duplicate of its plain spelling.
+    for (const auto& escaped : {QByteArray("\\u0066ormat"), QByteArray("\\u0066\\u006frmat")}) {
+        auto duplicate = bytes(fixture.document());
+        duplicate.replace("\"format\":", "\"" + escaped + "\":\"erdflow\",\"format\":");
+        reject(duplicate);
+    }
+    // A surrogate pair in a field name is well-formed text, so it must be
+    // refused for being an unsupported field rather than for being malformed.
+    auto raw = bytes(fixture.document());
+    raw.replace("\"format\":", "\"\\ud83d\\udcda\":1,\"format\":");
+    reject_because(raw, "unsupported project fields");
+    // Unpaired surrogates are a decoding fault, reported as such.
+    for (const auto& broken : {QByteArray("\\ud800"), QByteArray("\\udc00"), QByteArray("\\ud83d\\u0061")}) {
+        raw = bytes(fixture.document());
+        raw.replace("\"format\":", "\"" + broken + "\":1,\"format\":");
+        reject_because(raw, "unpaired Unicode surrogate");
+    }
+    // Truncated, non-hexadecimal and unknown escapes are decoding faults. A
+    // dangling escape cannot reach the decoder: it would consume the closing
+    // quote, so the scanner reports an unterminated string instead.
+    for (const auto& broken : {QByteArray("\\u00"), QByteArray("\\uzzzz"), QByteArray("\\q")}) {
+        raw = bytes(fixture.document());
+        raw.replace("\"format\":", "\"" + broken + "\":1,\"format\":");
+        reject_because(raw, "Invalid project JSON field name");
+    }
+    // A valid document must still load once escaped names are handled here.
+    CHECK(ErdxProjectStore::decode(bytes(fixture.document())));
+}
+
 void invalid_identifiers_references_and_enums() {
     Fixture fixture;
     const auto valid_id = uuid_text(fixture.employee.value);
@@ -395,6 +436,7 @@ int main() {
         {"incomplete draft save/open", incomplete_models_save_and_open},
         {"malformed JSON and Unicode", malformed_json_and_text},
         {"strict version and field contract", strict_version_and_field_contract},
+        {"escaped field name decoding", escaped_field_names},
         {"invalid IDs, references, enums and layout", invalid_identifiers_references_and_enums},
         {"bounded input and structural depth", resource_limits},
         {"failed saves preserve destination", failed_saves_preserve_existing_destination},
