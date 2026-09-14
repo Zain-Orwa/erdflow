@@ -14,13 +14,33 @@
 </p>
 
 <p align="center">
-  <img alt="Status" src="https://img.shields.io/badge/status-architecture%20phase-blue">
+  <img alt="Status" src="https://img.shields.io/badge/status-conceptual%20prototype-blue">
   <img alt="Platform" src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-0a84ff">
   <img alt="Desktop First" src="https://img.shields.io/badge/focus-desktop--first-1f9d55">
   <img alt="License" src="https://img.shields.io/badge/license-MIT-green">
 </p>
 
 ---
+
+## Current implementation
+
+A working single-page Chen Conceptual ERD editor: entities, attributes,
+relationships, cardinality/participation, Explorer/Properties, undo/redo,
+and versioned `.erdx` save/load. Advanced conceptual semantics and downstream
+Schema, Physical, SQL, and Data workspaces are still planned.
+
+Build with CMake 3.21+, C++20, and Qt 6.9+:
+
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+cmake --build build --parallel
+ctest --test-dir build --output-on-failure
+./build/erdflow --example
+```
+
+Read the [implemented features and remaining work](docs/IMPLEMENTATION_STATUS.md),
+[development guide](docs/DEVELOPMENT.md), and [project format](docs/ERDX_FORMAT.md).
+The product vision and artwork below include future capabilities.
 
 ## Overview
 
@@ -175,3 +195,20 @@ Current User-Edited Model
 New Candidate
         ↓
 Reviewable Change Proposal
+```
+
+
+## Documentation
+
+- [Product and system quality requirements](docs/1.ERDFlow_PRODUCT.md)
+- [Architecture](docs/2.ERDFlow_ARCHITECTURE.md)
+- [Target domain model](docs/3.ERDFlow_DOMAIN_MODEL.md)
+- [Scale strategy](docs/4.ERDFlow_SCALE.md)
+- [Roadmap](docs/5.ERDFlow_ROADMAP.md)
+- [Architecture review](docs/PHASE_0_REVIEW.md)
+- [Current implementation choices](docs/adr/ADR-014-CONCEPTUAL-EDITOR-FOUNDATION.md)
+
+The current development build has been verified on macOS arm64. Windows/Linux
+support and release packaging remain unverified. The project is released under
+the [MIT License](LICENSE); a dependency/module license review for
+distribution has not yet been performed.
