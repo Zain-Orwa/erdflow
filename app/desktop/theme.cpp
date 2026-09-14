@@ -224,7 +224,7 @@ QLabel#hint { color: @muted@; font-size: 12px; }
 QWidget#workspaceHeader { background: @panel@; border-bottom: 1px solid @border@; }
 QLabel#workspaceBadge { color: @accent@; font-size: 11px; font-weight: 700; padding-right: 10px; }
 QLabel#documentTitle { color: @text@; font-size: 13px; font-weight: 600; }
-QLabel#propertyHeading { color: @accent@; font-size: 13px; font-weight: 600; }
+QLabel#propertyHeading { color: @accent@; font-size: 15px; font-weight: 800; padding-bottom: 2px; }
 QWidget#participantCard { background: @panel@; border: 1px solid @border@; border-radius: 2px; }
 QTabBar::tab { background: @window@; color: @text@; border: 1px solid @border@; padding: 6px 14px; }
 QTabBar::tab:selected { background: @base@; color: @text@; border-bottom: 2px solid @accent@; }

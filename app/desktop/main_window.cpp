@@ -597,16 +597,12 @@ void MainWindow::refresh_properties() {
     const auto& project = editor_.project();
     auto* heading = new QLabel(kind_label(ref), panel);
     heading->setObjectName("propertyHeading");
-    // The panel wears the colour the element is drawn with, so the two read as
-    // one object rather than as two things that share a name. Both the heading
-    // and the name field are filled with it rather than lettered in it: a colour
-    // chosen to fill a shape is not one that can be read as small type, and the
-    // ink over each is picked against the colour itself.
+    // The heading says what kind of thing this is, so it stays a title and is
+    // left to the theme. Only the name carries the element's own colour: it is
+    // the box holding the thing being named, and colouring the kind as well
+    // would say the same thing twice and leave the panel shouting.
     const auto surface = surface_of(project, theme(theme_), ref);
     const auto ink = readable_on(surface);
-    heading->setStyleSheet(QStringLiteral(
-        "QLabel#propertyHeading { background: %1; color: %2; border-radius: 4px; padding: 4px 9px; }")
-        .arg(surface.name(), ink.name()));
     layout->addWidget(heading);
     auto* form = new QFormLayout;
     form->setRowWrapPolicy(QFormLayout::WrapAllRows);

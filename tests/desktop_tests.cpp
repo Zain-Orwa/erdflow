@@ -370,13 +370,14 @@ int main(int argc, char** argv) {
             const auto entity = window.editor().project().entities.begin()->first;
             window.canvas()->select_elements({domain::ElementRef{entity}});
             settle();
-            // With no colour of its own, the element still wears the one the
-            // theme draws it with, so the panel always matches the canvas.
-            const auto themed = child<QLabel>(window, "propertyHeading")->styleSheet();
+            // The name field wears the colour the element is drawn with, even
+            // when that colour came from the theme rather than from a choice.
             const auto entity_fill = desktop::theme(window.canvas()->theme_id()).entity_fill.name();
-            require(themed.contains(entity_fill), "An uncoloured element wears its theme colour");
             require(child<QLineEdit>(window, "elementName")->styleSheet().contains(entity_fill),
-                    "And so does the box its name is typed into");
+                    "The name box wears the element's theme colour");
+            // The heading says what kind of thing this is and stays a title.
+            require(child<QLabel>(window, "propertyHeading")->styleSheet().isEmpty(),
+                    "The kind heading is left to the theme");
 
             require(bool(editor.recolour({domain::ElementRef{entity}}, domain::Colour{0x20, 0x20, 0x30})),
                     "Colour the entity a dark shade");
@@ -384,11 +385,11 @@ int main(int argc, char** argv) {
             settle();
             window.canvas()->select_elements({domain::ElementRef{entity}});
             settle();
-            const auto sheet = child<QLabel>(window, "propertyHeading")->styleSheet();
-            require(sheet.contains("#202030"), "The heading is filled with the element's own colour");
+            const auto sheet = child<QLineEdit>(window, "elementName")->styleSheet();
+            require(sheet.contains("#202030"), "The name box is filled with the element's own colour");
             require(sheet.contains("#ffffff"), "And written in ink chosen against it, not against the theme");
-            require(child<QLineEdit>(window, "elementName")->styleSheet().contains("#202030"),
-                    "The name field is filled with it too");
+            require(child<QLabel>(window, "propertyHeading")->styleSheet().isEmpty(),
+                    "The heading still carries no colour of the element's");
             require(bool(editor.undo()), "Undo the colour");
         }
 
