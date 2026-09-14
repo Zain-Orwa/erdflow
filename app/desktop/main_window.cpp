@@ -433,38 +433,6 @@ void MainWindow::build_actions() {
     });
     toolbar->addWidget(notation_box_);
 
-    // The same tools again, down the side, for anyone who would rather read a
-    // list than scan a row. They are the very actions the toolbar holds, not
-    // copies, so a tool chosen in one place shows as chosen in both.
-    auto* palette_dock = new QDockWidget("Tools", this);
-    palette_dock->setObjectName("toolPaletteDock");
-    tool_palette_ = new QToolBar(palette_dock);
-    tool_palette_->setObjectName("diagramTools");
-    tool_palette_->setOrientation(Qt::Vertical);
-    tool_palette_->setMovable(false);
-    tool_palette_->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-    for (const auto tool : {Tool::Select, Tool::Entity, Tool::Attribute, Tool::Relationship}) {
-        if (const auto found = tool_actions_.find(tool); found != tool_actions_.end())
-            tool_palette_->addAction(found->second);
-    }
-    tool_palette_->addAction(isa_action_);
-    if (const auto found = tool_actions_.find(Tool::Connect); found != tool_actions_.end())
-        tool_palette_->addAction(found->second);
-    if (const auto found = tool_actions_.find(Tool::Pan); found != tool_actions_.end())
-        tool_palette_->addAction(found->second);
-    tool_palette_->addSeparator();
-    // Folding leaves the icons, which is what the palette is mostly for; the
-    // names are the part that costs width.
-    fold_palette_ = tool_palette_->addAction("Fold", this, [this] {
-        const bool folded = tool_palette_->toolButtonStyle() == Qt::ToolButtonTextBesideIcon;
-        tool_palette_->setToolButtonStyle(folded ? Qt::ToolButtonIconOnly : Qt::ToolButtonTextBesideIcon);
-        fold_palette_->setText(folded ? "Unfold" : "Fold");
-        QSettings().setValue("toolPaletteFolded", folded);
-    });
-    fold_palette_->setObjectName("foldPalette");
-    palette_dock->setWidget(tool_palette_);
-    addDockWidget(Qt::LeftDockWidgetArea, palette_dock);
-
     auto* view = findChild<QMenu*>("viewMenu");
     view->addSeparator();
     view->addAction(fit);
@@ -991,12 +959,6 @@ void MainWindow::choose_tool(Tool tool, bool locked) {
     canvas_->set_tool(tool, locked);
     canvas_->setFocus();
     refresh_tool_labels();
-}
-
-void MainWindow::restore_tool_palette(bool folded) {
-    if (!tool_palette_ || !fold_palette_) return;
-    tool_palette_->setToolButtonStyle(folded ? Qt::ToolButtonIconOnly : Qt::ToolButtonTextBesideIcon);
-    fold_palette_->setText(folded ? "Unfold" : "Fold");
 }
 
 void MainWindow::set_icon_mode(IconMode mode) {
