@@ -1,6 +1,7 @@
 #include "application/editor.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <functional>
 #include <iostream>
@@ -62,6 +63,26 @@ bool blocks(const Project& project) {
 bool has_issue(const Project& project, const std::string& code) {
     const auto issues = validate(project);
     return std::any_of(issues.begin(), issues.end(), [&](const auto& issue) { return issue.code == code; });
+}
+
+// A failed graph edit must preserve the complete document and the pending redo.
+void check_rejection_preserves_history(Editor& editor, const std::function<EditResult()>& edit) {
+    const auto original = editor.project();
+    const auto revision = editor.revision();
+    const auto bytes = editor.history_bytes();
+    const auto undo_label = editor.undo_label();
+    const auto redo_label = editor.redo_label();
+    const auto dirty = editor.dirty();
+    const auto result = edit();
+    CHECK(!result);
+    CHECK(!result.error.empty());
+    CHECK(editor.project() == original);
+    CHECK(editor.revision() == revision);
+    CHECK(editor.history_bytes() == bytes);
+    CHECK(editor.undo_label() == undo_label);
+    CHECK(editor.redo_label() == redo_label);
+    CHECK(editor.dirty() == dirty);
+    CHECK(editor.can_redo());
 }
 
 void identity_and_work_in_progress() {
@@ -599,6 +620,171 @@ void associative_relationships_act_as_entities() {
     CHECK(has_issue(plain, "participant.not_associative"));
 }
 
+void associative_graph_branches_and_cycles() {
+    // Vary map iteration order as well as participant order: the cycle must be
+    // found even when A -> B is visited before the cyclic A -> C -> A branch.
+    std::array<unsigned, 4> order{0, 1, 2, 3};
+    do {
+        for (const bool reverse : {false, true}) {
+            TestIds ids;
+            Editor editor(ids);
+            const std::array<RelationshipId, 4> nodes{
+                relationship(editor), relationship(editor), relationship(editor), relationship(editor)};
+            const auto a = nodes[order[0]], b = nodes[order[1]], c = nodes[order[2]], d = nodes[order[3]];
+            for (const auto node : nodes) CHECK(editor.set_associative(node, true));
+            // Both branches share D, which is valid and must not look cyclic.
+            CHECK(editor.connect(a, ParticipantTarget{reverse ? c : b}));
+            CHECK(editor.connect(a, ParticipantTarget{reverse ? b : c}));
+            CHECK(editor.connect(b, ParticipantTarget{d}));
+            CHECK(editor.connect(c, ParticipantTarget{d}));
+            CHECK(!blocks(editor.project()));
+            CHECK(!has_issue(editor.project(), "participant.cycle"));
+
+            auto cyclic = editor.project();
+            cyclic.relationships.at(c).participants.push_back(
+                {ParticipantId{ids.next()}, ParticipantTarget{a}, Cardinality::Many, Participation::Partial, {}});
+            CHECK(has_issue(cyclic, "participant.cycle"));
+            CHECK(blocks(cyclic));
+
+            CHECK(editor.rename(a, "Pending redo"));
+            const auto redone = editor.project();
+            CHECK(editor.undo());
+            editor.mark_saved(editor.revision());
+            check_rejection_preserves_history(editor, [&] { return editor.connect(c, ParticipantTarget{a}); });
+            check_rejection_preserves_history(editor, [&] { return editor.replace_project(cyclic); });
+            CHECK(editor.redo());
+            CHECK(editor.project() == redone);
+        }
+    } while (std::next_permutation(order.begin(), order.end()));
+}
+
+void inheritance_graph_branches_and_cycles() {
+    // A inherits from B and C, which both inherit from D. Try every entity ID
+    // order and both orders of A's parents, so shared ancestors are always legal.
+    std::array<unsigned, 4> order{0, 1, 2, 3};
+    do {
+        for (const bool reverse : {false, true}) {
+            TestIds ids;
+            Editor editor(ids);
+            const std::array<EntityId, 4> nodes{entity(editor), entity(editor), entity(editor), entity(editor)};
+            const auto a = nodes[order[0]], b = nodes[order[1]], c = nodes[order[2]], d = nodes[order[3]];
+            const auto triangle = [&](std::optional<EntityId> parent) {
+                const auto result = editor.create_specialization("IS A", {}, Inheritance::Specialization);
+                CHECK(result && result.created);
+                const auto id = std::get<SpecializationId>(*result.created);
+                CHECK(editor.set_supertype(id, parent));
+                return id;
+            };
+            const auto root = triangle(d);
+            CHECK(editor.attach_subtype(root, b));
+            CHECK(editor.attach_subtype(root, c));
+            const auto first = triangle(reverse ? c : b);
+            const auto second = triangle(reverse ? b : c);
+            CHECK(editor.attach_subtype(first, a));
+            const auto before_diamond = editor.project();
+            CHECK(editor.attach_subtype(second, a));
+            const auto diamond = editor.project();
+            CHECK(!blocks(diamond));
+            CHECK(!has_issue(diamond, "specialization.cycle"));
+            CHECK(editor.undo());
+            CHECK(editor.project() == before_diamond);
+            CHECK(editor.redo());
+            CHECK(editor.project() == diamond);
+
+            const auto back_edge = triangle(a);
+            const auto unfinished = triangle({});
+            CHECK(editor.attach_subtype(unfinished, d));
+            auto cyclic = editor.project();
+            cyclic.specializations.at(back_edge).subtypes.push_back(d);
+            CHECK(has_issue(cyclic, "specialization.cycle"));
+            CHECK(blocks(cyclic));
+            CHECK(has_issue(editor.project(), "specialization.supertype.incomplete"));
+            CHECK(!blocks(editor.project()));
+
+            CHECK(editor.rename(a, "Pending redo"));
+            const auto redone = editor.project();
+            CHECK(editor.undo());
+            editor.mark_saved(editor.revision());
+            check_rejection_preserves_history(editor, [&] { return editor.attach_subtype(back_edge, d); });
+            check_rejection_preserves_history(editor, [&] { return editor.set_supertype(unfinished, a); });
+            check_rejection_preserves_history(editor, [&] { return editor.replace_project(cyclic); });
+            CHECK(editor.redo());
+            CHECK(editor.project() == redone);
+        }
+    } while (std::next_permutation(order.begin(), order.end()));
+}
+
+void deep_relationship_and_inheritance_graphs() {
+    TestIds ids;
+    Project relationships;
+    relationships.id = ProjectId{ids.next()};
+    Project inheritance;
+    inheritance.id = ProjectId{ids.next()};
+    std::vector<RelationshipId> relationship_ids;
+    std::vector<EntityId> entity_ids;
+    for (std::size_t i = 0; i < 2000; ++i) {
+        const RelationshipId rel{ids.next()};
+        relationship_ids.push_back(rel);
+        relationships.relationships.emplace(rel, Relationship{rel, "Associative", {}, true, {}});
+        relationships.layout.emplace(ElementRef{rel}, Rect{});
+        const EntityId ent{ids.next()};
+        entity_ids.push_back(ent);
+        inheritance.entities.emplace(ent, Entity{ent, "Entity", {}});
+        inheritance.layout.emplace(ElementRef{ent}, Rect{});
+    }
+    // The lowest IDs lead to the next highest, forcing the full depth to be
+    // visited before any vertex can finish. No recursive call stack is needed.
+    for (std::size_t i = 1; i < relationship_ids.size(); ++i) {
+        relationships.relationships.at(relationship_ids[i - 1]).participants.push_back(
+            {ParticipantId{ids.next()}, ParticipantTarget{relationship_ids[i]}, Cardinality::Many, Participation::Partial, {}});
+        const SpecializationId spec{ids.next()};
+        inheritance.specializations.emplace(spec, Specialization{spec, "IS A", {}, Inheritance::Specialization,
+                                                                  entity_ids[i], {entity_ids[i - 1]}});
+        inheritance.layout.emplace(ElementRef{spec}, Rect{});
+    }
+    CHECK(!blocks(relationships));
+    CHECK(!blocks(inheritance));
+    relationships.relationships.at(relationship_ids.back()).participants.push_back(
+        {ParticipantId{ids.next()}, ParticipantTarget{relationship_ids.front()}, Cardinality::Many, Participation::Partial, {}});
+    const SpecializationId spec{ids.next()};
+    inheritance.specializations.emplace(spec, Specialization{spec, "IS A", {}, Inheritance::Specialization,
+                                                              entity_ids.front(), {entity_ids.back()}});
+    inheritance.layout.emplace(ElementRef{spec}, Rect{});
+    CHECK(has_issue(relationships, "participant.cycle"));
+    CHECK(has_issue(inheritance, "specialization.cycle"));
+}
+
+void coloured_specialization_cascade_restores_exactly() {
+    TestIds ids;
+    Editor editor(ids);
+    const auto parent = entity(editor, "Person");
+    const auto child = entity(editor, "Student");
+    const auto result = editor.create_specialization("IS A", {20, 100, 96, 74}, Inheritance::Generalization);
+    CHECK(result && result.created);
+    const auto spec = std::get<SpecializationId>(*result.created);
+    CHECK(editor.set_supertype(spec, parent));
+    CHECK(editor.attach_subtype(spec, child));
+    CHECK(editor.recolour({ElementRef{spec}}, Colour{1, 2, 3}));
+    CHECK(editor.recolour({ElementRef{child}}, Colour{40, 50, 60}));
+    editor.mark_saved(editor.revision());
+    const auto before = editor.project();
+    CHECK(editor.erase({ElementRef{parent}}));
+    CHECK(!editor.project().entities.contains(parent));
+    CHECK(editor.project().entities.contains(child));
+    CHECK(!editor.project().specializations.contains(spec));
+    CHECK(!editor.project().layout.contains(ElementRef{spec}));
+    CHECK(!editor.project().colours.contains(ElementRef{spec}));
+    CHECK(editor.project().colours.at(ElementRef{child}) == (Colour{40, 50, 60}));
+    CHECK(!blocks(editor.project()));
+    const auto after = editor.project();
+    CHECK(editor.undo());
+    CHECK(editor.project() == before);
+    CHECK(!editor.dirty());
+    CHECK(editor.redo());
+    CHECK(editor.project() == after);
+    CHECK(editor.dirty());
+}
+
 // Generalization and specialization: one supertype, its subtypes, and the two
 // rules a later conversion needs in order to choose a relational mapping.
 void specializations_carry_inheritance_rules() {
@@ -762,6 +948,10 @@ int main() {
         {"connector shapes follow their link", connector_shapes_follow_their_link},
         {"hostile connector shapes", hostile_connector_shapes_are_rejected},
         {"associative relationships act as entities", associative_relationships_act_as_entities},
+        {"associative graph branches and cycles", associative_graph_branches_and_cycles},
+        {"inheritance graph branches and cycles", inheritance_graph_branches_and_cycles},
+        {"deep relationship and inheritance graphs", deep_relationship_and_inheritance_graphs},
+        {"coloured specialization cascade restores exactly", coloured_specialization_cascade_restores_exactly},
         {"specializations carry inheritance rules", specializations_carry_inheritance_rules},
         {"binary ratios and reversal", binary_ratios_and_reversal},
     };

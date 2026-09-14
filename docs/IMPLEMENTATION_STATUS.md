@@ -1,6 +1,7 @@
 # Implementation status
 
-**Updated:** 2026-09-14  
+**Updated:** 2026-09-15
+
 **Scope:** Part 1 — a single-page Conceptual ERD editor foundation.
 
 This is the record of implemented behavior. The numbered Product, Architecture,
@@ -12,9 +13,9 @@ not been built yet. Their presence in those documents is not a completion claim.
 - Native Qt window with modeling toolbar, Explorer, Properties, model checks,
   status/zoom display, and a university example.
 - Six themes covering both the application chrome and the diagram, chosen under
-  **View → Theme** and remembered between sessions. Toolbar and menu icons are
-  drawn from the active theme rather than loaded, so they follow it and need no
-  asset pipeline; each modelling tool wears its own Chen shape.
+  **View → Theme** and remembered between sessions. **View → Icons** chooses
+  between glyphs painted from the active theme and embedded SVG artwork with
+  light/dark variants; the icon choice is also remembered.
 - Entity rectangles, attribute ovals, relationship diamonds, names and descriptions.
 - Stable typed UUIDv7 IDs for projects, entities, attributes, relationships, and
   each relationship participant. Rename and undo preserve identity.
@@ -22,6 +23,9 @@ not been built yet. Their presence in those documents is not a completion claim.
   underline, composite children, multivalued double oval, derived dashed oval.
 - Per-participant `1`/`M` cardinality and partial/total participation. These
   represent `0..1`, `1..1`, `0..M`, and `1..M`.
+- A relationship side's context menu edits its constraints and can hide their
+  drawing without changing the stored cardinality or participation. Visibility
+  is undoable and saved with the participant.
 - A binary relationship's ratio — `1:1`, `1:M`, `M:1`, `M:M` — is pickable
   directly in Properties, writing both sides in one edit, with a **Reverse sides**
   button that swaps their constraints. Every notation reads the same participant
@@ -82,10 +86,16 @@ not been built yet. Their presence in those documents is not a completion claim.
   as one connection fanning out rather than several meeting the body separately.
 - Connectors are drawn curved or straight, chosen from the arrow on the Connect
   tool itself, with each option drawn as a sample rather than only named.
-- Connector shaping: select a link, drag its handle to bend it aside, double-click
-  to straighten. The bend is one undoable edit, is saved, and is dropped with the
-  link it belongs to. Dragging nodes follows the pointer; snap to grid is opt-in.
-- Versioned `.erdx` JSON save/load, currently format version 6. Versions 1 to 5
+- Connector shaping for attribute and participant links: select a link and drag
+  its handle to bend it, or drag the selected line to add route corners. Corners
+  can be moved and removed individually; double-clicking the line clears its
+  route or bend. The padlock pins or releases both endpoint joins. These changes
+  are undoable, saved, and removed with their link. ISA links retain their fixed
+  triangle anchors. Dragging nodes follows the pointer; snap to grid is opt-in.
+- Element colours can be set for one element or a selection from the context
+  menu, using a swatch or custom colour, and reset to the theme colour. Colour
+  changes are undoable and saved with the project.
+- Versioned `.erdx` JSON save/load, currently format version 10. Versions 1 to 9
   still open and upgrade on save. Incomplete but structurally valid diagrams
   can be saved. Invalid/unsupported files leave the open project intact.
 - Safe file replacement, Save/Discard/Cancel protection, focused text committed
@@ -107,7 +117,7 @@ geometry changes use **Apply position and size**.
 | 5 — Canvas | Implemented with QGraphicsView; incremental projection, incident-only connector updates while dragging, measured prototype. |
 | 6 — Basic Chen | Implemented; university example and desktop workflow tests. |
 | 7 — Cardinality | Implemented per participant, with correct entity-side labels. |
-| 8 — Participation | Implemented partial/total and one/many combinations on the same participant. A separate min/max text notation toggle is not implemented. |
+| 8 — Participation | Implemented partial/total and one/many combinations on the same participant, including a min–max notation option. |
 | 9 — Advanced attributes | Partial: composite, multivalued, derived implemented. Partial keys and combined kind semantics remain open with weak entities. |
 | 10–12 — Weak/ISA/associative | Partial: associative entities and ISA generalization/specialization implemented, including nesting and the disjoint/total rules. Weak entities and identifying relationships remain. |
 | 13–14 — Modes/readiness | Basic properties and structural checks exist. Convertible mode, logical types, key groups, and conversion-readiness policy are not implemented. |
@@ -151,9 +161,9 @@ group snap/bounds; stale gesture cancellation; and incident-only live connector 
 Weak entities/identifying relationships/partial keys; logical metadata and
 conversion readiness;
 multiple pages; cross-project clipboard; alignment/distribution; drag resize
-handles; connector endpoint handles and multi-point routing; search; export;
-autosave and recovery. Connectors carry one bend each, which is enough to route
-around an overlap but not to follow an arbitrary path. Attribute kinds currently
+handles; freely draggable connector endpoint handles; search; export;
+autosave and recovery. Connector joins can be pinned at their current positions,
+and attribute/participant links support multi-point routes. Attribute kinds currently
 form one exclusive enum, so composite keys or other combinations require a
 deliberate model/format decision.
 

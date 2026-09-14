@@ -1398,15 +1398,22 @@ void DiagramView::delete_selection() {
     const auto elements = selected_elements();
     std::vector<std::pair<RelationshipId, ParticipantId>> participants;
     std::vector<AttributeId> detached_attributes;
+    std::vector<application::Editor::InheritanceLink> detached_inheritance;
     for (auto* item : impl_->scene->selectedItems()) {
         if (const auto* edge = dynamic_cast<EdgeItem*>(item)) {
-            if (edge->descriptor.relationship)
+            // Review 2026-09-15, finding 1: every link that was not a
+            // participant was read as an attribute link, and an inheritance
+            // link threw bad_variant_access on delete. Each kind is now told
+            // apart by its key and cut in the same edit.
+            if (const auto* inheritance = std::get_if<InheritanceKey>(&edge->descriptor.key))
+                detached_inheritance.emplace_back(inheritance->specialization, inheritance->subtype);
+            else if (edge->descriptor.relationship)
                 participants.emplace_back(*edge->descriptor.relationship, std::get<ParticipantId>(edge->descriptor.key));
             else detached_attributes.push_back(std::get<AttributeId>(edge->descriptor.key));
         }
     }
-    if (!elements.empty() || !participants.empty() || !detached_attributes.empty())
-        impl_->publish(impl_->editor.erase(elements, participants, detached_attributes));
+    if (!elements.empty() || !participants.empty() || !detached_attributes.empty() || !detached_inheritance.empty())
+        impl_->publish(impl_->editor.erase(elements, participants, detached_attributes, detached_inheritance));
 }
 
 void DiagramView::cancel_interaction() {

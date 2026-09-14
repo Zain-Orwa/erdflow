@@ -104,9 +104,16 @@ public:
     // Passing no anchors unpins it. The bend is left alone either way.
     EditResult pin_connector(domain::ConnectorRef ref, std::optional<double> owner_anchor,
                              std::optional<double> child_anchor);
+    // Review 2026-09-15, finding 1: an inheritance link is selectable, so it
+    // can be deleted alongside anything else. Each entry names the triangle
+    // and the subtype whose link goes; no subtype means the link up to the
+    // supertype. They are detached in the same edit as the rest, so a mixed
+    // deletion stays one step of history.
+    using InheritanceLink = std::pair<domain::SpecializationId, std::optional<domain::EntityId>>;
     EditResult erase(const std::vector<domain::ElementRef>& elements,
                      const std::vector<std::pair<domain::RelationshipId, domain::ParticipantId>>& participants = {},
-                     const std::vector<domain::AttributeId>& detached_attributes = {});
+                     const std::vector<domain::AttributeId>& detached_attributes = {},
+                     const std::vector<InheritanceLink>& detached_inheritance = {});
     EditResult duplicate(const std::vector<domain::ElementRef>& elements, double dx = 32, double dy = 32);
     EditResult undo();
     EditResult redo();
