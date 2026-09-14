@@ -400,9 +400,35 @@ void MainWindow::build_actions() {
     tool_actions_[Tool::Connect] = connect_action;
     connect_button->installEventFilter(this);
 
-    // Notation is a reading choice people change often, and a submenu hides it.
-    // The picker sits in the toolbar and draws each option, so the cardinality
-    // symbols can be recognised rather than remembered from a name.
+
+    // Panning and framing are about looking rather than modelling, so they sit
+    // on the canvas by what they act on instead of in the row of drawing tools.
+    auto* pan_action = new QAction("Pan", this);
+    pan_action->setCheckable(true);
+    pan_action->setData("Pan");
+    pan_action->setObjectName("toolPan");
+    pan_action->setActionGroup(group);
+    tool_actions_[Tool::Pan] = pan_action;
+    action_glyphs_[pan_action] = Glyph::Pan;
+    connect(pan_action, &QAction::triggered, this, [this] { choose_tool(Tool::Pan, false); });
+
+    auto* fit = new QAction("Fit", this);
+    fit->setObjectName("viewFit");
+    fit->setShortcut(QKeySequence("Ctrl+0"));
+    connect(fit, &QAction::triggered, canvas_, &DiagramView::fit_diagram);
+    action_glyphs_[fit] = Glyph::Fit;
+
+    toolbar->addSeparator();
+    auto* check = toolbar->addAction("Check model", this, [this] {
+        finish_field_edit(); refresh_validation(); validation_dock_->show();
+    });
+    check->setObjectName("checkModel");
+    action_glyphs_[check] = Glyph::Check;
+
+    // Notation is a reading choice rather than a drawing tool, so it closes the
+    // toolbar rather than sitting among the tools. The picker draws each option,
+    // so the cardinality symbols can be recognised rather than remembered from a
+    // name, and the Theme button settles just ahead of it.
     notation_separator_ = toolbar->addSeparator();
     auto* notation_separator = notation_separator_;
     // No written label: each entry draws the notation it stands for, which says
@@ -431,30 +457,6 @@ void MainWindow::build_actions() {
         choose_notation(static_cast<Notation>(index));
     });
     notation_action_ = toolbar->addWidget(notation_box_);
-
-    // Panning and framing are about looking rather than modelling, so they sit
-    // on the canvas by what they act on instead of in the row of drawing tools.
-    auto* pan_action = new QAction("Pan", this);
-    pan_action->setCheckable(true);
-    pan_action->setData("Pan");
-    pan_action->setObjectName("toolPan");
-    pan_action->setActionGroup(group);
-    tool_actions_[Tool::Pan] = pan_action;
-    action_glyphs_[pan_action] = Glyph::Pan;
-    connect(pan_action, &QAction::triggered, this, [this] { choose_tool(Tool::Pan, false); });
-
-    auto* fit = new QAction("Fit", this);
-    fit->setObjectName("viewFit");
-    fit->setShortcut(QKeySequence("Ctrl+0"));
-    connect(fit, &QAction::triggered, canvas_, &DiagramView::fit_diagram);
-    action_glyphs_[fit] = Glyph::Fit;
-
-    toolbar->addSeparator();
-    auto* check = toolbar->addAction("Check model", this, [this] {
-        finish_field_edit(); refresh_validation(); validation_dock_->show();
-    });
-    check->setObjectName("checkModel");
-    action_glyphs_[check] = Glyph::Check;
 
     // A small raft of view controls over the bottom-right of the canvas, where
     // a diagram is framed and zoomed rather than across the window from it.
