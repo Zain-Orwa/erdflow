@@ -7,7 +7,7 @@
   </defs>
   <g fill="none" stroke="#bcc8fc" stroke-width="7.0" stroke-linecap="round" stroke-linejoin="round">
 
-        <path d="M40 34 L16 58 L40 82"/>
-        <path d="M18 58 H74 C96 58 110 74 110 92 C110 100 108 106 104 112"/>
+    <path d="M86.6 90.6 A32 32 0 1 0 32.0 68.0" stroke-width="8"/>
+    <path d="M32.0 86.0 L17.0 64.0 L47.0 64.0 Z" fill="#bcc8fc" stroke-width="3"/>
   </g>
 </svg>
