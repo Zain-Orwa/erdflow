@@ -74,6 +74,13 @@ public:
                                    domain::Cardinality maximum,
                                    domain::Participation participation,
                                    std::string role);
+    // A binary relationship's ratio is its two participants' maximums read
+    // together, so 1:1, 1:M, M:1 and M:M are set as one edit rather than two.
+    EditResult set_ratio(domain::RelationshipId relationship,
+                         domain::Cardinality first, domain::Cardinality second);
+    // Swap the constraints between the two participants, turning 1:M into M:1
+    // without having to work out which participant is listed first.
+    EditResult reverse_participants(domain::RelationshipId relationship);
     EditResult disconnect(domain::RelationshipId relationship, domain::ParticipantId participant);
     EditResult move(const std::map<domain::ElementRef, domain::Rect>& positions);
     // A connector carries one signed perpendicular bend. Passing no offset

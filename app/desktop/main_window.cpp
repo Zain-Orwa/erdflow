@@ -668,6 +668,45 @@ void MainWindow::refresh_properties() {
             show_result(editor_.set_associative(id, on, body));
         });
         layout->addWidget(associative);
+        // The ratio is the two maximums read together. Setting it here writes
+        // both participants at once, so every notation redraws consistently.
+        auto* ratio = new QComboBox(panel);
+        ratio->setObjectName("relationshipRatio");
+        const std::array<std::pair<Cardinality, Cardinality>, 4> ratios{{
+            {Cardinality::One, Cardinality::One}, {Cardinality::One, Cardinality::Many},
+            {Cardinality::Many, Cardinality::One}, {Cardinality::Many, Cardinality::Many}
+        }};
+        for (const auto& [first, second] : ratios)
+            ratio->addItem(QString("%1:%2").arg(first == Cardinality::One ? "1" : "M",
+                                                second == Cardinality::One ? "1" : "M"));
+        const bool binary = relationship.participants.size() == 2;
+        ratio->setEnabled(binary);
+        if (binary) {
+            const auto current = std::make_pair(relationship.participants[0].maximum,
+                                                relationship.participants[1].maximum);
+            ratio->setCurrentIndex(static_cast<int>(
+                std::find(ratios.begin(), ratios.end(), current) - ratios.begin()));
+        }
+        connect(ratio, &QComboBox::activated, this, [this, id = relationship.id, ratios](int index) {
+            if (refreshing_ || index < 0) return;
+            show_result(editor_.set_ratio(id, ratios[static_cast<std::size_t>(index)].first,
+                                              ratios[static_cast<std::size_t>(index)].second));
+        });
+        auto* reverse = new QPushButton("Reverse sides", panel);
+        reverse->setObjectName("reverseRelationship");
+        reverse->setEnabled(binary);
+        reverse->setToolTip("Swap the two sides' constraints, turning 1:M into M:1.");
+        connect(reverse, &QPushButton::clicked, this, [this, id = relationship.id] {
+            show_result(editor_.reverse_participants(id));
+        });
+        auto* ratio_form = new QFormLayout;
+        ratio_form->setRowWrapPolicy(QFormLayout::WrapAllRows);
+        ratio_form->addRow("Ratio", ratio);
+        layout->addLayout(ratio_form);
+        layout->addWidget(reverse);
+        layout->addWidget(hint(binary
+            ? "The ratio reads left to right in the order the sides are listed below, and matches whichever notation the toolbar is showing."
+            : "A ratio describes exactly two sides. Set each side's own constraints below.", panel));
         layout->addWidget(hint("Connect this relationship to entities, or to another relationship when this one is associative. Each connection has its own role and constraints.", panel));
         for (const auto& participant : relationship.participants) {
             auto* card = new QWidget(panel);

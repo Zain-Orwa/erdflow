@@ -18,6 +18,11 @@ not been built yet. Their presence in those documents is not a completion claim.
   underline, composite children, multivalued double oval, derived dashed oval.
 - Per-participant `1`/`M` cardinality and partial/total participation. These
   represent `0..1`, `1..1`, `0..M`, and `1..M`.
+- A binary relationship's ratio — `1:1`, `1:M`, `M:1`, `M:M` — is pickable
+  directly in Properties, writing both sides in one edit, with a **Reverse sides**
+  button that swaps their constraints. Every notation reads the same participant
+  records, so the picker and the drawing cannot disagree. A relationship with
+  other than two sides keeps only its per-side controls.
 - Four notations for reading those bounds, chosen from the toolbar picker or
   **View → Notation**, and
   drawn per participant end so each side stays correct as entities are moved:

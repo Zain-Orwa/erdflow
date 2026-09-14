@@ -679,6 +679,65 @@ void specializations_carry_inheritance_rules() {
     CHECK(!blocks(editor.project()));
 }
 
+// The four binary ratios are the two maximums read together. Setting one writes
+// both sides in a single edit, which is what keeps every notation consistent:
+// they all read the same participant records.
+void binary_ratios_and_reversal() {
+    TestIds ids;
+    Editor editor(ids);
+    const auto student = entity(editor, "Student");
+    const auto course = entity(editor, "Course");
+    const auto enrolled = relationship(editor, "Enrolled");
+    const auto first = connect(editor, enrolled, student);
+    const auto second = connect(editor, enrolled, course);
+
+    const auto sides = [&] { return editor.project().relationships.at(enrolled).participants; };
+    const auto maximums = [&] { return std::make_pair(sides()[0].maximum, sides()[1].maximum); };
+
+    // All four are reachable, each in one edit.
+    const std::pair<Cardinality, Cardinality> all[] = {
+        {Cardinality::One, Cardinality::One}, {Cardinality::One, Cardinality::Many},
+        {Cardinality::Many, Cardinality::One}, {Cardinality::Many, Cardinality::Many}};
+    for (const auto& [a, b] : all) {
+        const auto before = editor.revision();
+        CHECK(editor.set_ratio(enrolled, a, b));
+        CHECK(maximums() == std::make_pair(a, b));
+        CHECK(editor.revision() == before + 1);
+        CHECK(!blocks(editor.project()));
+    }
+    // Setting the ratio already in use is not an edit at all.
+    const auto settled = editor.revision();
+    CHECK(editor.set_ratio(enrolled, Cardinality::Many, Cardinality::Many));
+    CHECK(editor.revision() == settled);
+
+    // Participation is the other half of each side and is left alone.
+    CHECK(editor.update_participant(enrolled, first, Cardinality::One, Participation::Total, "student"));
+    CHECK(editor.set_ratio(enrolled, Cardinality::Many, Cardinality::One));
+    CHECK(sides()[0].participation == Participation::Total);
+    CHECK(sides()[0].role == "student");
+    CHECK(sides()[0].id == first && sides()[1].id == second);
+
+    // Reversing swaps both halves between the sides, so M:1 becomes 1:M.
+    CHECK(editor.reverse_participants(enrolled));
+    CHECK(maximums() == std::make_pair(Cardinality::One, Cardinality::Many));
+    CHECK(sides()[0].participation == Participation::Partial);
+    CHECK(sides()[1].participation == Participation::Total);
+    // Identity and the entity each side names are untouched by a reversal.
+    CHECK(sides()[0].id == first && sides()[1].id == second);
+    CHECK(sides()[0].target == ParticipantTarget{student});
+    CHECK(sides()[1].target == ParticipantTarget{course});
+    CHECK(editor.undo());
+    CHECK(maximums() == std::make_pair(Cardinality::Many, Cardinality::One));
+
+    // A ratio describes exactly two sides, so neither operation applies to a
+    // relationship that does not have two.
+    const auto teacher = entity(editor, "Teacher");
+    connect(editor, enrolled, teacher);
+    CHECK(!editor.set_ratio(enrolled, Cardinality::One, Cardinality::One));
+    CHECK(!editor.reverse_participants(enrolled));
+    CHECK(maximums() == std::make_pair(Cardinality::Many, Cardinality::One));
+}
+
 } // namespace
 
 int main() {
@@ -697,6 +756,7 @@ int main() {
         {"hostile connector shapes", hostile_connector_shapes_are_rejected},
         {"associative relationships act as entities", associative_relationships_act_as_entities},
         {"specializations carry inheritance rules", specializations_carry_inheritance_rules},
+        {"binary ratios and reversal", binary_ratios_and_reversal},
     };
     std::size_t failures = 0;
     for (const auto& [name, test] : tests) {

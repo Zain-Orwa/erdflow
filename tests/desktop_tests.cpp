@@ -117,10 +117,13 @@ int main(int argc, char** argv) {
         const auto participant = original.relationships.begin()->second.participants.front().id;
         window.canvas()->select_elements({relationship});
         settle();
-        // Scope to the properties panel: the toolbar carries a combo of its own,
-        // and this assertion is about the participant forms, not the whole window.
-        auto combos = child<QDockWidget>(window, "propertiesDock")->findChildren<QComboBox*>();
-        require(combos.size() == 4, "Relationship renders two independent participant forms");
+        // Count the combos inside the participant cards rather than every combo
+        // in the panel: the panel also carries the relationship's own controls.
+        auto cards = child<QDockWidget>(window, "propertiesDock")->findChildren<QWidget*>("participantCard");
+        require(cards.size() == 2, "Relationship renders two independent participant forms");
+        QList<QComboBox*> combos;
+        for (auto* card : cards) combos.append(card->findChildren<QComboBox*>());
+        require(combos.size() == 4, "Each side carries its own cardinality and participation");
         combos.front()->setCurrentIndex(0);
         QMetaObject::invokeMethod(combos.front(), "activated", Q_ARG(int, 0));
         settle();
@@ -128,6 +131,32 @@ int main(int argc, char** argv) {
                 "Cardinality edit preserves participant ID");
         require(window.editor().project().relationships.at(relationship).participants.front().maximum == domain::Cardinality::One,
                 "Participant form applies cardinality");
+
+        // The ratio sets both sides at once and stays in step with them.
+        auto* ratio = child<QComboBox>(window, "relationshipRatio");
+        require(ratio->count() == 4, "All four ratios are offered");
+        require(ratio->itemText(0) == "1:1" && ratio->itemText(1) == "1:M"
+                && ratio->itemText(2) == "M:1" && ratio->itemText(3) == "M:M", "They read 1:1, 1:M, M:1, M:M");
+        const auto ratio_revision = window.editor().revision();
+        ratio->setCurrentIndex(2);
+        QMetaObject::invokeMethod(ratio, "activated", Q_ARG(int, 2));
+        settle();
+        const auto& sides = window.editor().project().relationships.at(relationship).participants;
+        require(sides[0].maximum == domain::Cardinality::Many && sides[1].maximum == domain::Cardinality::One,
+                "M:1 writes both sides");
+        require(window.editor().revision() == ratio_revision + 1, "Both sides move in one edit");
+        require(child<QComboBox>(window, "relationshipRatio")->currentIndex() == 2, "The picker reports the ratio in use");
+
+        // Reversing swaps the sides' constraints, turning M:1 back into 1:M.
+        child<QPushButton>(window, "reverseRelationship")->click();
+        settle();
+        const auto& reversed = window.editor().project().relationships.at(relationship).participants;
+        require(reversed[0].maximum == domain::Cardinality::One && reversed[1].maximum == domain::Cardinality::Many,
+                "Reverse swaps the ratio");
+        require(reversed[0].id == participant, "Reversing keeps participant identity");
+        require(child<QComboBox>(window, "relationshipRatio")->currentIndex() == 1, "The picker follows the reversal");
+        child<QAction>(window, "undoCommand")->trigger();
+        child<QAction>(window, "undoCommand")->trigger();
 
         // Notation must be visible in the toolbar, not buried in a submenu, and
         // the two controls must never disagree about which one is in use.

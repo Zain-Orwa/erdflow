@@ -444,6 +444,34 @@ EditResult Editor::update_participant(RelationshipId relationship, ParticipantId
         return EditResult{};
     });
 }
+EditResult Editor::set_ratio(RelationshipId relationship, Cardinality first, Cardinality second) {
+    return impl_->edit("Change relationship ratio", [&](Delta& delta) {
+        const auto found = project().relationships.find(relationship);
+        if (found == project().relationships.end()) return failure("The relationship no longer exists.");
+        if (found->second.participants.size() != 2)
+            return failure("A ratio describes exactly two participants. Edit each side separately.");
+        auto value = found->second;
+        value.participants[0].maximum = first;
+        value.participants[1].maximum = second;
+        if (value == found->second) return EditResult{};
+        delta.relationships.put(relationship, std::move(value));
+        return EditResult{};
+    });
+}
+EditResult Editor::reverse_participants(RelationshipId relationship) {
+    return impl_->edit("Reverse relationship", [&](Delta& delta) {
+        const auto found = project().relationships.find(relationship);
+        if (found == project().relationships.end()) return failure("The relationship no longer exists.");
+        if (found->second.participants.size() != 2)
+            return failure("Reversing describes exactly two participants. Edit each side separately.");
+        auto value = found->second;
+        std::swap(value.participants[0].maximum, value.participants[1].maximum);
+        std::swap(value.participants[0].participation, value.participants[1].participation);
+        if (value == found->second) return EditResult{};
+        delta.relationships.put(relationship, std::move(value));
+        return EditResult{};
+    });
+}
 EditResult Editor::disconnect(RelationshipId relationship, ParticipantId participant) {
     return impl_->edit("Disconnect participant", [&](Delta& delta) {
         const auto found = project().relationships.find(relationship);
