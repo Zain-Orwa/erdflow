@@ -350,6 +350,20 @@ void MainWindow::build_actions() {
         choose_notation(static_cast<Notation>(index));
     });
     toolbar->addWidget(notation_box_);
+    auto* lines_label = new QLabel("  Lines ", toolbar);
+    lines_label->setObjectName("hint");
+    toolbar->addWidget(lines_label);
+    auto* lines = new QComboBox(toolbar);
+    lines->setObjectName("linePicker");
+    lines->setToolTip("How connectors are drawn between elements.");
+    lines->addItem("Curved");
+    lines->addItem("Straight");
+    lines->setCurrentIndex(canvas_->line_style() == LineStyle::Straight ? 1 : 0);
+    connect(lines, &QComboBox::currentIndexChanged, this, [this](int index) {
+        if (refreshing_ || index < 0) return;
+        canvas_->set_line_style(index == 1 ? LineStyle::Straight : LineStyle::Curved);
+    });
+    toolbar->addWidget(lines);
     auto* view = findChild<QMenu*>("viewMenu");
     view->addSeparator();
     view->addAction(fit);

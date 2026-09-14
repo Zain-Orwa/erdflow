@@ -66,6 +66,10 @@ not been built yet. Their presence in those documents is not a completion claim.
   While connecting, a dashed line follows the pointer from the source and a valid
   drop target is outlined. Creating an attribute while one element is selected
   attaches it to that owner directly.
+- Attribute links leave their owner from one shared point per side, run a short
+  trunk and branch from there to each attribute, so a cluster of attributes reads
+  as one connection fanning out rather than several meeting the body separately.
+- Connectors are drawn curved or straight, chosen from the toolbar picker.
 - Connector shaping: select a link, drag its handle to bend it aside, double-click
   to straighten. The bend is one undoable edit, is saved, and is dropped with the
   link it belongs to. Dragging nodes follows the pointer; snap to grid is opt-in.

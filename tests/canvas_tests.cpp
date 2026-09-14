@@ -528,6 +528,72 @@ void inheritance_orientation_tests() {
     require(link->shape().contains(link->mapFromScene(apex())), "The link still starts at the apex after the move");
 }
 
+// Attribute links leave their owner from one point per side and branch from
+// there, and the same diagram can be drawn curved or straight.
+void attribute_trunk_and_line_style_tests() {
+    SequentialIds ids;
+    application::Editor editor(ids);
+    const auto person = std::get<domain::EntityId>(*editor.create_entity("Person", {330, 330, 160, 80}).created);
+    const auto owner = domain::AttributeOwner{domain::ElementRef{person}};
+    // Three above, one to the left: two different sides of the same owner.
+    editor.create_attribute("First", {120, 60, 130, 54}, owner);
+    editor.create_attribute("Last", {330, 30, 130, 54}, owner);
+    editor.create_attribute("Born", {540, 60, 130, 54}, owner);
+    editor.create_attribute("Ident", {40, 330, 130, 54}, owner);
+
+    desktop::DiagramView view(editor);
+    view.resize(900, 620);
+    view.show();
+    view.set_grid_visible(false);
+    view.fit_diagram();
+    QApplication::processEvents();
+    require(view.line_style() == desktop::LineStyle::Curved, "Connectors are curved by default");
+
+    const auto edge_for = [&](const QString& attribute) {
+        auto* node = find_node(view, attribute);
+        for (auto* item : view.scene()->items())
+            if (item->zValue() < 0 && item->shape().translated(item->scenePos())
+                    .intersects(node->sceneBoundingRect()))
+                return item;
+        throw std::runtime_error("Missing attribute link");
+    };
+    // Every link on a side starts at that side's shared point, so the three
+    // attributes above all begin at the top centre of the owner.
+    const auto body = find_node(view, "Person")->sceneBoundingRect();
+    const QPointF above{body.center().x(), body.top()};
+    const QPointF beside{body.left(), body.center().y()};
+    for (const auto& attribute : {QStringLiteral("First"), QStringLiteral("Last"), QStringLiteral("Born")}) {
+        auto* link = edge_for(attribute);
+        require(link->shape().contains(link->mapFromScene(above)), "Links above share the top exit point");
+    }
+    auto* sideways = edge_for(QStringLiteral("Ident"));
+    require(sideways->shape().contains(sideways->mapFromScene(beside)),
+            "A link on another side uses that side's exit point");
+    require(!sideways->shape().contains(sideways->mapFromScene(above)),
+            "It does not run back across the body to the shared point above");
+
+    const auto render = [&] {
+        QApplication::processEvents();
+        return view.viewport()->grab().toImage();
+    };
+    const auto curved = render();
+    view.set_line_style(desktop::LineStyle::Straight);
+    require(view.line_style() == desktop::LineStyle::Straight, "The chosen style is kept");
+    const auto straight = render();
+    require(curved != straight, "The two line styles draw differently");
+    view.set_line_style(desktop::LineStyle::Curved);
+    require(render() == curved, "Returning to a style reproduces its drawing");
+
+    // The shared exit point follows the owner as it moves.
+    require(editor.move({{domain::ElementRef{person}, {620, 330, 160, 80}}}), "Move the owner");
+    view.synchronize();
+    QApplication::processEvents();
+    const auto moved = find_node(view, "Person")->sceneBoundingRect();
+    const QPointF moved_above{moved.center().x(), moved.top()};
+    auto* link = edge_for(QStringLiteral("Last"));
+    require(link->shape().contains(link->mapFromScene(moved_above)), "The exit point moves with the owner");
+}
+
 void synchronization_lifetime_tests() {
     SequentialIds ids;
     application::Editor editor(ids);
@@ -701,6 +767,7 @@ int main(int argc, char** argv) {
         drag_to_connect_tests();
         inline_rename_tests();
         notation_tests();
+        attribute_trunk_and_line_style_tests();
         tool_locking_tests();
         inheritance_connection_tests();
         inheritance_orientation_tests();

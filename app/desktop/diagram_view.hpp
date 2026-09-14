@@ -21,6 +21,9 @@ enum class Tool { Select, Entity, Attribute, Relationship, Specialization, Gener
 // (1 or M), so every notation reads the same two values off each participant.
 enum class Notation { Chen, MinMax, CrowsFoot, Bachman };
 
+// How connectors are drawn between elements.
+enum class LineStyle { Curved, Straight };
+
 // Default body sizes for newly created elements. An associative relationship
 // adopts the entity size, because that is what it behaves as on the diagram.
 struct BodySize { double width, height; };
@@ -45,6 +48,8 @@ public:
     void actual_size();
     void zoom_in();
     void zoom_out();
+    void set_line_style(LineStyle style);
+    [[nodiscard]] LineStyle line_style() const;
     void set_notation(Notation notation);
     // A sample of how a notation draws one participant end, for the picker.
     // It uses the same drawing code as the canvas, so it cannot misrepresent it.

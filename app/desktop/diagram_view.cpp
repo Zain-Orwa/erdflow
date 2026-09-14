@@ -187,6 +187,26 @@ public:
         bounds_ = next;
         update();
     }
+    // Attributes owned by this element, so links to them can leave from one
+    // shared point per side instead of each meeting the body separately.
+    std::vector<NodeItem*> attribute_children;
+
+    // The side of this body a child sits on, as an outward unit vector. Grouping
+    // by side keeps a shared exit point from sending a link back across the body.
+    static QPointF side_of(const QPointF& from_centre) {
+        if (std::abs(from_centre.x()) > std::abs(from_centre.y()))
+            return {from_centre.x() < 0 ? -1.0 : 1.0, 0.0};
+        return {0.0, from_centre.y() < 0 ? -1.0 : 1.0};
+    }
+    // Where links to attributes on a child's side leave this body, and the point
+    // just outside it at which they fan out to their own attributes.
+    void attribute_trunk(const NodeItem* child, QPointF& anchor, QPointF& junction) const {
+        const QPointF centre = scenePos() + bounds_.center();
+        const auto side = side_of(child->scenePos() + child->bounds_.center() - centre);
+        anchor = {centre.x() + side.x() * bounds_.width() / 2, centre.y() + side.y() * bounds_.height() / 2};
+        junction = anchor + side * 30;
+    }
+
     // The ISA triangle attaches at fixed points rather than wherever a ray
     // happens to cross it: the supertype meets its top, the subtypes its bottom.
     // Which of those is the apex follows the direction the triangle points, so
@@ -293,6 +313,7 @@ public:
     NodeItem* source;
     NodeItem* target;
     Notation notation = Notation::Chen;
+    LineStyle style = LineStyle::Curved;
 
     // Every notation reads the same two values: the minimum from participation
     // and the maximum from cardinality.
@@ -355,7 +376,31 @@ public:
             bend = first + QPointF(80, -80);
         QPointF start;
         QPointF end;
-        if (inheritance) {
+        // An attribute link leaves its owner at the point shared by every
+        // attribute on that side, runs a short trunk, then branches to its own.
+        const bool owned_attribute = std::holds_alternative<AttributeId>(descriptor.key)
+            && std::holds_alternative<AttributeId>(descriptor.from);
+        if (owned_attribute) {
+            QPointF anchor;
+            QPointF junction;
+            target->attribute_trunk(source, anchor, junction);
+            end = source->boundary_toward(junction);
+            path_ = QPainterPath(anchor);
+            path_.lineTo(junction);
+            if (style == LineStyle::Straight) {
+                path_.lineTo(end);
+            } else {
+                const auto reach = std::clamp(std::hypot(end.x() - junction.x(), end.y() - junction.y()) * 0.45, 18.0, 90.0);
+                const auto out = junction - anchor;
+                const auto length = std::hypot(out.x(), out.y());
+                const auto lead = length > 0.01 ? out / length : QPointF(0, -1);
+                path_.cubicTo(junction + lead * reach, end + normal(lead) * 0, end);
+            }
+            bend = path_.pointAtPercent(0.5);
+            midpoint_ = bend;
+            perpendicular_ = normal(end - anchor);
+            start = anchor;
+        } else if (inheritance) {
             // Anchored at the triangle and curved to wherever the entity is, so
             // moving either one bends the line instead of dragging the anchor.
             const bool to_supertype = !inheritance->subtype.has_value();
@@ -364,7 +409,8 @@ public:
             const qreal reach = std::clamp(std::abs(end.y() - start.y()) * 0.55, 26.0, 110.0);
             const qreal away = to_supertype ? -1.0 : 1.0;
             path_ = QPainterPath(start);
-            path_.cubicTo(start + QPointF(0, away * reach), end - QPointF(0, away * reach), end);
+            if (style == LineStyle::Straight) path_.lineTo(end);
+            else path_.cubicTo(start + QPointF(0, away * reach), end - QPointF(0, away * reach), end);
             bend = path_.pointAtPercent(0.5);
             midpoint_ = bend;
             perpendicular_ = normal(end - start);
@@ -480,6 +526,7 @@ struct DiagramView::Impl {
     Tool active_tool = Tool::Select;
     ThemeId theme_id = ThemeId::OfficeLight;
     Notation notation = Notation::Chen;
+    LineStyle style = LineStyle::Curved;
     bool tool_locked = false;
     bool grid = true;
     bool snap = false;
@@ -786,6 +833,7 @@ void DiagramView::synchronize() {
             it = impl_->nodes.erase(it);
         } else ++it;
     }
+    for (auto& [ref, node] : impl_->nodes) { (void)ref; node->attribute_children.clear(); }
     std::set<EdgeItem*> dirty_edges;
     const auto sync_node = [&](const ElementRef& ref) {
         auto [iterator, created] = impl_->nodes.try_emplace(ref, nullptr);
@@ -854,6 +902,7 @@ void DiagramView::synchronize() {
             auto* edge = new EdgeItem(description, impl_->nodes.at(description.from), impl_->nodes.at(description.to), theme(impl_->theme_id));
             edge->notation = impl_->notation;
             impl_->edges.emplace(key, edge);
+            edge->style = impl_->style;
             impl_->incident[description.from].insert(edge);
             impl_->incident[description.to].insert(edge);
             impl_->scene->addItem(edge);
@@ -866,6 +915,15 @@ void DiagramView::synchronize() {
     // The workspace grows only at command boundaries, never during pointer movement.
     const auto content = impl_->scene->itemsBoundingRect().adjusted(-800, -800, 800, 800);
     impl_->scene->setSceneRect(QRectF(-3000, -2200, 6000, 4400).united(content));
+    for (const auto& [key, description] : desired_edges) {
+        (void)key;
+        if (!std::holds_alternative<AttributeId>(description.key)) continue;
+        const auto owner = impl_->nodes.find(description.to);
+        const auto child = impl_->nodes.find(description.from);
+        if (owner != impl_->nodes.end() && child != impl_->nodes.end())
+            owner->second->attribute_children.push_back(child->second);
+    }
+    for (auto& [key, edge] : impl_->edges) { (void)key; edge->refresh(); }
     impl_->displayed_revision = impl_->editor.revision();
     impl_->synchronizing = false;
     if (impl_->connect_start && !exists(project, *impl_->connect_start)) {
@@ -950,6 +1008,18 @@ void DiagramView::set_notation(Notation notation) {
     viewport()->update();
 }
 Notation DiagramView::notation() const { return impl_->notation; }
+
+void DiagramView::set_line_style(LineStyle style) {
+    if (impl_->style == style) return;
+    impl_->style = style;
+    for (auto& [key, edge] : impl_->edges) {
+        (void)key;
+        edge->style = style;
+        edge->refresh();
+    }
+    viewport()->update();
+}
+LineStyle DiagramView::line_style() const { return impl_->style; }
 
 QPixmap DiagramView::notation_preview(Notation notation, QSize size) const {
     const auto& colors = theme(impl_->theme_id);
