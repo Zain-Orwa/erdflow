@@ -12,6 +12,7 @@ class QDockWidget;
 class QLabel;
 class QComboBox;
 class QScrollArea;
+class QToolBar;
 class QToolButton;
 class QStandardItemModel;
 class QTreeView;
@@ -29,6 +30,8 @@ public:
     // Which icon set the window draws its actions with, and remembers it.
     void set_icon_mode(IconMode mode);
     [[nodiscard]] IconMode icon_mode() const { return icon_mode_; }
+    // Applies a remembered fold state to the side palette.
+    void restore_tool_palette(bool folded);
     void load_example();
     [[nodiscard]] const application::Editor& editor() const { return editor_; }
     [[nodiscard]] DiagramView* canvas() const { return canvas_; }
@@ -70,6 +73,8 @@ private:
     std::map<LineStyle, QAction*> line_actions_;
     QComboBox* notation_box_ = nullptr;
     QToolButton* theme_button_ = nullptr;
+    QToolBar* tool_palette_ = nullptr;
+    QAction* fold_palette_ = nullptr;
     std::map<QString, domain::ElementRef> references_;
     std::vector<domain::ElementRef> selection_;
     QString path_;

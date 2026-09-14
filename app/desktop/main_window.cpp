@@ -433,6 +433,38 @@ void MainWindow::build_actions() {
     });
     toolbar->addWidget(notation_box_);
 
+    // The same tools again, down the side, for anyone who would rather read a
+    // list than scan a row. They are the very actions the toolbar holds, not
+    // copies, so a tool chosen in one place shows as chosen in both.
+    auto* palette_dock = new QDockWidget("Tools", this);
+    palette_dock->setObjectName("toolPaletteDock");
+    tool_palette_ = new QToolBar(palette_dock);
+    tool_palette_->setObjectName("diagramTools");
+    tool_palette_->setOrientation(Qt::Vertical);
+    tool_palette_->setMovable(false);
+    tool_palette_->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    for (const auto tool : {Tool::Select, Tool::Entity, Tool::Attribute, Tool::Relationship}) {
+        if (const auto found = tool_actions_.find(tool); found != tool_actions_.end())
+            tool_palette_->addAction(found->second);
+    }
+    tool_palette_->addAction(isa_action_);
+    if (const auto found = tool_actions_.find(Tool::Connect); found != tool_actions_.end())
+        tool_palette_->addAction(found->second);
+    if (const auto found = tool_actions_.find(Tool::Pan); found != tool_actions_.end())
+        tool_palette_->addAction(found->second);
+    tool_palette_->addSeparator();
+    // Folding leaves the icons, which is what the palette is mostly for; the
+    // names are the part that costs width.
+    fold_palette_ = tool_palette_->addAction("Fold", this, [this] {
+        const bool folded = tool_palette_->toolButtonStyle() == Qt::ToolButtonTextBesideIcon;
+        tool_palette_->setToolButtonStyle(folded ? Qt::ToolButtonIconOnly : Qt::ToolButtonTextBesideIcon);
+        fold_palette_->setText(folded ? "Unfold" : "Fold");
+        QSettings().setValue("toolPaletteFolded", folded);
+    });
+    fold_palette_->setObjectName("foldPalette");
+    palette_dock->setWidget(tool_palette_);
+    addDockWidget(Qt::LeftDockWidgetArea, palette_dock);
+
     auto* view = findChild<QMenu*>("viewMenu");
     view->addSeparator();
     view->addAction(fit);
@@ -563,23 +595,29 @@ void MainWindow::refresh_explorer() {
     project->setData("project", Qt::UserRole);
     project->setEditable(false);
     explorer_model_->appendRow(project);
-    const auto append = [this, project](const QString& label, const auto& collection) {
-        auto* group = new QStandardItem(label + QString(" (%1)").arg(collection.size()));
+    // Each group and every row under it wears the same glyph the toolbar uses to
+    // place that kind of element, so the tree reads as the diagram does. They
+    // are built from the active theme and icon set, which is why the tree is
+    // rebuilt when either changes.
+    const auto& colors = theme(theme_);
+    const auto append = [&](const QString& label, Glyph glyph, const auto& collection) {
+        const auto badge = glyph_icon(glyph, colors, 18, icon_mode_);
+        auto* group = new QStandardItem(badge, label + QString(" (%1)").arg(collection.size()));
         group->setSelectable(false);
         project->appendRow(group);
         for (const auto& [id, item] : collection) {
             (void)item;
             const ElementRef ref{id};
-            auto* row = new QStandardItem(display_name(editor_.project(), ref));
+            auto* row = new QStandardItem(badge, display_name(editor_.project(), ref));
             row->setData(key(ref), Qt::UserRole);
             row->setToolTip(kind_label(ref) + " · " + key(ref));
             group->appendRow(row);
             references_.emplace(key(ref), ref);
         }
     };
-    append("Entities", editor_.project().entities);
-    append("Attributes", editor_.project().attributes);
-    append("Relationships", editor_.project().relationships);
+    append("Entities", Glyph::Entity, editor_.project().entities);
+    append("Attributes", Glyph::Attribute, editor_.project().attributes);
+    append("Relationships", Glyph::Relationship, editor_.project().relationships);
     explorer_->expandAll();
     highlight_explorer();
 }
@@ -955,11 +993,18 @@ void MainWindow::choose_tool(Tool tool, bool locked) {
     refresh_tool_labels();
 }
 
+void MainWindow::restore_tool_palette(bool folded) {
+    if (!tool_palette_ || !fold_palette_) return;
+    tool_palette_->setToolButtonStyle(folded ? Qt::ToolButtonIconOnly : Qt::ToolButtonTextBesideIcon);
+    fold_palette_->setText(folded ? "Unfold" : "Fold");
+}
+
 void MainWindow::set_icon_mode(IconMode mode) {
     icon_mode_ = mode;
     QSettings().setValue("iconMode", icon_mode_key(mode));
     for (const auto& [candidate, action] : icon_mode_actions_) action->setChecked(candidate == mode);
     refresh_icons();
+    refresh_explorer();
 }
 
 void MainWindow::set_theme(ThemeId id) {
@@ -970,6 +1015,7 @@ void MainWindow::set_theme(ThemeId id) {
     QSettings().setValue("theme", theme(id).key);
     for (const auto& [candidate, action] : theme_actions_) action->setChecked(candidate == id);
     refresh_icons();
+    refresh_explorer();
 }
 
 // Icons are drawn from the theme, so they are rebuilt whenever it changes.

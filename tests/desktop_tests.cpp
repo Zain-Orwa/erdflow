@@ -418,6 +418,24 @@ int main(int argc, char** argv) {
                     "Going back restores the drawn glyphs");
         }
 
+        // The side palette offers the same tools as the toolbar, and folds to
+        // icons without losing any of them.
+        {
+            auto* palette = child<QToolBar>(window, "diagramTools");
+            require(palette->actions().contains(child<QAction>(window, "toolEntity")),
+                    "The palette holds the toolbar's own actions, not copies of them");
+            const auto before = palette->actions().size();
+            require(palette->toolButtonStyle() == Qt::ToolButtonTextBesideIcon, "It starts unfolded");
+            child<QAction>(window, "foldPalette")->trigger();
+            settle();
+            require(palette->toolButtonStyle() == Qt::ToolButtonIconOnly, "Folding leaves only the icons");
+            require(palette->actions().size() == before, "And loses no tool while folded");
+            require(QSettings().value("toolPaletteFolded").toBool(), "The fold is remembered");
+            child<QAction>(window, "foldPalette")->trigger();
+            settle();
+            require(palette->toolButtonStyle() == Qt::ToolButtonTextBesideIcon, "Unfolding brings the names back");
+        }
+
         // The two menu buttons are added to the toolbar as widgets, so nothing
         // makes them follow it: they have to ask for the icon themselves.
         for (const char* menu_button : {"isaButton", "connectButton"}) {
