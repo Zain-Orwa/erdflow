@@ -162,6 +162,59 @@ void connector_shaping_tests() {
     require(editor.project().connectors.empty(), "Double-click straightens the connector");
 }
 
+// Connecting must work as one press-drag-release gesture as well as the older
+// click-then-click, and a drag that lands nowhere must not connect anything.
+void drag_to_connect_tests() {
+    SequentialIds ids;
+    application::Editor editor(ids);
+    const auto student = std::get<domain::EntityId>(*editor.create_entity("Student", {-320, 0, 160, 80}).created);
+    const auto course = std::get<domain::EntityId>(*editor.create_entity("Course", {320, 0, 160, 80}).created);
+    const auto enrolled = std::get<domain::RelationshipId>(*editor.create_relationship("Enrolled", {-60, -20, 180, 100}).created);
+
+    desktop::DiagramView view(editor);
+    view.resize(1000, 700);
+    view.show();
+    view.actual_size();
+    view.centerOn(0, 0);
+    view.set_tool(desktop::Tool::Connect);
+    QApplication::processEvents();
+
+    const auto at = [&](const QString& name) {
+        return view.mapFromScene(find_node(view, name)->sceneBoundingRect().center());
+    };
+
+    // One gesture: press the relationship, carry the line, release on an entity.
+    mouse(view, QEvent::MouseButtonPress, at("Enrolled"), Qt::LeftButton, Qt::LeftButton);
+    const auto midway = (at("Enrolled") + at("Student")) / 2;
+    mouse(view, QEvent::MouseMove, midway, Qt::NoButton, Qt::LeftButton);
+    require(editor.project().relationships.at(enrolled).participants.empty(),
+            "Carrying the line does not connect until release");
+    mouse(view, QEvent::MouseButtonRelease, at("Student"), Qt::LeftButton, Qt::NoButton);
+    require(editor.project().relationships.at(enrolled).participants.size() == 1,
+            "Release over a valid target connects");
+    require(editor.project().relationships.at(enrolled).participants.front().entity == student,
+            "The drag connected the entity under the release");
+
+    // Click-then-click must still work for the same pair.
+    click(view, find_node(view, "Enrolled")->sceneBoundingRect().center());
+    require(editor.project().relationships.at(enrolled).participants.size() == 1,
+            "A plain click only arms the source");
+    click(view, find_node(view, "Course")->sceneBoundingRect().center());
+    require(editor.project().relationships.at(enrolled).participants.size() == 2,
+            "A second click completes the connection");
+    require(editor.project().relationships.at(enrolled).participants.back().entity == course,
+            "Click-then-click connected the second entity");
+
+    // A drag released over empty canvas connects nothing and disarms cleanly.
+    const auto revision = editor.revision();
+    mouse(view, QEvent::MouseButtonPress, at("Enrolled"), Qt::LeftButton, Qt::LeftButton);
+    mouse(view, QEvent::MouseMove, QPoint(20, 20), Qt::NoButton, Qt::LeftButton);
+    mouse(view, QEvent::MouseButtonRelease, QPoint(20, 20), Qt::LeftButton, Qt::NoButton);
+    require(editor.revision() == revision, "Releasing over empty canvas connects nothing");
+    view.cancel_interaction();
+    require(editor.revision() == revision, "Cancelling a carried connection changes nothing");
+}
+
 void synchronization_lifetime_tests() {
     SequentialIds ids;
     application::Editor editor(ids);
@@ -332,6 +385,7 @@ int main(int argc, char** argv) {
         group_movement_tests();
         synchronization_lifetime_tests();
         connector_shaping_tests();
+        drag_to_connect_tests();
         std::cout << "Canvas tests passed\n";
     } catch (const std::exception& exception) {
         std::cerr << "Canvas test failed: " << exception.what() << '\n';

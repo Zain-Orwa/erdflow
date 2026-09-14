@@ -27,6 +27,10 @@ not been built yet. Their presence in those documents is not a completion claim.
 - One drag or duplicate/delete group is one history entry. Deletion restores
   dependent attributes and participant records on undo. Duplicate generates new
   IDs, including participant IDs, and remaps the copied subgraph.
+- Connecting works either as one press-drag-release gesture or as click-then-click.
+  While connecting, a dashed line follows the pointer from the source and a valid
+  drop target is outlined. Creating an attribute while one element is selected
+  attaches it to that owner directly.
 - Connector shaping: select a link, drag its handle to bend it aside, double-click
   to straighten. The bend is one undoable edit, is saved, and is dropped with the
   link it belongs to. Dragging nodes follows the pointer; snap to grid is opt-in.

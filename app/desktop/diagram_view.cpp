@@ -294,6 +294,10 @@ struct DiagramView::Impl {
     bool panning = false;
     QPoint pan_start;
     std::optional<ElementRef> connect_start;
+    // While a connection is being made the pointer carries a preview line, so
+    // the same gesture works as click-then-click or as one press-drag-release.
+    std::optional<QPointF> connect_pointer;
+    std::optional<ElementRef> connect_hover;
     std::map<ElementRef, Rect> drag_start;
     QPointF drag_anchor;
     // The connector being reshaped, previewed on its item until release.
@@ -354,10 +358,16 @@ struct DiagramView::Impl {
         if (view.on_zoom) view.on_zoom(view.zoom_factor());
     }
     void connect_node(NodeItem* node) {
-        if (!node) { connect_start.reset(); status(QStringLiteral("Connection cancelled. Select the first object.")); return; }
+        if (!node) {
+            connect_start.reset();
+            connect_pointer.reset();
+            status(QStringLiteral("Connection cancelled. Select the first object."));
+            return;
+        }
         if (!exists(editor.project(), node->ref)
             || (connect_start && !exists(editor.project(), *connect_start))) {
             connect_start.reset();
+            connect_pointer.reset();
             view.synchronize();
             status(QStringLiteral("The selected object was removed. Select the first object again."));
             return;
@@ -371,24 +381,41 @@ struct DiagramView::Impl {
         const auto from = *connect_start;
         const auto to = node->ref;
         connect_start.reset();
+        connect_pointer.reset();
         application::EditResult result{false, "Connect an entity to a relationship, or an attribute to its owner.", {}, {}};
         if (from == to) {
             result.error = "Select two different objects. For a recursive relationship, connect the same entity to its relationship twice.";
-        } else if (auto* relationship = std::get_if<RelationshipId>(&from); relationship && std::holds_alternative<EntityId>(to)) {
-            result = editor.connect(*relationship, std::get<EntityId>(to));
-        } else if (auto* target_relationship = std::get_if<RelationshipId>(&to); target_relationship && std::holds_alternative<EntityId>(from)) {
-            result = editor.connect(*target_relationship, std::get<EntityId>(from));
-        } else if (std::holds_alternative<AttributeId>(from) && std::holds_alternative<AttributeId>(to)
-                   && editor.project().attributes.at(std::get<AttributeId>(from)).kind == AttributeKind::Composite
-                   && editor.project().attributes.at(std::get<AttributeId>(to)).kind != AttributeKind::Composite) {
-            result = editor.set_attribute_owner(std::get<AttributeId>(to), from);
-        } else if (const auto* attribute = std::get_if<AttributeId>(&from)) {
-            result = editor.set_attribute_owner(*attribute, to);
-        } else if (const auto* target_attribute = std::get_if<AttributeId>(&to)) {
-            result = editor.set_attribute_owner(*target_attribute, from);
+        } else if (const auto plan = plan_connection(from, to)) {
+            result = (*plan)();
         }
         publish(result);
         if (result) status(QStringLiteral("Connected. Select the first object to make another connection."));
+    }
+    // The edit a pair of elements would produce, or nothing when the pair means
+    // nothing. The hover highlight and the committed connection read the same
+    // rule here, so what the pointer promises is what the release performs.
+    [[nodiscard]] std::optional<std::function<application::EditResult()>>
+    plan_connection(const ElementRef& from, const ElementRef& to) const {
+        const auto& project = editor.project();
+        if (from == to || !exists(project, from) || !exists(project, to)) return {};
+        if (const auto* relationship = std::get_if<RelationshipId>(&from); relationship && std::holds_alternative<EntityId>(to)) {
+            return [this, id = *relationship, entity = std::get<EntityId>(to)] { return editor.connect(id, entity); };
+        }
+        if (const auto* relationship = std::get_if<RelationshipId>(&to); relationship && std::holds_alternative<EntityId>(from)) {
+            return [this, id = *relationship, entity = std::get<EntityId>(from)] { return editor.connect(id, entity); };
+        }
+        if (std::holds_alternative<AttributeId>(from) && std::holds_alternative<AttributeId>(to)
+            && project.attributes.at(std::get<AttributeId>(from)).kind == AttributeKind::Composite
+            && project.attributes.at(std::get<AttributeId>(to)).kind != AttributeKind::Composite) {
+            return [this, id = std::get<AttributeId>(to), owner = from] { return editor.set_attribute_owner(id, owner); };
+        }
+        if (const auto* attribute = std::get_if<AttributeId>(&from)) {
+            return [this, id = *attribute, owner = to] { return editor.set_attribute_owner(id, owner); };
+        }
+        if (const auto* attribute = std::get_if<AttributeId>(&to)) {
+            return [this, id = *attribute, owner = from] { return editor.set_attribute_owner(id, owner); };
+        }
+        return {};
     }
 };
 
@@ -536,7 +563,11 @@ void DiagramView::synchronize() {
     impl_->scene->setSceneRect(QRectF(-3000, -2200, 6000, 4400).united(content));
     impl_->displayed_revision = impl_->editor.revision();
     impl_->synchronizing = false;
-    if (impl_->connect_start && !exists(project, *impl_->connect_start)) impl_->connect_start.reset();
+    if (impl_->connect_start && !exists(project, *impl_->connect_start)) {
+        impl_->connect_start.reset();
+        impl_->connect_pointer.reset();
+        impl_->connect_hover.reset();
+    }
     impl_->selection_changed();
 }
 
@@ -647,6 +678,8 @@ void DiagramView::cancel_interaction() {
         synchronize();
     }
     impl_->connect_start.reset();
+    impl_->connect_pointer.reset();
+    impl_->connect_hover.reset();
     impl_->panning = false;
     setCursor(impl_->active_tool == Tool::Pan ? Qt::OpenHandCursor : impl_->active_tool == Tool::Select ? Qt::ArrowCursor : Qt::CrossCursor);
 }
@@ -678,6 +711,12 @@ void DiagramView::mousePressEvent(QMouseEvent* event) {
     if (event->button() != Qt::LeftButton) { QGraphicsView::mousePressEvent(event); return; }
     if (impl_->active_tool == Tool::Connect) {
         impl_->connect_node(impl_->node_at(event->position().toPoint()));
+        // Arming a source starts carrying a preview line. Releasing over another
+        // element completes the connection; releasing where it started leaves it
+        // armed, so click-then-click still works for anyone who prefers it.
+        if (impl_->connect_start) impl_->connect_pointer = mapToScene(event->position().toPoint());
+        impl_->connect_hover.reset();
+        viewport()->update();
         event->accept();
         return;
     }
@@ -739,6 +778,37 @@ void DiagramView::mousePressEvent(QMouseEvent* event) {
         }
     }
 }
+void DiagramView::drawForeground(QPainter* painter, const QRectF& rect) {
+    QGraphicsView::drawForeground(painter, rect);
+    if (!impl_->connect_start || !impl_->connect_pointer) return;
+    const auto source = impl_->nodes.find(*impl_->connect_start);
+    if (source == impl_->nodes.end()) return;
+    const auto& colors = theme(impl_->theme_id);
+    const auto pointer = *impl_->connect_pointer;
+    // A valid drop target is outlined, so the pointer states what the release
+    // will do before the user commits to it.
+    const bool valid = impl_->connect_hover
+        && impl_->plan_connection(*impl_->connect_start, *impl_->connect_hover).has_value();
+    painter->setRenderHint(QPainter::Antialiasing);
+    QPen pen(valid ? colors.accent : colors.connector, 1.8, Qt::DashLine);
+    pen.setCosmetic(true);
+    painter->setPen(pen);
+    painter->setBrush(Qt::NoBrush);
+    painter->drawLine(source->second->boundary_toward(pointer), pointer);
+    if (valid) {
+        const auto target = impl_->nodes.find(*impl_->connect_hover);
+        if (target != impl_->nodes.end()) {
+            QPen outline(colors.accent, 2.0);
+            outline.setCosmetic(true);
+            painter->setPen(outline);
+            painter->drawRoundedRect(target->second->sceneBoundingRect().adjusted(-4, -4, 4, 4), 6, 6);
+        }
+    } else {
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(colors.connector);
+        painter->drawEllipse(pointer, 3.5, 3.5);
+    }
+}
 void DiagramView::mouseDoubleClickEvent(QMouseEvent* event) {
     // Double-clicking a connector restores automatic routing. Nodes keep Qt's
     // own double-click behaviour, so only clicks that miss every node count.
@@ -758,6 +828,14 @@ void DiagramView::mouseMoveEvent(QMouseEvent* event) {
         horizontalScrollBar()->setValue(horizontalScrollBar()->value() - delta.x());
         verticalScrollBar()->setValue(verticalScrollBar()->value() - delta.y());
         impl_->pan_start = event->position().toPoint();
+        event->accept();
+        return;
+    }
+    if (impl_->connect_start) {
+        impl_->connect_pointer = mapToScene(event->position().toPoint());
+        const auto* hovered = impl_->node_at(event->position().toPoint());
+        impl_->connect_hover = hovered ? std::optional<ElementRef>{hovered->ref} : std::nullopt;
+        viewport()->update();
         event->accept();
         return;
     }
@@ -781,6 +859,16 @@ void DiagramView::mouseReleaseEvent(QMouseEvent* event) {
     if (impl_->panning && (event->button() == Qt::MiddleButton || event->button() == Qt::LeftButton)) {
         impl_->panning = false;
         setCursor(impl_->active_tool == Tool::Pan ? Qt::OpenHandCursor : impl_->active_tool == Tool::Select ? Qt::ArrowCursor : Qt::CrossCursor);
+        event->accept();
+        return;
+    }
+    if (impl_->connect_start && event->button() == Qt::LeftButton) {
+        auto* released_over = impl_->node_at(event->position().toPoint());
+        impl_->connect_hover.reset();
+        // Releasing on a different element finishes the drag. Releasing on the
+        // source is a plain click, which leaves the source armed.
+        if (released_over && released_over->ref != *impl_->connect_start) impl_->connect_node(released_over);
+        viewport()->update();
         event->accept();
         return;
     }

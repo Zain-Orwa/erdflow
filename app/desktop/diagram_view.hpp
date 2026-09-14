@@ -40,6 +40,7 @@ public:
 
 protected:
     void drawBackground(QPainter*, const QRectF&) override;
+    void drawForeground(QPainter*, const QRectF&) override;
     void mousePressEvent(QMouseEvent*) override;
     void mouseDoubleClickEvent(QMouseEvent*) override;
     void mouseMoveEvent(QMouseEvent*) override;
