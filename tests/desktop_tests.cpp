@@ -12,6 +12,7 @@
 #include <QMouseEvent>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QSettings>
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QToolBar>
@@ -55,6 +56,13 @@ void click_canvas(desktop::DiagramView& canvas, QPointF position) {
 
 int main(int argc, char** argv) {
     QApplication app(argc, argv);
+    // The window remembers the chosen theme. Point that at a throwaway domain so
+    // running the tests cannot disturb the real preferences.
+    QCoreApplication::setOrganizationName("ERDFlowTests");
+    QCoreApplication::setApplicationName("ERDFlowTests");
+    // Start from nothing, so a remembered value has to be written by this run
+    // rather than left behind by the last one.
+    QSettings().clear();
     try {
         infrastructure::QtIdGenerator ids;
         application::Editor editor(ids);
@@ -299,6 +307,26 @@ int main(int argc, char** argv) {
         settle();
         require(window.canvas()->tool() == desktop::Tool::Connect && window.canvas()->tool_locked(),
                 "Double-clicking Connect locks it");
+
+        // Every toolbar action carries a drawn icon, and the icons follow the
+        // theme, since they are painted from it rather than loaded from files.
+        auto* tool_bar = child<QToolBar>(window, "modelTools");
+        for (auto* action : tool_bar->actions())
+            if (!action->isSeparator() && !action->text().isEmpty())
+                require(!action->icon().isNull(), "Every toolbar action is given an icon");
+        const auto entity_icon = child<QAction>(window, "toolEntity")->icon()
+            .pixmap(18, 18).toImage();
+        child<QAction>(window, "thememidnight")->trigger();
+        settle();
+        require(window.canvas()->theme_id() == desktop::ThemeId::Midnight, "The menu changes the canvas theme");
+        require(child<QAction>(window, "toolEntity")->icon().pixmap(18, 18).toImage() != entity_icon,
+                "Icons are redrawn for the new theme");
+        require(QSettings().value("theme").toString() == "midnight", "The choice is remembered");
+        child<QAction>(window, "themeofficelight")->trigger();
+        settle();
+        require(window.canvas()->theme_id() == desktop::ThemeId::OfficeLight, "And back again");
+        require(child<QAction>(window, "toolEntity")->icon().pixmap(18, 18).toImage() == entity_icon,
+                "Returning to a theme restores its icons");
 
         child<QAction>(window, "toolSelect")->trigger();
         require(!window.canvas()->tool_locked(), "Choosing another tool clears the lock");

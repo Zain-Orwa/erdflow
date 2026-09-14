@@ -24,6 +24,7 @@
 #include <QRegularExpression>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QSettings>
 #include <QSignalBlocker>
 #include <QStandardItemModel>
 #include <QStatusBar>
@@ -231,9 +232,11 @@ void MainWindow::build_actions() {
     menuBar()->insertMenu(menuBar()->actions().front(), file);
     auto* action_new = file->addAction("&New project", QKeySequence::New, this, &MainWindow::new_project);
     action_new->setObjectName("newProject");
-    file->addAction("&Open…", QKeySequence::Open, this, &MainWindow::open_dialog);
+    action_glyphs_[action_new] = Glyph::New;
+    action_glyphs_[file->addAction("&Open…", QKeySequence::Open, this, &MainWindow::open_dialog)] = Glyph::Open;
     auto* action_save = file->addAction("&Save", QKeySequence::Save, this, [this] { save(); });
     action_save->setObjectName("saveProject");
+    action_glyphs_[action_save] = Glyph::Save;
     file->addAction("Save &as…", QKeySequence::SaveAs, this, [this] { save(true); });
     file->addSeparator();
     file->addAction("Open example", this, &MainWindow::load_example);
@@ -254,19 +257,25 @@ void MainWindow::build_actions() {
     // as you work, so it keeps a fixed icon text and explains itself by tooltip.
     undo_->setIconText("Undo");
     redo_->setIconText("Redo");
+    action_glyphs_[undo_] = Glyph::Undo;
+    action_glyphs_[redo_] = Glyph::Redo;
     edit->addSeparator();
     rename_ = edit->addAction("Rename…", this, &MainWindow::rename_selection);
+    action_glyphs_[rename_] = Glyph::Rename;
     duplicate_ = edit->addAction("Duplicate", QKeySequence("Ctrl+D"), this, [this] {
         finish_field_edit(); show_result(editor_.duplicate(selection_));
     });
     duplicate_->setObjectName("duplicateElements");
-    edit->addAction("Delete selection", this, [this] { finish_field_edit(); canvas_->delete_selection(); });
+    action_glyphs_[duplicate_] = Glyph::Duplicate;
+    action_glyphs_[edit->addAction("Delete selection", this, [this] { finish_field_edit(); canvas_->delete_selection(); })] = Glyph::Delete;
     // Delete/Backspace and the letter tool shortcuts belong to the canvas, so
     // typing inside property fields never deletes model elements.
     auto* toolbar = addToolBar("Model tools");
     toolbar->setObjectName("modelTools");
     toolbar->setMovable(false);
-    toolbar->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    // Icon beside text, the way an office application labels its toolbar: the
+    // glyph carries recognition, the word removes any doubt.
+    toolbar->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     toolbar->addAction(action_save);
     toolbar->addSeparator();
     toolbar->addAction(undo_);
@@ -285,6 +294,9 @@ void MainWindow::build_actions() {
         action->setActionGroup(group);
         action->setChecked(tool == Tool::Select);
         tool_actions_[tool] = action;
+        action_glyphs_[action] = tool == Tool::Select ? Glyph::Select
+            : tool == Tool::Entity ? Glyph::Entity
+            : tool == Tool::Attribute ? Glyph::Attribute : Glyph::Relationship;
         connect(action, &QAction::triggered, this, [this, tool] { choose_tool(tool, false); });
         // A double click locks the tool. The button itself has to report it,
         // because the click that locks is also an ordinary click that selects.
@@ -298,6 +310,7 @@ void MainWindow::build_actions() {
     isa_action_->setData(isa_label(isa_mode_));
     isa_action_->setObjectName("toolIsa");
     isa_action_->setActionGroup(group);
+    action_glyphs_[isa_action_] = Glyph::Isa;
     connect(isa_action_, &QAction::triggered, this, [this] { choose_tool(isa_mode_, false); });
     auto* isa_menu = new QMenu(this);
     for (const auto mode : {Tool::Specialization, Tool::Generalization}) {
@@ -331,6 +344,7 @@ void MainWindow::build_actions() {
     connect_action->setData("Connect");
     connect_action->setObjectName("toolConnect");
     connect_action->setActionGroup(group);
+    action_glyphs_[connect_action] = Glyph::Connect;
     connect(connect_action, &QAction::triggered, this, [this] { choose_tool(Tool::Connect, false); });
     auto* line_menu = new QMenu(this);
     for (const auto style : {LineStyle::Curved, LineStyle::Straight}) {
@@ -358,16 +372,19 @@ void MainWindow::build_actions() {
     pan_action->setObjectName("toolPan");
     pan_action->setActionGroup(group);
     tool_actions_[Tool::Pan] = pan_action;
+    action_glyphs_[pan_action] = Glyph::Pan;
     connect(pan_action, &QAction::triggered, this, [this] { choose_tool(Tool::Pan, false); });
     if (auto* button = toolbar->widgetForAction(pan_action)) button->installEventFilter(this);
 
     toolbar->addSeparator();
     auto* fit = toolbar->addAction("Fit", canvas_, &DiagramView::fit_diagram);
     fit->setShortcut(QKeySequence("Ctrl+0"));
+    action_glyphs_[fit] = Glyph::Fit;
     auto* check = toolbar->addAction("Check model", this, [this] {
         finish_field_edit(); refresh_validation(); validation_dock_->show();
     });
     check->setObjectName("checkModel");
+    action_glyphs_[check] = Glyph::Check;
     // Notation is a reading choice people change often, and a submenu hides it.
     // The picker sits in the toolbar and draws each option, so the cardinality
     // symbols can be recognised rather than remembered from a name.
@@ -410,6 +427,17 @@ void MainWindow::build_actions() {
     canvas_->set_grid_visible(true);
     // The same participants can be read in several notations. This is a display
     // choice, so it lives with the other view settings rather than in the file.
+    auto* themes = view->addMenu("Theme");
+    auto* theme_group = new QActionGroup(this);
+    for (const auto& entry : erdflow::desktop::themes()) {
+        auto* action = themes->addAction(entry.label);
+        action->setCheckable(true);
+        action->setChecked(entry.id == theme_);
+        action->setObjectName("theme" + QString(entry.key).remove('-'));
+        action->setActionGroup(theme_group);
+        theme_actions_[entry.id] = action;
+        connect(action, &QAction::triggered, this, [this, id = entry.id] { set_theme(id); });
+    }
     auto* notations = view->addMenu("Notation");
     auto* notation_group = new QActionGroup(this);
     for (const auto& [style, label] : notation_styles()) {
@@ -421,6 +449,9 @@ void MainWindow::build_actions() {
         notation_actions_[style] = action;
         connect(action, &QAction::triggered, this, [this, style] { choose_notation(style); });
     }
+    // Every action now exists, so give them their first icons. The window must
+    // look right on its own, not only once a theme is chosen from outside it.
+    refresh_icons();
     auto* help = menuBar()->addMenu("&Help");
     help->addAction("Quick guide", this, [this] {
         QMessageBox::information(this, "Drawing a conceptual ERD",
@@ -847,6 +878,29 @@ void MainWindow::choose_tool(Tool tool, bool locked) {
     canvas_->set_tool(tool, locked);
     canvas_->setFocus();
     refresh_tool_labels();
+}
+
+void MainWindow::set_theme(ThemeId id) {
+    theme_ = id;
+    if (auto* application = qobject_cast<QApplication*>(QCoreApplication::instance()))
+        apply_theme(*application, id);
+    canvas_->set_theme(id);
+    QSettings().setValue("theme", theme(id).key);
+    for (const auto& [candidate, action] : theme_actions_) action->setChecked(candidate == id);
+    refresh_icons();
+}
+
+// Icons are drawn from the theme, so they are rebuilt whenever it changes.
+void MainWindow::refresh_icons() {
+    const auto& colors = theme(theme_);
+    for (const auto& [action, glyph] : action_glyphs_) action->setIcon(glyph_icon(glyph, colors));
+    if (notation_box_) {
+        for (int index = 0; index < notation_box_->count(); ++index)
+            notation_box_->setItemIcon(index, QIcon(canvas_->notation_preview(
+                static_cast<Notation>(index), QSize(58, 18))));
+    }
+    for (const auto& [style, action] : line_actions_)
+        action->setIcon(QIcon(canvas_->line_style_preview(style, QSize(34, 18))));
 }
 
 void MainWindow::refresh_tool_labels() {

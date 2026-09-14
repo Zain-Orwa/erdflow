@@ -1,9 +1,10 @@
 #include "main_window.hpp"
+#include "theme.hpp"
 #include "infrastructure/project_store.hpp"
 
 #include <QApplication>
 #include <QCommandLineParser>
-#include <QPalette>
+#include <QSettings>
 #include <QTimer>
 
 int main(int argc, char* argv[]) {
@@ -11,39 +12,12 @@ int main(int argc, char* argv[]) {
     QCoreApplication::setApplicationName("ERDFlow");
     QCoreApplication::setApplicationVersion("0.1.0");
     QCoreApplication::setOrganizationName("ERDFlow");
+    // The theme owns both the application palette and the diagram colours, so a
+    // remembered choice is applied before any window is built.
     QApplication::setStyle("Fusion");
-    QPalette palette;
-    palette.setColor(QPalette::Window, QColor(27, 34, 45));
-    palette.setColor(QPalette::WindowText, QColor(228, 235, 244));
-    palette.setColor(QPalette::Base, QColor(22, 29, 39));
-    palette.setColor(QPalette::AlternateBase, QColor(32, 41, 54));
-    palette.setColor(QPalette::Text, QColor(228, 235, 244));
-    palette.setColor(QPalette::Button, QColor(38, 48, 62));
-    palette.setColor(QPalette::ButtonText, QColor(228, 235, 244));
-    palette.setColor(QPalette::Highlight, QColor(40, 105, 120));
-    palette.setColor(QPalette::HighlightedText, Qt::white);
-    palette.setColor(QPalette::ToolTipBase, QColor(38, 48, 62));
-    palette.setColor(QPalette::ToolTipText, QColor(228, 235, 244));
-    palette.setColor(QPalette::PlaceholderText, QColor(146, 161, 179));
-    palette.setColor(QPalette::Disabled, QPalette::Text, QColor(119, 133, 150));
-    palette.setColor(QPalette::Disabled, QPalette::ButtonText, QColor(119, 133, 150));
-    app.setPalette(palette);
-    app.setStyleSheet(
-        "QToolBar { spacing: 6px; padding: 8px; border: none; border-bottom: 1px solid #354252; }"
-        "QToolButton { padding: 7px 11px; border-radius: 4px; }"
-        "QToolButton:checked { background: #286978; color: white; }"
-        "QDockWidget::title { padding: 10px; font-weight: 600; }"
-        "QTreeView { border: none; padding: 6px; }"
-        "QTreeView::item { padding: 6px 2px; }"
-        "QLineEdit, QComboBox, QDoubleSpinBox { padding: 5px; }"
-        "QPushButton { padding: 7px 12px; }"
-        "QLabel#hint { color: #9eafc3; font-size: 12px; }"
-        "QLabel#workspaceBadge { color: #68d6d0; font-size: 11px; font-weight: 700; padding-right: 16px; }"
-        "QLabel#documentTitle { font-size: 16px; font-weight: 600; }"
-        "QLabel#propertyHeading { color: #68d6d0; font-size: 15px; font-weight: 600; }"
-        "QWidget#participantCard { background: #222d3a; border-radius: 5px; }"
-        "QStatusBar { border-top: 1px solid #354252; color: #acb9ca; }"
-    );
+    const QSettings settings;
+    const auto chosen = erdflow::desktop::theme_from_key(settings.value("theme", "office-light").toString());
+    erdflow::desktop::apply_theme(app, chosen);
     QCommandLineParser parser;
     parser.setApplicationDescription("ERDFlow conceptual ERD editor");
     parser.addHelpOption();
@@ -57,6 +31,7 @@ int main(int argc, char* argv[]) {
     erdflow::application::Editor editor(ids);
     erdflow::infrastructure::ErdxProjectStore store;
     erdflow::desktop::MainWindow window(editor, store, ids);
+    window.set_theme(chosen);
     window.show();
     QTimer::singleShot(0, &window, [&] {
         if (!parser.positionalArguments().isEmpty()) window.open_path(parser.positionalArguments().front());

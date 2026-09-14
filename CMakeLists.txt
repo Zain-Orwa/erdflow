@@ -34,7 +34,7 @@ target_link_libraries(erdflow_infrastructure PUBLIC erdflow_application Qt6::Cor
 add_library(erdflow_canvas app/desktop/diagram_view.cpp app/desktop/theme.cpp)
 target_link_libraries(erdflow_canvas PUBLIC erdflow_application Qt6::Widgets PRIVATE erdflow_warnings)
 
-add_library(erdflow_desktop app/desktop/main_window.cpp)
+add_library(erdflow_desktop app/desktop/main_window.cpp app/desktop/icons.cpp)
 target_link_libraries(erdflow_desktop PUBLIC erdflow_canvas PRIVATE erdflow_warnings)
 
 add_executable(erdflow app/desktop/main.cpp)

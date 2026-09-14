@@ -83,8 +83,13 @@ The project itself is MIT licensed; see [LICENSE](../LICENSE).
 main.cpp (composition root)
   ├── QtIdGenerator + ErdxProjectStore (Infrastructure)
   ├── Editor (Application) → model/validation (Domain)
-  └── MainWindow + DiagramView (Presentation)
+  └── MainWindow + DiagramView + theme/icons (Presentation)
 ```
+
+Themes carry the application palette and the diagram colours together, so the
+chrome and the canvas cannot disagree. Icons are painted from the active theme
+in `icons.cpp` rather than shipped as files, which keeps them consistent with
+whatever theme is chosen and avoids a resource pipeline.
 
 `erdflow_domain` and `erdflow_application` have no Qt dependency. The desktop
 receives Application interfaces; only the composition root assembles concrete

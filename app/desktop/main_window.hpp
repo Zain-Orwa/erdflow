@@ -1,6 +1,7 @@
 #pragma once
 
 #include "diagram_view.hpp"
+#include "icons.hpp"
 #include "application/project_store.hpp"
 
 #include <QMainWindow>
@@ -22,6 +23,8 @@ public:
                application::IdGenerator& ids, QWidget* parent = nullptr);
     ~MainWindow() override;
     bool open_path(const QString& path);
+    // Applies a theme to the window and its canvas, and remembers it.
+    void set_theme(ThemeId id);
     void load_example();
     [[nodiscard]] const application::Editor& editor() const { return editor_; }
     [[nodiscard]] DiagramView* canvas() const { return canvas_; }
@@ -51,6 +54,9 @@ private:
     QAction* rename_ = nullptr;
     std::map<Tool, QAction*> tool_actions_;
     std::map<Notation, QAction*> notation_actions_;
+    std::map<ThemeId, QAction*> theme_actions_;
+    std::map<QAction*, Glyph> action_glyphs_;
+    ThemeId theme_ = ThemeId::OfficeLight;
     // Generalization and specialization share one toolbar entry; this is the
     // mode its main button uses, chosen from its dropdown.
     Tool isa_mode_ = Tool::Specialization;
@@ -67,6 +73,7 @@ private:
     void choose_tool(Tool tool, bool locked);
     void choose_line_style(LineStyle style);
     void refresh_tool_labels();
+    void refresh_icons();
     [[nodiscard]] QWidget* toolbar_widget(QAction* action) const;
     void choose_notation(Notation notation);
     void refresh();

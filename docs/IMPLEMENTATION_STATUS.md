@@ -11,6 +11,10 @@ not been built yet. Their presence in those documents is not a completion claim.
 
 - Native Qt window with modeling toolbar, Explorer, Properties, model checks,
   status/zoom display, and a university example.
+- Six themes covering both the application chrome and the diagram, chosen under
+  **View → Theme** and remembered between sessions. Toolbar and menu icons are
+  drawn from the active theme rather than loaded, so they follow it and need no
+  asset pipeline; each modelling tool wears its own Chen shape.
 - Entity rectangles, attribute ovals, relationship diamonds, names and descriptions.
 - Stable typed UUIDv7 IDs for projects, entities, attributes, relationships, and
   each relationship participant. Rename and undo preserve identity.
