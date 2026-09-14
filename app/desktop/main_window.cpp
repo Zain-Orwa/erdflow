@@ -452,7 +452,18 @@ void MainWindow::refresh_properties() {
         associative->setToolTip("Give this relationship its own identity so it can take part in other relationships.");
         connect(associative, &QCheckBox::toggled, this, [this, id = relationship.id](bool on) {
             if (refreshing_) return;
-            show_result(editor_.set_associative(id, on));
+            // An associative entity takes the entity body size, since that is
+            // what it behaves as. Keep it centred so the diagram does not shift.
+            std::optional<domain::Rect> body;
+            const auto found = editor_.project().layout.find(domain::ElementRef{id});
+            if (found != editor_.project().layout.end()) {
+                const auto& size = on ? entity_body : relationship_body;
+                const auto& current = found->second;
+                body = domain::Rect{current.x + current.width / 2 - size.width / 2,
+                                    current.y + current.height / 2 - size.height / 2,
+                                    size.width, size.height};
+            }
+            show_result(editor_.set_associative(id, on, body));
         });
         layout->addWidget(associative);
         layout->addWidget(hint("Connect this relationship to entities, or to another relationship when this one is associative. Each connection has its own role and constraints.", panel));

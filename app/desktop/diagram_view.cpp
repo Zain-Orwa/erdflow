@@ -23,6 +23,10 @@ namespace {
 using namespace domain;
 
 constexpr qreal grid_spacing = 20;
+// A body of the given size centred on a point.
+Rect centred(const QPointF& centre, const BodySize& size) {
+    return {centre.x() - size.width / 2, centre.y() - size.height / 2, size.width, size.height};
+}
 constexpr qreal minimum_zoom = 0.15;
 constexpr qreal maximum_zoom = 3.0;
 
@@ -66,7 +70,9 @@ public:
 
     QRectF boundingRect() const override { return bounds_.adjusted(-4, -4, 4, 4); }
     QRectF body_rect() const { return bounds_; }
-    QPainterPath shape() const override {
+    // The element's own Chen outline, without the rectangle that surrounds an
+    // associative one. This is what carries the fill.
+    QPainterPath body_path() const {
         QPainterPath path;
         if (std::holds_alternative<EntityId>(ref)) {
             path.addRect(bounds_);
@@ -78,13 +84,16 @@ public:
             path.lineTo(bounds_.center().x(), bounds_.bottom());
             path.lineTo(bounds_.left(), bounds_.center().y());
             path.closeSubpath();
-            if (associative) {
-                // Winding fill unions the two outlines; odd-even would punch the
-                // diamond out of the rectangle it sits inside.
-                path.setFillRule(Qt::WindingFill);
-                path.addRect(bounds_);
-            }
-            path.closeSubpath();
+        }
+        return path;
+    }
+    QPainterPath shape() const override {
+        auto path = body_path();
+        // Hit testing covers the surrounding rectangle so its corners can be
+        // clicked, even though only the diamond inside it is filled.
+        if (associative) {
+            path.setFillRule(Qt::WindingFill);
+            path.addRect(bounds_);
         }
         return path;
     }
@@ -119,7 +128,13 @@ public:
             pen.setStyle(Qt::DashLine);
         painter->setPen(pen);
         painter->setBrush(fill_);
-        painter->drawPath(shape());
+        painter->drawPath(body_path());
+        // An associative entity's surrounding rectangle stays unfilled, so it
+        // reads as a relationship wearing a box rather than as a solid entity.
+        if (associative) {
+            painter->setBrush(Qt::NoBrush);
+            painter->drawRect(bounds_);
+        }
         if (std::holds_alternative<AttributeId>(ref) && attribute_kind == AttributeKind::Multivalued)
             painter->drawEllipse(bounds_.adjusted(5, 5, -5, -5));
         auto font = painter->font();
@@ -814,9 +829,9 @@ void DiagramView::mousePressEvent(QMouseEvent* event) {
         if (impl_->snap) center = {std::round(center.x() / grid_spacing) * grid_spacing, std::round(center.y() / grid_spacing) * grid_spacing};
         application::EditResult result;
         if (impl_->active_tool == Tool::Entity) {
-            result = impl_->editor.create_entity("Entity", {center.x() - 80, center.y() - 40, 160, 80});
+            result = impl_->editor.create_entity("Entity", centred(center, entity_body));
         } else if (impl_->active_tool == Tool::Relationship) {
-            result = impl_->editor.create_relationship("Relationship", {center.x() - 95, center.y() - 55, 190, 110});
+            result = impl_->editor.create_relationship("Relationship", centred(center, relationship_body));
         } else {
             std::optional<AttributeOwner> owner;
             const auto selection = selected_elements();
@@ -824,7 +839,7 @@ void DiagramView::mousePressEvent(QMouseEvent* event) {
                 const auto* attribute = std::get_if<AttributeId>(&selection.front());
                 if (!attribute || impl_->editor.project().attributes.at(*attribute).kind == AttributeKind::Composite) owner = selection.front();
             }
-            result = impl_->editor.create_attribute("Attribute", {center.x() - 75, center.y() - 30, 150, 60}, owner);
+            result = impl_->editor.create_attribute("Attribute", centred(center, attribute_body), owner);
         }
         impl_->publish(result);
         if (result && result.created) {

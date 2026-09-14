@@ -333,7 +333,7 @@ EditResult Editor::connect(RelationshipId relationship, ParticipantTarget target
         return EditResult{true, {}, {}, id};
     });
 }
-EditResult Editor::set_associative(RelationshipId relationship, bool associative) {
+EditResult Editor::set_associative(RelationshipId relationship, bool associative, std::optional<Rect> body) {
     return impl_->edit(associative ? "Make associative entity" : "Make plain relationship", [&](Delta& delta) {
         const auto found = project().relationships.find(relationship);
         if (found == project().relationships.end()) return failure("The relationship no longer exists.");
@@ -341,6 +341,11 @@ EditResult Editor::set_associative(RelationshipId relationship, bool associative
         auto value = found->second;
         value.associative = associative;
         delta.relationships.put(relationship, std::move(value));
+        if (body) {
+            const ElementRef ref{relationship};
+            const auto layout = project().layout.find(ref);
+            if (layout != project().layout.end() && layout->second != *body) delta.layout.put(ref, *body);
+        }
         return EditResult{};
     });
 }

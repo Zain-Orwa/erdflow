@@ -11,6 +11,13 @@ namespace erdflow::desktop {
 
 enum class Tool { Select, Entity, Attribute, Relationship, Connect, Pan };
 
+// Default body sizes for newly created elements. An associative relationship
+// adopts the entity size, because that is what it behaves as on the diagram.
+struct BodySize { double width, height; };
+inline constexpr BodySize entity_body{160, 80};
+inline constexpr BodySize attribute_body{150, 60};
+inline constexpr BodySize relationship_body{190, 110};
+
 class DiagramView : public QGraphicsView {
 public:
     explicit DiagramView(application::Editor& editor, QWidget* parent = nullptr);

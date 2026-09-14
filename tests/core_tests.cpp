@@ -545,7 +545,16 @@ void associative_relationships_act_as_entities() {
     CHECK(!editor.connect(teach, ParticipantTarget{enrolled}));
     CHECK(!blocks(editor.project()));
 
-    CHECK(editor.set_associative(enrolled, true));
+    // Adopting the associative shape may resize the body in the same edit, so
+    // one undo restores both the flag and the previous size.
+    CHECK(editor.move({{ElementRef{enrolled}, {0, 0, 190, 110}}}));
+    CHECK(editor.set_associative(enrolled, true, Rect{15, 15, 160, 80}));
+    CHECK(editor.project().relationships.at(enrolled).associative);
+    CHECK(editor.project().layout.at(ElementRef{enrolled}) == (Rect{15, 15, 160, 80}));
+    CHECK(editor.undo());
+    CHECK(!editor.project().relationships.at(enrolled).associative);
+    CHECK(editor.project().layout.at(ElementRef{enrolled}) == (Rect{0, 0, 190, 110}));
+    CHECK(editor.redo());
     CHECK(editor.project().relationships.at(enrolled).associative);
     CHECK(editor.connect(teach, ParticipantTarget{enrolled}));
     CHECK(editor.project().relationships.at(teach).participants.size() == 2);

@@ -27,9 +27,11 @@ not been built yet. Their presence in those documents is not a completion claim.
 - One drag or duplicate/delete group is one history entry. Deletion restores
   dependent attributes and participant records on undo. Duplicate generates new
   IDs, including participant IDs, and remaps the copied subgraph.
-- Associative entities: mark a relationship associative in Properties and it is
-  drawn as a diamond inside a rectangle and may take part in further
-  relationships, as an entity does.
+- Associative entities: mark a relationship associative in Properties and it
+  takes the entity body size and is drawn as a filled diamond inside an unfilled
+  rectangle, so it stays distinguishable from a solid entity. It may then take
+  part in further relationships, as an entity does. Adopting or dropping the
+  shape resizes it in the same undoable edit.
 - Names can be edited in two places: double-click an element to type its name on
   the canvas itself, or use the Properties panel. Return or clicking away commits
   as one undoable rename; Escape keeps the previous name.

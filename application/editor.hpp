@@ -54,7 +54,10 @@ public:
     EditResult connect(domain::RelationshipId relationship, domain::ParticipantTarget target);
     // An associative relationship carries its own identity and may then take
     // part in further relationships, as an entity would.
-    EditResult set_associative(domain::RelationshipId relationship, bool associative);
+    // Passing a body resizes the relationship in the same edit, so adopting or
+    // dropping the associative shape is a single undo step.
+    EditResult set_associative(domain::RelationshipId relationship, bool associative,
+                               std::optional<domain::Rect> body = {});
     EditResult update_participant(domain::RelationshipId relationship,
                                    domain::ParticipantId participant,
                                    domain::Cardinality maximum,
