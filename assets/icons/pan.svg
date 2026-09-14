@@ -1,58 +1,14 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="wash" x1="0" y1="0" x2="0.35" y2="1">
+      <stop offset="0" stop-color="#EEF2FF"/>
+      <stop offset="1" stop-color="#DCE4FE"/>
+    </linearGradient>
+  </defs>
+  <g fill="none" stroke="#4F6EF7" stroke-width="7.0" stroke-linecap="round" stroke-linejoin="round">
 
-    <defs>
-      <linearGradient id="bg" x1="0.12" y1="0" x2="0.9" y2="1">
-        <stop offset="0" stop-color="#62E8FF"/>
-        <stop offset="0.48" stop-color="#0A84FF"/>
-        <stop offset="1" stop-color="#2C45D9"/>
-      </linearGradient>
-      <!-- The gloss across the top, fading out rather than cut off, which is
-           what a blur would have done if filters were safe to rely on. -->
-      <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
-        <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.72"/>
-        <stop offset="0.45" stop-color="#FFFFFF" stop-opacity="0.22"/>
-        <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
-      </linearGradient>
-      <!-- Light bouncing back up off the bottom of the plate. -->
-      <linearGradient id="bounce" x1="0" y1="1" x2="0" y2="0">
-        <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.34"/>
-        <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
-      </linearGradient>
-      <radialGradient id="shine" cx="0.3" cy="0.16" r="0.62">
-        <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.75"/>
-        <stop offset="0.5" stop-color="#FFFFFF" stop-opacity="0.16"/>
-        <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
-      </radialGradient>
-      <!-- The glyph is glass rather than paint: lit from above, denser below. -->
-      <linearGradient id="glass" x1="0.2" y1="0" x2="0.7" y2="1">
-        <stop offset="0" stop-color="#FFFFFF" stop-opacity="1"/>
-        <stop offset="0.42" stop-color="#F2F7FF" stop-opacity="0.99"/>
-        <stop offset="1" stop-color="#C8DAF5" stop-opacity="0.97"/>
-      </linearGradient>
-      <linearGradient id="glass2" x1="0" y1="0" x2="1" y2="1">
-        <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.75"/>
-        <stop offset="1" stop-color="#FFFFFF" stop-opacity="0.18"/>
-      </linearGradient>
-      <radialGradient id="rim" cx="0.5" cy="0.5" r="0.5">
-        <stop offset="0.82" stop-color="#FFFFFF" stop-opacity="0"/>
-        <stop offset="1" stop-color="#FFFFFF" stop-opacity="0.5"/>
-      </radialGradient>
-    </defs>
-    
-  <!-- Contact shadow, stacked rather than blurred so no filter is needed. -->
-  <rect x="17" y="21" width="94" height="94" rx="27" fill="#0E1E4A" opacity="0.10"/>
-  <rect x="15" y="19" width="98" height="98" rx="28" fill="#0E1E4A" opacity="0.10"/>
-  <!-- The plate: vivid, rounded almost to a squircle, as the artwork is. -->
-  <rect x="12" y="10" width="104" height="104" rx="31" fill="url(#bg)"/>
-  <!-- A bright rim all round, brightest along the top edge. -->
-  <rect x="12" y="10" width="104" height="104" rx="31" fill="url(#rim)"/>
-  <rect x="13.2" y="11.2" width="101.6" height="101.6" rx="30" fill="none"
-        stroke="#FFFFFF" stroke-opacity="0.55" stroke-width="1.6"/>
-  <!-- Gloss over the upper half, bounce light off the lower. -->
-  <rect x="12" y="10" width="104" height="58" rx="30" fill="url(#gloss)"/>
-  <rect x="20" y="82" width="88" height="30" rx="15" fill="url(#bounce)"/>
-  <ellipse cx="50" cy="34" rx="30" ry="21" fill="url(#shine)"/>
-  
-  <path d="M42 70 V48 C42 43 49 43 49 48 V63 V38 C49 33 56 33 56 38 V62 V34 C56 29 63 29 63 34 V62 V40 C63 35 70 35 70 40 V65 V46 C70 41 77 41 77 46 V70 C77 89 68 99 55 99 C42 99 34 89 34 77 C34 68 42 66 42 70 Z" fill="url(#glass)" stroke="#FFFFFF" stroke-opacity="0.9" stroke-width="2.4"/>
-
+        <path d="M44 74 V40 C44 33 55 33 55 40 V62 V30 C55 23 66 23 66 30 V60 V26
+                 C66 19 77 19 77 26 V60 V38 C77 31 88 31 88 38 V74
+                 C88 96 77 110 64 110 C48 110 40 96 40 82 C40 70 44 68 44 74 Z" fill="url(#wash)"/>
+  </g>
 </svg>

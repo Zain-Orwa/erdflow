@@ -311,9 +311,15 @@ QIcon glyph_icon(Glyph glyph, const Theme& colors, int size, IconMode mode) {
     if (mode == IconMode::Modern) {
         // The artwork is square and carries its own plate, so it is rendered at
         // the pixel size it will be shown at rather than scaled from a pixmap.
+        // A flat icon has no plate to sit on, so the set comes in two inks and
+        // the theme's own panel decides which: the same rule that picks the
+        // lettering over a colour picks the lettering of the icons.
+        const bool on_dark = readable_on(colors.panel) == QColor(0xff, 0xff, 0xff);
         // Scalable artwork reports no fixed sizes of its own, so whether it
         // loaded is asked by rendering it rather than by listing what it offers.
-        QIcon artwork(QStringLiteral(":/erdflow/icons/%1.svg").arg(icon_name(glyph)));
+        QIcon artwork(QStringLiteral(":/erdflow/%1/%2.svg")
+                          .arg(on_dark ? QStringLiteral("icons-on-dark") : QStringLiteral("icons"),
+                               icon_name(glyph)));
         if (!artwork.pixmap(size).isNull()) return artwork;
         // A missing file must not leave a button blank, so the drawn glyph
         // stands in. Nothing else in the window has to know it happened.

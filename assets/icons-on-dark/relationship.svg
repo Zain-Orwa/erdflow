@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="wash" x1="0" y1="0" x2="0.35" y2="1">
+      <stop offset="0" stop-color="#502d36"/>
+      <stop offset="1" stop-color="#352634"/>
+    </linearGradient>
+  </defs>
+  <g fill="none" stroke="#f1bcb5" stroke-width="7.0" stroke-linecap="round" stroke-linejoin="round">
+
+        <path d="M64 20 L110 64 L64 108 L18 64 Z" fill="url(#wash)"/>
+  </g>
+</svg>

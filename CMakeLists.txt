@@ -56,6 +56,22 @@ qt_add_resources(erdflow_desktop "erdflow_icons"
         assets/icons/validate.svg assets/icons/theme.svg assets/icons/settings.svg
 )
 
+qt_add_resources(erdflow_desktop "erdflow_icons_on_dark"
+    PREFIX "/erdflow/icons-on-dark"
+    BASE "assets/icons-on-dark"
+    FILES
+        assets/icons-on-dark/select.svg assets/icons-on-dark/entity.svg assets/icons-on-dark/attribute.svg
+        assets/icons-on-dark/relationship.svg assets/icons-on-dark/isa.svg assets/icons-on-dark/connect.svg
+        assets/icons-on-dark/note.svg assets/icons-on-dark/comment.svg assets/icons-on-dark/pan.svg
+        assets/icons-on-dark/zoom.svg assets/icons-on-dark/new-project.svg assets/icons-on-dark/open.svg
+        assets/icons-on-dark/save.svg assets/icons-on-dark/import.svg assets/icons-on-dark/export.svg
+        assets/icons-on-dark/undo.svg assets/icons-on-dark/redo.svg assets/icons-on-dark/duplicate.svg
+        assets/icons-on-dark/delete.svg assets/icons-on-dark/search.svg assets/icons-on-dark/conceptual.svg
+        assets/icons-on-dark/schema.svg assets/icons-on-dark/physical.svg assets/icons-on-dark/sql.svg
+        assets/icons-on-dark/data.svg assets/icons-on-dark/explorer.svg assets/icons-on-dark/properties.svg
+        assets/icons-on-dark/validate.svg assets/icons-on-dark/theme.svg assets/icons-on-dark/settings.svg
+)
+
 
 add_executable(erdflow app/desktop/main.cpp)
 target_link_libraries(erdflow PRIVATE erdflow_desktop erdflow_infrastructure erdflow_warnings)
