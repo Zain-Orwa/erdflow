@@ -4,6 +4,7 @@
 #include "theme.hpp"
 
 #include <QGraphicsView>
+#include <QPixmap>
 #include <functional>
 #include <memory>
 
@@ -37,6 +38,9 @@ public:
     void zoom_in();
     void zoom_out();
     void set_notation(Notation notation);
+    // A sample of how a notation draws one participant end, for the picker.
+    // It uses the same drawing code as the canvas, so it cannot misrepresent it.
+    [[nodiscard]] QPixmap notation_preview(Notation notation, QSize size) const;
     [[nodiscard]] Notation notation() const;
     void set_grid_visible(bool enabled);
     void set_snap_enabled(bool enabled);

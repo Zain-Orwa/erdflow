@@ -14,6 +14,7 @@
 #include <QFormLayout>
 #include <QHeaderView>
 #include <QInputDialog>
+#include <QIcon>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenuBar>
@@ -205,6 +206,17 @@ void MainWindow::build_shell() {
     resizeDocks({explorer_dock, properties_dock}, {230, 310}, Qt::Horizontal);
 }
 
+namespace {
+// The notations offered, in the order they appear everywhere in the UI.
+const std::array<std::pair<Notation, QString>, 4>& notation_styles() {
+    static const std::array<std::pair<Notation, QString>, 4> styles{{
+        {Notation::Chen, "Chen"}, {Notation::MinMax, "Min–max"},
+        {Notation::CrowsFoot, "Crow's foot"}, {Notation::Bachman, "Bachman"}
+    }};
+    return styles;
+}
+} // namespace
+
 void MainWindow::build_actions() {
     auto* file = new QMenu("&File", this);
     menuBar()->insertMenu(menuBar()->actions().front(), file);
@@ -274,6 +286,26 @@ void MainWindow::build_actions() {
         finish_field_edit(); refresh_validation(); validation_dock_->show();
     });
     check->setObjectName("checkModel");
+    // Notation is a reading choice people change often, and a submenu hides it.
+    // The picker sits in the toolbar and draws each option, so the cardinality
+    // symbols can be recognised rather than remembered from a name.
+    toolbar->addSeparator();
+    auto* notation_label = new QLabel("  Notation ", toolbar);
+    notation_label->setObjectName("hint");
+    toolbar->addWidget(notation_label);
+    notation_box_ = new QComboBox(toolbar);
+    notation_box_->setObjectName("notationPicker");
+    notation_box_->setIconSize(QSize(58, 18));
+    notation_box_->setToolTip("How each participant's minimum and maximum are drawn.");
+    for (const auto& [style, label] : notation_styles())
+        notation_box_->addItem(QIcon(canvas_->notation_preview(style, QSize(58, 18))), label,
+                               QVariant::fromValue(static_cast<int>(style)));
+    notation_box_->setCurrentIndex(static_cast<int>(canvas_->notation()));
+    connect(notation_box_, &QComboBox::currentIndexChanged, this, [this](int index) {
+        if (refreshing_ || index < 0) return;
+        choose_notation(static_cast<Notation>(index));
+    });
+    toolbar->addWidget(notation_box_);
     auto* view = findChild<QMenu*>("viewMenu");
     view->addSeparator();
     view->addAction(fit);
@@ -297,17 +329,14 @@ void MainWindow::build_actions() {
     // choice, so it lives with the other view settings rather than in the file.
     auto* notations = view->addMenu("Notation");
     auto* notation_group = new QActionGroup(this);
-    const std::array<std::pair<Notation, QString>, 4> styles{{
-        {Notation::Chen, "Chen"}, {Notation::MinMax, "Min–max (0,M)"},
-        {Notation::CrowsFoot, "Crow's foot"}, {Notation::Bachman, "Bachman"}
-    }};
-    for (const auto& [style, label] : styles) {
+    for (const auto& [style, label] : notation_styles()) {
         auto* action = notations->addAction(label);
         action->setCheckable(true);
         action->setChecked(style == canvas_->notation());
         action->setObjectName("notation" + QString(label).remove(QRegularExpression("[^A-Za-z]")));
         action->setActionGroup(notation_group);
-        connect(action, &QAction::triggered, this, [this, style] { canvas_->set_notation(style); });
+        notation_actions_[style] = action;
+        connect(action, &QAction::triggered, this, [this, style] { choose_notation(style); });
     }
     auto* help = menuBar()->addMenu("&Help");
     help->addAction("Quick guide", this, [this] {
@@ -597,6 +626,18 @@ void MainWindow::show_result(const application::EditResult& result) {
         statusBar()->showMessage(text(result.error), 12000);
         QMessageBox::warning(this, "Change could not be applied", text(result.error));
     } else if (result.created) canvas_->select_elements({*result.created});
+}
+
+// One entry point, so the menu and the toolbar picker cannot disagree about
+// which notation is in use.
+void MainWindow::choose_notation(Notation notation) {
+    canvas_->set_notation(notation);
+    const auto previous = refreshing_;
+    refreshing_ = true;
+    if (const auto found = notation_actions_.find(notation); found != notation_actions_.end())
+        found->second->setChecked(true);
+    if (notation_box_) notation_box_->setCurrentIndex(static_cast<int>(notation));
+    refreshing_ = previous;
 }
 
 void MainWindow::rename_selection() {

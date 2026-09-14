@@ -35,6 +35,55 @@ QPointF normal(const QPointF& delta) {
     return length > 0.001 ? QPointF(-delta.y() / length, delta.x() / length) : QPointF(0, 1);
 }
 
+// One definition of how a participant end is drawn, used both by the canvas and
+// by the previews in the notation picker, so a picker can never show something
+// the diagram does not draw. Crow's foot places the maximum against the entity
+// and the minimum just inboard of it; Bachman uses an arrowhead for "many" and
+// a circle whose fill states whether the side is mandatory.
+void draw_participant_end(QPainter* painter, Notation notation, bool many, bool mandatory,
+                          const QPointF& end, const QPointF& outward,
+                          const QColor& ink, const QColor& paper) {
+    if (notation != Notation::CrowsFoot && notation != Notation::Bachman) return;
+    const QPointF u = outward;
+    const QPointF n = normal(u);
+    painter->save();
+    QPen pen(ink, 1.6);
+    pen.setCosmetic(true);
+    painter->setPen(pen);
+    painter->setBrush(Qt::NoBrush);
+    if (notation == Notation::CrowsFoot) {
+        if (many) {
+            const auto apex = end + u * 15;
+            painter->drawLine(apex, end + n * 7);
+            painter->drawLine(apex, end - n * 7);
+            painter->drawLine(apex, end);
+        } else {
+            const auto bar = end + u * 13;
+            painter->drawLine(bar + n * 7, bar - n * 7);
+        }
+        const auto inner = end + u * 25;
+        if (mandatory) {
+            painter->drawLine(inner + n * 7, inner - n * 7);
+        } else {
+            painter->setBrush(paper);
+            painter->drawEllipse(inner, 4.5, 4.5);
+        }
+    } else {
+        if (many) {
+            QPolygonF head;
+            head << end << end + u * 13 + n * 5 << end + u * 13 - n * 5;
+            painter->setBrush(ink);
+            painter->setPen(Qt::NoPen);
+            painter->drawPolygon(head);
+            if (mandatory) painter->drawEllipse(end + u * 20, 4.5, 4.5);
+        } else {
+            painter->setBrush(mandatory ? ink : paper);
+            painter->drawEllipse(end + u * 9, 5, 5);
+        }
+    }
+    painter->restore();
+}
+
 // These items are projections only: all persistent changes go through Editor.
 class NodeItem final : public QGraphicsItem {
 public:
@@ -217,53 +266,9 @@ public:
         if (notation == Notation::Bachman) return many() && mandatory() ? 26 : 16;
         return 0;
     }
-    // Crow's foot places the maximum against the entity and the minimum just
-    // inboard of it; Bachman uses an arrowhead for "many" and a circle whose
-    // fill states whether the side is mandatory.
     void paint_end_symbols(QPainter* painter, const QColor& ink, const QColor& paper) const {
         if (!descriptor.relationship) return;
-        const QPointF u = outward_;
-        const QPointF n = normal(u);
-        painter->save();
-        QPen pen(ink, 1.6);
-        pen.setCosmetic(true);
-        painter->setPen(pen);
-        painter->setBrush(Qt::NoBrush);
-        if (notation == Notation::CrowsFoot) {
-            const auto tip = end_;
-            if (many()) {
-                const auto apex = tip + u * 15;
-                painter->drawLine(apex, tip + n * 7);
-                painter->drawLine(apex, tip - n * 7);
-                painter->drawLine(apex, tip);
-            } else {
-                const auto bar = tip + u * 13;
-                painter->drawLine(bar + n * 7, bar - n * 7);
-            }
-            const auto inner = tip + u * 25;
-            if (mandatory()) {
-                painter->drawLine(inner + n * 7, inner - n * 7);
-            } else {
-                painter->setBrush(paper);
-                painter->drawEllipse(inner, 4.5, 4.5);
-            }
-        } else if (notation == Notation::Bachman) {
-            if (many()) {
-                QPolygonF head;
-                head << end_ << end_ + u * 13 + n * 5 << end_ + u * 13 - n * 5;
-                painter->setBrush(ink);
-                painter->setPen(Qt::NoPen);
-                painter->drawPolygon(head);
-                if (mandatory()) {
-                    painter->setBrush(ink);
-                    painter->drawEllipse(end_ + u * 20, 4.5, 4.5);
-                }
-            } else {
-                painter->setBrush(mandatory() ? ink : paper);
-                painter->drawEllipse(end_ + u * 9, 5, 5);
-            }
-        }
-        painter->restore();
+        draw_participant_end(painter, notation, many(), mandatory(), end_, outward_, ink, paper);
     }
     [[nodiscard]] QString end_label() const {
         if (!descriptor.relationship) return {};
@@ -833,6 +838,32 @@ void DiagramView::set_notation(Notation notation) {
     viewport()->update();
 }
 Notation DiagramView::notation() const { return impl_->notation; }
+
+QPixmap DiagramView::notation_preview(Notation notation, QSize size) const {
+    const auto& colors = theme(impl_->theme_id);
+    QPixmap pixmap(size * devicePixelRatioF());
+    pixmap.setDevicePixelRatio(devicePixelRatioF());
+    pixmap.fill(Qt::transparent);
+    QPainter painter(&pixmap);
+    painter.setRenderHint(QPainter::Antialiasing);
+    const qreal middle = size.height() / 2.0;
+    // A mandatory "many" end exercises both symbols in every notation.
+    const QPointF end(size.width() - 6.0, middle);
+    QPen line(colors.connector, 1.6);
+    line.setCosmetic(true);
+    painter.setPen(line);
+    painter.drawLine(QPointF(4, middle), end);
+    draw_participant_end(&painter, notation, true, true, end, QPointF(-1, 0), colors.connector, colors.canvas);
+    if (notation == Notation::Chen || notation == Notation::MinMax) {
+        auto font = painter.font();
+        font.setPointSizeF(9);
+        painter.setFont(font);
+        painter.setPen(colors.node_text);
+        painter.drawText(QRectF(0, 0, size.width() - 8, size.height()), Qt::AlignRight | Qt::AlignVCenter,
+                         notation == Notation::Chen ? QStringLiteral("M") : QStringLiteral("(1,M)"));
+    }
+    return pixmap;
+}
 void DiagramView::set_grid_visible(bool enabled) { impl_->grid = enabled; viewport()->update(); }
 void DiagramView::set_snap_enabled(bool enabled) { impl_->snap = enabled; }
 void DiagramView::set_theme(ThemeId id) {

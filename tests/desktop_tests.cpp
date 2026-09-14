@@ -4,6 +4,7 @@
 #include <QAction>
 #include <QApplication>
 #include <QComboBox>
+#include <QDockWidget>
 #include <QFile>
 #include <QKeyEvent>
 #include <QLineEdit>
@@ -115,7 +116,9 @@ int main(int argc, char** argv) {
         const auto participant = original.relationships.begin()->second.participants.front().id;
         window.canvas()->select_elements({relationship});
         settle();
-        auto combos = window.findChildren<QComboBox*>();
+        // Scope to the properties panel: the toolbar carries a combo of its own,
+        // and this assertion is about the participant forms, not the whole window.
+        auto combos = child<QDockWidget>(window, "propertiesDock")->findChildren<QComboBox*>();
         require(combos.size() == 4, "Relationship renders two independent participant forms");
         combos.front()->setCurrentIndex(0);
         QMetaObject::invokeMethod(combos.front(), "activated", Q_ARG(int, 0));
@@ -124,6 +127,25 @@ int main(int argc, char** argv) {
                 "Cardinality edit preserves participant ID");
         require(window.editor().project().relationships.at(relationship).participants.front().maximum == domain::Cardinality::One,
                 "Participant form applies cardinality");
+
+        // Notation must be visible in the toolbar, not buried in a submenu, and
+        // the two controls must never disagree about which one is in use.
+        auto* picker = child<QComboBox>(window, "notationPicker");
+        require(tools->findChildren<QComboBox*>().contains(picker), "The notation picker is on the toolbar");
+        require(picker->count() == 4, "All four notations are offered");
+        for (int index = 0; index < picker->count(); ++index)
+            require(!picker->itemIcon(index).isNull(), "Each notation is drawn, not just named");
+        require(picker->currentIndex() == static_cast<int>(window.canvas()->notation()), "The picker starts in step");
+        picker->setCurrentIndex(static_cast<int>(desktop::Notation::CrowsFoot));
+        settle();
+        require(window.canvas()->notation() == desktop::Notation::CrowsFoot, "The picker changes the canvas");
+        require(child<QAction>(window, "notationCrowsfoot")->isChecked(), "The menu follows the picker");
+        child<QAction>(window, "notationBachman")->trigger();
+        settle();
+        require(window.canvas()->notation() == desktop::Notation::Bachman, "The menu changes the canvas");
+        require(picker->currentIndex() == static_cast<int>(desktop::Notation::Bachman), "The picker follows the menu");
+        child<QAction>(window, "notationChen")->trigger();
+        settle();
 
         window.canvas()->select_elements({student});
         child<QAction>(window, "duplicateElements")->trigger();

@@ -18,7 +18,8 @@ not been built yet. Their presence in those documents is not a completion claim.
   underline, composite children, multivalued double oval, derived dashed oval.
 - Per-participant `1`/`M` cardinality and partial/total participation. These
   represent `0..1`, `1..1`, `0..M`, and `1..M`.
-- Four notations for reading those bounds, chosen under **View → Notation** and
+- Four notations for reading those bounds, chosen from the toolbar picker or
+  **View → Notation**, and
   drawn per participant end so each side stays correct as entities are moved:
   Chen (`1`/`M` with a doubled line for total participation), min–max (`(0,M)`),
   crow's foot (maximum against the entity, minimum just inboard), and Bachman

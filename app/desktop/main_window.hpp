@@ -9,6 +9,7 @@
 class QAction;
 class QDockWidget;
 class QLabel;
+class QComboBox;
 class QScrollArea;
 class QStandardItemModel;
 class QTreeView;
@@ -48,6 +49,8 @@ private:
     QAction* duplicate_ = nullptr;
     QAction* rename_ = nullptr;
     std::map<Tool, QAction*> tool_actions_;
+    std::map<Notation, QAction*> notation_actions_;
+    QComboBox* notation_box_ = nullptr;
     std::map<QString, domain::ElementRef> references_;
     std::vector<domain::ElementRef> selection_;
     QString path_;
@@ -55,6 +58,7 @@ private:
 
     void build_shell();
     void build_actions();
+    void choose_notation(Notation notation);
     void refresh();
     void refresh_explorer();
     void highlight_explorer();
