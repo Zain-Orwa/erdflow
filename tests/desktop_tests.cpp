@@ -393,6 +393,31 @@ int main(int argc, char** argv) {
             require(bool(editor.undo()), "Undo the colour");
         }
 
+        // The modern set is artwork rather than drawing, so it neither follows
+        // the theme nor needs to: switching to it must change every button, and
+        // switching back must restore what the theme was drawing.
+        {
+            const auto drawn = child<QAction>(window, "toolEntity")->icon().pixmap(22, 22).toImage();
+            child<QAction>(window, "iconsmodern")->trigger();
+            settle();
+            require(window.icon_mode() == desktop::IconMode::Modern, "The menu changes the icon set");
+            const auto artwork = child<QAction>(window, "toolEntity")->icon().pixmap(22, 22).toImage();
+            require(!artwork.isNull() && artwork != drawn, "Every button takes the new set");
+            require(QSettings().value("iconMode").toString() == "modern", "The choice is remembered");
+            // Every glyph the window uses has to exist in the set, or a button
+            // silently falls back and the two sets disagree about what is there.
+            for (int index = 0; index <= static_cast<int>(desktop::Glyph::Theme); ++index) {
+                const auto glyph = static_cast<desktop::Glyph>(index);
+                const QIcon file(QStringLiteral(":/erdflow/icons/%1.svg").arg(desktop::icon_name(glyph)));
+                require(!file.pixmap(22, 22).isNull(),
+                        "The modern set has artwork for every glyph the window draws");
+            }
+            child<QAction>(window, "iconsnormal")->trigger();
+            settle();
+            require(child<QAction>(window, "toolEntity")->icon().pixmap(22, 22).toImage() == drawn,
+                    "Going back restores the drawn glyphs");
+        }
+
         // The two menu buttons are added to the toolbar as widgets, so nothing
         // makes them follow it: they have to ask for the icon themselves.
         for (const char* menu_button : {"isaButton", "connectButton"}) {

@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+
+    <defs>
+      <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0" stop-color="#52F0F0"/>
+        <stop offset="0.52" stop-color="#08BEE8"/>
+        <stop offset="1" stop-color="#1475E8"/>
+      </linearGradient>
+      <linearGradient id="glass" x1="0" y1="0" x2="0.9" y2="1">
+        <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.98"/>
+        <stop offset="0.46" stop-color="#F7FBFF" stop-opacity="0.92"/>
+        <stop offset="1" stop-color="#BFD7FF" stop-opacity="0.90"/>
+      </linearGradient>
+      <linearGradient id="glass2" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.75"/>
+        <stop offset="1" stop-color="#FFFFFF" stop-opacity="0.18"/>
+      </linearGradient>
+      <radialGradient id="shine" cx="0.22" cy="0.14" r="0.72">
+        <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.85"/>
+        <stop offset="0.35" stop-color="#FFFFFF" stop-opacity="0.22"/>
+        <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+      </radialGradient>
+    </defs>
+    
+  <!-- soft shadow -->
+  <rect x="13" y="16" width="102" height="102" rx="28" fill="#10245A" opacity="0.18"/>
+  <!-- glossy rounded plate -->
+  <rect x="10" y="10" width="108" height="108" rx="30" fill="url(#bg)" stroke="#FFFFFF" stroke-opacity="0.55" stroke-width="2"/>
+  <rect x="13" y="13" width="102" height="102" rx="27" fill="none" stroke="#FFFFFF" stroke-opacity="0.23" stroke-width="2"/>
+  <ellipse cx="44" cy="31" rx="34" ry="25" fill="url(#shine)"/>
+  
+  <path d="M64 31 L98 64 L64 97 L30 64 Z" fill="#173B85" opacity="0.20" transform="translate(2,5)"/>
+  <path d="M64 31 L98 64 L64 97 L30 64 Z" fill="url(#glass)" stroke="#FFFFFF" stroke-opacity="0.78" stroke-width="2"/>
+
+</svg>

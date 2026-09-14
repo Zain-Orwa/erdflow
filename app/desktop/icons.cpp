@@ -274,7 +274,50 @@ void draw(QPainter& painter, Glyph glyph, const Theme& colors, qreal side) {
 
 } // namespace
 
-QIcon glyph_icon(Glyph glyph, const Theme& colors, int size) {
+QString icon_mode_key(IconMode mode) {
+    return mode == IconMode::Modern ? QStringLiteral("modern") : QStringLiteral("normal");
+}
+IconMode icon_mode_from_key(const QString& key) {
+    return key == QStringLiteral("modern") ? IconMode::Modern : IconMode::Normal;
+}
+
+QString icon_name(Glyph glyph) {
+    switch (glyph) {
+    case Glyph::New: return QStringLiteral("new-project");
+    case Glyph::Open: return QStringLiteral("open");
+    case Glyph::Save: return QStringLiteral("save");
+    case Glyph::Undo: return QStringLiteral("undo");
+    case Glyph::Redo: return QStringLiteral("redo");
+    case Glyph::Select: return QStringLiteral("select");
+    case Glyph::Entity: return QStringLiteral("entity");
+    case Glyph::Attribute: return QStringLiteral("attribute");
+    case Glyph::Relationship: return QStringLiteral("relationship");
+    case Glyph::Isa: return QStringLiteral("isa");
+    case Glyph::Connect: return QStringLiteral("connect");
+    case Glyph::Pan: return QStringLiteral("pan");
+    case Glyph::Fit: return QStringLiteral("zoom");
+    case Glyph::Check: return QStringLiteral("validate");
+    case Glyph::Duplicate: return QStringLiteral("duplicate");
+    // The set has no pencil of its own, so renaming borrows the properties
+    // artwork: both are about the details of an element rather than its shape.
+    case Glyph::Rename: return QStringLiteral("properties");
+    case Glyph::Delete: return QStringLiteral("delete");
+    case Glyph::Theme: return QStringLiteral("theme");
+    }
+    return QStringLiteral("select");
+}
+
+QIcon glyph_icon(Glyph glyph, const Theme& colors, int size, IconMode mode) {
+    if (mode == IconMode::Modern) {
+        // The artwork is square and carries its own plate, so it is rendered at
+        // the pixel size it will be shown at rather than scaled from a pixmap.
+        // Scalable artwork reports no fixed sizes of its own, so whether it
+        // loaded is asked by rendering it rather than by listing what it offers.
+        QIcon artwork(QStringLiteral(":/erdflow/icons/%1.svg").arg(icon_name(glyph)));
+        if (!artwork.pixmap(size).isNull()) return artwork;
+        // A missing file must not leave a button blank, so the drawn glyph
+        // stands in. Nothing else in the window has to know it happened.
+    }
     QPixmap pixmap(QSize(size, size) * 3);
     pixmap.setDevicePixelRatio(3);
     pixmap.fill(Qt::transparent);

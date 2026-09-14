@@ -26,6 +26,9 @@ public:
     bool open_path(const QString& path);
     // Applies a theme to the window and its canvas, and remembers it.
     void set_theme(ThemeId id);
+    // Which icon set the window draws its actions with, and remembers it.
+    void set_icon_mode(IconMode mode);
+    [[nodiscard]] IconMode icon_mode() const { return icon_mode_; }
     void load_example();
     [[nodiscard]] const application::Editor& editor() const { return editor_; }
     [[nodiscard]] DiagramView* canvas() const { return canvas_; }
@@ -58,6 +61,8 @@ private:
     std::map<ThemeId, QAction*> theme_actions_;
     std::map<QAction*, Glyph> action_glyphs_;
     ThemeId theme_ = ThemeId::OfficeLight;
+    IconMode icon_mode_ = IconMode::Normal;
+    std::map<IconMode, QAction*> icon_mode_actions_;
     // Generalization and specialization share one toolbar entry; this is the
     // mode its main button uses, chosen from its dropdown.
     Tool isa_mode_ = Tool::Specialization;

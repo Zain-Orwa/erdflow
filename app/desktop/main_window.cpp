@@ -476,6 +476,21 @@ void MainWindow::build_actions() {
     theme_button_->setPopupMode(QToolButton::InstantPopup);
     theme_button_->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     theme_button_->setIconSize(toolbar->iconSize());
+    // The icon set is a choice about appearance like the theme is, so it sits
+    // in the same menu rather than somewhere of its own.
+    auto* icon_menu = view->addMenu("Icons");
+    auto* icon_group = new QActionGroup(this);
+    for (const auto mode : {IconMode::Normal, IconMode::Modern}) {
+        auto* action = icon_menu->addAction(mode == IconMode::Modern ? "Modern — 3D artwork"
+                                                                     : "Normal — drawn from the theme");
+        action->setCheckable(true);
+        action->setChecked(mode == icon_mode_);
+        action->setObjectName("icons" + icon_mode_key(mode));
+        action->setActionGroup(icon_group);
+        icon_mode_actions_[mode] = action;
+        connect(action, &QAction::triggered, this, [this, mode] { set_icon_mode(mode); });
+    }
+
     // It goes before the notation picker rather than at the end: the toolbar
     // runs out of width on a narrow window, and anything added last is the
     // first thing to disappear into the overflow.
@@ -940,6 +955,13 @@ void MainWindow::choose_tool(Tool tool, bool locked) {
     refresh_tool_labels();
 }
 
+void MainWindow::set_icon_mode(IconMode mode) {
+    icon_mode_ = mode;
+    QSettings().setValue("iconMode", icon_mode_key(mode));
+    for (const auto& [candidate, action] : icon_mode_actions_) action->setChecked(candidate == mode);
+    refresh_icons();
+}
+
 void MainWindow::set_theme(ThemeId id) {
     theme_ = id;
     if (auto* application = qobject_cast<QApplication*>(QCoreApplication::instance()))
@@ -953,8 +975,9 @@ void MainWindow::set_theme(ThemeId id) {
 // Icons are drawn from the theme, so they are rebuilt whenever it changes.
 void MainWindow::refresh_icons() {
     const auto& colors = theme(theme_);
-    for (const auto& [action, glyph] : action_glyphs_) action->setIcon(glyph_icon(glyph, colors));
-    if (theme_button_) theme_button_->setIcon(glyph_icon(Glyph::Theme, colors));
+    for (const auto& [action, glyph] : action_glyphs_)
+        action->setIcon(glyph_icon(glyph, colors, 22, icon_mode_));
+    if (theme_button_) theme_button_->setIcon(glyph_icon(Glyph::Theme, colors, 22, icon_mode_));
     if (notation_box_) {
         for (int index = 0; index < notation_box_->count(); ++index)
             notation_box_->setItemIcon(index, QIcon(canvas_->notation_preview(
