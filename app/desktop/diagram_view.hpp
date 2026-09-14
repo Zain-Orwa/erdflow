@@ -11,6 +11,11 @@ namespace erdflow::desktop {
 
 enum class Tool { Select, Entity, Attribute, Relationship, Connect, Pan };
 
+// How each participant end is drawn. The model is the same in every notation:
+// participation supplies the minimum (0 or 1) and cardinality the maximum
+// (1 or M), so every notation reads the same two values off each participant.
+enum class Notation { Chen, MinMax, CrowsFoot, Bachman };
+
 // Default body sizes for newly created elements. An associative relationship
 // adopts the entity size, because that is what it behaves as on the diagram.
 struct BodySize { double width, height; };
@@ -31,6 +36,8 @@ public:
     void actual_size();
     void zoom_in();
     void zoom_out();
+    void set_notation(Notation notation);
+    [[nodiscard]] Notation notation() const;
     void set_grid_visible(bool enabled);
     void set_snap_enabled(bool enabled);
     void set_theme(ThemeId id);

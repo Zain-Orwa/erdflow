@@ -204,6 +204,74 @@ public:
     EdgeDescription descriptor;
     NodeItem* source;
     NodeItem* target;
+    Notation notation = Notation::Chen;
+
+    // Every notation reads the same two values: the minimum from participation
+    // and the maximum from cardinality.
+    [[nodiscard]] bool mandatory() const { return descriptor.participation == Participation::Total; }
+    [[nodiscard]] bool many() const { return descriptor.cardinality == Cardinality::Many; }
+    // How far from the entity the drawn symbols extend, so labels sit clear of them.
+    [[nodiscard]] qreal symbol_reach() const {
+        if (!descriptor.relationship) return 0;
+        if (notation == Notation::CrowsFoot) return mandatory() || !many() ? 26 : 16;
+        if (notation == Notation::Bachman) return many() && mandatory() ? 26 : 16;
+        return 0;
+    }
+    // Crow's foot places the maximum against the entity and the minimum just
+    // inboard of it; Bachman uses an arrowhead for "many" and a circle whose
+    // fill states whether the side is mandatory.
+    void paint_end_symbols(QPainter* painter, const QColor& ink, const QColor& paper) const {
+        if (!descriptor.relationship) return;
+        const QPointF u = outward_;
+        const QPointF n = normal(u);
+        painter->save();
+        QPen pen(ink, 1.6);
+        pen.setCosmetic(true);
+        painter->setPen(pen);
+        painter->setBrush(Qt::NoBrush);
+        if (notation == Notation::CrowsFoot) {
+            const auto tip = end_;
+            if (many()) {
+                const auto apex = tip + u * 15;
+                painter->drawLine(apex, tip + n * 7);
+                painter->drawLine(apex, tip - n * 7);
+                painter->drawLine(apex, tip);
+            } else {
+                const auto bar = tip + u * 13;
+                painter->drawLine(bar + n * 7, bar - n * 7);
+            }
+            const auto inner = tip + u * 25;
+            if (mandatory()) {
+                painter->drawLine(inner + n * 7, inner - n * 7);
+            } else {
+                painter->setBrush(paper);
+                painter->drawEllipse(inner, 4.5, 4.5);
+            }
+        } else if (notation == Notation::Bachman) {
+            if (many()) {
+                QPolygonF head;
+                head << end_ << end_ + u * 13 + n * 5 << end_ + u * 13 - n * 5;
+                painter->setBrush(ink);
+                painter->setPen(Qt::NoPen);
+                painter->drawPolygon(head);
+                if (mandatory()) {
+                    painter->setBrush(ink);
+                    painter->drawEllipse(end_ + u * 20, 4.5, 4.5);
+                }
+            } else {
+                painter->setBrush(mandatory() ? ink : paper);
+                painter->drawEllipse(end_ + u * 9, 5, 5);
+            }
+        }
+        painter->restore();
+    }
+    [[nodiscard]] QString end_label() const {
+        if (!descriptor.relationship) return {};
+        if (notation == Notation::Chen) return many() ? QStringLiteral("M") : QStringLiteral("1");
+        if (notation == Notation::MinMax)
+            return QStringLiteral("(%1,%2)").arg(mandatory() ? "1" : "0", many() ? "M" : "1");
+        return {};
+    }
 
     void set_theme(const Theme& colors) {
         connector_ = colors.connector;
@@ -253,20 +321,28 @@ public:
             return half_width * std::abs(unit.x()) + half_height * std::abs(unit.y()) + 4;
         };
         const auto entity_normal = normal(entity_direction);
-        const auto label_center = end + (distance > 0.01 ? entity_direction * (20 / distance) : QPointF(-20, 0))
-            + entity_normal * clearance(entity_normal, 11, 10);
-        cardinality_rect_ = QRectF(label_center - QPointF(11, 10), QSizeF(22, 20));
-        // Size the role box to its text. A fixed-width box blanketed the area
-        // around the entity end and hid the connector arriving there.
+        // The unit vector pointing from the entity back along the connector.
+        // Every end symbol is laid out along it, so the notation turns with the
+        // line and stays correct on whichever side the entity has been moved to.
+        outward_ = distance > 0.01 ? entity_direction / distance : QPointF(-1, 0);
+        end_ = end;
         QFont label_font;
         label_font.setPointSizeF(10);
+        const auto label = end_label();
+        const auto label_width = label.isEmpty()
+            ? 22.0 : QFontMetricsF(label_font).horizontalAdvance(label) + 10;
+        const auto label_center = end + outward_ * symbol_reach() + 20.0 * outward_
+            + entity_normal * clearance(entity_normal, label_width / 2, 10);
+        cardinality_rect_ = QRectF(label_center - QPointF(label_width / 2, 10), QSizeF(label_width, 20));
+        // Size the role box to its text. A fixed-width box blanketed the area
+        // around the entity end and hid the connector arriving there.
         const auto role_width = descriptor.role.isEmpty()
             ? 0.0 : std::min(140.0, QFontMetricsF(label_font).horizontalAdvance(descriptor.role) + 12);
         const auto role_center = path_.pointAtPercent(0.45)
             + perpendicular_ * clearance(perpendicular_, role_width / 2, 10);
         role_rect_ = QRectF(role_center - QPointF(role_width / 2, 10), QSizeF(role_width, 20));
-        bounds_ = path_.boundingRect().adjusted(-10, -10, 10, 10);
-        if (descriptor.relationship) bounds_ = bounds_.united(cardinality_rect_);
+        bounds_ = path_.boundingRect().adjusted(-14, -14, 14, 14);
+        if (descriptor.relationship && !end_label().isEmpty()) bounds_ = bounds_.united(cardinality_rect_);
         if (!descriptor.role.isEmpty()) bounds_ = bounds_.united(role_rect_);
         bounds_ = bounds_.united(handle_rect_.adjusted(-2, -2, 2, 2));
         setToolTip(descriptor.relationship
@@ -280,7 +356,7 @@ public:
         painter->setRenderHint(QPainter::Antialiasing);
         painter->setPen(QPen(isSelected() ? selection_ : connector_, isSelected() ? 2.2 : 1.6));
         painter->setBrush(Qt::NoBrush);
-        if (descriptor.relationship && descriptor.participation == Participation::Total) {
+        if (descriptor.relationship && notation == Notation::Chen && descriptor.participation == Participation::Total) {
             painter->save();
             painter->translate(perpendicular_ * 3);
             painter->drawPath(path_);
@@ -300,9 +376,9 @@ public:
             painter->setPen(isSelected() ? selection_ : text_);
             painter->drawText(rect, Qt::AlignCenter, QFontMetricsF(font).elidedText(text, Qt::ElideRight, rect.width() - 6));
         };
-        if (descriptor.relationship)
-            draw_label(cardinality_rect_, descriptor.cardinality == Cardinality::One ? QStringLiteral("1") : QStringLiteral("M"));
+        if (const auto label = end_label(); !label.isEmpty()) draw_label(cardinality_rect_, label);
         if (!descriptor.role.isEmpty()) draw_label(role_rect_, descriptor.role);
+        paint_end_symbols(painter, isSelected() ? selection_ : connector_, canvas_);
         if (isSelected()) {
             painter->setPen(QPen(selection_, 1.4));
             painter->setBrush(canvas_);
@@ -317,6 +393,8 @@ private:
     QRectF handle_rect_;
     QPointF midpoint_;
     QPointF perpendicular_;
+    QPointF outward_{-1, 0};
+    QPointF end_;
     QColor connector_, selection_, canvas_, text_;
 };
 
@@ -331,6 +409,7 @@ struct DiagramView::Impl {
     std::map<ElementRef, std::set<EdgeItem*>> incident;
     Tool active_tool = Tool::Select;
     ThemeId theme_id = ThemeId::OfficeLight;
+    Notation notation = Notation::Chen;
     bool grid = true;
     bool snap = false;
     bool synchronizing = false;
@@ -665,6 +744,7 @@ void DiagramView::synchronize() {
         auto found = impl_->edges.find(key);
         if (found == impl_->edges.end()) {
             auto* edge = new EdgeItem(description, impl_->nodes.at(description.from), impl_->nodes.at(description.to), theme(impl_->theme_id));
+            edge->notation = impl_->notation;
             impl_->edges.emplace(key, edge);
             impl_->incident[description.from].insert(edge);
             impl_->incident[description.to].insert(edge);
@@ -742,6 +822,17 @@ void DiagramView::fit_diagram() {
 void DiagramView::actual_size() { impl_->zoom(1); }
 void DiagramView::zoom_in() { impl_->zoom(zoom_factor() * 1.2); }
 void DiagramView::zoom_out() { impl_->zoom(zoom_factor() / 1.2); }
+void DiagramView::set_notation(Notation notation) {
+    if (impl_->notation == notation) return;
+    impl_->notation = notation;
+    for (auto& [key, edge] : impl_->edges) {
+        (void)key;
+        edge->notation = notation;
+        edge->refresh();
+    }
+    viewport()->update();
+}
+Notation DiagramView::notation() const { return impl_->notation; }
 void DiagramView::set_grid_visible(bool enabled) { impl_->grid = enabled; viewport()->update(); }
 void DiagramView::set_snap_enabled(bool enabled) { impl_->snap = enabled; }
 void DiagramView::set_theme(ThemeId id) {

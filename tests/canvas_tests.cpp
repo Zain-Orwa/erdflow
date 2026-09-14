@@ -3,13 +3,17 @@
 #include <QApplication>
 #include <QGraphicsItem>
 #include <QGraphicsScene>
+#include <QImage>
 #include <QKeyEvent>
 #include <QLineEdit>
 #include <QMouseEvent>
+#include <QPainter>
 
+#include <array>
 #include <cmath>
 #include <iostream>
 #include <stdexcept>
+#include <vector>
 
 namespace {
 using namespace erdflow;
@@ -294,6 +298,66 @@ void inline_rename_tests() {
     require(!view.renaming() && !field->isVisible(), "Cancelling closes the in-place editor");
 }
 
+// The same participant is readable in several notations. Each must reach the
+// painter, and within a notation both the minimum and the maximum must show.
+void notation_tests() {
+    SequentialIds ids;
+    application::Editor editor(ids);
+    const auto course = std::get<domain::EntityId>(*editor.create_entity("Course", {300, 0, 160, 80}).created);
+    const auto enrolled = std::get<domain::RelationshipId>(*editor.create_relationship("Enrolled", {-60, 0, 160, 80}).created);
+    const auto side = *editor.connect(enrolled, domain::ParticipantTarget{course}).participant;
+
+    desktop::DiagramView view(editor);
+    view.resize(640, 260);
+    view.show();
+    view.set_grid_visible(false);
+    view.fit_diagram();
+    QApplication::processEvents();
+    require(view.notation() == desktop::Notation::Chen, "Chen is the default notation");
+
+    const auto render = [&] {
+        QApplication::processEvents();
+        QImage image(640, 260, QImage::Format_ARGB32_Premultiplied);
+        image.fill(Qt::transparent);
+        QPainter painter(&image);
+        view.render(&painter);
+        return image;
+    };
+
+    // Every notation must draw the same participant differently.
+    const std::array<desktop::Notation, 4> styles{desktop::Notation::Chen, desktop::Notation::MinMax,
+                                                  desktop::Notation::CrowsFoot, desktop::Notation::Bachman};
+    std::vector<QImage> drawn;
+    for (const auto style : styles) {
+        view.set_notation(style);
+        require(view.notation() == style, "The chosen notation is kept");
+        drawn.push_back(render());
+    }
+    for (std::size_t a = 0; a < drawn.size(); ++a)
+        for (std::size_t b = a + 1; b < drawn.size(); ++b)
+            require(drawn[a] != drawn[b], "Each notation draws the participant differently");
+
+    // Re-selecting a notation reproduces its drawing exactly.
+    view.set_notation(desktop::Notation::Chen);
+    require(render() == drawn.front(), "Returning to a notation reproduces its drawing");
+
+    // Within one notation, all four minimum/maximum combinations must differ,
+    // which is only true if the minimum is drawn as well as the maximum.
+    for (const auto style : styles) {
+        view.set_notation(style);
+        std::vector<QImage> combinations;
+        for (const auto maximum : {domain::Cardinality::One, domain::Cardinality::Many})
+            for (const auto minimum : {domain::Participation::Partial, domain::Participation::Total}) {
+                require(editor.update_participant(enrolled, side, maximum, minimum, ""), "Set participant bounds");
+                view.synchronize();
+                combinations.push_back(render());
+            }
+        for (std::size_t a = 0; a < combinations.size(); ++a)
+            for (std::size_t b = a + 1; b < combinations.size(); ++b)
+                require(combinations[a] != combinations[b], "Every minimum/maximum pair is drawn distinctly");
+    }
+}
+
 void synchronization_lifetime_tests() {
     SequentialIds ids;
     application::Editor editor(ids);
@@ -466,6 +530,7 @@ int main(int argc, char** argv) {
         connector_shaping_tests();
         drag_to_connect_tests();
         inline_rename_tests();
+        notation_tests();
         std::cout << "Canvas tests passed\n";
     } catch (const std::exception& exception) {
         std::cerr << "Canvas test failed: " << exception.what() << '\n';

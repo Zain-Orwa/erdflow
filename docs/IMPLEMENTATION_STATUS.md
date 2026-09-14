@@ -17,7 +17,13 @@ not been built yet. Their presence in those documents is not a completion claim.
 - Entity, relationship, and composite-attribute ownership of attributes; key
   underline, composite children, multivalued double oval, derived dashed oval.
 - Per-participant `1`/`M` cardinality and partial/total participation. These
-  represent `0..1`, `1..1`, `0..M`, and `1..M`; total participation draws two lines.
+  represent `0..1`, `1..1`, `0..M`, and `1..M`.
+- Four notations for reading those bounds, chosen under **View → Notation** and
+  drawn per participant end so each side stays correct as entities are moved:
+  Chen (`1`/`M` with a doubled line for total participation), min–max (`(0,M)`),
+  crow's foot (maximum against the entity, minimum just inboard), and Bachman
+  (arrowhead for many, filled or hollow circle for mandatory or optional).
+  The notation is a display choice and is not stored in the project file.
 - Recursive and multi-participant relationships with independent participant IDs
   and editable roles. Cardinality labels follow their entity endpoint.
 - Create, rename, describe, move, set size through Properties, delete, duplicate,

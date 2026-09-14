@@ -19,6 +19,7 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QPlainTextEdit>
+#include <QRegularExpression>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QSignalBlocker>
@@ -292,6 +293,22 @@ void MainWindow::build_actions() {
     }
     canvas_->set_snap_enabled(false);
     canvas_->set_grid_visible(true);
+    // The same participants can be read in several notations. This is a display
+    // choice, so it lives with the other view settings rather than in the file.
+    auto* notations = view->addMenu("Notation");
+    auto* notation_group = new QActionGroup(this);
+    const std::array<std::pair<Notation, QString>, 4> styles{{
+        {Notation::Chen, "Chen"}, {Notation::MinMax, "Min–max (0,M)"},
+        {Notation::CrowsFoot, "Crow's foot"}, {Notation::Bachman, "Bachman"}
+    }};
+    for (const auto& [style, label] : styles) {
+        auto* action = notations->addAction(label);
+        action->setCheckable(true);
+        action->setChecked(style == canvas_->notation());
+        action->setObjectName("notation" + QString(label).remove(QRegularExpression("[^A-Za-z]")));
+        action->setActionGroup(notation_group);
+        connect(action, &QAction::triggered, this, [this, style] { canvas_->set_notation(style); });
+    }
     auto* help = menuBar()->addMenu("&Help");
     help->addAction("Quick guide", this, [this] {
         QMessageBox::information(this, "Drawing a conceptual ERD",
