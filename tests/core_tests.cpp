@@ -324,8 +324,8 @@ void duplicate_remaps_selected_subgraph() {
     CHECK(editor.project().relationships.size() == 2);
     const auto copied_rel = std::find_if(editor.project().relationships.begin(), editor.project().relationships.end(), [&](const auto& entry) { return entry.first != rel; });
     CHECK(copied_rel != editor.project().relationships.end());
-    CHECK(copied_rel->second.participants[0].entity == duplicate_student);
-    CHECK(copied_rel->second.participants[1].entity == course);
+    CHECK(copied_rel->second.participants[0].target == ParticipantTarget{duplicate_student});
+    CHECK(copied_rel->second.participants[1].target == ParticipantTarget{course});
     CHECK(copied_rel->second.participants[0].id != p1);
     CHECK(copied_rel->second.participants[1].id != p2);
     CHECK(editor.project().layout.at(duplicate_student).x == 32);
@@ -364,7 +364,7 @@ void hostile_models_are_rejected() {
     malformed.relationships.at(other).participants.front().id = malformed.relationships.at(rel).participants.front().id;
     CHECK(has_issue(malformed, "identity.duplicate"));
     malformed = original;
-    malformed.relationships.at(rel).participants.front().entity = EntityId{ids.next()};
+    malformed.relationships.at(rel).participants.front().target = EntityId{ids.next()};
     CHECK(has_issue(malformed, "participant.entity.missing"));
     malformed = original;
     malformed.layout.erase(ent);
@@ -526,6 +526,63 @@ void hostile_connector_shapes_are_rejected() {
     CHECK(!blocks(project));
 }
 
+// An associative relationship keeps its own identity and may take part in
+// further relationships, as the Chen "Enrolled participates in Teach" shape does.
+void associative_relationships_act_as_entities() {
+    TestIds ids;
+    Editor editor(ids);
+    const auto student = entity(editor, "Student");
+    const auto course = entity(editor, "Course");
+    const auto teacher = entity(editor, "Teacher");
+    const auto enrolled = relationship(editor, "Enrolled");
+    const auto teach = relationship(editor, "Teach");
+    connect(editor, enrolled, student);
+    connect(editor, enrolled, course);
+    connect(editor, teach, teacher);
+
+    // A plain relationship cannot take part in another one.
+    CHECK(!editor.project().relationships.at(enrolled).associative);
+    CHECK(!editor.connect(teach, ParticipantTarget{enrolled}));
+    CHECK(!blocks(editor.project()));
+
+    CHECK(editor.set_associative(enrolled, true));
+    CHECK(editor.project().relationships.at(enrolled).associative);
+    CHECK(editor.connect(teach, ParticipantTarget{enrolled}));
+    CHECK(editor.project().relationships.at(teach).participants.size() == 2);
+    CHECK(editor.project().relationships.at(teach).participants.back().target == ParticipantTarget{enrolled});
+    CHECK(!blocks(editor.project()));
+
+    // Clearing the flag while it is still in use would strand that participant.
+    CHECK(!editor.set_associative(enrolled, false));
+    CHECK(editor.project().relationships.at(enrolled).associative);
+
+    // Undo restores the plain relationship together with the participation.
+    CHECK(editor.undo());
+    CHECK(editor.project().relationships.at(teach).participants.size() == 1);
+    CHECK(editor.undo());
+    CHECK(!editor.project().relationships.at(enrolled).associative);
+
+    // A relationship may not take part in itself, nor form a cycle.
+    CHECK(editor.redo());
+    auto malformed = editor.project();
+    malformed.relationships.at(enrolled).participants.push_back(
+        {ParticipantId{ids.next()}, ParticipantTarget{enrolled}, Cardinality::Many, Participation::Partial, {}});
+    CHECK(has_issue(malformed, "participant.self"));
+
+    malformed = editor.project();
+    CHECK(editor.redo());
+    auto cyclic = editor.project();
+    cyclic.relationships.at(teach).associative = true;
+    cyclic.relationships.at(enrolled).participants.push_back(
+        {ParticipantId{ids.next()}, ParticipantTarget{teach}, Cardinality::Many, Participation::Partial, {}});
+    CHECK(has_issue(cyclic, "participant.cycle"));
+
+    // A participant pointing at a plain relationship is rejected outright.
+    auto plain = editor.project();
+    plain.relationships.at(enrolled).associative = false;
+    CHECK(has_issue(plain, "participant.not_associative"));
+}
+
 } // namespace
 
 int main() {
@@ -542,6 +599,7 @@ int main() {
         {"limits, deep ownership and compact history", limits_deep_ownership_and_compact_history},
         {"connector shapes follow their link", connector_shapes_follow_their_link},
         {"hostile connector shapes", hostile_connector_shapes_are_rejected},
+        {"associative relationships act as entities", associative_relationships_act_as_entities},
     };
     std::size_t failures = 0;
     for (const auto& [name, test] : tests) {

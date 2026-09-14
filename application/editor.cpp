@@ -260,7 +260,7 @@ EditResult Editor::create_attribute(std::string name, Rect rect, std::optional<A
 EditResult Editor::create_relationship(std::string name, Rect rect) {
     return impl_->edit("Create relationship", [&](Delta& delta) {
         const RelationshipId id{impl_->next_id()};
-        delta.relationships.put(id, Relationship{id, std::move(name), {}, {}});
+        delta.relationships.put(id, Relationship{id, std::move(name), {}, false, {}});
         delta.layout.put(ElementRef{id}, rect);
         return EditResult{true, {}, ElementRef{id}, {}};
     });
@@ -321,16 +321,27 @@ EditResult Editor::set_attribute_owner(AttributeId id, std::optional<AttributeOw
         return EditResult{};
     });
 }
-EditResult Editor::connect(RelationshipId relationship, EntityId entity) {
+EditResult Editor::connect(RelationshipId relationship, ParticipantTarget target) {
     return impl_->edit("Connect participant", [&](Delta& delta) {
         const auto found = project().relationships.find(relationship);
-        if (found == project().relationships.end() || !project().entities.contains(entity))
-            return failure("The relationship or entity no longer exists.");
+        if (found == project().relationships.end() || !exists(project(), target_ref(target)))
+            return failure("The relationship or its participant no longer exists.");
         const ParticipantId id{impl_->next_id()};
         auto value = found->second;
-        value.participants.push_back({id, entity, Cardinality::Many, Participation::Partial, {}});
+        value.participants.push_back({id, target, Cardinality::Many, Participation::Partial, {}});
         delta.relationships.put(relationship, std::move(value));
         return EditResult{true, {}, {}, id};
+    });
+}
+EditResult Editor::set_associative(RelationshipId relationship, bool associative) {
+    return impl_->edit(associative ? "Make associative entity" : "Make plain relationship", [&](Delta& delta) {
+        const auto found = project().relationships.find(relationship);
+        if (found == project().relationships.end()) return failure("The relationship no longer exists.");
+        if (found->second.associative == associative) return EditResult{};
+        auto value = found->second;
+        value.associative = associative;
+        delta.relationships.put(relationship, std::move(value));
+        return EditResult{};
     });
 }
 EditResult Editor::update_participant(RelationshipId relationship, ParticipantId participant,
@@ -425,7 +436,7 @@ EditResult Editor::erase(const std::vector<ElementRef>& elements,
         for (const auto& [id, relationship] : project().relationships) {
             if (removed.contains(ElementRef{id})) continue;
             const auto should_remove = [&](const auto& participant) {
-                return removed.contains(ElementRef{participant.entity})
+                return removed.contains(target_ref(participant.target))
                     || (disconnected.contains(id) && disconnected.at(id).contains(participant.id));
             };
             const bool affected = std::any_of(relationship.participants.begin(), relationship.participants.end(), should_remove);
@@ -472,7 +483,11 @@ EditResult Editor::duplicate(const std::vector<ElementRef>& elements, double dx,
                     for (auto& participant : value.participants) {
                         const auto original_participant = participant.id;
                         participant.id = ParticipantId{impl_->next_id()};
-                        if (mapping.contains(ElementRef{participant.entity})) participant.entity = std::get<EntityId>(mapping.at(ElementRef{participant.entity}));
+                        if (mapping.contains(target_ref(participant.target))) {
+                            const auto replacement_target = mapping.at(target_ref(participant.target));
+                            if (const auto* copied_entity = std::get_if<EntityId>(&replacement_target)) participant.target = *copied_entity;
+                            else if (const auto* copied_rel = std::get_if<RelationshipId>(&replacement_target)) participant.target = *copied_rel;
+                        }
                         const auto shape = project().connectors.find(ConnectorRef{original_participant});
                         if (shape != project().connectors.end())
                             delta.connectors.put(ConnectorRef{participant.id}, shape->second);

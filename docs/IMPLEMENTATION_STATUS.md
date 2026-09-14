@@ -27,6 +27,9 @@ not been built yet. Their presence in those documents is not a completion claim.
 - One drag or duplicate/delete group is one history entry. Deletion restores
   dependent attributes and participant records on undo. Duplicate generates new
   IDs, including participant IDs, and remaps the copied subgraph.
+- Associative entities: mark a relationship associative in Properties and it is
+  drawn as a diamond inside a rectangle and may take part in further
+  relationships, as an entity does.
 - Names can be edited in two places: double-click an element to type its name on
   the canvas itself, or use the Properties panel. Return or clicking away commits
   as one undoable rename; Escape keeps the previous name.
@@ -37,7 +40,7 @@ not been built yet. Their presence in those documents is not a completion claim.
 - Connector shaping: select a link, drag its handle to bend it aside, double-click
   to straighten. The bend is one undoable edit, is saved, and is dropped with the
   link it belongs to. Dragging nodes follows the pointer; snap to grid is opt-in.
-- Versioned `.erdx` JSON save/load, currently format version 2. Version 1 files
+- Versioned `.erdx` JSON save/load, currently format version 3. Versions 1 and 2
   still open and upgrade on save. Incomplete but structurally valid diagrams
   can be saved. Invalid/unsupported files leave the open project intact.
 - Safe file replacement, Save/Discard/Cancel protection, focused text committed
@@ -52,7 +55,7 @@ geometry changes use **Apply position and size**.
 | Phase | Evidence and remaining work |
 | --- | --- |
 | 0 — Architecture | Completed review; ADR-001–013 accepted. ADR-014 records implementation choices. |
-| 1 — Build foundation | Exit criteria met: layered CMake targets, warning flags, Debug/Release, five passing suites, macOS launch, and committed repository state. Windows/Linux instructions exist but those platforms are unverified. |
+| 1 — Build foundation | Exit criteria met: layered CMake targets, warning flags, Debug/Release, passing suites, macOS launch, and committed repository state. Windows/Linux instructions exist but those platforms are unverified. |
 | 2 — Shell | Functional desktop shell delivered. Future Schema/Table/SQL/Data navigation waits for usable destinations. |
 | 3 — Commands | Implemented Qt-free semantic operations, atomic deltas, dirty state, bounded undo/redo. |
 | 4 — Minimal domain | Implemented and independently tested without Qt. |
@@ -61,7 +64,7 @@ geometry changes use **Apply position and size**.
 | 7 — Cardinality | Implemented per participant, with correct entity-side labels. |
 | 8 — Participation | Implemented partial/total and one/many combinations on the same participant. A separate min/max text notation toggle is not implemented. |
 | 9 — Advanced attributes | Partial: composite, multivalued, derived implemented. Partial keys and combined kind semantics remain open with weak entities. |
-| 10–12 — Weak/ISA/associative | Not implemented. Next semantic work begins with weak entities and partial keys. |
+| 10–12 — Weak/ISA/associative | Partial: associative entities implemented, including participation in further relationships. Weak entities, identifying relationships and ISA remain. |
 | 13–14 — Modes/readiness | Basic properties and structural checks exist. Convertible mode, logical types, key groups, and conversion-readiness policy are not implemented. |
 | 15 — Project files | Single-page native format foundation delivered early to protect the current editor's work. No historical migration or recovery system. |
 | 16–17 — Pages/editor milestone | Not complete; multiple pages and the remaining conceptual semantics are required. |
@@ -84,9 +87,9 @@ conversion, SQL, AI, or data features ahead of the roadmap.
 
 ## Verification
 
-All five CTest suites passed in Debug, Release, and AddressSanitizer +
+All six CTest suites passed in Debug, Release, and AddressSanitizer +
 UndefinedBehaviorSanitizer builds. They cover the core, real persistence adapter,
-canvas interactions, desktop workflows, and application startup. See [development instructions](DEVELOPMENT.md)
+canvas interactions, themes, desktop workflows, and application startup. See [development instructions](DEVELOPMENT.md)
 for reproducible commands and [performance baseline](PERFORMANCE_BASELINE.md) for
 measurements. GUI checks currently use Qt's offscreen platform on macOS; the
 rendered example was visually inspected. This does not prove native dialogs,
@@ -101,7 +104,7 @@ group snap/bounds; stale gesture cancellation; and incident-only live connector 
 ## Still to build in Part 1
 
 Weak entities/identifying relationships/partial keys; ISA and specialization
-constraints; associative entities; logical metadata and conversion readiness;
+constraints; logical metadata and conversion readiness;
 multiple pages; cross-project clipboard; alignment/distribution; drag resize
 handles; connector endpoint handles and multi-point routing; search; export;
 autosave and recovery. Connectors carry one bend each, which is enough to route

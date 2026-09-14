@@ -17,9 +17,10 @@
 namespace erdflow::infrastructure {
 using namespace domain;
 namespace {
-// Version 2 adds connector shapes. Version 1 remains readable; see the format
-// specification for the compatibility rule this pair of versions defines.
-constexpr int current_format_version = 2;
+// Version 2 added connector shapes; version 3 adds associative relationships
+// and participants that may target one. Earlier versions remain readable; the
+// format specification states the compatibility rule for each.
+constexpr int current_format_version = 3;
 QString text(const std::string& value) { return QString::fromUtf8(value.data(), static_cast<qsizetype>(value.size())); }
 Uuid bytes_of(const QUuid& value) {
     Uuid result;
@@ -258,11 +259,12 @@ QByteArray ErdxProjectStore::encode(const Project& project) {
     for (const auto& [id, relationship] : project.relationships) {
         QJsonArray participants;
         for (const auto& p : relationship.participants)
-            participants.append(QJsonObject{{"id", uuid_text(p.id.value)}, {"entity", uuid_text(p.entity.value)},
+            participants.append(QJsonObject{{"id", uuid_text(p.id.value)}, {"target", reference(target_ref(p.target))},
                 {"maximum", p.maximum == Cardinality::One ? "one" : "many"},
                 {"participation", p.participation == Participation::Total ? "total" : "partial"}, {"role", text(p.role)}});
         relationships.append(QJsonObject{{"id", uuid_text(id.value)}, {"name", text(relationship.name)},
-            {"description", text(relationship.description)}, {"participants", participants}});
+            {"description", text(relationship.description)}, {"associative", relationship.associative},
+            {"participants", participants}});
     }
     for (const auto& [ref, rect] : project.layout)
         layout.append(QJsonObject{{"element", reference(ref)}, {"x", rect.x}, {"y", rect.y}, {"width", rect.width}, {"height", rect.height}});
@@ -289,9 +291,11 @@ application::LoadResult ErdxProjectStore::decode(const QByteArray& input) {
         // Version 1 had no connector shapes. It still opens, and its links start
         // routed automatically; saving then writes the current version.
         const auto version = root["format_version"];
-        if (!version.isDouble() || (version.toDouble() != 1 && version.toDouble() != 2))
+        const auto number_version = version.isDouble() ? version.toDouble() : 0;
+        if (number_version != 1 && number_version != 2 && number_version != 3)
             invalid("Unsupported project version. Use a compatible ERDFlow release.");
-        const bool shaped_connectors = version.toDouble() == 2;
+        const bool shaped_connectors = number_version >= 2;
+        const bool associative_entities = number_version >= 3;
         const auto data = shaped_connectors
             ? object(root["project"], {"id", "name", "entities", "attributes", "relationships", "layout", "connectors"})
             : object(root["project"], {"id", "name", "entities", "attributes", "relationships", "layout"});
@@ -311,16 +315,35 @@ application::LoadResult ErdxProjectStore::decode(const QByteArray& input) {
         }
         std::size_t participant_count = 0;
         for (const auto& value : array(data["relationships"])) {
-            auto o = object(value, {"id", "name", "description", "participants"});
-            Relationship relationship{RelationshipId{parse_id(o["id"])}, string(o["name"]), string(o["description"], max_description_bytes), {}};
+            auto o = associative_entities
+                ? object(value, {"id", "name", "description", "associative", "participants"})
+                : object(value, {"id", "name", "description", "participants"});
+            Relationship relationship{RelationshipId{parse_id(o["id"])}, string(o["name"]), string(o["description"], max_description_bytes), false, {}};
+            if (associative_entities) {
+                if (!o["associative"].isBool()) invalid("A relationship's associative flag must be true or false.");
+                relationship.associative = o["associative"].toBool();
+            }
             for (const auto& part : array(o["participants"])) {
                 if (++participant_count > max_elements) invalid("The project exceeds its participant limit.");
-                auto p = object(part, {"id", "entity", "maximum", "participation", "role"});
+                auto p = associative_entities
+                    ? object(part, {"id", "target", "maximum", "participation", "role"})
+                    : object(part, {"id", "entity", "maximum", "participation", "role"});
                 const auto maximum = string(p["maximum"]);
                 const auto participation = string(p["participation"]);
                 if (maximum != "one" && maximum != "many") invalid("Invalid participant cardinality.");
                 if (participation != "partial" && participation != "total") invalid("Invalid participation.");
-                relationship.participants.push_back({ParticipantId{parse_id(p["id"])}, EntityId{parse_id(p["entity"])},
+                // Before version 3 a participant could only be an entity, and
+                // was stored as a bare identifier rather than a typed reference.
+                ParticipantTarget target = EntityId{};
+                if (associative_entities) {
+                    const auto element = parse_ref(p["target"]);
+                    if (const auto* entity = std::get_if<EntityId>(&element)) target = *entity;
+                    else if (const auto* onward = std::get_if<RelationshipId>(&element)) target = *onward;
+                    else invalid("A participant must target an entity or an associative relationship.");
+                } else {
+                    target = EntityId{parse_id(p["entity"])};
+                }
+                relationship.participants.push_back({ParticipantId{parse_id(p["id"])}, target,
                     maximum == "one" ? Cardinality::One : Cardinality::Many,
                     participation == "total" ? Participation::Total : Participation::Partial, string(p["role"])});
             }

@@ -43,6 +43,9 @@ public:
     ElementRef ref;
     QString label;
     AttributeKind attribute_kind = AttributeKind::Normal;
+    // An associative relationship is drawn as its diamond inside a rectangle,
+    // because it takes part in further relationships as an entity would.
+    bool associative = false;
     std::function<void(NodeItem*)> moved;
     std::function<QPointF(QPointF)> constrain;
 
@@ -75,6 +78,13 @@ public:
             path.lineTo(bounds_.center().x(), bounds_.bottom());
             path.lineTo(bounds_.left(), bounds_.center().y());
             path.closeSubpath();
+            if (associative) {
+                // Winding fill unions the two outlines; odd-even would punch the
+                // diamond out of the rectangle it sits inside.
+                path.setFillRule(Qt::WindingFill);
+                path.addRect(bounds_);
+            }
+            path.closeSubpath();
         }
         return path;
     }
@@ -95,7 +105,7 @@ public:
         qreal divisor;
         if (std::holds_alternative<AttributeId>(ref)) {
             divisor = std::hypot(delta.x() / rx, delta.y() / ry);
-        } else if (std::holds_alternative<RelationshipId>(ref)) {
+        } else if (std::holds_alternative<RelationshipId>(ref) && !associative) {
             divisor = std::abs(delta.x()) / rx + std::abs(delta.y()) / ry;
         } else {
             divisor = std::max(std::abs(delta.x()) / rx, std::abs(delta.y()) / ry);
@@ -464,6 +474,17 @@ struct DiagramView::Impl {
         if (const auto* relationship = std::get_if<RelationshipId>(&to); relationship && std::holds_alternative<EntityId>(from)) {
             return [this, id = *relationship, entity = std::get<EntityId>(from)] { return editor.connect(id, entity); };
         }
+        // An associative relationship acts as an entity, so it may join another
+        // relationship. The plain one of the pair is the one that gains a participant.
+        if (std::holds_alternative<RelationshipId>(from) && std::holds_alternative<RelationshipId>(to)) {
+            const auto first = std::get<RelationshipId>(from);
+            const auto second = std::get<RelationshipId>(to);
+            if (project.relationships.at(first).associative && !project.relationships.at(second).associative)
+                return [this, id = second, target = first] { return editor.connect(id, ParticipantTarget{target}); };
+            if (project.relationships.at(second).associative && !project.relationships.at(first).associative)
+                return [this, id = first, target = second] { return editor.connect(id, ParticipantTarget{target}); };
+            return {};
+        }
         if (std::holds_alternative<AttributeId>(from) && std::holds_alternative<AttributeId>(to)
             && project.attributes.at(std::get<AttributeId>(from)).kind == AttributeKind::Composite
             && project.attributes.at(std::get<AttributeId>(to)).kind != AttributeKind::Composite) {
@@ -526,14 +547,14 @@ void DiagramView::synchronize() {
                                                       Participation::Partial, {}, shaped(id, 0)});
     }
     for (const auto& [id, relationship] : project.relationships) {
-        std::map<EntityId, std::size_t> counts;
-        std::map<EntityId, std::size_t> index;
-        for (const auto& participant : relationship.participants) ++counts[participant.entity];
+        std::map<ElementRef, std::size_t> counts;
+        std::map<ElementRef, std::size_t> index;
+        for (const auto& participant : relationship.participants) ++counts[target_ref(participant.target)];
         for (const auto& participant : relationship.participants) {
-            if (!project.entities.contains(participant.entity)) continue;
-            const auto ordinal = index[participant.entity]++;
-            const auto offset = (static_cast<qreal>(ordinal) - (static_cast<qreal>(counts[participant.entity]) - 1) / 2) * 48;
-            desired_edges.emplace(participant.id, EdgeDescription{participant.id, id, participant.entity, id,
+            if (!exists(project, target_ref(participant.target))) continue;
+            const auto ordinal = index[target_ref(participant.target)]++;
+            const auto offset = (static_cast<qreal>(ordinal) - (static_cast<qreal>(counts[target_ref(participant.target)]) - 1) / 2) * 48;
+            desired_edges.emplace(participant.id, EdgeDescription{participant.id, id, target_ref(participant.target), id,
                 participant.maximum, participant.participation, QString::fromStdString(participant.role),
                 shaped(participant.id, offset)});
         }
@@ -590,9 +611,13 @@ void DiagramView::synchronize() {
         const auto label = QString::fromStdString(name(project, ref));
         AttributeKind kind = AttributeKind::Normal;
         if (const auto* attribute_id = std::get_if<AttributeId>(&ref)) kind = project.attributes.at(*attribute_id).kind;
-        if (node->label != label || node->attribute_kind != kind) {
+        bool associative = false;
+        if (const auto* relationship_id = std::get_if<RelationshipId>(&ref))
+            associative = project.relationships.at(*relationship_id).associative;
+        if (node->label != label || node->attribute_kind != kind || node->associative != associative) {
             node->label = label;
             node->attribute_kind = kind;
+            node->associative = associative;
             node->update();
         }
         node->setToolTip(label);

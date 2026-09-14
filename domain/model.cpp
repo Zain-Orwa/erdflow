@@ -71,6 +71,11 @@ bool empty_name(const std::string& value) {
 bool exists(const Project& project, const ElementRef& ref) {
     return visit_element(project, ref, [](const auto* element) { return element != nullptr; });
 }
+ElementRef target_ref(const ParticipantTarget& target) {
+    if (const auto* entity = std::get_if<EntityId>(&target)) return *entity;
+    return std::get<RelationshipId>(target);
+}
+
 bool connector_exists(const Project& project, const ConnectorRef& ref) {
     if (const auto* attribute = std::get_if<AttributeId>(&ref)) {
         const auto found = project.attributes.find(*attribute);
@@ -181,17 +186,31 @@ std::vector<Issue> validate(const Project& project) {
         text_fields(relationship.name, relationship.description, ref);
         if (relationship.participants.size() < 2)
             warning("relationship.participants.incomplete", "Connect at least two participant roles to complete this relationship.", ref);
-        std::map<EntityId, std::vector<std::string>> roles;
+        std::map<ElementRef, std::vector<std::string>> roles;
         for (const auto& participant : relationship.participants) {
             identity(participant.id.value, ref);
-            if (!project.entities.contains(participant.entity)) error("participant.entity.missing", "A relationship participant refers to a missing entity.", ref);
+            if (const auto* entity = std::get_if<EntityId>(&participant.target)) {
+                if (!project.entities.contains(*entity))
+                    error("participant.entity.missing", "A relationship participant refers to a missing entity.", ref);
+            } else {
+                // Only an associative relationship carries the identity needed
+                // to take part in another relationship.
+                const auto target = std::get<RelationshipId>(participant.target);
+                const auto found = project.relationships.find(target);
+                if (found == project.relationships.end())
+                    error("participant.relationship.missing", "A relationship participant refers to a missing relationship.", ref);
+                else if (target == id)
+                    error("participant.self", "A relationship cannot take part in itself.", ref);
+                else if (!found->second.associative)
+                    error("participant.not_associative", "Only an associative relationship can take part in another relationship.", ref);
+            }
             if (participant.maximum != Cardinality::One && participant.maximum != Cardinality::Many)
                 error("participant.cardinality.invalid", "Participant maximum cardinality must be one or many.", ref);
             if (participant.participation != Participation::Partial && participant.participation != Participation::Total)
                 error("participant.participation.invalid", "Participant participation must be partial or total.", ref);
             if (participant.role.size() > max_name_bytes || !valid_text(participant.role, false))
                 error("participant.role.invalid", "Participant roles must be valid UTF-8 and fit in 512 bytes.", ref);
-            roles[participant.entity].push_back(participant.role);
+            roles[target_ref(participant.target)].push_back(participant.role);
         }
         for (const auto& [entity, names] : roles) {
             (void)entity;
@@ -200,6 +219,32 @@ std::vector<Issue> validate(const Project& project) {
             if (std::any_of(names.begin(), names.end(), [&](const auto& role) { return empty_name(role) || !unique.insert(role).second; }))
                 warning("relationship.recursive.roles", "Give repeated participants distinct role names to explain this recursive relationship.", ref);
         }
+    }
+    // Associative relationships can take part in one another, so the same
+    // iterative colouring used for composite attributes guards against a cycle
+    // that no traversal could terminate on.
+    std::map<RelationshipId, unsigned char> relationship_color;
+    for (const auto& [id, relationship] : project.relationships) {
+        (void)relationship;
+        if (relationship_color[id] == 2) continue;
+        std::vector<RelationshipId> path;
+        auto current = id;
+        while (true) {
+            const auto found = project.relationships.find(current);
+            if (found == project.relationships.end() || relationship_color[current] == 2) break;
+            if (relationship_color[current] == 1) {
+                error("participant.cycle", "Associative relationships must not take part in one another in a cycle.", ElementRef{current});
+                break;
+            }
+            relationship_color[current] = 1;
+            path.push_back(current);
+            std::optional<RelationshipId> next;
+            for (const auto& participant : found->second.participants)
+                if (const auto* onward = std::get_if<RelationshipId>(&participant.target)) { next = *onward; break; }
+            if (!next) break;
+            current = *next;
+        }
+        for (const auto& visited : path) relationship_color[visited] = 2;
     }
     if (project.connectors.size() > max_elements) error("connector.limit", "The connector shapes exceed the element limit.");
     for (const auto& [ref, offset] : project.connectors) {

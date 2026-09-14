@@ -51,7 +51,10 @@ public:
     EditResult set_attribute_kind(domain::AttributeId id, domain::AttributeKind kind);
     EditResult set_attribute_owner(domain::AttributeId id,
                                    std::optional<domain::AttributeOwner> owner);
-    EditResult connect(domain::RelationshipId relationship, domain::EntityId entity);
+    EditResult connect(domain::RelationshipId relationship, domain::ParticipantTarget target);
+    // An associative relationship carries its own identity and may then take
+    // part in further relationships, as an entity would.
+    EditResult set_associative(domain::RelationshipId relationship, bool associative);
     EditResult update_participant(domain::RelationshipId relationship,
                                    domain::ParticipantId participant,
                                    domain::Cardinality maximum,

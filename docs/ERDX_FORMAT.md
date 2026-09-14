@@ -1,6 +1,6 @@
-# ERDX project format — versions 1 and 2
+# ERDX project format — versions 1 to 3
 
-**Status:** Implemented Conceptual ERD format; version 2 is current  
+**Status:** Implemented Conceptual ERD format; version 3 is current  
 **Date:** 2026-09-14
 
 ## What, why, and how
@@ -26,7 +26,7 @@ The root object has exactly three fields:
 | Field | Value |
 | --- | --- |
 | `format` | String, exactly `"erdflow"` |
-| `format_version` | JSON number, exactly `1` or `2` |
+| `format_version` | JSON number, exactly `1`, `2` or `3` |
 | `project` | Project object described below |
 
 A file with an unsupported version, missing field, unknown
@@ -37,22 +37,37 @@ The same strict field rule applies to every nested object. Unknown fields are
 neither ignored nor removed. A future format change must define its compatibility
 and migration policy explicitly before writing a new version.
 
-### Compatibility between versions 1 and 2
+### Compatibility between versions
 
-Version 2 adds connector shapes and changes nothing else, so the two versions
-differ by exactly one project field. The rule is stated here rather than left to
-be inferred:
+Each version adds one capability and changes nothing else. The rules are stated
+here rather than left to be inferred.
+
+**Version 2** adds connector shapes, so it differs from version 1 by exactly one
+project field:
 
 - A version 1 document must **not** contain `connectors`, and a version 2
   document must contain it. A document declaring the wrong shape for its
   version is rejected rather than read leniently.
 - Opening a version 1 document succeeds and leaves every connector routed
   automatically. Nothing is lost, because version 1 could not express a shape.
-- Saving always writes version 2, so opening a version 1 file and saving
-  upgrades it in place and an older build will then refuse it. This one-way
-  upgrade is acceptable only because no release has shipped. A future version
-  that must stay readable by older builds needs a different policy, recorded
-  before it is written.
+
+**Version 3** adds associative relationships. A relationship object gains a
+required `associative` field, and a participant's `entity` identifier is replaced
+by a typed `target` reference, because a participant may now attach to an
+associative relationship instead of an entity:
+
+- A version 1 or 2 document must use `entity` and must not carry `associative`;
+  a version 3 document must use `target` and must carry `associative`. A document
+  whose shape contradicts its declared version is rejected in either direction.
+- Opening an earlier document succeeds. Every relationship reads as not
+  associative and every participant as targeting an entity, which is exactly
+  what those versions could express.
+
+Saving always writes version 3, so opening an earlier file and saving upgrades
+it in place and an older build will then refuse the result. This one-way upgrade
+is acceptable only because no release has shipped. A future version that must
+stay readable by older builds needs a different policy, recorded before it is
+written.
 
 Whitespace and JSON object property order are not significant. Files written by
 the adapter use indented JSON. Array iteration is deterministic for the current
@@ -71,7 +86,7 @@ The project object has exactly these fields:
 | `attributes` | Array of attribute objects |
 | `relationships` | Array of relationship objects |
 | `layout` | Array of layout objects |
-| `connectors` | Array of connector-shape objects; version 2 only |
+| `connectors` | Array of connector-shape objects; version 2 onwards |
 
 An **entity** object has `id`, `name`, and `description`, all strings.
 
@@ -90,16 +105,23 @@ a relationship, or another attribute whose kind is `"composite"`. Composite
 ownership must be acyclic. A key attribute cannot be directly owned by a
 relationship. Unowned attributes are valid work in progress.
 
-A **relationship** object has `id`, `name`, `description`, and `participants`.
-The first three fields are strings; `participants` is an array of participant
-objects. A relationship may have fewer than two participants while being edited.
+A **relationship** object has `id`, `name`, `description`, `associative`, and
+`participants`. The first three fields are strings, `associative` is a boolean,
+and `participants` is an array of participant objects. A relationship may have
+fewer than two participants while being edited.
+
+An **associative** relationship carries its own identity and may take part in
+further relationships, as an entity does; it is drawn as a diamond inside a
+rectangle. A plain relationship may not be a participant target, a relationship
+may not take part in itself, and associative relationships may not take part in
+one another in a cycle.
 
 Each **participant** has these exact fields:
 
 | Field | Type and meaning |
 | --- | --- |
 | `id` | Participant UUIDv7 string |
-| `entity` | UUIDv7 string referencing an existing entity |
+| `target` | Element reference to an existing entity, or to an associative relationship |
 | `maximum` | `"one"` or `"many"` |
 | `participation` | `"partial"` or `"total"` |
 | `role` | Role name string; may be empty |
@@ -196,7 +218,7 @@ An empty conceptual project is a valid saved draft:
 ```json
 {
   "format": "erdflow",
-  "format_version": 2,
+  "format_version": 3,
   "project": {
     "id": "019947b9-7111-7000-8000-000000000001",
     "name": "Untitled",

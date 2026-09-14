@@ -198,7 +198,7 @@ void drag_to_connect_tests() {
     mouse(view, QEvent::MouseButtonRelease, at("Student"), Qt::LeftButton, Qt::NoButton);
     require(editor.project().relationships.at(enrolled).participants.size() == 1,
             "Release over a valid target connects");
-    require(editor.project().relationships.at(enrolled).participants.front().entity == student,
+    require(editor.project().relationships.at(enrolled).participants.front().target == domain::ParticipantTarget{student},
             "The drag connected the entity under the release");
 
     // Click-then-click must still work for the same pair.
@@ -208,7 +208,7 @@ void drag_to_connect_tests() {
     click(view, find_node(view, "Course")->sceneBoundingRect().center());
     require(editor.project().relationships.at(enrolled).participants.size() == 2,
             "A second click completes the connection");
-    require(editor.project().relationships.at(enrolled).participants.back().entity == course,
+    require(editor.project().relationships.at(enrolled).participants.back().target == domain::ParticipantTarget{course},
             "Click-then-click connected the second entity");
 
     // A drag released over empty canvas connects nothing and disarms cleanly.

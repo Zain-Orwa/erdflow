@@ -190,7 +190,7 @@ void malformed_json_and_text() {
 
 void strict_version_and_field_contract() {
     Fixture fixture;
-    for (const auto& version : {QJsonValue(0), QJsonValue(3), QJsonValue(1.5), QJsonValue("1"), QJsonValue(true)}) {
+    for (const auto& version : {QJsonValue(0), QJsonValue(4), QJsonValue(1.5), QJsonValue("1"), QJsonValue(true)}) {
         auto root = fixture.document();
         root["format_version"] = version;
         reject(bytes(root));
@@ -281,7 +281,7 @@ void escaped_field_names() {
 
 // Version 2 adds connector shapes. Version 1 files must still open, and the
 // shapes a user gives connectors must survive a full save/open cycle.
-void connector_shapes_persist_and_version_1_still_opens() {
+void connector_shapes_persist_and_older_versions_still_open() {
     Fixture fixture;
     const auto side = fixture.editor.project().relationships.at(fixture.supervises).participants.front().id;
     CHECK(fixture.editor.bend_connector(ConnectorRef{side}, 37.5));
@@ -289,7 +289,7 @@ void connector_shapes_persist_and_version_1_still_opens() {
 
     const auto encoded = ErdxProjectStore::encode(fixture.editor.project());
     const auto root = QJsonDocument::fromJson(encoded).object();
-    CHECK(root["format_version"].toInt() == 2);
+    CHECK(root["format_version"].toInt() == 3);
     CHECK(root["project"].toObject()["connectors"].toArray().size() == 2);
 
     const auto reopened = ErdxProjectStore::decode(encoded);
@@ -297,26 +297,58 @@ void connector_shapes_persist_and_version_1_still_opens() {
     CHECK(reopened.project->connectors == fixture.editor.project().connectors);
     CHECK(*reopened.project == fixture.editor.project());
 
-    // A version 1 document has no connectors field and opens with none.
-    auto legacy = fixture.document();
-    auto project = legacy["project"].toObject();
-    project.remove("connectors");
-    legacy["project"] = project;
-    legacy["format_version"] = 1;
-    const auto opened = ErdxProjectStore::decode(bytes(legacy));
-    CHECK(opened);
-    CHECK(opened.project->connectors.empty());
-    CHECK(opened.project->entities == fixture.editor.project().entities);
-    // Saving it again writes the current version without losing anything.
-    CHECK(QJsonDocument::fromJson(ErdxProjectStore::encode(*opened.project)).object()["format_version"].toInt() == 2);
+    // Rewrite the current document as an older version: before version 3 a
+    // relationship had no associative flag and a participant stored a bare
+    // entity identifier, and before version 2 there were no connector shapes.
+    const auto downgrade = [&](int version) {
+        auto document = fixture.document();
+        auto project = document["project"].toObject();
+        QJsonArray relationships;
+        for (const auto& value : project["relationships"].toArray()) {
+            auto relationship = value.toObject();
+            relationship.remove("associative");
+            QJsonArray participants;
+            for (const auto& item : relationship["participants"].toArray()) {
+                auto participant = item.toObject();
+                participant["entity"] = participant["target"].toObject()["id"];
+                participant.remove("target");
+                participants.append(participant);
+            }
+            relationship["participants"] = participants;
+            relationships.append(relationship);
+        }
+        project["relationships"] = relationships;
+        if (version < 2) project.remove("connectors");
+        document["project"] = project;
+        document["format_version"] = version;
+        return document;
+    };
 
-    // A version 1 document that carries connectors is refused, not silently read.
+    for (const int version : {1, 2}) {
+        const auto opened = ErdxProjectStore::decode(bytes(downgrade(version)));
+        CHECK(opened);
+        CHECK(opened.project->entities == fixture.editor.project().entities);
+        CHECK(opened.project->connectors.size() == (version == 1 ? 0u : 2u));
+        for (const auto& [id, relationship] : opened.project->relationships) {
+            (void)id;
+            CHECK(!relationship.associative);
+            for (const auto& participant : relationship.participants)
+                CHECK(std::holds_alternative<EntityId>(participant.target));
+        }
+        // Saving an older document upgrades it to the current version.
+        CHECK(QJsonDocument::fromJson(ErdxProjectStore::encode(*opened.project)).object()["format_version"].toInt() == 3);
+    }
+
+    // A document whose shape contradicts its declared version is refused rather
+    // than read leniently, in both directions.
     auto smuggled = fixture.document();
-    smuggled["format_version"] = 1;
+    smuggled["format_version"] = 2;
     reject(bytes(smuggled));
-    // A version 2 document without the field is equally refused.
+    auto stale = downgrade(2);
+    stale["format_version"] = 3;
+    reject(bytes(stale));
     auto missing = fixture.document();
-    project = missing["project"].toObject();
+    auto project = missing["project"].toObject();
     project.remove("connectors");
     missing["project"] = project;
     reject(bytes(missing));
@@ -536,7 +568,7 @@ int main() {
         {"malformed JSON and Unicode", malformed_json_and_text},
         {"strict version and field contract", strict_version_and_field_contract},
         {"escaped field name decoding", escaped_field_names},
-        {"connector shapes persist across versions", connector_shapes_persist_and_version_1_still_opens},
+        {"connector shapes persist across versions", connector_shapes_persist_and_older_versions_still_open},
         {"invalid connector shapes", invalid_connector_shapes},
         {"invalid IDs, references, enums and layout", invalid_identifiers_references_and_enums},
         {"bounded input and structural depth", resource_limits},

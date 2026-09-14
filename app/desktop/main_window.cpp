@@ -4,6 +4,7 @@
 #include <QActionGroup>
 #include <QApplication>
 #include <QCloseEvent>
+#include <QCheckBox>
 #include <QComboBox>
 #include <QDockWidget>
 #include <QDoubleSpinBox>
@@ -443,13 +444,24 @@ void MainWindow::refresh_properties() {
     if (const auto* id = std::get_if<RelationshipId>(&ref)) {
         const auto relationship_id = *id;
         const auto relationship = project.relationships.at(*id);
-        layout->addWidget(hint("Connect this relationship to entities. Each connection has its own role and constraints.", panel));
+        // An associative relationship keeps its own identity, so it can take
+        // part in further relationships exactly as an entity does.
+        auto* associative = new QCheckBox("Associative entity", panel);
+        associative->setObjectName("relationshipAssociative");
+        associative->setChecked(relationship.associative);
+        associative->setToolTip("Give this relationship its own identity so it can take part in other relationships.");
+        connect(associative, &QCheckBox::toggled, this, [this, id = relationship.id](bool on) {
+            if (refreshing_) return;
+            show_result(editor_.set_associative(id, on));
+        });
+        layout->addWidget(associative);
+        layout->addWidget(hint("Connect this relationship to entities, or to another relationship when this one is associative. Each connection has its own role and constraints.", panel));
         for (const auto& participant : relationship.participants) {
             auto* card = new QWidget(panel);
             card->setObjectName("participantCard");
             auto* participant_form = new QFormLayout(card);
             participant_form->setRowWrapPolicy(QFormLayout::WrapAllRows);
-            auto* title = new QLabel(display_name(project, participant.entity), card);
+            auto* title = new QLabel(display_name(project, target_ref(participant.target)), card);
             participant_form->addRow(title);
             auto* maximum = new QComboBox(card);
             maximum->addItems({"1 — One", "M — Many"});

@@ -59,9 +59,13 @@ struct Attribute {
     std::optional<AttributeOwner> owner;
     auto operator<=>(const Attribute&) const = default;
 };
+// A participant attaches to an entity, or to an associative relationship that
+// is acting as one. Only an associative relationship may be a target.
+using ParticipantTarget = std::variant<EntityId, RelationshipId>;
+
 struct Participant {
     ParticipantId id;
-    EntityId entity;
+    ParticipantTarget target;
     Cardinality maximum = Cardinality::Many;
     Participation participation = Participation::Partial;
     std::string role;
@@ -71,6 +75,9 @@ struct Relationship {
     RelationshipId id;
     std::string name;
     std::string description;
+    // An associative relationship carries its own identity and may participate
+    // in further relationships. It is drawn as a diamond inside a rectangle.
+    bool associative = false;
     std::vector<Participant> participants;
     auto operator<=>(const Relationship&) const = default;
 };
@@ -101,6 +108,8 @@ struct Issue {
 // A connector exists while the record that draws it does: an owned attribute,
 // or a participant still listed by its relationship.
 [[nodiscard]] bool connector_exists(const Project& project, const ConnectorRef& ref);
+// The element a participant attaches to, as a general element reference.
+[[nodiscard]] ElementRef target_ref(const ParticipantTarget& target);
 [[nodiscard]] std::string name(const Project& project, const ElementRef& ref);
 [[nodiscard]] std::string description(const Project& project, const ElementRef& ref);
 [[nodiscard]] std::vector<Issue> validate(const Project& project);
