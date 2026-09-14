@@ -74,6 +74,10 @@ public:
                                    domain::Cardinality maximum,
                                    domain::Participation participation,
                                    std::string role);
+    // Whether one side's constraints are drawn. This changes the diagram, not
+    // the model: the side keeps its maximum and minimum either way.
+    EditResult show_participant_constraints(domain::RelationshipId relationship,
+                                            domain::ParticipantId participant, bool shown);
     // A binary relationship's ratio is its two participants' maximums read
     // together, so 1:1, 1:M, M:1 and M:M are set as one edit rather than two.
     EditResult set_ratio(domain::RelationshipId relationship,

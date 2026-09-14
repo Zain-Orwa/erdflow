@@ -386,6 +386,9 @@ struct EdgeDescription {
     std::optional<RelationshipId> relationship;
     Cardinality cardinality = Cardinality::Many;
     Participation participation = Participation::Partial;
+    // Whether this side's constraints are drawn. The constraints themselves are
+    // unaffected; the line is simply bare at that end.
+    bool show_constraints = true;
     QString role;
     qreal offset = 0;
     // Where the line is pinned to meet each shape, when the user has locked it.
@@ -692,9 +695,14 @@ public:
             painter->setPen(isSelected() ? selection_ : text_);
             painter->drawText(rect, Qt::AlignCenter, QFontMetricsF(font).elidedText(text, Qt::ElideRight, rect.width() - 6));
         };
-        if (const auto label = end_label(); !label.isEmpty()) draw_label(cardinality_rect_, label);
+        // A side asked to be drawn bare shows neither its symbols nor the
+        // number beside them. Its role is still drawn: a role names the side,
+        // it does not constrain it.
+        if (descriptor.show_constraints) {
+            if (const auto label = end_label(); !label.isEmpty()) draw_label(cardinality_rect_, label);
+        }
         if (!descriptor.role.isEmpty()) draw_label(role_rect_, descriptor.role);
-        paint_end_symbols(painter, ink, canvas_);
+        if (descriptor.show_constraints) paint_end_symbols(painter, ink, canvas_);
         if (isSelected() && shapeable()) {
             painter->setPen(QPen(selection_, 1.4));
             painter->setBrush(canvas_);
@@ -1074,10 +1082,14 @@ void DiagramView::synchronize() {
     for (const auto& [id, attribute] : project.attributes) {
         if (attribute.owner && exists(project, *attribute.owner)) {
             const auto shape = shaped(id, 0);
-            desired_edges.emplace(id, EdgeDescription{id, id, *attribute.owner, {}, Cardinality::Many,
-                                                      Participation::Partial, {}, shape.offset,
-                                                      shape.owner_anchor, shape.child_anchor,
-                                                      route_of(shape)});
+            // Named rather than positional: the description has grown enough
+            // fields that a list of them silently means the wrong thing the
+            // moment one is inserted.
+            desired_edges.emplace(id, EdgeDescription{.key = id, .from = id, .to = *attribute.owner,
+                                                      .offset = shape.offset,
+                                                      .owner_anchor = shape.owner_anchor,
+                                                      .child_anchor = shape.child_anchor,
+                                                      .waypoints = route_of(shape)});
         }
     }
     for (const auto& [id, relationship] : project.relationships) {
@@ -1089,21 +1101,24 @@ void DiagramView::synchronize() {
             const auto ordinal = index[target_ref(participant.target)]++;
             const auto offset = (static_cast<qreal>(ordinal) - (static_cast<qreal>(counts[target_ref(participant.target)]) - 1) / 2) * 48;
             const auto shape = shaped(participant.id, offset);
-            desired_edges.emplace(participant.id, EdgeDescription{participant.id, id, target_ref(participant.target), id,
-                participant.maximum, participant.participation, QString::fromStdString(participant.role),
-                shape.offset, shape.owner_anchor, shape.child_anchor, route_of(shape)});
+            desired_edges.emplace(participant.id, EdgeDescription{
+                .key = participant.id, .from = id, .to = target_ref(participant.target), .relationship = id,
+                .cardinality = participant.maximum, .participation = participant.participation,
+                .show_constraints = participant.show_constraints,
+                .role = QString::fromStdString(participant.role), .offset = shape.offset,
+                .owner_anchor = shape.owner_anchor, .child_anchor = shape.child_anchor,
+                .waypoints = route_of(shape)});
         }
     }
     for (const auto& [id, specialization] : project.specializations) {
         if (specialization.supertype && project.entities.contains(*specialization.supertype))
             desired_edges.emplace(EdgeKey{InheritanceKey{id, {}}},
-                EdgeDescription{EdgeKey{InheritanceKey{id, {}}}, id, ElementRef{*specialization.supertype}, {},
-                                Cardinality::Many, Participation::Partial, {}, 0});
+                EdgeDescription{.key = EdgeKey{InheritanceKey{id, {}}}, .from = id,
+                                .to = ElementRef{*specialization.supertype}});
         for (const auto& subtype : specialization.subtypes) {
             if (!project.entities.contains(subtype)) continue;
             const EdgeKey key{InheritanceKey{id, subtype}};
-            desired_edges.emplace(key, EdgeDescription{key, id, ElementRef{subtype}, {},
-                                                      Cardinality::Many, Participation::Partial, {}, 0});
+            desired_edges.emplace(key, EdgeDescription{.key = key, .from = id, .to = ElementRef{subtype}});
         }
     }
     for (auto it = impl_->edges.begin(); it != impl_->edges.end();) {
@@ -1558,6 +1573,10 @@ void DiagramView::participant_menu(QContextMenuEvent* event) {
     auto* many = entry(maximum, "M — Many", "sideMany", side->maximum == Cardinality::Many);
     auto* partial = entry(minimum, "Partial — optional", "sidePartial", side->participation == Participation::Partial);
     auto* total = entry(minimum, "Total — required", "sideTotal", side->participation == Participation::Total);
+    auto* shown = menu.addAction("Show constraints on this side");
+    shown->setObjectName("sideShowConstraints");
+    shown->setCheckable(true);
+    shown->setChecked(side->show_constraints);
     menu.addSeparator();
     auto* reverse = menu.addAction("Reverse sides");
     reverse->setObjectName("sideReverse");
@@ -1566,6 +1585,13 @@ void DiagramView::participant_menu(QContextMenuEvent* event) {
 
     auto* picked = menu.exec(event->globalPos());
     if (!picked) return;
+    if (picked == shown) {
+        // Hiding a side's constraints changes only what is drawn, so the two
+        // submenus above still show what this side holds.
+        impl_->publish(impl_->editor.show_participant_constraints(relationship_id, *participant_key,
+                                                                  !side->show_constraints));
+        return;
+    }
     if (picked == reverse) { impl_->publish(impl_->editor.reverse_participants(relationship_id)); return; }
     if (picked == disconnect) {
         impl_->publish(impl_->editor.disconnect(relationship_id, *participant_key));

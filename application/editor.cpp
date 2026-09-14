@@ -450,6 +450,20 @@ EditResult Editor::update_participant(RelationshipId relationship, ParticipantId
         return EditResult{};
     });
 }
+EditResult Editor::show_participant_constraints(RelationshipId relationship, ParticipantId participant,
+                                                bool shown) {
+    return impl_->edit(shown ? "Show constraints" : "Hide constraints", [&](Delta& delta) {
+        const auto found = project().relationships.find(relationship);
+        if (found == project().relationships.end()) return failure("The relationship no longer exists.");
+        auto value = found->second;
+        const auto item = std::find_if(value.participants.begin(), value.participants.end(),
+                                       [&](const auto& entry) { return entry.id == participant; });
+        if (item == value.participants.end()) return failure("The participant does not belong to this relationship.");
+        item->show_constraints = shown;
+        if (value != found->second) delta.relationships.put(relationship, std::move(value));
+        return EditResult{};
+    });
+}
 EditResult Editor::set_ratio(RelationshipId relationship, Cardinality first, Cardinality second) {
     return impl_->edit("Change relationship ratio", [&](Delta& delta) {
         const auto found = project().relationships.find(relationship);

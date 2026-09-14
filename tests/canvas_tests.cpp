@@ -867,6 +867,24 @@ void participant_menu_tests() {
     QApplication::processEvents();
     require(view.viewport()->grab().toImage() != total, "The line is redrawn for the new constraints");
 
+    // One side can be drawn bare while the other keeps its symbols, which is
+    // how an ERD is often drawn when only one side is being made a point of.
+    view.synchronize();
+    QApplication::processEvents();
+    const auto annotated = view.viewport()->grab().toImage();
+    require(editor.show_participant_constraints(enrolled, side, false), "Draw this side bare");
+    view.synchronize();
+    QApplication::processEvents();
+    require(view.viewport()->grab().toImage() != annotated, "The symbols come off the line");
+    // The constraints are still there: this changed the diagram, not the model.
+    require(constraints() == std::pair{domain::Cardinality::Many, domain::Participation::Partial},
+            "A bare side keeps the constraints it holds");
+    require(editor.undo_label() == "Hide constraints", "Named for what it did");
+    require(editor.show_participant_constraints(enrolled, side, true), "Show them again");
+    view.synchronize();
+    QApplication::processEvents();
+    require(view.viewport()->grab().toImage() == annotated, "And the line is drawn as it was");
+
     // Reversing and disconnecting are offered on the same menu.
     require(editor.connect(enrolled, std::get<domain::EntityId>(*editor.create_entity("Course", {220, 300, 160, 80}).created)),
             "Connect a second side");

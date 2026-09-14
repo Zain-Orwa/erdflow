@@ -23,7 +23,7 @@ namespace {
 // triangle wait for its supertype.
 // Earlier versions remain readable; the format specification states the
 // compatibility rule for each.
-constexpr int current_format_version = 9;
+constexpr int current_format_version = 10;
 QString text(const std::string& value) { return QString::fromUtf8(value.data(), static_cast<qsizetype>(value.size())); }
 Uuid bytes_of(const QUuid& value) {
     Uuid result;
@@ -267,7 +267,8 @@ QByteArray ErdxProjectStore::encode(const Project& project) {
         for (const auto& p : relationship.participants)
             participants.append(QJsonObject{{"id", uuid_text(p.id.value)}, {"target", reference(target_ref(p.target))},
                 {"maximum", p.maximum == Cardinality::One ? "one" : "many"},
-                {"participation", p.participation == Participation::Total ? "total" : "partial"}, {"role", text(p.role)}});
+                {"participation", p.participation == Participation::Total ? "total" : "partial"}, {"role", text(p.role)},
+                {"show_constraints", p.show_constraints}});
         relationships.append(QJsonObject{{"id", uuid_text(id.value)}, {"name", text(relationship.name)},
             {"description", text(relationship.description)}, {"associative", relationship.associative},
             {"participants", participants}});
@@ -327,7 +328,7 @@ application::LoadResult ErdxProjectStore::decode(const QByteArray& input) {
         // routed automatically; saving then writes the current version.
         const auto version = root["format_version"];
         const auto number_version = version.isDouble() ? version.toDouble() : 0;
-        if (number_version < 1 || number_version > 9 || number_version != std::floor(number_version))
+        if (number_version < 1 || number_version > 10 || number_version != std::floor(number_version))
             invalid("Unsupported project version. Use a compatible ERDFlow release.");
         const bool shaped_connectors = number_version >= 2;
         const bool associative_entities = number_version >= 3;
@@ -345,6 +346,9 @@ application::LoadResult ErdxProjectStore::decode(const QByteArray& input) {
         // Version 9 lets an element carry a colour of its own. Earlier files
         // have none, and every element follows its theme, as they always did.
         const bool chosen_colours = number_version >= 9;
+        // Version 10 lets one side of a relationship be drawn bare. Earlier
+        // files draw both, which is what every one of them meant.
+        const bool hidable_constraints = number_version >= 10;
         const auto data = chosen_colours
             ? object(root["project"], {"id", "name", "entities", "attributes", "relationships", "layout", "connectors", "specializations", "colours"})
             : inheritance
@@ -379,7 +383,9 @@ application::LoadResult ErdxProjectStore::decode(const QByteArray& input) {
             for (const auto& part : array(o["participants"])) {
                 if (++participant_count > max_elements) invalid("The project exceeds its participant limit.");
                 auto p = associative_entities
-                    ? object(part, {"id", "target", "maximum", "participation", "role"})
+                    ? (hidable_constraints
+                        ? object(part, {"id", "target", "maximum", "participation", "role", "show_constraints"})
+                        : object(part, {"id", "target", "maximum", "participation", "role"}))
                     : object(part, {"id", "entity", "maximum", "participation", "role"});
                 const auto maximum = string(p["maximum"]);
                 const auto participation = string(p["participation"]);
@@ -396,9 +402,14 @@ application::LoadResult ErdxProjectStore::decode(const QByteArray& input) {
                 } else {
                     target = EntityId{parse_id(p["entity"])};
                 }
+                // A file written before a side could be drawn bare draws both,
+                // which is what every one of those diagrams meant.
+                const auto shown = hidable_constraints ? p["show_constraints"] : QJsonValue(true);
+                if (!shown.isBool()) invalid("A participant's show_constraints must be true or false.");
                 relationship.participants.push_back({ParticipantId{parse_id(p["id"])}, target,
                     maximum == "one" ? Cardinality::One : Cardinality::Many,
-                    participation == "total" ? Participation::Total : Participation::Partial, string(p["role"])});
+                    participation == "total" ? Participation::Total : Participation::Partial, string(p["role"]),
+                    shown.toBool()});
             }
             if (!project.relationships.emplace(relationship.id, relationship).second) invalid("Duplicate relationship identifier.");
         }

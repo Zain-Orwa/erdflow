@@ -1,6 +1,6 @@
 # ERDX project format — versions 1 to 6
 
-**Status:** Implemented Conceptual ERD format; version 9 is current  
+**Status:** Implemented Conceptual ERD format; version 10 is current  
 **Date:** 2026-09-14
 
 ## What, why, and how
@@ -88,7 +88,13 @@ must not carry it and read as unrouted, which is the shape they were drawn with.
 gains a required `colours` array, which may be empty; earlier versions must not
 carry it, and every element in such a file follows its theme, as they always did.
 
-Saving always writes version 9, so opening an earlier file and saving upgrades
+**Version 10** lets one side of a relationship be drawn bare. A participant
+gains a required `show_constraints` boolean; earlier versions must not carry it
+and read as `true`, which is what every one of those diagrams meant. It changes
+only what is drawn: the side keeps its `maximum` and `participation` either way,
+and anything reasoning about the relationship still reads them.
+
+Saving always writes version 10, so opening an earlier file and saving upgrades
 it in place and an older build will then refuse the result. This one-way upgrade
 is acceptable only because no release has shipped. A future version that must
 stay readable by older builds needs a different policy, recorded before it is

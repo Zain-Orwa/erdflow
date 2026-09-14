@@ -126,6 +126,12 @@ struct Participant {
     Cardinality maximum = Cardinality::Many;
     Participation participation = Participation::Partial;
     std::string role;
+    // Whether this side's constraints are drawn on the line. The constraints
+    // themselves are unaffected: the model still holds them and anything that
+    // reasons about the relationship still reads them. This only says that the
+    // diagram is to show a bare connection at this end, which is how an ERD is
+    // often drawn when only one side is being made a point of.
+    bool show_constraints = true;
     auto operator<=>(const Participant&) const = default;
 };
 struct Relationship {

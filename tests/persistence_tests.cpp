@@ -201,7 +201,7 @@ void malformed_json_and_text() {
 
 void strict_version_and_field_contract() {
     Fixture fixture;
-    for (const auto& version : {QJsonValue(0), QJsonValue(10), QJsonValue(1.5), QJsonValue("1"), QJsonValue(true)}) {
+    for (const auto& version : {QJsonValue(0), QJsonValue(11), QJsonValue(1.5), QJsonValue("1"), QJsonValue(true)}) {
         auto root = fixture.document();
         root["format_version"] = version;
         reject(bytes(root));
@@ -300,7 +300,7 @@ void connector_shapes_persist_and_older_versions_still_open() {
 
     const auto encoded = ErdxProjectStore::encode(fixture.editor.project());
     const auto root = QJsonDocument::fromJson(encoded).object();
-    CHECK(root["format_version"].toInt() == 9);
+    CHECK(root["format_version"].toInt() == 10);
     CHECK(root["project"].toObject()["connectors"].toArray().size() == 2);
 
     // A pinned join survives the same round trip.
@@ -322,6 +322,17 @@ void connector_shapes_persist_and_older_versions_still_open() {
         CHECK(connector.contains("waypoints"));
     }
     CHECK(fixture.editor.pin_connector(ConnectorRef{fixture.address}, std::nullopt, std::nullopt));
+
+    // A side drawn bare survives the round trip, and the constraints it still
+    // holds come back untouched.
+    const auto bare_side = fixture.editor.project().relationships.at(fixture.supervises).participants.front().id;
+    CHECK(fixture.editor.show_participant_constraints(fixture.supervises, bare_side, false));
+    const auto bare = ErdxProjectStore::decode(ErdxProjectStore::encode(fixture.editor.project()));
+    CHECK(bare);
+    const auto& reopened_side = bare.project->relationships.at(fixture.supervises).participants.front();
+    CHECK(!reopened_side.show_constraints);
+    CHECK(reopened_side.maximum == fixture.editor.project().relationships.at(fixture.supervises).participants.front().maximum);
+    CHECK(fixture.editor.show_participant_constraints(fixture.supervises, bare_side, true));
 
     // An element's chosen colour survives the round trip.
     const Colour coral{0xFF, 0xA8, 0xA8};
@@ -404,6 +415,22 @@ void connector_shapes_persist_and_older_versions_still_open() {
         }
         // Before version 9 an element could not carry a colour of its own.
         if (version < 9) project.remove("colours");
+        // Before version 10 both sides of a relationship were always drawn.
+        if (version < 10) {
+            QJsonArray without;
+            for (const auto& value : project["relationships"].toArray()) {
+                auto relationship = value.toObject();
+                QJsonArray participants;
+                for (const auto& item : relationship["participants"].toArray()) {
+                    auto participant = item.toObject();
+                    participant.remove("show_constraints");
+                    participants.append(participant);
+                }
+                relationship["participants"] = participants;
+                without.append(relationship);
+            }
+            project["relationships"] = without;
+        }
         if (version < 8 || version < 7) {
             // Before version 8 a connector had no route of its own, and before
             // version 7 no pinned joins, so a file of that vintage carries
@@ -426,7 +453,7 @@ void connector_shapes_persist_and_older_versions_still_open() {
         return document;
     };
 
-    for (const int version : {1, 2, 3, 4, 5, 6, 7, 8}) {
+    for (const int version : {1, 2, 3, 4, 5, 6, 7, 8, 9}) {
         const auto opened = ErdxProjectStore::decode(bytes(downgrade(version)));
         if (!opened) throw std::runtime_error("version " + std::to_string(version) + ": " + opened.error);
         CHECK(opened.project->entities == fixture.editor.project().entities);
@@ -449,7 +476,7 @@ void connector_shapes_persist_and_older_versions_still_open() {
             // and reads as specialization, which is how those files were drawn.
             CHECK(specialization.direction == (version >= 5 ? Inheritance::Generalization : Inheritance::Specialization));
         }
-        CHECK(QJsonDocument::fromJson(ErdxProjectStore::encode(*opened.project)).object()["format_version"].toInt() == 9);
+        CHECK(QJsonDocument::fromJson(ErdxProjectStore::encode(*opened.project)).object()["format_version"].toInt() == 10);
     }
 
     // A document whose shape contradicts its declared version is refused rather
