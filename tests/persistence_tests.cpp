@@ -201,7 +201,7 @@ void malformed_json_and_text() {
 
 void strict_version_and_field_contract() {
     Fixture fixture;
-    for (const auto& version : {QJsonValue(0), QJsonValue(7), QJsonValue(1.5), QJsonValue("1"), QJsonValue(true)}) {
+    for (const auto& version : {QJsonValue(0), QJsonValue(10), QJsonValue(1.5), QJsonValue("1"), QJsonValue(true)}) {
         auto root = fixture.document();
         root["format_version"] = version;
         reject(bytes(root));
@@ -300,8 +300,50 @@ void connector_shapes_persist_and_older_versions_still_open() {
 
     const auto encoded = ErdxProjectStore::encode(fixture.editor.project());
     const auto root = QJsonDocument::fromJson(encoded).object();
-    CHECK(root["format_version"].toInt() == 6);
+    CHECK(root["format_version"].toInt() == 9);
     CHECK(root["project"].toObject()["connectors"].toArray().size() == 2);
+
+    // A pinned join survives the same round trip.
+    CHECK(fixture.editor.pin_connector(ConnectorRef{fixture.address}, 1.25, -0.5));
+    const auto pinned = ErdxProjectStore::encode(fixture.editor.project());
+    const auto reloaded = ErdxProjectStore::decode(pinned);
+    CHECK(reloaded);
+    CHECK(reloaded.project->connectors == fixture.editor.project().connectors);
+    const auto& kept = reloaded.project->connectors.at(ConnectorRef{fixture.address});
+    CHECK(kept.owner_anchor && *kept.owner_anchor == 1.25);
+    CHECK(kept.child_anchor && *kept.child_anchor == -0.5);
+    CHECK(kept.offset == -12.25);
+    // Every connector carries the same field set whether or not it is pinned,
+    // since the reader refuses an object with keys it does not expect.
+    for (const auto& value : QJsonDocument::fromJson(pinned).object()["project"].toObject()["connectors"].toArray()) {
+        const auto connector = value.toObject();
+        CHECK(connector.size() == 5);
+        CHECK(connector.contains("owner_anchor") && connector.contains("child_anchor"));
+        CHECK(connector.contains("waypoints"));
+    }
+    CHECK(fixture.editor.pin_connector(ConnectorRef{fixture.address}, std::nullopt, std::nullopt));
+
+    // An element's chosen colour survives the round trip.
+    const Colour coral{0xFF, 0xA8, 0xA8};
+    CHECK(fixture.editor.recolour({ElementRef{fixture.employee}}, coral));
+    const auto coloured = ErdxProjectStore::decode(ErdxProjectStore::encode(fixture.editor.project()));
+    CHECK(coloured);
+    CHECK(coloured.project->colours.at(ElementRef{fixture.employee}) == coral);
+    CHECK(*coloured.project == fixture.editor.project());
+    CHECK(fixture.editor.recolour({ElementRef{fixture.employee}}, std::nullopt));
+
+    // A route survives the same round trip, in order.
+    const std::vector<Point> route{Point{12.5, -30.0}, Point{44.0, 61.5}};
+    CHECK(fixture.editor.route_connector(ConnectorRef{side}, route));
+    const auto routed = ErdxProjectStore::decode(ErdxProjectStore::encode(fixture.editor.project()));
+    CHECK(routed);
+    const auto& shape = routed.project->connectors.at(ConnectorRef{side});
+    CHECK(shape.waypoints.size() == 2);
+    CHECK(shape.waypoints == route);
+    // A route supersedes the single bend rather than sitting alongside it.
+    CHECK(shape.offset == 0);
+    CHECK(fixture.editor.route_connector(ConnectorRef{side}, std::vector<Point>{}));
+    CHECK(fixture.editor.bend_connector(ConnectorRef{side}, 37.5));
 
     const auto reopened = ErdxProjectStore::decode(encoded);
     CHECK(reopened);
@@ -360,13 +402,31 @@ void connector_shapes_persist_and_older_versions_still_open() {
             }
             project["layout"] = layout;
         }
+        // Before version 9 an element could not carry a colour of its own.
+        if (version < 9) project.remove("colours");
+        if (version < 8 || version < 7) {
+            // Before version 8 a connector had no route of its own, and before
+            // version 7 no pinned joins, so a file of that vintage carries
+            // none of those keys at all.
+            QJsonArray connectors;
+            for (const auto& value : project["connectors"].toArray()) {
+                auto connector = value.toObject();
+                if (version < 8) connector.remove("waypoints");
+                if (version < 7) {
+                    connector.remove("owner_anchor");
+                    connector.remove("child_anchor");
+                }
+                connectors.append(connector);
+            }
+            project["connectors"] = connectors;
+        }
         if (version < 2) project.remove("connectors");
         document["project"] = project;
         document["format_version"] = version;
         return document;
     };
 
-    for (const int version : {1, 2, 3, 4, 5}) {
+    for (const int version : {1, 2, 3, 4, 5, 6, 7, 8}) {
         const auto opened = ErdxProjectStore::decode(bytes(downgrade(version)));
         if (!opened) throw std::runtime_error("version " + std::to_string(version) + ": " + opened.error);
         CHECK(opened.project->entities == fixture.editor.project().entities);
@@ -389,7 +449,7 @@ void connector_shapes_persist_and_older_versions_still_open() {
             // and reads as specialization, which is how those files were drawn.
             CHECK(specialization.direction == (version >= 5 ? Inheritance::Generalization : Inheritance::Specialization));
         }
-        CHECK(QJsonDocument::fromJson(ErdxProjectStore::encode(*opened.project)).object()["format_version"].toInt() == 6);
+        CHECK(QJsonDocument::fromJson(ErdxProjectStore::encode(*opened.project)).object()["format_version"].toInt() == 9);
     }
 
     // A document whose shape contradicts its declared version is refused rather

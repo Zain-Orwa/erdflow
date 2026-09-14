@@ -160,7 +160,7 @@ void connector_shaping_tests() {
 
     require(editor.project().connectors.size() == 1, "Release stores exactly one connector shape");
     const auto shaped = editor.project().connectors.begin()->first;
-    require(editor.project().connectors.at(shaped) != 0, "The stored bend is non-zero");
+    require(editor.project().connectors.at(shaped).offset != 0, "The stored bend is non-zero");
     require(editor.undo_label() == "Shape connector", "The drag is one named history entry");
     require(editor.undo(), "Undo the bend");
     require(editor.project().connectors.empty(), "One undo restores automatic routing");
@@ -229,6 +229,518 @@ void drag_to_connect_tests() {
     require(editor.revision() == revision, "Releasing over empty canvas connects nothing");
     view.cancel_interaction();
     require(editor.revision() == revision, "Cancelling a carried connection changes nothing");
+}
+
+// An unlocked tool is spent by a single use. Connect is where that matters
+// most: it is the only tool needing two clicks, so it is the only one that can
+// be abandoned part way, and a Connect left armed turns the next click on an
+// element into a connection when the user meant to select it.
+void connect_returns_to_select_tests() {
+    SequentialIds ids;
+    application::Editor editor(ids);
+    editor.create_entity("Student", {-320, 0, 160, 80});
+    editor.create_entity("Course", {320, 0, 160, 80});
+    const auto enrolled = std::get<domain::RelationshipId>(*editor.create_relationship("Enrolled", {-60, -20, 180, 100}).created);
+
+    desktop::DiagramView view(editor);
+    QString announced;
+    view.on_status = [&](const QString& message) { announced = message; };
+    view.resize(1000, 700);
+    view.show();
+    view.actual_size();
+    view.centerOn(0, 0);
+    QApplication::processEvents();
+    const auto centre = [&](const QString& name) { return find_node(view, name)->sceneBoundingRect().center(); };
+
+    view.set_tool(desktop::Tool::Connect);
+    require(!view.tool_locked(), "Choosing a tool plainly does not lock it");
+    click(view, centre("Enrolled"));
+    require(view.tool() == desktop::Tool::Connect, "The tool stays while a connection is half made");
+    click(view, centre("Course"));
+    require(editor.project().relationships.at(enrolled).participants.size() == 1, "The pair connected");
+    require(view.tool() == desktop::Tool::Select, "Completing a connection hands the tool back");
+
+    // Giving up on one spends the use just the same, so the click after it
+    // selects rather than starting another connection.
+    view.set_tool(desktop::Tool::Connect);
+    click(view, centre("Enrolled"));
+    click(view, view.mapToScene(QPoint(8, 8)));
+    require(view.tool() == desktop::Tool::Select, "Abandoning a half-made connection hands the tool back");
+
+    // A missed first click is only a miss, and must not cost the tool.
+    view.set_tool(desktop::Tool::Connect);
+    click(view, view.mapToScene(QPoint(8, 8)));
+    require(view.tool() == desktop::Tool::Connect, "Clicking past an element with nothing armed keeps the tool");
+
+    // An illegal pair is still an attempt. The tool goes back, and the reason
+    // the pair was refused has to survive the handover rather than being
+    // overwritten by the message the incoming tool announces itself with.
+    const auto revision = editor.revision();
+    view.set_tool(desktop::Tool::Connect);
+    click(view, centre("Student"));
+    click(view, centre("Course"));
+    require(editor.revision() == revision, "Two entities do not connect");
+    require(view.tool() == desktop::Tool::Select, "A refused pair spends the tool too");
+    require(announced.contains("Connect an entity to a relationship"),
+            "The refusal is still on screen after the tool hands back");
+
+    // Locking is what holds a tool open, and must still do so.
+    view.set_tool(desktop::Tool::Connect, true);
+    click(view, centre("Enrolled"));
+    click(view, centre("Student"));
+    require(editor.project().relationships.at(enrolled).participants.size() == 2, "The locked tool still connects");
+    require(view.tool() == desktop::Tool::Connect, "A locked tool keeps going");
+}
+
+// Locking a connector pins where it meets each shape, so the joins stop sliding
+// as the attribute is moved.
+void lock_connector_tests() {
+    SequentialIds ids;
+    application::Editor editor(ids);
+    const auto person = std::get<domain::EntityId>(*editor.create_entity("Person", {0, 0, 160, 80}).created);
+    const auto owner = domain::AttributeOwner{domain::ElementRef{person}};
+    const auto born = std::get<domain::AttributeId>(*editor.create_attribute("Born", {0, -220, 130, 54}, owner).created);
+
+    desktop::DiagramView view(editor);
+    view.resize(900, 700);
+    view.show();
+    view.actual_size();
+    view.centerOn(0, -60);
+    QApplication::processEvents();
+
+    auto* link = [&] {
+        auto* node = find_node(view, "Born");
+        for (auto* item : view.scene()->items())
+            if (item->zValue() < 0 && item->shape().translated(item->scenePos())
+                    .intersects(node->sceneBoundingRect()))
+                return item;
+        throw std::runtime_error("Missing attribute link");
+    }();
+    const auto body = find_node(view, "Person")->sceneBoundingRect();
+    const auto outline_toward = [&](const QPointF& target) {
+        const auto delta = target - body.center();
+        const auto divisor = std::max(std::abs(delta.x()) / (body.width() / 2),
+                                      std::abs(delta.y()) / (body.height() / 2));
+        return body.center() + delta / divisor;
+    };
+    const auto meets = [&](const QPointF& point) { return link->shape().contains(link->mapFromScene(point)); };
+    const auto attribute_centre = [&] { return find_node(view, "Born")->sceneBoundingRect().center(); };
+
+    // Unlocked, the join tracks the attribute wherever it goes.
+    const auto pinned_at = outline_toward(attribute_centre());
+    require(meets(pinned_at), "An unlocked join sits in the attribute's direction");
+
+    // Lock it exactly where it is drawn, so locking itself moves nothing.
+    const auto angle = std::atan2(pinned_at.y() - body.center().y(), pinned_at.x() - body.center().x());
+    require(editor.pin_connector(domain::ConnectorRef{born}, angle, std::nullopt), "Lock the connector");
+    view.synchronize();
+    QApplication::processEvents();
+    require(meets(pinned_at), "Locking leaves the line where it was");
+
+    // Now the attribute can go anywhere and the join stays behind.
+    require(editor.move({{domain::ElementRef{born}, {430, 260, 130, 54}}}), "Move the attribute far away");
+    view.synchronize();
+    QApplication::processEvents();
+    const auto would_have_slid = outline_toward(attribute_centre());
+    require(std::hypot(would_have_slid.x() - pinned_at.x(), would_have_slid.y() - pinned_at.y()) > 40.0,
+            "The move is far enough that an unlocked join would have travelled");
+    require(meets(pinned_at), "A locked join stays where it was pinned");
+    require(!meets(would_have_slid), "It does not follow the attribute");
+
+    // Unlocking hands the connector back to automatic routing and stores nothing.
+    require(editor.pin_connector(domain::ConnectorRef{born}, std::nullopt, std::nullopt), "Unlock it");
+    require(editor.project().connectors.empty(), "An unlocked, unbent connector stores nothing");
+    view.synchronize();
+    QApplication::processEvents();
+    require(meets(outline_toward(attribute_centre())), "Unlocking lets the join follow the attribute again");
+
+    // A lock is an edit like any other.
+    require(editor.undo(), "Undo the unlock");
+    require(editor.project().connectors.size() == 1, "Undo restores the lock");
+    require(editor.project().connectors.begin()->second.pinned(), "And it is restored as a pin");
+    require(editor.redo(), "Redo the unlock");
+    require(editor.project().connectors.empty(), "Redo clears it again");
+    view.synchronize();
+    QApplication::processEvents();
+
+    // The padlock itself: a selected link carries one, and clicking it pins the
+    // joins. Where exactly it sits is the drawing's business, so it is found the
+    // way it is defined -- as hit area that a selected link has and an
+    // unselected one does not -- rather than by assuming a position.
+    view.set_tool(desktop::Tool::Select);
+    const auto covers = [&](const QPointF& point) {
+        return link->shape().contains(link->mapFromScene(point));
+    };
+    const auto search = link->shape().boundingRect().translated(link->scenePos()).adjusted(-20, -20, 20, 20);
+    std::vector<QPointF> only_when_selected;
+    for (qreal y = search.top(); y <= search.bottom(); y += 3)
+        for (qreal x = search.left(); x <= search.right(); x += 3) {
+            const QPointF point{x, y};
+            link->setSelected(false);
+            if (covers(point)) continue;
+            link->setSelected(true);
+            if (covers(point)) only_when_selected.push_back(point);
+        }
+    require(!only_when_selected.empty(), "A selected link grows hit areas an unselected one lacks");
+    bool pinned_by_click = false;
+    for (const auto& point : only_when_selected) {
+        link->setSelected(true);
+        QApplication::processEvents();
+        click(view, point);
+        if (!editor.project().connectors.empty() && editor.project().connectors.begin()->second.pinned()) {
+            pinned_by_click = true;
+            break;
+        }
+    }
+    require(pinned_by_click, "One of them is a padlock, and clicking it pins the joins");
+    require(editor.undo_label() == "Lock connector", "Clicking the padlock is one named history entry");
+}
+
+
+// A connector can be shaped by more than one bend: pressing on a selected line
+// and dragging puts a corner there, and the line is routed through it.
+void connector_route_tests() {
+    SequentialIds ids;
+    application::Editor editor(ids);
+    const auto student = std::get<domain::EntityId>(*editor.create_entity("Student", {-320, 0, 160, 80}).created);
+    const auto enrolled = std::get<domain::RelationshipId>(*editor.create_relationship("Enrolled", {220, 0, 190, 110}).created);
+    require(editor.connect(enrolled, student), "Connect student");
+
+    desktop::DiagramView view(editor);
+    view.resize(1000, 700);
+    view.show();
+    view.actual_size();
+    view.centerOn(0, 0);
+    view.set_line_style(desktop::LineStyle::Straight);
+    QApplication::processEvents();
+
+    const auto student_centre = find_node(view, "Student")->sceneBoundingRect().center();
+    const auto midpoint = (student_centre + find_node(view, "Enrolled")->sceneBoundingRect().center()) / 2;
+    // Where the line actually runs is the drawing's business, so a point on it
+    // is found by asking the item rather than by reproducing its geometry. Any
+    // grip is avoided: a drag starting on one would move that corner instead of
+    // making a new one.
+    const auto point_on_line = [&](const QPointF& away_from) {
+        auto* item = find_edge(view);
+        const auto search = item->shape().boundingRect().translated(item->scenePos());
+        const auto inside = [&](const QPointF& point) {
+            return item->shape().contains(item->mapFromScene(point));
+        };
+        std::vector<QPointF> candidates;
+        for (qreal y = search.top(); y <= search.bottom(); y += 2)
+            for (qreal x = search.left(); x <= search.right(); x += 2) {
+                const QPointF point{x, y};
+                // Well inside the line's own hit area, not merely touching its
+                // edge, or the press can miss by a rounding error.
+                if (!inside(point) || !inside(point + QPointF(3, 0)) || !inside(point - QPointF(3, 0))
+                    || !inside(point + QPointF(0, 3)) || !inside(point - QPointF(0, 3))) continue;
+                if (find_node(view, "Student")->sceneBoundingRect().adjusted(-10, -10, 10, 10).contains(point)) continue;
+                if (find_node(view, "Enrolled")->sceneBoundingRect().adjusted(-10, -10, 10, 10).contains(point)) continue;
+                if (std::hypot(point.x() - away_from.x(), point.y() - away_from.y()) < 30.0) continue;
+                candidates.push_back(point);
+            }
+        if (candidates.empty()) throw std::runtime_error("No point found on the connector");
+        // The middle of what is left, so the point sits along the line rather
+        // than at whichever extreme the scan happened to reach first.
+        std::sort(candidates.begin(), candidates.end(), [&](const QPointF& a, const QPointF& b) {
+            return std::hypot(a.x() - away_from.x(), a.y() - away_from.y())
+                 < std::hypot(b.x() - away_from.x(), b.y() - away_from.y());
+        });
+        return candidates[candidates.size() / 2];
+    };
+    const auto on_line = point_on_line(midpoint);
+    const auto drag = [&](const QPointF& from, const QPointF& to) {
+        const auto start = view.mapFromScene(from);
+        const auto finish = view.mapFromScene(to);
+        mouse(view, QEvent::MouseButtonPress, start, Qt::LeftButton, Qt::LeftButton);
+        for (int step = 1; step <= 8; ++step)
+            mouse(view, QEvent::MouseMove, start + (finish - start) * step / 8, Qt::NoButton, Qt::LeftButton);
+        mouse(view, QEvent::MouseButtonRelease, finish, Qt::LeftButton, Qt::NoButton);
+    };
+
+    // The item is re-found before each gesture: reshaping a connector can
+    // replace its item, and a kept pointer would be stale.
+    const auto select = [&] { find_edge(view)->setSelected(true); QApplication::processEvents(); };
+
+    // A line that is not selected is not shaped by anything: shaping is a
+    // second gesture on something already picked out.
+    click(view, on_line);
+    require(editor.project().connectors.empty(), "Clicking an unselected connector only selects it");
+    require(find_edge(view)->isSelected(), "Though it does select it");
+    find_edge(view)->setSelected(false);
+    QApplication::processEvents();
+    drag(on_line, on_line + QPointF(0, 90));
+    require(editor.project().connectors.empty(), "Dragging an unselected connector shapes nothing");
+
+    // Clicking a selected line fixes it at that point. No grip has to be found
+    // and no drag is needed: the click is the whole gesture.
+    select();
+    click(view, on_line);
+    require(editor.project().connectors.size() == 1, "Clicking a selected line places a corner there");
+    require(editor.project().connectors.begin()->second.waypoints.size() == 1, "Exactly one corner");
+    const auto placed = editor.project().connectors.begin()->second.waypoints.front();
+    require(std::hypot(placed.x - on_line.x(), placed.y - on_line.y()) < 8.0,
+            "The corner lands where it was clicked");
+    require(editor.undo(), "Undo the placed corner");
+    require(editor.project().connectors.empty(), "Undo takes it away again");
+    view.synchronize();
+    QApplication::processEvents();
+
+    select();
+    drag(on_line, on_line + QPointF(0, 120));
+    require(editor.project().connectors.size() == 1, "Dragging a selected line also stores a route");
+    const auto ref = editor.project().connectors.begin()->first;
+    require(editor.project().connectors.at(ref).waypoints.size() == 1, "It has one corner");
+    require(editor.undo_label() == "Route connector", "The drag is one named history entry");
+    const auto first = editor.project().connectors.at(ref).waypoints.front();
+    require(std::abs(first.y - (on_line.y() + 120)) < 12.0, "The corner lands where it was dropped");
+    require(std::abs(first.x - on_line.x()) < 12.0, "And keeps the across position it was dragged from");
+
+    // A second drag, on a different stretch, adds a second corner rather than
+    // replacing the first, and the two are kept in the order they are met.
+    select();
+    // Somewhere on the routed line, as far as possible from the corner it now
+    // has, so the drag makes a second one rather than moving the first.
+    const QPointF corner{first.x, first.y};
+    const auto first_leg = point_on_line(corner);
+    drag(first_leg, first_leg + QPointF(-60, -40));
+    const auto corners = editor.project().connectors.at(ref).waypoints;
+    require(corners.size() == 2, "A second drag adds a second corner");
+
+    // Dragging a corner moves that corner rather than making another.
+    select();
+    const QPointF grip{corners.front().x, corners.front().y};
+    drag(grip, grip + QPointF(40, 40));
+    const auto moved = editor.project().connectors.at(ref).waypoints;
+    require(moved.size() == 2, "Dragging a corner does not add one");
+    require(moved.front() != corners.front(), "It moves the corner it grabbed");
+
+    // Double-clicking one corner removes just that corner.
+    select();
+    const auto remaining = editor.project().connectors.at(ref).waypoints;
+    const QPointF second{remaining.back().x, remaining.back().y};
+    const auto position = view.mapFromScene(second);
+    mouse(view, QEvent::MouseButtonPress, position, Qt::LeftButton, Qt::LeftButton);
+    mouse(view, QEvent::MouseButtonRelease, position, Qt::LeftButton, Qt::NoButton);
+    mouse(view, QEvent::MouseButtonDblClick, position, Qt::LeftButton, Qt::LeftButton);
+    mouse(view, QEvent::MouseButtonRelease, position, Qt::LeftButton, Qt::NoButton);
+    require(editor.project().connectors.at(ref).waypoints.size() == 1, "Double-clicking a corner removes it");
+
+    // And undo walks back through each of those shaping steps.
+    require(editor.undo(), "Undo the removal");
+    require(editor.project().connectors.at(ref).waypoints.size() == 2, "Undo restores the corner");
+
+    // The point of placing a corner is that it is a fixed point: the line is
+    // frozen there, and moving either end of it swings the rest of the line
+    // about the corner rather than carrying the corner along.
+    const auto fixed = editor.project().connectors.at(ref).waypoints;
+    require(editor.move({{domain::ElementRef{student}, {-320, 360, 160, 80}}}), "Move the entity");
+    view.synchronize();
+    QApplication::processEvents();
+    require(editor.project().connectors.at(ref).waypoints == fixed,
+            "Moving an element does not move the corners of a line that meets it");
+    auto* held = find_edge(view);
+    for (const auto& corner : fixed)
+        require(held->shape().contains(held->mapFromScene(QPointF(corner.x, corner.y))),
+                "And the line still runs through every one of them");
+    require(editor.move({{domain::ElementRef{enrolled}, {220, -380, 190, 110}}}), "Move the relationship too");
+    view.synchronize();
+    QApplication::processEvents();
+    require(editor.project().connectors.at(ref).waypoints == fixed, "Still fixed from the other end");
+}
+
+
+// The same locking applies to the line between an entity and a relationship,
+// not only to an attribute's link.
+void lock_participant_tests() {
+    SequentialIds ids;
+    application::Editor editor(ids);
+    const auto student = std::get<domain::EntityId>(*editor.create_entity("Student", {-320, 0, 160, 80}).created);
+    const auto enrolled = std::get<domain::RelationshipId>(*editor.create_relationship("Enrolled", {220, 0, 190, 110}).created);
+    require(editor.connect(enrolled, student), "Connect student");
+    const auto side = editor.project().relationships.at(enrolled).participants.front().id;
+
+    desktop::DiagramView view(editor);
+    view.resize(1000, 700);
+    view.show();
+    view.actual_size();
+    view.centerOn(0, 0);
+    QApplication::processEvents();
+
+    const auto entity = find_node(view, "Student")->sceneBoundingRect();
+    const auto outline_at = [](const QRectF& box, double radians) {
+        const QPointF direction{std::cos(radians), std::sin(radians)};
+        const auto divisor = std::max(std::abs(direction.x()) / (box.width() / 2),
+                                      std::abs(direction.y()) / (box.height() / 2));
+        return box.center() + direction / divisor;
+    };
+    const auto meets = [&](const QPointF& point) {
+        auto* item = find_edge(view);
+        return item->shape().contains(item->mapFromScene(point));
+    };
+
+    // Pin the entity end to the top of its box, which is not where the line
+    // would otherwise meet it: the relationship is off to the right.
+    const double upwards = -M_PI / 2;
+    const auto pinned = outline_at(entity, upwards);
+    require(!meets(pinned), "The line does not start out meeting the top of the entity");
+    require(editor.pin_connector(domain::ConnectorRef{side}, std::nullopt, upwards), "Lock the entity end");
+    view.synchronize();
+    QApplication::processEvents();
+    require(meets(pinned), "Locking moves the join to where it was pinned");
+
+    // Moving the relationship right around must not drag the join with it.
+    require(editor.move({{domain::ElementRef{enrolled}, {-320, 420, 190, 110}}}), "Move the relationship");
+    view.synchronize();
+    QApplication::processEvents();
+    require(meets(pinned), "A locked join on a participant stays put");
+
+    // Released, it follows again.
+    require(editor.pin_connector(domain::ConnectorRef{side}, std::nullopt, std::nullopt), "Unlock it");
+    require(editor.project().connectors.empty(), "An unlocked, unshaped connector stores nothing");
+    view.synchronize();
+    QApplication::processEvents();
+    require(!meets(pinned), "Unlocking lets the join follow the relationship again");
+
+    // And the relationship end can be pinned on its own.
+    require(editor.pin_connector(domain::ConnectorRef{side}, 0.0, std::nullopt), "Lock the relationship end");
+    const auto shaped = editor.project().connectors.at(domain::ConnectorRef{side});
+    require(shaped.owner_anchor && !shaped.child_anchor, "Each end is pinned independently");
+}
+
+
+// An element can be given a surface colour of its own, one colour can be given
+// to several at once, and a coloured element keeps a readable label.
+void element_colour_tests() {
+    SequentialIds ids;
+    application::Editor editor(ids);
+    const auto student = std::get<domain::EntityId>(*editor.create_entity("Student", {-320, 0, 160, 80}).created);
+    const auto course = std::get<domain::EntityId>(*editor.create_entity("Course", {120, 0, 160, 80}).created);
+
+    desktop::DiagramView view(editor);
+    view.resize(900, 600);
+    view.show();
+    view.actual_size();
+    view.centerOn(0, 0);
+    QApplication::processEvents();
+
+    // The surface of an element, read from what is actually drawn.
+    const auto surface = [&](const QString& name) {
+        auto* node = find_node(view, name);
+        const auto box = node->sceneBoundingRect();
+        const auto image = view.viewport()->grab().toImage();
+        return image.pixelColor(view.mapFromScene(box.center()) + QPoint(0, box.height() / 4));
+    };
+    const auto before = surface("Student");
+
+    const domain::Colour coral{0xFF, 0xA8, 0xA8};
+    require(editor.recolour({domain::ElementRef{student}}, coral), "Colour one entity");
+    view.synchronize();
+    QApplication::processEvents();
+    require(editor.project().colours.at(domain::ElementRef{student}) == coral, "The colour is stored");
+    require(!editor.project().colours.contains(domain::ElementRef{course}), "Its neighbour is untouched");
+    const auto after = surface("Student");
+    require(after != before, "The element is drawn in its new colour");
+    require(std::abs(after.red() - 0xFF) < 40 && std::abs(after.green() - 0xA8) < 40,
+            "And that colour is the one chosen");
+    require(surface("Course") == before, "The neighbour still follows the theme");
+
+    // One colour for a whole selection, as one step of history.
+    const auto revision = editor.revision();
+    require(editor.recolour({domain::ElementRef{student}, domain::ElementRef{course}}, coral),
+            "Colour both entities");
+    require(editor.revision() == revision + 1, "Recolouring a selection is a single edit");
+    require(editor.undo_label() == "Set colour", "Named for what it did");
+    view.synchronize();
+    QApplication::processEvents();
+    require(editor.project().colours.size() == 2, "Both are stored");
+    require(editor.undo(), "Undo the group recolour");
+    require(editor.project().colours.size() == 1, "Undo restores exactly what was there");
+
+    // Clearing hands the element back to its theme.
+    require(editor.recolour({domain::ElementRef{student}}, {}), "Clear the colour");
+    require(editor.project().colours.empty(), "Nothing is stored for an element following its theme");
+    view.synchronize();
+    QApplication::processEvents();
+    require(surface("Student") == before, "And it is drawn the way the theme says again");
+
+    // A dark surface must not be written on in dark ink.
+    require(editor.recolour({domain::ElementRef{student}}, domain::Colour{0x20, 0x20, 0x30}), "Colour it dark");
+    view.synchronize();
+    QApplication::processEvents();
+    const auto image = view.viewport()->grab().toImage();
+    const auto box = find_node(view, "Student")->sceneBoundingRect();
+    bool light_ink = false;
+    const auto centre = view.mapFromScene(box.center());
+    for (int dx = -50; dx <= 50 && !light_ink; ++dx)
+        for (int dy = -8; dy <= 8 && !light_ink; ++dy) {
+            const auto pixel = image.pixelColor(centre + QPoint(dx, dy));
+            if (pixel.red() > 200 && pixel.green() > 200 && pixel.blue() > 200) light_ink = true;
+        }
+    require(light_ink, "A label on a dark surface is written in light ink");
+}
+
+
+// Several elements can be picked out and then acted on together: the modifier
+// that extends a selection is the same one the colour and delete paths read.
+void extend_selection_tests() {
+    SequentialIds ids;
+    application::Editor editor(ids);
+    const auto student = std::get<domain::EntityId>(*editor.create_entity("Student", {-360, 0, 160, 80}).created);
+    const auto course = std::get<domain::EntityId>(*editor.create_entity("Course", {-60, 0, 160, 80}).created);
+    const auto tutor = std::get<domain::EntityId>(*editor.create_entity("Tutor", {240, 0, 160, 80}).created);
+
+    desktop::DiagramView view(editor);
+    view.resize(1000, 600);
+    view.show();
+    view.actual_size();
+    view.centerOn(0, 0);
+    QApplication::processEvents();
+
+    const auto at = [&](const QString& name) {
+        return view.mapFromScene(find_node(view, name)->sceneBoundingRect().center());
+    };
+    const auto click_with = [&](const QString& name, Qt::KeyboardModifiers modifiers) {
+        mouse(view, QEvent::MouseButtonPress, at(name), Qt::LeftButton, Qt::LeftButton, modifiers);
+        mouse(view, QEvent::MouseButtonRelease, at(name), Qt::LeftButton, Qt::NoButton, modifiers);
+    };
+
+    click_with("Student", Qt::NoModifier);
+    require(view.selected_elements().size() == 1, "A plain click selects one element");
+
+    // Command on a Mac and Control elsewhere both arrive as ControlModifier.
+    click_with("Course", Qt::ControlModifier);
+    require(view.selected_elements().size() == 2, "Command or Control click adds to the selection");
+    click_with("Tutor", Qt::ShiftModifier);
+    require(view.selected_elements().size() == 3, "Shift click adds to it as well");
+
+    // Whatever has been picked out is what the colour is given to.
+    const domain::Colour lilac{0xC9, 0xB0, 0xFF};
+    require(editor.recolour(view.selected_elements(), lilac), "Colour the selection");
+    require(editor.project().colours.size() == 3, "Every selected element takes the colour");
+
+    // A copy looks like what it was copied from.
+    require(editor.duplicate({domain::ElementRef{student}}), "Duplicate a coloured entity");
+    require(editor.project().colours.size() == 4, "The copy carries the colour of its original");
+    require(editor.undo(), "Undo the duplicate");
+    require(editor.project().colours.size() == 3, "And undoing takes both away");
+    view.synchronize();
+    QApplication::processEvents();
+
+    // The same modifier takes one back out again.
+    click_with("Course", Qt::ControlModifier);
+    require(view.selected_elements().size() == 2, "Clicking a selected element again removes it");
+
+    // And a plain click starts over rather than adding.
+    click_with("Student", Qt::NoModifier);
+    require(view.selected_elements().size() == 1, "A plain click replaces the selection");
+
+    // Deleting acts on the whole selection too.
+    click_with("Course", Qt::ControlModifier);
+    view.delete_selection();
+    require(editor.project().entities.size() == 1, "Delete removes everything selected");
+    require(editor.project().entities.begin()->first == tutor, "And leaves what was not");
+    (void)student;
 }
 
 // A name must be editable on the element itself, not only in the properties
@@ -573,15 +1085,39 @@ void attribute_trunk_and_line_style_tests() {
                 return item;
         throw std::runtime_error("Missing attribute link");
     };
-    // Every link on a side starts at that side's shared point, so the three
-    // attributes above all begin at the top centre of the owner.
+    // A link meets the body where its own attribute lies, rather than at the
+    // middle of whichever face is nearest. Anchoring to a face's midpoint is
+    // what made a dragged attribute's line jump: the join held still, then
+    // leapt the width of the body the moment the nearest face changed.
     const auto body = find_node(view, "Person")->sceneBoundingRect();
     const QPointF above{body.center().x(), body.top()};
     const QPointF beside{body.left(), body.center().y()};
+    const auto exit_toward = [](const QRectF& owner, const QPointF& target) {
+        const auto centre = owner.center();
+        const auto delta = target - centre;
+        const auto divisor = std::max(std::abs(delta.x()) / (owner.width() / 2),
+                                      std::abs(delta.y()) / (owner.height() / 2));
+        return centre + delta / divisor;
+    };
+    std::vector<QPointF> exits;
     for (const auto& attribute : {QStringLiteral("First"), QStringLiteral("Last"), QStringLiteral("Born")}) {
         auto* link = edge_for(attribute);
-        require(link->shape().contains(link->mapFromScene(above)), "Links above share the top exit point");
+        const auto exit = exit_toward(body, find_node(view, attribute)->sceneBoundingRect().center());
+        require(link->shape().contains(link->mapFromScene(exit)),
+                "A link leaves the body in its own attribute's direction");
+        require(std::abs(exit.y() - body.top()) < 1.0, "An attribute above still leaves by the top");
+        exits.push_back(exit);
     }
+    // The outer two sit far apart along that same top edge. Were the anchor
+    // still snapping to the face's midpoint, all three would coincide.
+    require(std::abs(exits.front().x() - exits.back().x()) > 20.0,
+            "Attributes spread along a side do not collapse onto one exit point");
+    // Moving an attribute a little must move its join a little. This is the
+    // property the old midpoint anchor lacked, and the reason the line jumped.
+    const auto before = exit_toward(body, find_node(view, "Last")->sceneBoundingRect().center());
+    const auto nudged = exit_toward(body, find_node(view, "Last")->sceneBoundingRect().center() + QPointF(6, 0));
+    const auto shift = std::hypot(nudged.x() - before.x(), nudged.y() - before.y());
+    require(shift > 0.0 && shift < 12.0, "A small move of an attribute slides its join a small amount");
     auto* sideways = edge_for(QStringLiteral("Ident"));
     require(sideways->shape().contains(sideways->mapFromScene(beside)),
             "A link on another side uses that side's exit point");
@@ -600,14 +1136,15 @@ void attribute_trunk_and_line_style_tests() {
     view.set_line_style(desktop::LineStyle::Curved);
     require(render() == curved, "Returning to a style reproduces its drawing");
 
-    // The shared exit point follows the owner as it moves.
+    // The exit point follows the owner as it moves, and is recomputed against
+    // where the attribute now lies rather than staying on the face it left by.
     require(editor.move({{domain::ElementRef{person}, {620, 330, 160, 80}}}), "Move the owner");
     view.synchronize();
     QApplication::processEvents();
     const auto moved = find_node(view, "Person")->sceneBoundingRect();
-    const QPointF moved_above{moved.center().x(), moved.top()};
     auto* link = edge_for(QStringLiteral("Last"));
-    require(link->shape().contains(link->mapFromScene(moved_above)), "The exit point moves with the owner");
+    const auto moved_exit = exit_toward(moved, find_node(view, "Last")->sceneBoundingRect().center());
+    require(link->shape().contains(link->mapFromScene(moved_exit)), "The exit point moves with the owner");
 }
 
 // Selecting an element must show what it connects to, so its links are drawn
@@ -847,6 +1384,12 @@ int main(int argc, char** argv) {
         synchronization_lifetime_tests();
         connector_shaping_tests();
         drag_to_connect_tests();
+        connect_returns_to_select_tests();
+        lock_connector_tests();
+        connector_route_tests();
+        lock_participant_tests();
+        element_colour_tests();
+        extend_selection_tests();
         inline_rename_tests();
         notation_tests();
         attribute_trunk_and_line_style_tests();

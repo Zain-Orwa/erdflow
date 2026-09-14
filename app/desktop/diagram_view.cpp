@@ -1,9 +1,14 @@
 #include "diagram_view.hpp"
 
 #include <QApplication>
+#include <QColorDialog>
+#include <QIcon>
+#include <QContextMenuEvent>
+#include <QMenu>
 #include <QGraphicsItem>
 #include <QGraphicsScene>
 #include <QKeyEvent>
+#include <QKeySequence>
 #include <QLineEdit>
 #include <QMouseEvent>
 #include <QPainter>
@@ -13,7 +18,9 @@
 #include <QWheelEvent>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <limits>
 #include <map>
 #include <set>
 #include <utility>
@@ -29,6 +36,48 @@ Rect centred(const QPointF& centre, const BodySize& size) {
 }
 constexpr qreal minimum_zoom = 0.15;
 constexpr qreal maximum_zoom = 3.0;
+
+// Black or white, whichever the eye can actually read on a given surface. The
+// threshold is on relative luminance rather than on plain brightness, so a
+// saturated yellow is treated as the light colour it is.
+QColor readable_on(const QColor& surface) {
+    const auto channel = [](double value) {
+        return value <= 0.04045 ? value / 12.92 : std::pow((value + 0.055) / 1.055, 2.4);
+    };
+    const auto luminance = 0.2126 * channel(surface.redF()) + 0.7152 * channel(surface.greenF())
+                         + 0.0722 * channel(surface.blueF());
+    return luminance > 0.36 ? QColor(0x1a, 0x1a, 0x1a) : QColor(0xff, 0xff, 0xff);
+}
+
+
+// The palette offered on the canvas. These are surface colours rather than ink,
+// so each is light enough to write on and distinct from its neighbours at the
+// size an element is actually drawn. The names are what the menu reads out, so
+// they say what the eye sees rather than naming a hex value.
+const std::array<std::pair<const char*, QColor>, 10>& swatches() {
+    static const std::array<std::pair<const char*, QColor>, 10> palette{{
+        {"Butter", QColor(0xFF, 0xE0, 0x8A)}, {"Apricot", QColor(0xFF, 0xC2, 0x8A)},
+        {"Coral", QColor(0xFF, 0xA8, 0xA8)}, {"Rose", QColor(0xF7, 0xA8, 0xD8)},
+        {"Lilac", QColor(0xC9, 0xB0, 0xFF)}, {"Periwinkle", QColor(0xA8, 0xBD, 0xFF)},
+        {"Sky", QColor(0x9A, 0xDC, 0xFF)}, {"Mint", QColor(0x9E, 0xE8, 0xC4)},
+        {"Sage", QColor(0xC3, 0xE0, 0x9E)}, {"Stone", QColor(0xD6, 0xD6, 0xD6)},
+    }};
+    return palette;
+}
+
+// A swatch drawn as its own icon, so the menu shows the colour rather than only
+// naming it.
+QIcon swatch_icon(const QColor& colour) {
+    QPixmap pixmap(32, 32);
+    pixmap.setDevicePixelRatio(2);
+    pixmap.fill(Qt::transparent);
+    QPainter painter(&pixmap);
+    painter.setRenderHint(QPainter::Antialiasing);
+    painter.setBrush(colour);
+    painter.setPen(QPen(colour.darker(150), 1.2));
+    painter.drawEllipse(QRectF(1.5, 1.5, 13, 13));
+    return QIcon(pixmap);
+}
 
 QPointF normal(const QPointF& delta) {
     const auto length = std::hypot(delta.x(), delta.y());
@@ -115,6 +164,14 @@ public:
         apply_colors();
     }
 
+    // A colour the user chose for this element, which overrides the theme's.
+    void set_chosen_colour(std::optional<QColor> colour) {
+        if (chosen_ == colour) return;
+        chosen_ = colour;
+        apply_colors();
+    }
+    [[nodiscard]] const std::optional<QColor>& chosen_colour() const { return chosen_; }
+
     void apply_colors() {
         const auto& colors = *colors_;
         fill_ = colors.attribute_fill;
@@ -134,6 +191,15 @@ public:
             border_ = as_entity ? colors.entity_border : colors.relationship_border;
         }
         text_ = colors.node_text;
+        if (chosen_) {
+            // A chosen colour replaces the fill and takes the border with it, or
+            // the surface would sit inside an outline from a palette it has left.
+            fill_ = *chosen_;
+            border_ = chosen_->darker(145);
+            // The label has to stay readable on a colour the theme knows nothing
+            // about, so it is chosen against the surface rather than the theme.
+            text_ = readable_on(*chosen_);
+        }
         selection_ = colors.accent;
         update();
     }
@@ -187,24 +253,34 @@ public:
         bounds_ = next;
         update();
     }
-    // Attributes owned by this element, so links to them can leave from one
-    // shared point per side instead of each meeting the body separately.
+    // Attributes owned by this element, so their links can be laid out against
+    // the body they belong to rather than each being routed on its own.
     std::vector<NodeItem*> attribute_children;
 
-    // The side of this body a child sits on, as an outward unit vector. Grouping
-    // by side keeps a shared exit point from sending a link back across the body.
-    static QPointF side_of(const QPointF& from_centre) {
-        if (std::abs(from_centre.x()) > std::abs(from_centre.y()))
-            return {from_centre.x() < 0 ? -1.0 : 1.0, 0.0};
-        return {0.0, from_centre.y() < 0 ? -1.0 : 1.0};
-    }
-    // Where links to attributes on a child's side leave this body, and the point
-    // just outside it at which they fan out to their own attributes.
-    void attribute_trunk(const NodeItem* child, QPointF& anchor, QPointF& junction) const {
+    // Where a link to an attribute leaves this body, and the point just outside
+    // it where the line straightens out.
+    //
+    // The anchor rides the outline itself, at whatever point the attribute's own
+    // direction crosses it, so moving the attribute slides the join smoothly
+    // around the body and carries it around the corners. Snapping to the middle
+    // of whichever face is nearest is what made the line jump: the anchor would
+    // sit still while the attribute moved, then leap the width of the body the
+    // moment the nearest face changed.
+    void attribute_trunk(const NodeItem* child, const std::optional<double>& pinned,
+                         QPointF& anchor, QPointF& junction) const {
         const QPointF centre = scenePos() + bounds_.center();
-        const auto side = side_of(child->scenePos() + child->bounds_.center() - centre);
-        anchor = {centre.x() + side.x() * bounds_.width() / 2, centre.y() + side.y() * bounds_.height() / 2};
-        junction = anchor + side * 30;
+        anchor = pinned ? boundary_at(*pinned)
+                        : boundary_toward(child->scenePos() + child->bounds_.center());
+        // The stub leaves along the outline's own outward direction rather than
+        // pointing straight back at the attribute, so the line looks like it
+        // leaves the body squarely and still has somewhere to curve from.
+        // Dividing each axis by its own radius turns the corners smoothly
+        // instead of snapping between four fixed headings.
+        const auto rx = std::max(bounds_.width() / 2, 0.001);
+        const auto ry = std::max(bounds_.height() / 2, 0.001);
+        QPointF out{(anchor.x() - centre.x()) / (rx * rx), (anchor.y() - centre.y()) / (ry * ry)};
+        const auto length = std::hypot(out.x(), out.y());
+        junction = anchor + (length > 0.000001 ? out / length : QPointF(1, 0)) * 22;
     }
 
     // The ISA triangle attaches at fixed points rather than wherever a ray
@@ -214,6 +290,17 @@ public:
     QPointF isa_anchor(bool toward_supertype) const {
         const QPointF centre = scenePos() + bounds_.center();
         return {centre.x(), scenePos().y() + (toward_supertype ? bounds_.top() : bounds_.bottom())};
+    }
+    // A pinned join is stored as a direction rather than a point, so that it
+    // keeps its place on the outline when the shape is moved or resized. These
+    // two convert between that direction and the point it names.
+    [[nodiscard]] QPointF boundary_at(double radians) const {
+        const QPointF centre = scenePos() + bounds_.center();
+        return boundary_toward(centre + QPointF(std::cos(radians), std::sin(radians)) * 1000.0);
+    }
+    [[nodiscard]] double direction_of(const QPointF& point) const {
+        const QPointF centre = scenePos() + bounds_.center();
+        return std::atan2(point.y() - centre.y(), point.x() - centre.x());
     }
     // Intersection of a ray from the node center with its actual Chen shape.
     QPointF boundary_toward(const QPointF& target) const {
@@ -250,9 +337,12 @@ public:
         }
         if (std::holds_alternative<AttributeId>(ref) && attribute_kind == AttributeKind::Multivalued)
             painter->drawEllipse(bounds_.adjusted(5, 5, -5, -5));
+        // Names on the canvas are read at a glance and often at less than full
+        // zoom, so they sit a step above the interface's own type and never
+        // below medium weight.
         auto font = painter->font();
-        font.setPointSizeF(11);
-        font.setWeight(std::holds_alternative<EntityId>(ref) ? QFont::DemiBold : QFont::Normal);
+        font.setPointSizeF(12.5);
+        font.setWeight(std::holds_alternative<EntityId>(ref) ? QFont::Bold : QFont::Medium);
         font.setUnderline(std::holds_alternative<AttributeId>(ref) && attribute_kind == AttributeKind::Key);
         painter->setFont(font);
         painter->setPen(text_);
@@ -276,6 +366,7 @@ private:
     QRectF bounds_{0, 0, 160, 80};
     const Theme* colors_ = nullptr;
     QColor fill_, border_, text_, selection_;
+    std::optional<QColor> chosen_;
 };
 
 // An edge is keyed by the record that draws it. Attribute and participant links
@@ -297,6 +388,11 @@ struct EdgeDescription {
     Participation participation = Participation::Partial;
     QString role;
     qreal offset = 0;
+    // Where the line is pinned to meet each shape, when the user has locked it.
+    std::optional<double> owner_anchor;
+    std::optional<double> child_anchor;
+    // Corners the line is routed through, when the user has given it any.
+    std::vector<QPointF> waypoints;
     bool operator==(const EdgeDescription&) const = default;
 };
 
@@ -354,11 +450,31 @@ public:
         if (descriptor.relationship) hit.addRect(cardinality_rect_);
         if (!descriptor.role.isEmpty()) hit.addRect(role_rect_);
         if (isSelected() && shapeable()) hit.addRect(handle_rect_);
+        if (isSelected() && shapeable()) for (const auto& corner : corner_rects_) hit.addRect(corner);
+        if (isSelected() && lockable()) hit.addRect(lock_rect_);
         return hit;
     }
     // An inheritance link is anchored to the triangle, so it carries no bend and
     // must not offer a handle that would do nothing.
     [[nodiscard]] bool shapeable() const { return !std::holds_alternative<InheritanceKey>(descriptor.key); }
+    // An attribute's link runs from its owner to the attribute, the other way
+    // round from how it is keyed, so the two ends do not map onto source and
+    // target the same way for every kind of connector.
+    [[nodiscard]] bool from_owner() const {
+        return std::holds_alternative<AttributeId>(descriptor.key)
+            && std::holds_alternative<AttributeId>(descriptor.from);
+    }
+    [[nodiscard]] NodeItem* head_node() const { return from_owner() ? target : source; }
+    [[nodiscard]] NodeItem* tail_node() const { return from_owner() ? source : target; }
+    // Every connector whose joins slide can have them pinned. Only inheritance
+    // is excluded, since it is already anchored at fixed points on the triangle.
+    [[nodiscard]] bool lockable() const { return shapeable(); }
+    [[nodiscard]] bool locked() const { return descriptor.owner_anchor || descriptor.child_anchor; }
+    [[nodiscard]] QRectF lock_rect() const { return lock_rect_; }
+    // Where the line currently meets each shape, as the direction that would
+    // pin it exactly where it is now.
+    [[nodiscard]] double owner_direction() const { return head_node()->direction_of(owner_join_); }
+    [[nodiscard]] double child_direction() const { return tail_node()->direction_of(child_join_); }
     // A link touching the selection is drawn heavier and above the other links,
     // so what an element connects to can be read without tracing each line.
     void set_highlighted(bool value) {
@@ -371,6 +487,35 @@ public:
     // The bend handle only exists while the connector is selected, so an
     // unselected diagram stays free of grab targets.
     [[nodiscard]] QRectF handle_rect() const { return handle_rect_; }
+    [[nodiscard]] const std::vector<QRectF>& corner_rects() const { return corner_rects_; }
+    // Which corner a point grabs, or where a new one would be inserted to put a
+    // corner at that point: the index of the segment it lies on.
+    [[nodiscard]] std::optional<std::size_t> corner_at(const QPointF& scene_point) const {
+        for (std::size_t index = 0; index < corner_rects_.size(); ++index)
+            if (corner_rects_[index].contains(scene_point)) return index;
+        return std::nullopt;
+    }
+    // The route already has corners before this point, walking the path from its
+    // start, so a new corner dropped here belongs at that index.
+    [[nodiscard]] std::size_t insertion_for(const QPointF& scene_point) const {
+        std::size_t best = descriptor.waypoints.size();
+        qreal nearest = std::numeric_limits<qreal>::max();
+        QPointF previous = path_.pointAtPercent(0);
+        for (std::size_t index = 0; index <= descriptor.waypoints.size(); ++index) {
+            const auto next = index < descriptor.waypoints.size() ? descriptor.waypoints[index]
+                                                                  : path_.currentPosition();
+            const auto along = next - previous;
+            const auto length = std::hypot(along.x(), along.y());
+            if (length > 0.01) {
+                const auto t = std::clamp(QPointF::dotProduct(scene_point - previous, along) / (length * length), 0.0, 1.0);
+                const auto foot = previous + along * t;
+                const auto gap = std::hypot(scene_point.x() - foot.x(), scene_point.y() - foot.y());
+                if (gap < nearest) { nearest = gap; best = index; }
+            }
+            previous = next;
+        }
+        return best;
+    }
     [[nodiscard]] QPointF midpoint() const { return midpoint_; }
     [[nodiscard]] QPointF perpendicular() const { return perpendicular_; }
     void refresh() {
@@ -392,8 +537,11 @@ public:
         if (owned_attribute) {
             QPointF anchor;
             QPointF junction;
-            target->attribute_trunk(source, anchor, junction);
-            end = source->boundary_toward(junction);
+            target->attribute_trunk(source, descriptor.owner_anchor, anchor, junction);
+            end = descriptor.child_anchor ? source->boundary_at(*descriptor.child_anchor)
+                                          : source->boundary_toward(junction);
+            owner_join_ = anchor;
+            child_join_ = end;
             path_ = QPainterPath(anchor);
             path_.lineTo(junction);
             if (style == LineStyle::Straight) {
@@ -424,13 +572,49 @@ public:
             midpoint_ = bend;
             perpendicular_ = normal(end - start);
         } else {
-            start = source->boundary_toward(bend);
-            end = target->boundary_toward(bend);
+            start = descriptor.owner_anchor ? source->boundary_at(*descriptor.owner_anchor)
+                                            : source->boundary_toward(bend);
+            end = descriptor.child_anchor ? target->boundary_at(*descriptor.child_anchor)
+                                          : target->boundary_toward(bend);
+            owner_join_ = start;
+            child_join_ = end;
             path_ = QPainterPath(start);
             path_.lineTo(bend);
             path_.lineTo(end);
         }
-        handle_rect_ = QRectF(bend - QPointF(5, 5), QSizeF(10, 10));
+        // A route replaces whatever the automatic shape would have been. Each
+        // end aims at the corner nearest it rather than at the far endpoint, so
+        // the first and last segments leave and arrive along the route itself.
+        if (!descriptor.waypoints.empty() && !inheritance) {
+            const auto& corners = descriptor.waypoints;
+            // The route is listed from the path's start to its end, and an
+            // attribute's line runs from its owner, so head and tail are not
+            // always source and target. Getting this the wrong way round would
+            // reverse the cardinality symbols the moment a line was routed.
+            auto* head = head_node();
+            auto* tail = tail_node();
+            start = descriptor.owner_anchor ? head->boundary_at(*descriptor.owner_anchor)
+                                            : head->boundary_toward(corners.front());
+            end = descriptor.child_anchor ? tail->boundary_at(*descriptor.child_anchor)
+                                          : tail->boundary_toward(corners.back());
+            owner_join_ = start;
+            child_join_ = end;
+            path_ = QPainterPath(start);
+            for (const auto& corner : corners) path_.lineTo(corner);
+            path_.lineTo(end);
+            bend = path_.pointAtPercent(0.5);
+            midpoint_ = bend;
+            perpendicular_ = normal(end - corners.back());
+        }
+        // A routed line is shaped by its corners, so it shows a grip on each
+        // instead of the single bend grip a plain one carries.
+        corner_rects_.clear();
+        for (const auto& corner : descriptor.waypoints)
+            corner_rects_.push_back(QRectF(corner - QPointF(5, 5), QSizeF(10, 10)));
+        handle_rect_ = descriptor.waypoints.empty() ? QRectF(bend - QPointF(5, 5), QSizeF(10, 10)) : QRectF();
+        // The padlock sits off to one side of the bend grip rather than on it,
+        // so the two controls on a selected link never overlap.
+        lock_rect_ = lockable() ? QRectF(bend + perpendicular_ * 16 - QPointF(6, 6), QSizeF(12, 12)) : QRectF();
         const auto entity_direction = bend - end;
         const auto distance = std::hypot(entity_direction.x(), entity_direction.y());
         // Labels are filled, so one overlapping the line hides it and the
@@ -465,6 +649,8 @@ public:
         if (descriptor.relationship && !end_label().isEmpty()) bounds_ = bounds_.united(cardinality_rect_);
         if (!descriptor.role.isEmpty()) bounds_ = bounds_.united(role_rect_);
         if (shapeable()) bounds_ = bounds_.united(handle_rect_.adjusted(-2, -2, 2, 2));
+        for (const auto& corner : corner_rects_) bounds_ = bounds_.united(corner.adjusted(-2, -2, 2, 2));
+        if (lockable()) bounds_ = bounds_.united(lock_rect_.adjusted(-2, -2, 2, 2));
         if (inheritance) {
             setToolTip(inheritance->subtype ? QStringLiteral("Inheritance — subtype")
                                             : QStringLiteral("Inheritance — supertype"));
@@ -509,8 +695,25 @@ public:
         if (isSelected() && shapeable()) {
             painter->setPen(QPen(selection_, 1.4));
             painter->setBrush(canvas_);
-            painter->drawEllipse(handle_rect_);
+            if (!handle_rect_.isNull()) painter->drawEllipse(handle_rect_);
+            for (const auto& corner : corner_rects_) painter->drawEllipse(corner);
         }
+        if (isSelected() && lockable()) paint_lock(painter);
+    }
+    // A padlock, filled when the joins are pinned and hollow when they are not,
+    // so the control shows its own state rather than needing a legend.
+    void paint_lock(QPainter* painter) const {
+        const auto body = QRectF(lock_rect_.left(), lock_rect_.center().y() - 1,
+                                 lock_rect_.width(), lock_rect_.height() / 2 + 1);
+        const auto shackle = QRectF(lock_rect_.left() + lock_rect_.width() * 0.22, lock_rect_.top(),
+                                    lock_rect_.width() * 0.56, lock_rect_.height() * 0.62);
+        painter->setPen(QPen(selection_, 1.4));
+        painter->setBrush(Qt::NoBrush);
+        // An open padlock is drawn with its shackle lifted clear on one side,
+        // which reads as unlocked at this size where a tilted one does not.
+        painter->drawArc(locked() ? shackle : shackle.translated(2.5, -1.5), 0, 180 * 16);
+        painter->setBrush(locked() ? selection_ : canvas_);
+        painter->drawRoundedRect(body, 1.5, 1.5);
     }
 private:
     QPainterPath path_;
@@ -518,6 +721,10 @@ private:
     QRectF cardinality_rect_;
     QRectF role_rect_;
     QRectF handle_rect_;
+    std::vector<QRectF> corner_rects_;
+    QRectF lock_rect_;
+    QPointF owner_join_;
+    QPointF child_join_;
     QPointF midpoint_;
     QPointF perpendicular_;
     QPointF outward_{-1, 0};
@@ -558,6 +765,15 @@ struct DiagramView::Impl {
     QPointF drag_anchor;
     // The connector being reshaped, previewed on its item until release.
     std::optional<EdgeKey> bending;
+    // A corner being dragged. It is only created once the pointer has actually
+    // travelled, so a plain click on a line still just selects it.
+    struct RouteDrag {
+        EdgeKey key;
+        std::size_t index = 0;
+        QPointF press;
+        bool grabbed = false;
+    };
+    std::optional<RouteDrag> routing;
     QPointF minimum_drag;
     QPointF maximum_drag;
     std::optional<std::uint64_t> displayed_revision;
@@ -660,7 +876,23 @@ struct DiagramView::Impl {
         }
         return nullptr;
     }
+    EdgeItem* selected_edge_at(const QPoint& viewport_position) const {
+        for (auto* item : view.items(viewport_position)) {
+            auto* edge = dynamic_cast<EdgeItem*>(item);
+            if (edge && edge->isSelected() && edge->shapeable()) return edge;
+        }
+        return nullptr;
+    }
     // Only a selected connector shows a handle, so only it can be grabbed.
+    EdgeItem* lock_at(const QPoint& viewport_position) const {
+        const auto scene_position = view.mapToScene(viewport_position);
+        for (auto* item : view.items(viewport_position)) {
+            auto* edge = dynamic_cast<EdgeItem*>(item);
+            if (edge && edge->isSelected() && edge->lockable() && edge->lock_rect().contains(scene_position))
+                return edge;
+        }
+        return nullptr;
+    }
     EdgeItem* handle_at(const QPoint& viewport_position) const {
         const auto scene_position = view.mapToScene(viewport_position);
         for (auto* item : view.items(viewport_position)) {
@@ -688,8 +920,16 @@ struct DiagramView::Impl {
     }
     void connect_node(NodeItem* node) {
         if (!node) {
+            // Abandoning a half-made connection spends the tool's one use just
+            // as completing it does. Otherwise Connect stays armed after the
+            // gesture the user gave up on, and their next click on an element
+            // starts another connection when they meant to select it. A click
+            // on empty canvas with nothing yet armed is only a miss, so it
+            // leaves the tool alone.
+            const bool abandoned = connect_start.has_value();
             connect_start.reset();
             connect_pointer.reset();
+            if (abandoned && !tool_locked) { view.set_tool(Tool::Select); return; }
             status(QStringLiteral("Connection cancelled. Select the first object."));
             return;
         }
@@ -717,12 +957,14 @@ struct DiagramView::Impl {
         } else if (const auto plan = plan_connection(from, to)) {
             result = (*plan)();
         }
+        // The attempt is the tool's one use whether or not the pair was legal,
+        // so an unlocked Connect hands back to Select the way every other tool
+        // does. Handing back first matters: the new tool announces itself, and
+        // doing it afterwards would overwrite the reason a pair was refused.
+        if (!tool_locked) view.set_tool(Tool::Select);
         publish(result);
-        if (result) {
-            // One connection completes the tool unless it has been locked.
-            if (!tool_locked) view.set_tool(Tool::Select);
-            else status(QStringLiteral("Connected. Locked: select the first object of the next connection."));
-        }
+        if (result && tool_locked)
+            status(QStringLiteral("Connected. Locked: select the first object of the next connection."));
     }
     // The edit a pair of elements would produce, or nothing when the pair means
     // nothing. The hover highlight and the committed connection read the same
@@ -814,15 +1056,26 @@ void DiagramView::synchronize() {
     impl_->synchronizing = true;
     const auto& project = impl_->editor.project();
     std::map<EdgeKey, EdgeDescription> desired_edges;
-    // A stored bend is the user's choice and overrides automatic routing.
+    // A stored shape is the user's choice and overrides automatic routing.
     const auto shaped = [&](const ConnectorRef& key, qreal automatic) {
         const auto found = project.connectors.find(key);
-        return found == project.connectors.end() ? automatic : found->second;
+        if (found == project.connectors.end()) return domain::Connector{automatic, {}, {}, {}};
+        return found->second;
+    };
+    const auto route_of = [](const domain::Connector& connector) {
+        std::vector<QPointF> route;
+        route.reserve(connector.waypoints.size());
+        for (const auto& point : connector.waypoints) route.emplace_back(point.x, point.y);
+        return route;
     };
     for (const auto& [id, attribute] : project.attributes) {
-        if (attribute.owner && exists(project, *attribute.owner))
+        if (attribute.owner && exists(project, *attribute.owner)) {
+            const auto shape = shaped(id, 0);
             desired_edges.emplace(id, EdgeDescription{id, id, *attribute.owner, {}, Cardinality::Many,
-                                                      Participation::Partial, {}, shaped(id, 0)});
+                                                      Participation::Partial, {}, shape.offset,
+                                                      shape.owner_anchor, shape.child_anchor,
+                                                      route_of(shape)});
+        }
     }
     for (const auto& [id, relationship] : project.relationships) {
         std::map<ElementRef, std::size_t> counts;
@@ -832,9 +1085,10 @@ void DiagramView::synchronize() {
             if (!exists(project, target_ref(participant.target))) continue;
             const auto ordinal = index[target_ref(participant.target)]++;
             const auto offset = (static_cast<qreal>(ordinal) - (static_cast<qreal>(counts[target_ref(participant.target)]) - 1) / 2) * 48;
+            const auto shape = shaped(participant.id, offset);
             desired_edges.emplace(participant.id, EdgeDescription{participant.id, id, target_ref(participant.target), id,
                 participant.maximum, participant.participation, QString::fromStdString(participant.role),
-                shaped(participant.id, offset)});
+                shape.offset, shape.owner_anchor, shape.child_anchor, route_of(shape)});
         }
     }
     for (const auto& [id, specialization] : project.specializations) {
@@ -918,6 +1172,10 @@ void DiagramView::synchronize() {
             node->update();
         }
         node->setToolTip(label);
+        const auto chosen = project.colours.find(ref);
+        node->set_chosen_colour(chosen == project.colours.end()
+            ? std::optional<QColor>{}
+            : std::optional{QColor(chosen->second.red, chosen->second.green, chosen->second.blue)});
         if (geometry_changed) {
             const auto incident = impl_->incident.find(ref);
             if (incident != impl_->incident.end()) dirty_edges.insert(incident->second.begin(), incident->second.end());
@@ -982,7 +1240,14 @@ void DiagramView::set_tool(Tool tool, bool locked) {
         return;
     }
     switch (tool) {
-    case Tool::Select: impl_->status(QStringLiteral("Select objects to edit. Drag to move; Shift-click to extend selection.")); break;
+    case Tool::Select: {
+        // Qt renders this modifier as the platform's own key, so the hint names
+        // Command on a Mac and Control elsewhere without guessing which.
+        const auto extend = QKeySequence(Qt::ControlModifier).toString(QKeySequence::NativeText);
+        impl_->status(QStringLiteral("Select objects to edit. Drag to move; %1click or Shift-click to add to the selection.")
+                          .arg(extend));
+        break;
+    }
     case Tool::Entity: impl_->status(QStringLiteral("Click the canvas to create an entity.")); break;
     case Tool::Attribute: impl_->status(QStringLiteral("Click to add an attribute to the selected owner, or an unattached attribute.")); break;
     case Tool::Relationship: impl_->status(QStringLiteral("Click the canvas to create a relationship, then use Connect to add participants.")); break;
@@ -1179,6 +1444,68 @@ void DiagramView::drawBackground(QPainter* painter, const QRectF& rect) {
         for (qreal y = top; y <= rect.bottom(); y += step) painter->drawPoint(QPointF(x, y));
 }
 
+
+// Right-clicking an element offers what can be done to it and, mainly, what
+// colour it should be. It acts on the whole selection, so several elements can
+// be given one colour in a single step.
+void DiagramView::contextMenuEvent(QContextMenuEvent* event) {
+    auto* node = impl_->node_at(event->pos());
+    if (!node) { QGraphicsView::contextMenuEvent(event); return; }
+    // Right-clicking outside the selection acts on what was clicked, which is
+    // what anyone expects; right-clicking inside it keeps the selection whole.
+    auto chosen = selected_elements();
+    if (std::find(chosen.begin(), chosen.end(), node->ref) == chosen.end()) {
+        select_elements({node->ref});
+        chosen = {node->ref};
+    }
+    QMenu menu(this);
+    const auto several = chosen.size() > 1;
+    auto* duplicate = menu.addAction(several ? "Duplicate selection" : "Duplicate");
+    duplicate->setObjectName("contextDuplicate");
+    auto* remove = menu.addAction(several ? "Delete selection" : "Delete");
+    remove->setObjectName("contextDelete");
+    menu.addSeparator();
+    auto* colours = menu.addMenu(several ? "Colour selection" : "Colour");
+    colours->setObjectName("contextColour");
+    for (const auto& [name, colour] : swatches()) {
+        auto* entry = colours->addAction(swatch_icon(colour), QString::fromLatin1(name));
+        entry->setData(colour);
+        entry->setObjectName("swatch" + QString::fromLatin1(name));
+    }
+    colours->addSeparator();
+    auto* custom = colours->addAction("Custom colour…");
+    custom->setObjectName("contextCustomColour");
+    auto* clear = colours->addAction("Use theme colour");
+    clear->setObjectName("contextClearColour");
+    // Nothing to clear when none of the selection has been given a colour.
+    const auto& project = impl_->editor.project();
+    clear->setEnabled(std::any_of(chosen.begin(), chosen.end(),
+                                  [&](const ElementRef& ref) { return project.colours.contains(ref); }));
+
+    auto* picked = menu.exec(event->globalPos());
+    if (!picked) return;
+    if (picked == duplicate) { impl_->publish(impl_->editor.duplicate(chosen)); return; }
+    if (picked == remove) { delete_selection(); return; }
+    if (picked == clear) { impl_->publish(impl_->editor.recolour(chosen, {})); return; }
+    QColor colour;
+    if (picked == custom) {
+        // Start from whatever the first selected element already wears, so the
+        // dialog opens on the colour being changed rather than on nothing.
+        const auto current = project.colours.find(chosen.front());
+        const auto initial = current == project.colours.end()
+            ? QColor(Qt::white)
+            : QColor(current->second.red, current->second.green, current->second.blue);
+        colour = QColorDialog::getColor(initial, this, "Choose a surface colour");
+        if (!colour.isValid()) return;
+    } else {
+        colour = picked->data().value<QColor>();
+        if (!colour.isValid()) return;
+    }
+    impl_->publish(impl_->editor.recolour(chosen, domain::Colour{
+        static_cast<std::uint8_t>(colour.red()), static_cast<std::uint8_t>(colour.green()),
+        static_cast<std::uint8_t>(colour.blue())}));
+}
+
 void DiagramView::mousePressEvent(QMouseEvent* event) {
     setFocus();
     if (event->button() == Qt::MiddleButton || (event->button() == Qt::LeftButton && impl_->active_tool == Tool::Pan)) {
@@ -1243,9 +1570,37 @@ void DiagramView::mousePressEvent(QMouseEvent* event) {
     // Grabbing a selected connector's handle reshapes it instead of starting a
     // rubber band. The bend is previewed on the item and committed on release.
     if (impl_->active_tool == Tool::Select) {
+        // The padlock is tested before the bend grip: it sits beside it, and a
+        // click meant for the lock must not start reshaping the line instead.
+        if (auto* edge = impl_->lock_at(event->position().toPoint())) {
+            const auto& edge_key = edge->descriptor.key;
+            const ConnectorRef key = std::holds_alternative<AttributeId>(edge_key)
+                ? ConnectorRef{std::get<AttributeId>(edge_key)} : ConnectorRef{std::get<ParticipantId>(edge_key)};
+            // Locking pins the joins exactly where they are drawn now, so the
+            // line does not move at the moment it is locked.
+            impl_->publish(edge->locked()
+                ? impl_->editor.pin_connector(key, {}, {})
+                : impl_->editor.pin_connector(key, edge->owner_direction(), edge->child_direction()));
+            event->accept();
+            return;
+        }
         if (auto* edge = impl_->handle_at(event->position().toPoint())) {
+            // No grab cursor: shaping a line is done by clicking it, and a palm
+            // would suggest the old business of finding a grip and hauling it.
             impl_->bending = edge->descriptor.key;
-            setCursor(Qt::ClosedHandCursor);
+            event->accept();
+            return;
+        }
+        const auto scene_press = mapToScene(event->position().toPoint());
+        if (auto* edge = impl_->selected_edge_at(event->position().toPoint())) {
+            // A grip grabs its own corner; anywhere else along the line arms a
+            // drag that will put a new corner there. Neither changes anything
+            // until the pointer moves, so a click that only meant to select is
+            // still only a selection.
+            const auto existing = edge->corner_at(scene_press);
+            impl_->routing = Impl::RouteDrag{edge->descriptor.key,
+                                             existing.value_or(edge->insertion_for(scene_press)),
+                                             scene_press, existing.has_value()};
             event->accept();
             return;
         }
@@ -1342,7 +1697,22 @@ void DiagramView::mouseDoubleClickEvent(QMouseEvent* event) {
             const auto& key = edge->descriptor.key;
             const auto connector = std::holds_alternative<AttributeId>(key)
                 ? ConnectorRef{std::get<AttributeId>(key)} : ConnectorRef{std::get<ParticipantId>(key)};
-            impl_->publish(impl_->editor.bend_connector(connector, {}));
+            // Double-clicking one corner takes out that corner; double-clicking
+            // the line itself straightens the whole thing. Otherwise a routed
+            // line could only ever be undone all at once.
+            const auto corner = edge->corner_at(mapToScene(event->position().toPoint()));
+            if (corner && *corner < edge->descriptor.waypoints.size()) {
+                std::vector<domain::Point> route;
+                for (std::size_t index = 0; index < edge->descriptor.waypoints.size(); ++index)
+                    if (index != *corner)
+                        route.push_back(domain::Point{edge->descriptor.waypoints[index].x(),
+                                                      edge->descriptor.waypoints[index].y()});
+                impl_->publish(impl_->editor.route_connector(connector, std::move(route)));
+            } else if (!edge->descriptor.waypoints.empty()) {
+                impl_->publish(impl_->editor.route_connector(connector, {}));
+            } else {
+                impl_->publish(impl_->editor.bend_connector(connector, {}));
+            }
             event->accept();
             return;
         }
@@ -1363,6 +1733,34 @@ void DiagramView::mouseMoveEvent(QMouseEvent* event) {
         const auto* hovered = impl_->node_at(event->position().toPoint());
         impl_->connect_hover = hovered ? std::optional<ElementRef>{hovered->ref} : std::nullopt;
         viewport()->update();
+        event->accept();
+        return;
+    }
+    if (impl_->routing) {
+        const auto found = impl_->edges.find(impl_->routing->key);
+        if (found != impl_->edges.end()) {
+            auto* edge = found->second;
+            const auto here = mapToScene(event->position().toPoint());
+            const auto travelled = std::hypot(here.x() - impl_->routing->press.x(),
+                                              here.y() - impl_->routing->press.y());
+            // Four pixels of travel is what separates shaping the line from
+            // clicking it. Below that nothing is created, so the corner cannot
+            // appear under a hand that merely twitched on a selected line.
+            if (!impl_->routing->grabbed && travelled > 4.0) {
+                auto& corners = edge->descriptor.waypoints;
+                corners.insert(corners.begin() + static_cast<std::ptrdiff_t>(impl_->routing->index), here);
+                impl_->routing->grabbed = true;
+            }
+            if (impl_->routing->grabbed) {
+                auto& corners = edge->descriptor.waypoints;
+                if (impl_->routing->index < corners.size()) {
+                    corners[impl_->routing->index] =
+                        QPointF(std::clamp(here.x(), -max_coordinate, max_coordinate),
+                                std::clamp(here.y(), -max_coordinate, max_coordinate));
+                    edge->refresh();
+                }
+            }
+        }
         event->accept();
         return;
     }
@@ -1401,6 +1799,35 @@ void DiagramView::mouseReleaseEvent(QMouseEvent* event) {
         // source is a plain click, which leaves the source armed.
         if (released_over && released_over->ref != *impl_->connect_start) impl_->connect_node(released_over);
         viewport()->update();
+        event->accept();
+        return;
+    }
+    if (impl_->routing) {
+        const auto drag = *impl_->routing;
+        impl_->routing.reset();
+        const auto found = impl_->edges.find(drag.key);
+        // A click that never travelled still leaves a corner where it landed.
+        // Placing one is the whole gesture: the line is fixed at that point, and
+        // it can be picked up and moved afterwards like any other corner.
+        if (!drag.grabbed && found != impl_->edges.end()) {
+            auto& corners = found->second->descriptor.waypoints;
+            if (drag.index <= corners.size()) {
+                corners.insert(corners.begin() + static_cast<std::ptrdiff_t>(drag.index), drag.press);
+                found->second->refresh();
+            }
+        }
+        if (found != impl_->edges.end()) {
+            const auto connector = std::holds_alternative<AttributeId>(drag.key)
+                ? ConnectorRef{std::get<AttributeId>(drag.key)} : ConnectorRef{std::get<ParticipantId>(drag.key)};
+            std::vector<domain::Point> route;
+            for (const auto& corner : found->second->descriptor.waypoints)
+                route.push_back(domain::Point{corner.x(), corner.y()});
+            const auto result = impl_->editor.route_connector(connector, std::move(route));
+            // Restore the projection after a rejected route, or the preview
+            // would be left standing as though it had been accepted.
+            if (!result) impl_->displayed_revision.reset();
+            impl_->publish(result);
+        }
         event->accept();
         return;
     }

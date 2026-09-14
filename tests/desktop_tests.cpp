@@ -21,6 +21,7 @@
 #include <QTreeView>
 
 #include <algorithm>
+#include <cstdlib>
 #include <iostream>
 #include <map>
 #include <stdexcept>
@@ -319,12 +320,12 @@ int main(int argc, char** argv) {
                 require(!action->icon().isNull(), "Every toolbar action is given an icon");
         const auto entity_icon = child<QAction>(window, "toolEntity")->icon()
             .pixmap(18, 18).toImage();
-        child<QAction>(window, "thememidnight")->trigger();
+        child<QAction>(window, "themedracula")->trigger();
         settle();
-        require(window.canvas()->theme_id() == desktop::ThemeId::Midnight, "The menu changes the canvas theme");
+        require(window.canvas()->theme_id() == desktop::ThemeId::Dracula, "The menu changes the canvas theme");
         require(child<QAction>(window, "toolEntity")->icon().pixmap(18, 18).toImage() != entity_icon,
                 "Icons are redrawn for the new theme");
-        require(QSettings().value("theme").toString() == "midnight", "The choice is remembered");
+        require(QSettings().value("theme").toString() == "dracula", "The choice is remembered");
         child<QAction>(window, "themeofficelight")->trigger();
         settle();
         require(window.canvas()->theme_id() == desktop::ThemeId::OfficeLight, "And back again");
@@ -334,23 +335,29 @@ int main(int argc, char** argv) {
         // A glyph is a drawing, not a silhouette. The hand is the shape most at
         // risk: it is a stack of overlapping rounded rects, so once its stroke
         // approaches a finger's width the outlines merge and the whole icon
-        // fills in as one dark mass. Measuring how much of the pale palm fill
-        // survives at toolbar size catches exactly that collapse; the drawn-at-
-        // all check covers the rest of the set.
-        const auto share_of_fill = [](desktop::Glyph glyph) {
-            const auto drawn = desktop::glyph_icon(glyph, desktop::theme(desktop::ThemeId::OfficeLight), 22)
+        // fills in as one mass of outline colour. Measuring how much of the palm
+        // still carries the fill colour rather than the outline's catches exactly
+        // that collapse; the drawn-at-all check covers the rest of the set. The
+        // comparison is against the theme's own two colours, not a fixed
+        // brightness, so it holds however light or dark the palette is.
+        const auto& glyph_theme = desktop::theme(desktop::ThemeId::OfficeLight);
+        const auto fill_grey = qGray(glyph_theme.base.rgb());
+        const auto outline_grey = qGray(glyph_theme.muted.rgb());
+        const auto share_of_fill = [&](desktop::Glyph glyph) {
+            const auto drawn = desktop::glyph_icon(glyph, glyph_theme, 22)
                                    .pixmap(22, 22).toImage().convertToFormat(QImage::Format_ARGB32);
             int opaque = 0;
-            int pale = 0;
+            int filled = 0;
             for (int y = 0; y < drawn.height(); ++y)
                 for (int x = 0; x < drawn.width(); ++x) {
                     const auto pixel = drawn.pixel(x, y);
                     if (qAlpha(pixel) < 200) continue;
                     ++opaque;
-                    if (qGray(pixel) > 150) ++pale;
+                    const auto grey = qGray(pixel);
+                    if (std::abs(grey - fill_grey) < std::abs(grey - outline_grey)) ++filled;
                 }
             require(opaque > 40, "Every glyph draws something at toolbar size");
-            return static_cast<double>(pale) / static_cast<double>(opaque);
+            return static_cast<double>(filled) / static_cast<double>(opaque);
         };
         for (int index = 0; index <= static_cast<int>(desktop::Glyph::Delete); ++index)
             share_of_fill(static_cast<desktop::Glyph>(index));

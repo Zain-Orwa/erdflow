@@ -236,6 +236,20 @@ void draw(QPainter& painter, Glyph glyph, const Theme& colors, qreal side) {
         painter.drawPath(pen);
         break;
     }
+    case Glyph::Theme: {
+        // Half the disc carries the page colour and half the ink, which is the
+        // one picture that says "appearance" without naming a single theme.
+        painter.setBrush(depth(box, colors.base));
+        painter.setPen(outline(colors.muted, weight * 0.8));
+        painter.drawEllipse(box);
+        QPainterPath half(QPointF(centre.x(), box.top()));
+        half.arcTo(box, 90, -180);
+        half.closeSubpath();
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(ink);
+        painter.drawPath(half);
+        break;
+    }
     case Glyph::Delete: {
         const auto lip = box.top() + box.height() * 0.26;
         const QColor rim(0xc0, 0x3b, 0x3b);

@@ -23,7 +23,7 @@ namespace {
 // triangle wait for its supertype.
 // Earlier versions remain readable; the format specification states the
 // compatibility rule for each.
-constexpr int current_format_version = 6;
+constexpr int current_format_version = 9;
 QString text(const std::string& value) { return QString::fromUtf8(value.data(), static_cast<qsizetype>(value.size())); }
 Uuid bytes_of(const QUuid& value) {
     Uuid result;
@@ -287,13 +287,28 @@ QByteArray ErdxProjectStore::encode(const Project& project) {
             {"constraint", specialization.constraint == Disjointness::Overlapping ? "overlapping" : "disjoint"},
             {"completeness", specialization.completeness == Completeness::Total ? "total" : "partial"}});
     }
+    QJsonArray colours;
+    for (const auto& [ref, colour] : project.colours)
+        colours.append(QJsonObject{{"element", reference(ref)},
+                                   {"red", colour.red}, {"green", colour.green}, {"blue", colour.blue}});
     QJsonArray connectors;
-    for (const auto& [ref, offset] : project.connectors)
-        connectors.append(QJsonObject{{"link", connector_reference(ref)}, {"offset", offset}});
+    for (const auto& [ref, connector] : project.connectors) {
+        // Both anchors are always written, null when the join is not pinned, so
+        // that every connector in a file carries the same field set. The reader
+        // refuses an object whose keys it does not expect, so an optional field
+        // has to be a present null rather than an absent key.
+        QJsonArray route;
+        for (const auto& point : connector.waypoints)
+            route.append(QJsonObject{{"x", point.x}, {"y", point.y}});
+        connectors.append(QJsonObject{{"link", connector_reference(ref)}, {"offset", connector.offset},
+            {"owner_anchor", connector.owner_anchor ? QJsonValue(*connector.owner_anchor) : QJsonValue()},
+            {"child_anchor", connector.child_anchor ? QJsonValue(*connector.child_anchor) : QJsonValue()},
+            {"waypoints", route}});
+    }
     auto bytes = QJsonDocument(QJsonObject{{"format", "erdflow"}, {"format_version", current_format_version},
         {"project", QJsonObject{{"id", uuid_text(project.id.value)}, {"name", text(project.name)},
         {"entities", entities}, {"attributes", attributes}, {"relationships", relationships},
-        {"layout", layout}, {"connectors", connectors},
+        {"layout", layout}, {"connectors", connectors}, {"colours", colours},
         {"specializations", specializations}}}}).toJson(QJsonDocument::Indented);
     if (bytes.size() > max_file_bytes) invalid("The project exceeds the 8 MiB file limit.");
     return bytes;
@@ -312,14 +327,27 @@ application::LoadResult ErdxProjectStore::decode(const QByteArray& input) {
         // routed automatically; saving then writes the current version.
         const auto version = root["format_version"];
         const auto number_version = version.isDouble() ? version.toDouble() : 0;
-        if (number_version < 1 || number_version > 6 || number_version != std::floor(number_version))
+        if (number_version < 1 || number_version > 9 || number_version != std::floor(number_version))
             invalid("Unsupported project version. Use a compatible ERDFlow release.");
         const bool shaped_connectors = number_version >= 2;
         const bool associative_entities = number_version >= 3;
         const bool inheritance = number_version >= 4;
         const bool inheritance_direction = number_version >= 5;
         const bool detachable_supertype = number_version >= 6;
-        const auto data = inheritance
+        // Version 7 lets a connector pin where it meets each shape. Since the
+        // reader refuses fields it does not expect, a release that predates
+        // pinning declines the whole file rather than opening it and dropping
+        // the pins on the next save, which is the better of the two.
+        const bool pinned_connectors = number_version >= 7;
+        // Version 8 lets a connector carry a route of its own. Earlier files
+        // have at most the single bend, which is exactly the shape they had.
+        const bool routed_connectors = number_version >= 8;
+        // Version 9 lets an element carry a colour of its own. Earlier files
+        // have none, and every element follows its theme, as they always did.
+        const bool chosen_colours = number_version >= 9;
+        const auto data = chosen_colours
+            ? object(root["project"], {"id", "name", "entities", "attributes", "relationships", "layout", "connectors", "specializations", "colours"})
+            : inheritance
             ? object(root["project"], {"id", "name", "entities", "attributes", "relationships", "layout", "connectors", "specializations"})
             : shaped_connectors
             ? object(root["project"], {"id", "name", "entities", "attributes", "relationships", "layout", "connectors"})
@@ -408,9 +436,41 @@ application::LoadResult ErdxProjectStore::decode(const QByteArray& input) {
         }
         if (shaped_connectors) {
             for (const auto& value : array(data["connectors"])) {
-                const auto o = object(value, {"link", "offset"});
-                if (!project.connectors.emplace(parse_connector_reference(o["link"]), number(o["offset"])).second)
+                const auto o = routed_connectors
+                    ? object(value, {"link", "offset", "owner_anchor", "child_anchor", "waypoints"})
+                    : pinned_connectors
+                    ? object(value, {"link", "offset", "owner_anchor", "child_anchor"})
+                    : object(value, {"link", "offset"});
+                domain::Connector shaped;
+                shaped.offset = number(o["offset"]);
+                // Files written before connectors could be pinned carry no
+                // anchors, which is exactly the automatic join they were drawn with.
+                if (pinned_connectors && !o["owner_anchor"].isNull()) shaped.owner_anchor = number(o["owner_anchor"]);
+                if (pinned_connectors && !o["child_anchor"].isNull()) shaped.child_anchor = number(o["child_anchor"]);
+                if (routed_connectors)
+                    for (const auto& point : array(o["waypoints"])) {
+                        const auto p = object(point, {"x", "y"});
+                        shaped.waypoints.push_back(domain::Point{number(p["x"]), number(p["y"])});
+                    }
+                if (!project.connectors.emplace(parse_connector_reference(o["link"]), shaped).second)
                     invalid("Duplicate connector shape.");
+            }
+        }
+        if (chosen_colours) {
+            for (const auto& value : array(data["colours"])) {
+                const auto o = object(value, {"element", "red", "green", "blue"});
+                domain::Colour colour;
+                // Each channel is one byte, so a value outside it is a broken
+                // document rather than something to clamp into range quietly.
+                for (const auto& [name, channel] : {std::pair{"red", &colour.red}, std::pair{"green", &colour.green},
+                                                    std::pair{"blue", &colour.blue}}) {
+                    const auto level = number(o[name]);
+                    if (level < 0 || level > 255 || level != std::floor(level))
+                        invalid("A colour channel must be a whole number between 0 and 255.");
+                    *channel = static_cast<std::uint8_t>(level);
+                }
+                if (!project.colours.emplace(parse_ref(o["element"]), colour).second)
+                    invalid("Duplicate element colour.");
             }
         }
         require_valid(project);

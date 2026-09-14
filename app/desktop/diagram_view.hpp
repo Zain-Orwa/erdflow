@@ -87,6 +87,7 @@ protected:
     void mouseReleaseEvent(QMouseEvent*) override;
     void wheelEvent(QWheelEvent*) override;
     void keyPressEvent(QKeyEvent*) override;
+    void contextMenuEvent(QContextMenuEvent*) override;
 
 private:
     struct Impl;

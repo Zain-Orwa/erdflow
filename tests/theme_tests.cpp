@@ -47,7 +47,9 @@ void require_contrast(const Theme& candidate, const char* use, const QColor& for
 }
 
 void identity_tests() {
-    require(themes().size() == 6, "Six appearance choices must be available");
+    require(themes().size() == theme_count, "Every palette family must be offered");
+    require(themes().front().id == ThemeId::OfficeLight,
+            "The default appearance is offered first");
     std::set<QString> keys;
     std::set<QString> labels;
     std::set<ThemeId> ids;
@@ -60,9 +62,9 @@ void identity_tests() {
         require(theme_from_key(candidate.key) == candidate.id, "Theme keys must round-trip");
         require(theme(candidate.id).key == candidate.key, "Theme IDs must look up their definition");
     }
-    require(theme_from_key(QString{}) == ThemeId::OfficeLight, "Missing preference falls back to Office Light");
+    require(theme_from_key(QString{}) == ThemeId::OfficeLight, "Missing preference falls back to Normal");
     require(theme_from_key("removed-or-invalid-theme") == ThemeId::OfficeLight,
-            "An obsolete preference falls back to Office Light");
+            "An obsolete preference falls back to Normal");
 }
 
 void contrast_tests() {
@@ -74,7 +76,14 @@ void contrast_tests() {
         require_contrast(candidate, "attribute label", candidate.node_text, candidate.attribute_fill, 4.5);
         require_contrast(candidate, "relationship label", candidate.node_text, candidate.relationship_fill, 4.5);
         require_contrast(candidate, "selection label", candidate.selected_text, candidate.accent, 4.5);
+        require_contrast(candidate, "isa label", candidate.node_text, candidate.isa_fill, 4.5);
         require_contrast(candidate, "connector on canvas", candidate.connector, candidate.canvas, 3.0);
+        // A rule's verdict is read off the canvas, so its colour has to carry
+        // there as well as any element does.
+        for (const auto& [use, colour] : {std::pair{"valid", candidate.valid},
+                                          std::pair{"warning", candidate.warning},
+                                          std::pair{"error", candidate.error}})
+            require_contrast(candidate, use, colour, candidate.canvas, 3.0);
     }
 }
 
@@ -109,7 +118,7 @@ void live_palette_tests(QApplication& app) {
     QApplication::processEvents();
     require(field.text() == "An existing property field", "Theme switching preserves an active field's contents");
     require(app.palette().color(QPalette::Window) == theme(ThemeId::OfficeLight).window,
-            "Switching back restores Office Light");
+            "Switching back restores Normal");
 }
 } // namespace
 

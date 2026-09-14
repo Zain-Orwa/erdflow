@@ -12,7 +12,7 @@ namespace erdflow::desktop {
 // looks like the entity it places.
 enum class Glyph {
     New, Open, Save, Undo, Redo, Select, Entity, Attribute, Relationship,
-    Isa, Connect, Pan, Fit, Check, Duplicate, Rename, Delete
+    Isa, Connect, Pan, Fit, Check, Duplicate, Rename, Delete, Theme
 };
 
 [[nodiscard]] QIcon glyph_icon(Glyph glyph, const Theme& colors, int size = 22);

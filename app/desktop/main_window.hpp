@@ -12,6 +12,7 @@ class QDockWidget;
 class QLabel;
 class QComboBox;
 class QScrollArea;
+class QToolButton;
 class QStandardItemModel;
 class QTreeView;
 
@@ -63,6 +64,7 @@ private:
     QAction* isa_action_ = nullptr;
     std::map<LineStyle, QAction*> line_actions_;
     QComboBox* notation_box_ = nullptr;
+    QToolButton* theme_button_ = nullptr;
     std::map<QString, domain::ElementRef> references_;
     std::vector<domain::ElementRef> selection_;
     QString path_;

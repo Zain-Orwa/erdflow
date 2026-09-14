@@ -393,7 +393,7 @@ void MainWindow::build_actions() {
     // Notation is a reading choice people change often, and a submenu hides it.
     // The picker sits in the toolbar and draws each option, so the cardinality
     // symbols can be recognised rather than remembered from a name.
-    toolbar->addSeparator();
+    auto* notation_separator = toolbar->addSeparator();
     auto* notation_label = new QLabel("  Notation ", toolbar);
     notation_label->setObjectName("hint");
     toolbar->addWidget(notation_label);
@@ -443,6 +443,22 @@ void MainWindow::build_actions() {
         theme_actions_[entry.id] = action;
         connect(action, &QAction::triggered, this, [this, id = entry.id] { set_theme(id); });
     }
+    // Appearance is tried repeatedly rather than set once, so the same list is
+    // put on the toolbar behind a button. It is the menu itself, not a copy, so
+    // the two can never disagree about which theme is the current one.
+    theme_button_ = new QToolButton(toolbar);
+    theme_button_->setObjectName("themeButton");
+    theme_button_->setText("Theme");
+    theme_button_->setToolTip("Change the appearance of the window and the diagram.");
+    theme_button_->setMenu(themes);
+    theme_button_->setPopupMode(QToolButton::InstantPopup);
+    theme_button_->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    theme_button_->setIconSize(toolbar->iconSize());
+    // It goes before the notation picker rather than at the end: the toolbar
+    // runs out of width on a narrow window, and anything added last is the
+    // first thing to disappear into the overflow.
+    toolbar->insertSeparator(notation_separator);
+    toolbar->insertWidget(notation_separator, theme_button_);
     auto* notations = view->addMenu("Notation");
     auto* notation_group = new QActionGroup(this);
     for (const auto& [style, label] : notation_styles()) {
@@ -899,6 +915,7 @@ void MainWindow::set_theme(ThemeId id) {
 void MainWindow::refresh_icons() {
     const auto& colors = theme(theme_);
     for (const auto& [action, glyph] : action_glyphs_) action->setIcon(glyph_icon(glyph, colors));
+    if (theme_button_) theme_button_->setIcon(glyph_icon(Glyph::Theme, colors));
     if (notation_box_) {
         for (int index = 0; index < notation_box_->count(); ++index)
             notation_box_->setItemIcon(index, QIcon(canvas_->notation_preview(
