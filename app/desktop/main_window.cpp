@@ -51,6 +51,22 @@ QString kind_label(ElementRef ref) {
     if (std::holds_alternative<SpecializationId>(ref)) return QStringLiteral("Specialization");
     return QStringLiteral("Relationship");
 }
+// The colour an element is actually drawn with on the canvas: the one it was
+// given if it has one, and otherwise whatever the theme gives its kind. The
+// panel reads this so that it shows the element's own colour rather than only
+// the colours a user happened to choose by hand.
+QColor surface_of(const Project& project, const Theme& colors, ElementRef ref) {
+    if (const auto chosen = project.colours.find(ref); chosen != project.colours.end())
+        return QColor(chosen->second.red, chosen->second.green, chosen->second.blue);
+    if (std::holds_alternative<AttributeId>(ref)) return colors.attribute_fill;
+    if (std::holds_alternative<EntityId>(ref)) return colors.entity_fill;
+    if (std::holds_alternative<SpecializationId>(ref)) return colors.isa_fill;
+    // An associative relationship converts to a relation of its own and wears
+    // the entity palette on the canvas, so it wears it here too.
+    const auto& relationship = project.relationships.at(std::get<RelationshipId>(ref));
+    return relationship.associative ? colors.entity_fill : colors.relationship_fill;
+}
+
 QString display_name(const Project& project, ElementRef ref) {
     const auto value = text(name(project, ref));
     return value.isEmpty() ? QStringLiteral("(unnamed)") : value;
@@ -581,22 +597,32 @@ void MainWindow::refresh_properties() {
     const auto& project = editor_.project();
     auto* heading = new QLabel(kind_label(ref), panel);
     heading->setObjectName("propertyHeading");
-    // An element given a colour of its own wears it here too, so the panel and
-    // the shape on the canvas are obviously the same object. The heading becomes
-    // a chip of that colour rather than text in it: a colour chosen to fill a
-    // shape is not one that can be read as small type against the panel, and the
-    // ink over it is picked against the colour itself.
-    if (const auto colour = project.colours.find(ref); colour != project.colours.end()) {
-        const QColor surface(colour->second.red, colour->second.green, colour->second.blue);
-        heading->setStyleSheet(QStringLiteral(
-            "QLabel#propertyHeading { background: %1; color: %2; border-radius: 4px; padding: 4px 9px; }")
-            .arg(surface.name(), readable_on(surface).name()));
-    }
+    // The panel wears the colour the element is drawn with, so the two read as
+    // one object rather than as two things that share a name. Both the heading
+    // and the name field are filled with it rather than lettered in it: a colour
+    // chosen to fill a shape is not one that can be read as small type, and the
+    // ink over each is picked against the colour itself.
+    const auto surface = surface_of(project, theme(theme_), ref);
+    const auto ink = readable_on(surface);
+    heading->setStyleSheet(QStringLiteral(
+        "QLabel#propertyHeading { background: %1; color: %2; border-radius: 4px; padding: 4px 9px; }")
+        .arg(surface.name(), ink.name()));
     layout->addWidget(heading);
     auto* form = new QFormLayout;
     form->setRowWrapPolicy(QFormLayout::WrapAllRows);
     auto* name_edit = new QLineEdit(text(name(project, ref)), panel);
     name_edit->setObjectName("elementName");
+    // The name field carries the same colour. Its border is darkened from the
+    // fill rather than taken from the theme, which would otherwise draw a line
+    // the element's colour knows nothing about around it.
+    // The focus ring has to be restated: a style set on the widget wins over the
+    // application's, so the theme's focus rule no longer reaches this field, and
+    // it is drawn in the ink rather than the accent, which is the one colour
+    // already known to contrast with whatever fill the element carries.
+    name_edit->setStyleSheet(QStringLiteral(
+        "QLineEdit#elementName { background: %1; color: %2; border: 1px solid %3; }"
+        "QLineEdit#elementName:focus { border: 2px solid %2; }")
+        .arg(surface.name(), ink.name(), surface.darker(135).name()));
     name_edit->setMaxLength(512);
     form->addRow("Name", name_edit);
     connect(name_edit, &QLineEdit::editingFinished, this, [this, ref, name_edit] {

@@ -370,8 +370,13 @@ int main(int argc, char** argv) {
             const auto entity = window.editor().project().entities.begin()->first;
             window.canvas()->select_elements({domain::ElementRef{entity}});
             settle();
-            const auto plain_heading = child<QLabel>(window, "propertyHeading")->styleSheet();
-            require(plain_heading.isEmpty(), "An uncoloured element leaves the heading to the theme");
+            // With no colour of its own, the element still wears the one the
+            // theme draws it with, so the panel always matches the canvas.
+            const auto themed = child<QLabel>(window, "propertyHeading")->styleSheet();
+            const auto entity_fill = desktop::theme(window.canvas()->theme_id()).entity_fill.name();
+            require(themed.contains(entity_fill), "An uncoloured element wears its theme colour");
+            require(child<QLineEdit>(window, "elementName")->styleSheet().contains(entity_fill),
+                    "And so does the box its name is typed into");
 
             require(bool(editor.recolour({domain::ElementRef{entity}}, domain::Colour{0x20, 0x20, 0x30})),
                     "Colour the entity a dark shade");
@@ -382,6 +387,8 @@ int main(int argc, char** argv) {
             const auto sheet = child<QLabel>(window, "propertyHeading")->styleSheet();
             require(sheet.contains("#202030"), "The heading is filled with the element's own colour");
             require(sheet.contains("#ffffff"), "And written in ink chosen against it, not against the theme");
+            require(child<QLineEdit>(window, "elementName")->styleSheet().contains("#202030"),
+                    "The name field is filled with it too");
             require(bool(editor.undo()), "Undo the colour");
         }
 
