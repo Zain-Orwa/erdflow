@@ -54,6 +54,10 @@ enum class Participation { Partial, Total };
 // relational mapping strategy when the model is converted.
 enum class Disjointness { Disjoint, Overlapping };
 enum class Completeness { Partial, Total };
+// Which way the hierarchy was read. It is not only provenance: the ISA triangle
+// points at the supertype when generalising and at the subtypes when
+// specialising, so the direction is part of the notation and is stored.
+enum class Inheritance { Generalization, Specialization };
 
 struct Entity {
     EntityId id;
@@ -95,6 +99,7 @@ struct Specialization {
     SpecializationId id;
     std::string name;
     std::string description;
+    Inheritance direction = Inheritance::Specialization;
     EntityId supertype;
     std::vector<EntityId> subtypes;
     Disjointness constraint = Disjointness::Disjoint;

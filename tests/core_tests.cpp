@@ -602,7 +602,7 @@ void specializations_carry_inheritance_rules() {
     const auto employee = entity(editor, "Employee");
     const auto teacher = entity(editor, "Teacher");
 
-    const auto created = editor.create_specialization("IS A", {0, 200, 96, 74}, person);
+    const auto created = editor.create_specialization("IS A", {0, 200, 96, 74}, person, Inheritance::Specialization);
     CHECK(created);
     const auto role = std::get<SpecializationId>(*created.created);
     // A triangle with no subtypes yet is work in progress, not an error.
@@ -628,8 +628,18 @@ void specializations_carry_inheritance_rules() {
     CHECK(editor.undo());
     CHECK(editor.project().specializations.at(role).constraint == Disjointness::Disjoint);
 
+    // The direction is stored, because the triangle points the way it was read.
+    CHECK(editor.project().specializations.at(role).direction == Inheritance::Specialization);
+    CHECK(editor.set_inheritance_direction(role, Inheritance::Generalization));
+    CHECK(editor.project().specializations.at(role).direction == Inheritance::Generalization);
+    CHECK(editor.undo());
+    CHECK(editor.project().specializations.at(role).direction == Inheritance::Specialization);
+    auto wrong = editor.project();
+    wrong.specializations.at(role).direction = static_cast<Inheritance>(7);
+    CHECK(has_issue(wrong, "specialization.direction.invalid"));
+
     // Specialization nests: an Employee may itself be generalised further.
-    const auto job = std::get<SpecializationId>(*editor.create_specialization("IS A", {0, 400, 96, 74}, employee).created);
+    const auto job = std::get<SpecializationId>(*editor.create_specialization("IS A", {0, 400, 96, 74}, employee, Inheritance::Generalization).created);
     CHECK(editor.attach_subtype(job, teacher));
     CHECK(!blocks(editor.project()));
 

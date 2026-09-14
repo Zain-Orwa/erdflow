@@ -25,6 +25,7 @@ struct Fixture {
     EntityId employee;
     RelationshipId supervises;
     AttributeId address;
+    SpecializationId specialisation;
     Fixture() {
         const auto ent = editor.create_entity("Employee 学生", {-120.25, 20.5, 160, 80});
         CHECK(ent);
@@ -52,6 +53,16 @@ struct Fixture {
         const auto phone = editor.create_attribute("Phone", {}, ElementRef{employee});
         CHECK(phone);
         CHECK(editor.set_attribute_kind(std::get<AttributeId>(*phone.created), AttributeKind::Multivalued));
+        // A specialization in the fixture gives the cross-version checks teeth;
+        // without one, stripping its fields from a document changes nothing.
+        const auto manager = editor.create_entity("Manager", {320, 420, 160, 80});
+        CHECK(manager);
+        const auto isa = editor.create_specialization("IS A", {120, 360, 96, 74}, employee,
+                                                      Inheritance::Generalization);
+        CHECK(isa);
+        specialisation = std::get<SpecializationId>(*isa.created);
+        CHECK(editor.attach_subtype(specialisation, std::get<EntityId>(*manager.created)));
+        CHECK(editor.set_specialization_rules(specialisation, Disjointness::Overlapping, Completeness::Total));
         CHECK(editor.rename_project("University design"));
     }
     QJsonObject document() const { return QJsonDocument::fromJson(ErdxProjectStore::encode(editor.project())).object(); }
@@ -121,7 +132,7 @@ void uuid_generation_and_roundtrip() {
     const auto restored = ErdxProjectStore::decode(ErdxProjectStore::encode(copied));
     CHECK(restored);
     CHECK(*restored.project == copied);
-    CHECK(copied.entities.size() == 2);
+    CHECK(copied.entities.size() == 3);
     CHECK(copied.relationships.size() == 2);
     std::set<ParticipantId> participants;
     for (const auto& [id, relationship] : copied.relationships) {
@@ -190,7 +201,7 @@ void malformed_json_and_text() {
 
 void strict_version_and_field_contract() {
     Fixture fixture;
-    for (const auto& version : {QJsonValue(0), QJsonValue(5), QJsonValue(1.5), QJsonValue("1"), QJsonValue(true)}) {
+    for (const auto& version : {QJsonValue(0), QJsonValue(6), QJsonValue(1.5), QJsonValue("1"), QJsonValue(true)}) {
         auto root = fixture.document();
         root["format_version"] = version;
         reject(bytes(root));
@@ -289,11 +300,13 @@ void connector_shapes_persist_and_older_versions_still_open() {
 
     const auto encoded = ErdxProjectStore::encode(fixture.editor.project());
     const auto root = QJsonDocument::fromJson(encoded).object();
-    CHECK(root["format_version"].toInt() == 4);
+    CHECK(root["format_version"].toInt() == 5);
     CHECK(root["project"].toObject()["connectors"].toArray().size() == 2);
 
     const auto reopened = ErdxProjectStore::decode(encoded);
     CHECK(reopened);
+    CHECK(reopened.project->specializations == fixture.editor.project().specializations);
+    CHECK(reopened.project->specializations.at(fixture.specialisation).direction == Inheritance::Generalization);
     CHECK(reopened.project->connectors == fixture.editor.project().connectors);
     CHECK(*reopened.project == fixture.editor.project());
 
@@ -319,16 +332,35 @@ void connector_shapes_persist_and_older_versions_still_open() {
             relationships.append(relationship);
         }
         project["relationships"] = relationships;
-        if (version < 4) project.remove("specializations");
+        if (version < 5) {
+            QJsonArray specializations;
+            for (const auto& value : project["specializations"].toArray()) {
+                auto specialization = value.toObject();
+                specialization.remove("direction");
+                specializations.append(specialization);
+            }
+            project["specializations"] = specializations;
+        }
+        if (version < 4) {
+            // Dropping the specializations must drop their layout entries too,
+            // or the document describes a layout for an element it no longer has.
+            project.remove("specializations");
+            QJsonArray layout;
+            for (const auto& value : project["layout"].toArray()) {
+                const auto entry = value.toObject();
+                if (entry["element"].toObject()["type"].toString() != "specialization") layout.append(entry);
+            }
+            project["layout"] = layout;
+        }
         if (version < 2) project.remove("connectors");
         document["project"] = project;
         document["format_version"] = version;
         return document;
     };
 
-    for (const int version : {1, 2, 3}) {
+    for (const int version : {1, 2, 3, 4}) {
         const auto opened = ErdxProjectStore::decode(bytes(downgrade(version)));
-        CHECK(opened);
+        if (!opened) throw std::runtime_error("version " + std::to_string(version) + ": " + opened.error);
         CHECK(opened.project->entities == fixture.editor.project().entities);
         CHECK(opened.project->connectors.size() == (version == 1 ? 0u : 2u));
         for (const auto& [id, relationship] : opened.project->relationships) {
@@ -338,17 +370,21 @@ void connector_shapes_persist_and_older_versions_still_open() {
                 CHECK(std::holds_alternative<EntityId>(participant.target));
         }
         // Saving an older document upgrades it to the current version.
-        CHECK(opened.project->specializations.empty());
-        CHECK(QJsonDocument::fromJson(ErdxProjectStore::encode(*opened.project)).object()["format_version"].toInt() == 4);
+        CHECK(opened.project->specializations.size() == (version < 4 ? 0u : 1u));
+        for (const auto& [id, specialization] : opened.project->specializations) {
+            (void)id;
+            CHECK(specialization.direction == Inheritance::Specialization);
+        }
+        CHECK(QJsonDocument::fromJson(ErdxProjectStore::encode(*opened.project)).object()["format_version"].toInt() == 5);
     }
 
     // A document whose shape contradicts its declared version is refused rather
     // than read leniently, in both directions.
     auto smuggled = fixture.document();
-    smuggled["format_version"] = 3;
+    smuggled["format_version"] = 4;
     reject(bytes(smuggled));
-    auto stale = downgrade(3);
-    stale["format_version"] = 4;
+    auto stale = downgrade(4);
+    stale["format_version"] = 5;
     reject(bytes(stale));
     auto missing = fixture.document();
     auto project = missing["project"].toObject();

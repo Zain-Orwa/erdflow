@@ -535,6 +535,23 @@ void MainWindow::refresh_properties() {
         const auto& specialization = project.specializations.at(*specialization_id);
         layout->addWidget(hint("An ISA triangle. Its supertype is fixed when it is created; connect entities to it "
                                "to make them subtypes. The two rules below decide how it converts to relations.", panel));
+        // The triangle points the way the hierarchy is read, so the direction is
+        // an editable property rather than only a choice made at creation.
+        auto* direction = new QComboBox(panel);
+        direction->setObjectName("specializationDirection");
+        direction->addItem("Specialization — points down at the subtypes");
+        direction->addItem("Generalization — points up at the supertype");
+        direction->setCurrentIndex(specialization.direction == Inheritance::Generalization ? 1 : 0);
+        connect(direction, &QComboBox::activated, this, [this, id = *specialization_id, direction](int index) {
+            if (refreshing_) return;
+            (void)direction;
+            show_result(editor_.set_inheritance_direction(id,
+                index == 1 ? Inheritance::Generalization : Inheritance::Specialization));
+        });
+        auto* direction_form = new QFormLayout;
+        direction_form->setRowWrapPolicy(QFormLayout::WrapAllRows);
+        direction_form->addRow("Direction", direction);
+        layout->addLayout(direction_form);
         auto* super = new QLabel("Supertype: " + display_name(project, ElementRef{specialization.supertype}), panel);
         super->setObjectName("specializationSupertype");
         layout->addWidget(super);

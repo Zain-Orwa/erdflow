@@ -272,14 +272,26 @@ EditResult Editor::create_relationship(std::string name, Rect rect) {
     });
 }
 
-EditResult Editor::create_specialization(std::string name, Rect rect, EntityId supertype) {
-    return impl_->edit("Create specialization", [&](Delta& delta) {
+EditResult Editor::create_specialization(std::string name, Rect rect, EntityId supertype, Inheritance direction) {
+    return impl_->edit(direction == Inheritance::Generalization ? "Create generalization" : "Create specialization",
+                       [&](Delta& delta) {
         if (!project().entities.contains(supertype)) return failure("The supertype no longer exists.");
         const SpecializationId id{impl_->next_id()};
-        delta.specializations.put(id, Specialization{id, std::move(name), {}, supertype, {},
+        delta.specializations.put(id, Specialization{id, std::move(name), {}, direction, supertype, {},
                                                      Disjointness::Disjoint, Completeness::Partial});
         delta.layout.put(ElementRef{id}, rect);
         return EditResult{true, {}, ElementRef{id}, {}};
+    });
+}
+EditResult Editor::set_inheritance_direction(SpecializationId specialization, Inheritance direction) {
+    return impl_->edit("Change ISA direction", [&](Delta& delta) {
+        const auto found = project().specializations.find(specialization);
+        if (found == project().specializations.end()) return failure("The specialization no longer exists.");
+        if (found->second.direction == direction) return EditResult{};
+        auto value = found->second;
+        value.direction = direction;
+        delta.specializations.put(specialization, std::move(value));
+        return EditResult{};
     });
 }
 EditResult Editor::attach_subtype(SpecializationId specialization, EntityId subtype) {

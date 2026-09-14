@@ -99,6 +99,8 @@ public:
     // An associative relationship is drawn as its diamond inside a rectangle,
     // because it takes part in further relationships as an entity would.
     bool associative = false;
+    // An ISA triangle points up when generalising and down when specialising.
+    bool generalising = false;
     std::function<void(NodeItem*)> moved;
     std::function<QPointF(QPointF)> constrain;
 
@@ -147,10 +149,17 @@ public:
         } else if (std::holds_alternative<AttributeId>(ref)) {
             path.addEllipse(bounds_);
         } else if (std::holds_alternative<SpecializationId>(ref)) {
-            // The ISA triangle points at the supertype, which sits above it.
-            path.moveTo(bounds_.center().x(), bounds_.top());
-            path.lineTo(bounds_.right(), bounds_.bottom());
-            path.lineTo(bounds_.left(), bounds_.bottom());
+            // The triangle points the way the hierarchy was read: up at the
+            // supertype when generalising, down at the subtypes when specialising.
+            if (generalising) {
+                path.moveTo(bounds_.center().x(), bounds_.top());
+                path.lineTo(bounds_.right(), bounds_.bottom());
+                path.lineTo(bounds_.left(), bounds_.bottom());
+            } else {
+                path.moveTo(bounds_.center().x(), bounds_.bottom());
+                path.lineTo(bounds_.right(), bounds_.top());
+                path.lineTo(bounds_.left(), bounds_.top());
+            }
             path.closeSubpath();
         } else {
             path.moveTo(bounds_.center().x(), bounds_.top());
@@ -223,7 +232,8 @@ public:
         auto text_rect = bounds_.adjusted(inset, 8, -inset, -8);
         // A triangle only has room for text across its base.
         if (std::holds_alternative<SpecializationId>(ref))
-            text_rect = QRectF(bounds_.left() + 6, bounds_.center().y(), bounds_.width() - 12, bounds_.height() / 2 - 4);
+            text_rect = QRectF(bounds_.left() + 6, generalising ? bounds_.center().y() : bounds_.top() + 4,
+                               bounds_.width() - 12, bounds_.height() / 2 - 4);
         const auto text = QFontMetricsF(font).elidedText(label, Qt::ElideRight, text_rect.width());
         painter->drawText(text_rect, Qt::AlignCenter, text);
     }
@@ -777,9 +787,14 @@ void DiagramView::synchronize() {
         bool associative = false;
         if (const auto* relationship_id = std::get_if<RelationshipId>(&ref))
             associative = project.relationships.at(*relationship_id).associative;
-        if (node->label != label || node->attribute_kind != kind || node->associative != associative) {
+        bool generalising = false;
+        if (const auto* specialization_id = std::get_if<SpecializationId>(&ref))
+            generalising = project.specializations.at(*specialization_id).direction == Inheritance::Generalization;
+        if (node->label != label || node->attribute_kind != kind || node->associative != associative
+            || node->generalising != generalising) {
             node->label = label;
             node->attribute_kind = kind;
+            node->generalising = generalising;
             node->set_associative(associative);
             node->update();
         }
@@ -1047,7 +1062,8 @@ void DiagramView::mousePressEvent(QMouseEvent* event) {
         }
         const auto box = node->sceneBoundingRect();
         const auto result = impl_->editor.create_specialization(
-            "IS A", centred(QPointF(box.center().x(), box.bottom() + 110), isa_body), *supertype);
+            "IS A", centred(QPointF(box.center().x(), box.bottom() + 110), isa_body), *supertype,
+            bottom_up ? Inheritance::Generalization : Inheritance::Specialization);
         impl_->publish(result);
         if (result && result.created) {
             const auto id = std::get<SpecializationId>(*result.created);

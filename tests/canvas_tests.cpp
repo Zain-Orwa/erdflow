@@ -472,6 +472,52 @@ void inheritance_direction_tests() {
     require(!blocks(editor.project()), "Selecting the supertype too is still valid");
 }
 
+// The ISA triangle points the way the hierarchy was read, so the two directions
+// must not draw the same shape.
+void inheritance_orientation_tests() {
+    SequentialIds ids;
+    application::Editor editor(ids);
+    const auto person = std::get<domain::EntityId>(*editor.create_entity("Person", {0, 0, 160, 80}).created);
+    const auto isa = std::get<domain::SpecializationId>(
+        *editor.create_specialization("IS A", {32, 200, 96, 74}, person, domain::Inheritance::Specialization).created);
+
+    desktop::DiagramView view(editor);
+    view.resize(520, 420);
+    view.show();
+    view.set_grid_visible(false);
+    view.actual_size();
+    view.centerOn(80, 140);
+    QApplication::processEvents();
+
+    // Grab the viewport rather than rendering the widget: viewport pixels share
+    // the coordinate space mapFromScene reports, so a point can be sampled.
+    const auto render = [&] {
+        QApplication::processEvents();
+        return view.viewport()->grab().toImage();
+    };
+    // Sample just inside the triangle's top-left corner. That corner is solid
+    // when the apex points down and empty when it points up, which pins the
+    // shape itself rather than merely proving that something changed.
+    const auto corner = [&] {
+        const auto box = find_node(view, "IS A")->sceneBoundingRect();
+        return view.mapFromScene(QPointF(box.left() + box.width() * 0.12, box.top() + box.height() * 0.12));
+    };
+    const auto background = render().pixel(2, 2);
+
+    const auto pointing_down = render();
+    require(pointing_down.pixel(corner()) != background, "Specialising fills the top corner: the apex is at the bottom");
+
+    require(editor.set_inheritance_direction(isa, domain::Inheritance::Generalization), "Flip the direction");
+    view.synchronize();
+    const auto pointing_up = render();
+    require(pointing_up.pixel(corner()) == background, "Generalising leaves the top corner empty: the apex is at the top");
+    require(pointing_down != pointing_up, "The two ISA directions are drawn differently");
+
+    require(editor.set_inheritance_direction(isa, domain::Inheritance::Specialization), "Flip it back");
+    view.synchronize();
+    require(render() == pointing_down, "Returning to a direction reproduces its drawing");
+}
+
 void synchronization_lifetime_tests() {
     SequentialIds ids;
     application::Editor editor(ids);
@@ -647,6 +693,7 @@ int main(int argc, char** argv) {
         notation_tests();
         tool_locking_tests();
         inheritance_direction_tests();
+        inheritance_orientation_tests();
         std::cout << "Canvas tests passed\n";
     } catch (const std::exception& exception) {
         std::cerr << "Canvas test failed: " << exception.what() << '\n';

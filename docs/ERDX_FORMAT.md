@@ -1,6 +1,6 @@
-# ERDX project format — versions 1 to 4
+# ERDX project format — versions 1 to 5
 
-**Status:** Implemented Conceptual ERD format; version 4 is current  
+**Status:** Implemented Conceptual ERD format; version 5 is current  
 **Date:** 2026-09-14
 
 ## What, why, and how
@@ -26,7 +26,7 @@ The root object has exactly three fields:
 | Field | Value |
 | --- | --- |
 | `format` | String, exactly `"erdflow"` |
-| `format_version` | JSON number, exactly `1`, `2`, `3` or `4` |
+| `format_version` | JSON number, exactly `1` to `5` |
 | `project` | Project object described below |
 
 A file with an unsupported version, missing field, unknown
@@ -67,7 +67,11 @@ associative relationship instead of an entity:
 A version 4 document has one further project field, `specializations`; earlier
 versions must not carry it and open with none, which is what they could express.
 
-Saving always writes version 4, so opening an earlier file and saving upgrades
+**Version 5** records which way each hierarchy was read. A specialization
+object gains a required `direction`; earlier versions must not carry it and read
+as `"specialization"`, which is how they were drawn.
+
+Saving always writes version 5, so opening an earlier file and saving upgrades
 it in place and an older build will then refuse the result. This one-way upgrade
 is acceptable only because no release has shipped. A future version that must
 stay readable by older builds needs a different policy, recorded before it is
@@ -158,11 +162,12 @@ layout entry and preserves its semantic identity.
 
 ## Specializations
 
-A **specialization** object has exactly `id`, `name`, `description`, `supertype`,
-`subtypes`, `constraint`, and `completeness`:
+A **specialization** object has exactly `id`, `name`, `description`,
+`direction`, `supertype`, `subtypes`, `constraint`, and `completeness`:
 
 ```json
 {"id": "019947b9-7111-7000-8000-000000000004", "name": "IS A", "description": "",
+ "direction": "specialization",
  "supertype": "019947b9-7111-7000-8000-000000000002",
  "subtypes": ["019947b9-7111-7000-8000-000000000005"],
  "constraint": "disjoint", "completeness": "partial"}
@@ -172,6 +177,11 @@ A **specialization** object has exactly `id`, `name`, `description`, `supertype`
 may not be its own subtype, may appear only once among one specialization's
 subtypes, and inheritance may not form a cycle. A specialization with no
 subtypes yet is valid work in progress.
+
+`direction` is `"generalization"` or `"specialization"`. It is not only a record
+of how the hierarchy was reached: the ISA triangle points at the supertype when
+generalising and at the subtypes when specialising, so the direction is part of
+the notation and is drawn.
 
 `constraint` is `"disjoint"` or `"overlapping"`, and `completeness` is
 `"partial"` or `"total"`. These are not decoration: together they choose which
@@ -249,7 +259,7 @@ An empty conceptual project is a valid saved draft:
 ```json
 {
   "format": "erdflow",
-  "format_version": 4,
+  "format_version": 5,
   "project": {
     "id": "019947b9-7111-7000-8000-000000000001",
     "name": "Untitled",

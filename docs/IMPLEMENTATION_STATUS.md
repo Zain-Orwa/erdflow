@@ -42,7 +42,9 @@ not been built yet. Their presence in those documents is not a completion claim.
   directions from its dropdown. Specialization works top-down — click the entity
   to specialise and connect subtypes afterwards. Generalization works bottom-up —
   select the subtypes, then click the entity that generalises them, and they are
-  adopted in one gesture. Both build the same structure.
+  adopted in one gesture. The ISA triangle points the way the hierarchy is read,
+  up at the supertype when generalising and down at the subtypes when
+  specialising, so the direction is stored and can be changed in Properties.
   Each carries a disjoint/overlapping constraint and total/partial completeness,
   the two inputs a later conversion needs to choose a relational mapping.
   Hierarchies nest, and inheritance cycles are rejected.
@@ -62,7 +64,7 @@ not been built yet. Their presence in those documents is not a completion claim.
 - Connector shaping: select a link, drag its handle to bend it aside, double-click
   to straighten. The bend is one undoable edit, is saved, and is dropped with the
   link it belongs to. Dragging nodes follows the pointer; snap to grid is opt-in.
-- Versioned `.erdx` JSON save/load, currently format version 4. Versions 1 to 3
+- Versioned `.erdx` JSON save/load, currently format version 5. Versions 1 to 4
   still open and upgrade on save. Incomplete but structurally valid diagrams
   can be saved. Invalid/unsupported files leave the open project intact.
 - Safe file replacement, Save/Discard/Cancel protection, focused text committed

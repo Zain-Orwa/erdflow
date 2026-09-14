@@ -271,6 +271,8 @@ std::vector<Issue> validate(const Project& project) {
             if (!seen.insert(subtype).second)
                 error("specialization.subtype.duplicate", "An entity can appear only once among a specialization's subtypes.", ref);
         }
+        if (specialization.direction != Inheritance::Generalization && specialization.direction != Inheritance::Specialization)
+            error("specialization.direction.invalid", "An ISA direction must be generalization or specialization.", ref);
         if (specialization.constraint != Disjointness::Disjoint && specialization.constraint != Disjointness::Overlapping)
             error("specialization.constraint.invalid", "A specialization constraint must be disjoint or overlapping.", ref);
         if (specialization.completeness != Completeness::Partial && specialization.completeness != Completeness::Total)
