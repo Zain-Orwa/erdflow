@@ -59,6 +59,9 @@ public:
                                    std::string role);
     EditResult disconnect(domain::RelationshipId relationship, domain::ParticipantId participant);
     EditResult move(const std::map<domain::ElementRef, domain::Rect>& positions);
+    // A connector carries one signed perpendicular bend. Passing no offset
+    // restores automatic routing rather than storing a zero-length bend.
+    EditResult bend_connector(domain::ConnectorRef ref, std::optional<double> offset);
     EditResult erase(const std::vector<domain::ElementRef>& elements,
                      const std::vector<std::pair<domain::RelationshipId, domain::ParticipantId>>& participants = {},
                      const std::vector<domain::AttributeId>& detached_attributes = {});

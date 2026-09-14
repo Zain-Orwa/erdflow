@@ -1,6 +1,7 @@
 #pragma once
 
 #include "application/editor.hpp"
+#include "theme.hpp"
 
 #include <QGraphicsView>
 #include <functional>
@@ -25,6 +26,8 @@ public:
     void zoom_out();
     void set_grid_visible(bool enabled);
     void set_snap_enabled(bool enabled);
+    void set_theme(ThemeId id);
+    [[nodiscard]] ThemeId theme_id() const;
     void delete_selection();
     void cancel_interaction();
     [[nodiscard]] double zoom_factor() const;
@@ -38,6 +41,7 @@ public:
 protected:
     void drawBackground(QPainter*, const QRectF&) override;
     void mousePressEvent(QMouseEvent*) override;
+    void mouseDoubleClickEvent(QMouseEvent*) override;
     void mouseMoveEvent(QMouseEvent*) override;
     void mouseReleaseEvent(QMouseEvent*) override;
     void wheelEvent(QWheelEvent*) override;

@@ -1,6 +1,6 @@
-# ERDX project format — version 1
+# ERDX project format — versions 1 and 2
 
-**Status:** Implemented initial Conceptual ERD format  
+**Status:** Implemented Conceptual ERD format; version 2 is current  
 **Date:** 2026-09-14
 
 ## What, why, and how
@@ -26,17 +26,33 @@ The root object has exactly three fields:
 | Field | Value |
 | --- | --- |
 | `format` | String, exactly `"erdflow"` |
-| `format_version` | JSON number, exactly `1` |
+| `format_version` | JSON number, exactly `1` or `2` |
 | `project` | Project object described below |
 
-This is the first implemented public project format. There is no earlier public
-format to migrate. A file with an unsupported version, missing field, unknown
+A file with an unsupported version, missing field, unknown
 field, duplicate JSON object key, or invalid value is rejected. Escaped-equivalent
 keys, such as `"name"` and `"na\u006de"`, count as duplicates.
 
 The same strict field rule applies to every nested object. Unknown fields are
 neither ignored nor removed. A future format change must define its compatibility
 and migration policy explicitly before writing a new version.
+
+### Compatibility between versions 1 and 2
+
+Version 2 adds connector shapes and changes nothing else, so the two versions
+differ by exactly one project field. The rule is stated here rather than left to
+be inferred:
+
+- A version 1 document must **not** contain `connectors`, and a version 2
+  document must contain it. A document declaring the wrong shape for its
+  version is rejected rather than read leniently.
+- Opening a version 1 document succeeds and leaves every connector routed
+  automatically. Nothing is lost, because version 1 could not express a shape.
+- Saving always writes version 2, so opening a version 1 file and saving
+  upgrades it in place and an older build will then refuse it. This one-way
+  upgrade is acceptable only because no release has shipped. A future version
+  that must stay readable by older builds needs a different policy, recorded
+  before it is written.
 
 Whitespace and JSON object property order are not significant. Files written by
 the adapter use indented JSON. Array iteration is deterministic for the current
@@ -55,6 +71,7 @@ The project object has exactly these fields:
 | `attributes` | Array of attribute objects |
 | `relationships` | Array of relationship objects |
 | `layout` | Array of layout objects |
+| `connectors` | Array of connector-shape objects; version 2 only |
 
 An **entity** object has `id`, `name`, and `description`, all strings.
 
@@ -112,6 +129,32 @@ relationship participant records.
 Semantic and layout state are stored separately. Moving an element changes its
 layout entry and preserves its semantic identity.
 
+## Connector shapes
+
+A connector is drawn from the record that creates it, so it has no identity of
+its own and is addressed by that record. A **connector-shape** object has exactly
+`link` and `offset`:
+
+```json
+{"link": {"type": "participant", "id": "019947b9-7111-7000-8000-000000000003"},
+ "offset": 37.5}
+```
+
+The `link` type is `"attribute"` for an attribute's ownership link, or
+`"participant"` for one relationship participant, and the ID must reference an
+existing record of that kind. An attribute link exists only while the attribute
+has an owner, so a shape on an unowned attribute is invalid.
+
+The `offset` is a finite signed perpendicular bend in canvas units, measured from
+the straight line between the two endpoints. Its magnitude is bounded by the
+canvas limit. An absent entry means the connector is routed automatically, so a
+straightened connector stores nothing rather than an offset of zero. At most one
+shape may exist per connector; a repeated link is rejected as contradictory.
+
+Because a shape cannot outlive the record that draws it, deleting a relationship,
+disconnecting a participant, or detaching an attribute removes the shape in the
+same edit, and undo restores both together.
+
 ## Identity, text, and resource limits
 
 | Item | Initial enforced limit or rule |
@@ -124,6 +167,8 @@ layout entry and preserves its semantic identity.
 | JSON object fields | At most 16 distinct keys per object before parsing |
 | Names and roles | At most 512 UTF-8 bytes each |
 | Descriptions | At most 16,384 UTF-8 bytes each |
+| Connector shapes | At most 10,000, and at most one per connector |
+| Connector bend | Finite, between −100,000 and +100,000 |
 | Canvas bounds | All rectangle edges between −100,000 and +100,000 |
 | Dimensions | Greater than zero and at most 100,000 |
 | IDs | Valid UUIDv7, canonical lowercase text with hyphens and no braces |
@@ -151,14 +196,15 @@ An empty conceptual project is a valid saved draft:
 ```json
 {
   "format": "erdflow",
-  "format_version": 1,
+  "format_version": 2,
   "project": {
     "id": "019947b9-7111-7000-8000-000000000001",
     "name": "Untitled",
     "entities": [],
     "attributes": [],
     "relationships": [],
-    "layout": []
+    "layout": [],
+    "connectors": []
   }
 }
 ```
@@ -196,6 +242,12 @@ identities, recursive participant IDs, incomplete drafts, unsupported fields and
 versions, duplicate keys, malformed Unicode, invalid references and enums,
 resource limits, failed-save destination preservation, and failed-open session
 preservation. These tests use temporary directories and the real Qt adapter.
+
+`connector shapes persist across versions` covers the version 2 roundtrip, a
+version 1 document opening with automatic routing, the upgrade on save, and the
+refusal of a document whose connector field contradicts its version.
+`invalid connector shapes` covers dangling and wrongly typed links, non-finite
+and out-of-range offsets, repeated links, and unknown or missing fields.
 
 Field names are unescaped by the loader rather than by a parser call per key,
 so `escaped field name decoding` pins that decoder against JSON: escaped and

@@ -71,6 +71,18 @@ bool empty_name(const std::string& value) {
 bool exists(const Project& project, const ElementRef& ref) {
     return visit_element(project, ref, [](const auto* element) { return element != nullptr; });
 }
+bool connector_exists(const Project& project, const ConnectorRef& ref) {
+    if (const auto* attribute = std::get_if<AttributeId>(&ref)) {
+        const auto found = project.attributes.find(*attribute);
+        return found != project.attributes.end() && found->second.owner.has_value();
+    }
+    const auto& participant = std::get<ParticipantId>(ref);
+    return std::any_of(project.relationships.begin(), project.relationships.end(), [&](const auto& entry) {
+        return std::any_of(entry.second.participants.begin(), entry.second.participants.end(),
+                           [&](const auto& item) { return item.id == participant; });
+    });
+}
+
 std::string name(const Project& project, const ElementRef& ref) {
     return visit_element(project, ref, [](const auto* element) { return element ? element->name : std::string{}; });
 }
@@ -188,6 +200,17 @@ std::vector<Issue> validate(const Project& project) {
             if (std::any_of(names.begin(), names.end(), [&](const auto& role) { return empty_name(role) || !unique.insert(role).second; }))
                 warning("relationship.recursive.roles", "Give repeated participants distinct role names to explain this recursive relationship.", ref);
         }
+    }
+    if (project.connectors.size() > max_elements) error("connector.limit", "The connector shapes exceed the element limit.");
+    for (const auto& [ref, offset] : project.connectors) {
+        // Report against the owning element so the canvas can highlight it; a
+        // connector has no element reference of its own.
+        const std::optional<ElementRef> owner = std::holds_alternative<AttributeId>(ref)
+            ? std::optional<ElementRef>{std::get<AttributeId>(ref)} : std::nullopt;
+        if (!connector_exists(project, ref))
+            error("connector.reference.missing", "A connector shape refers to a link that no longer exists.", owner);
+        if (!std::isfinite(offset) || std::abs(offset) > max_coordinate)
+            error("connector.bounds.invalid", "A connector bend must be finite and within the supported canvas.", owner);
     }
     if (project.layout.size() > max_elements) error("layout.limit", "The layout exceeds the element limit.");
     for (const auto& [ref, rect] : project.layout) {

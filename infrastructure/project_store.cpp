@@ -17,6 +17,9 @@
 namespace erdflow::infrastructure {
 using namespace domain;
 namespace {
+// Version 2 adds connector shapes. Version 1 remains readable; see the format
+// specification for the compatibility rule this pair of versions defines.
+constexpr int current_format_version = 2;
 QString text(const std::string& value) { return QString::fromUtf8(value.data(), static_cast<qsizetype>(value.size())); }
 Uuid bytes_of(const QUuid& value) {
     Uuid result;
@@ -58,6 +61,19 @@ Uuid parse_id(const QJsonValue& value) {
 QJsonObject reference(const ElementRef& ref) {
     const char* type = std::holds_alternative<EntityId>(ref) ? "entity" : std::holds_alternative<AttributeId>(ref) ? "attribute" : "relationship";
     return {{"type", QLatin1String(type)}, {"id", uuid_text(uuid(ref))}};
+}
+QJsonObject connector_reference(const ConnectorRef& ref) {
+    const bool attribute = std::holds_alternative<AttributeId>(ref);
+    const auto id = attribute ? std::get<AttributeId>(ref).value : std::get<ParticipantId>(ref).value;
+    return {{"type", QLatin1String(attribute ? "attribute" : "participant")}, {"id", uuid_text(id)}};
+}
+ConnectorRef parse_connector_reference(const QJsonValue& value) {
+    auto o = object(value, {"type", "id"});
+    auto id = parse_id(o["id"]);
+    const auto type = string(o["type"]);
+    if (type == "attribute") return AttributeId{id};
+    if (type == "participant") return ParticipantId{id};
+    invalid("Unsupported connector link type.");
 }
 ElementRef parse_ref(const QJsonValue& value) {
     auto o = object(value, {"type", "id"});
@@ -250,9 +266,13 @@ QByteArray ErdxProjectStore::encode(const Project& project) {
     }
     for (const auto& [ref, rect] : project.layout)
         layout.append(QJsonObject{{"element", reference(ref)}, {"x", rect.x}, {"y", rect.y}, {"width", rect.width}, {"height", rect.height}});
-    auto bytes = QJsonDocument(QJsonObject{{"format", "erdflow"}, {"format_version", 1},
+    QJsonArray connectors;
+    for (const auto& [ref, offset] : project.connectors)
+        connectors.append(QJsonObject{{"link", connector_reference(ref)}, {"offset", offset}});
+    auto bytes = QJsonDocument(QJsonObject{{"format", "erdflow"}, {"format_version", current_format_version},
         {"project", QJsonObject{{"id", uuid_text(project.id.value)}, {"name", text(project.name)},
-        {"entities", entities}, {"attributes", attributes}, {"relationships", relationships}, {"layout", layout}}}}).toJson(QJsonDocument::Indented);
+        {"entities", entities}, {"attributes", attributes}, {"relationships", relationships},
+        {"layout", layout}, {"connectors", connectors}}}}).toJson(QJsonDocument::Indented);
     if (bytes.size() > max_file_bytes) invalid("The project exceeds the 8 MiB file limit.");
     return bytes;
 }
@@ -266,8 +286,15 @@ application::LoadResult ErdxProjectStore::decode(const QByteArray& input) {
         if (error.error != QJsonParseError::NoError) invalid("Invalid project JSON: " + error.errorString());
         const auto root = object(document.isObject() ? QJsonValue(document.object()) : QJsonValue{}, {"format", "format_version", "project"});
         if (string(root["format"]) != "erdflow") invalid("This is not an ERDFlow project.");
-        if (!root["format_version"].isDouble() || root["format_version"].toDouble() != 1) invalid("Unsupported project version. Use a compatible ERDFlow release.");
-        const auto data = object(root["project"], {"id", "name", "entities", "attributes", "relationships", "layout"});
+        // Version 1 had no connector shapes. It still opens, and its links start
+        // routed automatically; saving then writes the current version.
+        const auto version = root["format_version"];
+        if (!version.isDouble() || (version.toDouble() != 1 && version.toDouble() != 2))
+            invalid("Unsupported project version. Use a compatible ERDFlow release.");
+        const bool shaped_connectors = version.toDouble() == 2;
+        const auto data = shaped_connectors
+            ? object(root["project"], {"id", "name", "entities", "attributes", "relationships", "layout", "connectors"})
+            : object(root["project"], {"id", "name", "entities", "attributes", "relationships", "layout"});
         Project project;
         project.id = ProjectId{parse_id(data["id"])};
         project.name = string(data["name"]);
@@ -303,6 +330,13 @@ application::LoadResult ErdxProjectStore::decode(const QByteArray& input) {
             const auto o = object(value, {"element", "x", "y", "width", "height"});
             if (!project.layout.emplace(parse_ref(o["element"]), Rect{number(o["x"]), number(o["y"]), number(o["width"]), number(o["height"])}).second)
                 invalid("Duplicate element layout.");
+        }
+        if (shaped_connectors) {
+            for (const auto& value : array(data["connectors"])) {
+                const auto o = object(value, {"link", "offset"});
+                if (!project.connectors.emplace(parse_connector_reference(o["link"]), number(o["offset"])).second)
+                    invalid("Duplicate connector shape.");
+            }
         }
         require_valid(project);
         return {std::move(project), {}};

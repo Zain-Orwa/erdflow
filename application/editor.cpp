@@ -47,6 +47,7 @@ std::size_t payload(const Relationship& value) {
     return result;
 }
 std::size_t payload(const Rect&) { return 0; }
+std::size_t payload(double) { return 0; }
 
 template<class Key, class Value>
 std::size_t cost(const Changes<Key, Value>& changes, const std::map<Key, Value>& live) {
@@ -69,13 +70,14 @@ struct Delta {
     Changes<AttributeId, Attribute> attributes;
     Changes<RelationshipId, Relationship> relationships;
     Changes<ElementRef, Rect> layout;
+    Changes<ConnectorRef, double> connectors;
     std::size_t bytes = 0;
     std::uint64_t before_state = 0;
     std::uint64_t after_state = 0;
 
     [[nodiscard]] bool empty() const {
         return !project_name && entities.keys.empty() && attributes.keys.empty()
-            && relationships.keys.empty() && layout.keys.empty();
+            && relationships.keys.empty() && layout.keys.empty() && connectors.keys.empty();
     }
     void toggle(Project& project) {
         if (project_name) project.name.swap(*project_name);
@@ -83,12 +85,14 @@ struct Delta {
         attributes.toggle(project.attributes);
         relationships.toggle(project.relationships);
         layout.toggle(project.layout);
+        connectors.toggle(project.connectors);
     }
     [[nodiscard]] std::size_t estimate(const Project& project) const {
         return sizeof(Delta) + sizeof(std::unique_ptr<Delta>) + label.capacity()
             + (project_name ? project_name->capacity() + project.name.capacity() : 0)
             + cost(entities, project.entities) + cost(attributes, project.attributes)
-            + cost(relationships, project.relationships) + cost(layout, project.layout);
+            + cost(relationships, project.relationships) + cost(layout, project.layout)
+            + cost(connectors, project.connectors);
     }
 };
 
@@ -307,7 +311,13 @@ EditResult Editor::set_attribute_owner(AttributeId id, std::optional<AttributeOw
     return impl_->edit("Change attribute owner", [&](Delta& delta) {
         const auto found = project().attributes.find(id);
         if (found == project().attributes.end()) return failure("The attribute no longer exists.");
-        if (found->second.owner != owner) { auto value = found->second; value.owner = owner; delta.attributes.put(id, std::move(value)); }
+        if (found->second.owner != owner) {
+            auto value = found->second;
+            value.owner = owner;
+            delta.attributes.put(id, std::move(value));
+            // Detaching removes the link, and with it any shape given to it.
+            if (!owner && project().connectors.contains(ConnectorRef{id})) delta.connectors.remove(id);
+        }
         return EditResult{};
     });
 }
@@ -346,6 +356,7 @@ EditResult Editor::disconnect(RelationshipId relationship, ParticipantId partici
         const auto removed = std::erase_if(value.participants, [&](const auto& entry) { return entry.id == participant; });
         if (removed == 0) return failure("The participant does not belong to this relationship.");
         delta.relationships.put(relationship, std::move(value));
+        if (project().connectors.contains(ConnectorRef{participant})) delta.connectors.remove(participant);
         return EditResult{};
     });
 }
@@ -359,11 +370,28 @@ EditResult Editor::move(const std::map<ElementRef, Rect>& positions) {
         return EditResult{};
     });
 }
+EditResult Editor::bend_connector(ConnectorRef ref, std::optional<double> offset) {
+    return impl_->edit("Shape connector", [&](Delta& delta) {
+        if (!connector_exists(project(), ref)) return failure("That connector no longer exists.");
+        const auto found = project().connectors.find(ref);
+        const auto current = found == project().connectors.end() ? std::optional<double>{} : found->second;
+        if (current == offset) return EditResult{};
+        if (offset) delta.connectors.put(ref, *offset);
+        else delta.connectors.remove(ref);
+        return EditResult{};
+    });
+}
 EditResult Editor::erase(const std::vector<ElementRef>& elements,
                           const std::vector<std::pair<RelationshipId, ParticipantId>>& participants,
                           const std::vector<AttributeId>& detached_attributes) {
     return impl_->edit("Delete elements", [&](Delta& delta) {
         const auto removed = owned_closure(project(), elements);
+        // A connector shape outlives nothing: dropping the attribute link or
+        // participant that draws it must drop the stored bend in the same edit,
+        // so undo restores both together and validation never sees a dangling one.
+        auto drop_connector = [&](const ConnectorRef& ref) {
+            if (project().connectors.contains(ref)) delta.connectors.remove(ref);
+        };
         std::map<RelationshipId, std::set<ParticipantId>> disconnected;
         for (const auto& [relationship, participant] : participants) {
             const auto found = project().relationships.find(relationship);
@@ -379,13 +407,18 @@ EditResult Editor::erase(const std::vector<ElementRef>& elements,
             auto value = found->second;
             value.owner.reset();
             delta.attributes.put(id, std::move(value));
+            drop_connector(id);
         }
         for (const auto& ref : removed) {
             std::visit([&](const auto& id) {
                 using T = std::decay_t<decltype(id)>;
                 if constexpr (std::is_same_v<T, EntityId>) delta.entities.remove(id);
-                else if constexpr (std::is_same_v<T, AttributeId>) delta.attributes.remove(id);
-                else delta.relationships.remove(id);
+                else if constexpr (std::is_same_v<T, AttributeId>) { delta.attributes.remove(id); drop_connector(id); }
+                else {
+                    delta.relationships.remove(id);
+                    for (const auto& participant : project().relationships.at(id).participants)
+                        drop_connector(participant.id);
+                }
             }, ref);
             if (project().layout.contains(ref)) delta.layout.remove(ref);
         }
@@ -398,6 +431,8 @@ EditResult Editor::erase(const std::vector<ElementRef>& elements,
             const bool affected = std::any_of(relationship.participants.begin(), relationship.participants.end(), should_remove);
             if (!affected) continue;
             auto value = relationship;
+            for (const auto& participant : value.participants)
+                if (should_remove(participant)) drop_connector(participant.id);
             std::erase_if(value.participants, should_remove);
             delta.relationships.put(id, std::move(value));
         }
@@ -427,12 +462,20 @@ EditResult Editor::duplicate(const std::vector<ElementRef>& elements, double dx,
                     value.id = new_id;
                     if (value.owner && mapping.contains(*value.owner)) value.owner = mapping.at(*value.owner);
                     delta.attributes.put(new_id, std::move(value));
+                    // A copy keeps the shape of the link it was copied from.
+                    const auto shape = project().connectors.find(ConnectorRef{id});
+                    if (shape != project().connectors.end() && value.owner)
+                        delta.connectors.put(ConnectorRef{new_id}, shape->second);
                 } else {
                     auto value = project().relationships.at(id);
                     value.id = new_id;
                     for (auto& participant : value.participants) {
+                        const auto original_participant = participant.id;
                         participant.id = ParticipantId{impl_->next_id()};
                         if (mapping.contains(ElementRef{participant.entity})) participant.entity = std::get<EntityId>(mapping.at(ElementRef{participant.entity}));
+                        const auto shape = project().connectors.find(ConnectorRef{original_participant});
+                        if (shape != project().connectors.end())
+                            delta.connectors.put(ConnectorRef{participant.id}, shape->second);
                     }
                     delta.relationships.put(new_id, std::move(value));
                 }

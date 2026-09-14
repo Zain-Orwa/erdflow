@@ -27,7 +27,11 @@ not been built yet. Their presence in those documents is not a completion claim.
 - One drag or duplicate/delete group is one history entry. Deletion restores
   dependent attributes and participant records on undo. Duplicate generates new
   IDs, including participant IDs, and remaps the copied subgraph.
-- Versioned `.erdx` JSON save/load. Incomplete but structurally valid diagrams
+- Connector shaping: select a link, drag its handle to bend it aside, double-click
+  to straighten. The bend is one undoable edit, is saved, and is dropped with the
+  link it belongs to. Dragging nodes follows the pointer; snap to grid is opt-in.
+- Versioned `.erdx` JSON save/load, currently format version 2. Version 1 files
+  still open and upgrade on save. Incomplete but structurally valid diagrams
   can be saved. Invalid/unsupported files leave the open project intact.
 - Safe file replacement, Save/Discard/Cancel protection, focused text committed
   before save, clean-state tracking, and reopening the file saved at the prompt.
@@ -92,9 +96,11 @@ group snap/bounds; stale gesture cancellation; and incident-only live connector 
 Weak entities/identifying relationships/partial keys; ISA and specialization
 constraints; associative entities; logical metadata and conversion readiness;
 multiple pages; cross-project clipboard; alignment/distribution; drag resize
-handles; connector endpoint handles and routing; search; export; autosave and
-recovery. Attribute kinds currently form one exclusive enum, so composite keys
-or other combinations require a deliberate model/format decision.
+handles; connector endpoint handles and multi-point routing; search; export;
+autosave and recovery. Connectors carry one bend each, which is enough to route
+around an overlap but not to follow an arbitrary path. Attribute kinds currently
+form one exclusive enum, so composite keys or other combinations require a
+deliberate model/format decision.
 
 Undo history has a conservative 32 MiB accounting budget; older entries are
 removed when it is reached, and a single larger edit is rejected. This estimates

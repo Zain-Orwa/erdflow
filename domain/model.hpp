@@ -28,6 +28,10 @@ using RelationshipId = Id<struct RelationshipTag>;
 using ParticipantId = Id<struct ParticipantTag>;
 using ElementRef = std::variant<EntityId, AttributeId, RelationshipId>;
 using AttributeOwner = ElementRef;
+// A connector is drawn from the record that creates it, so it is identified by
+// that record rather than by its own identity: an attribute's ownership link,
+// or one relationship participant. Connectors are therefore never orphaned.
+using ConnectorRef = std::variant<AttributeId, ParticipantId>;
 
 struct Rect {
     double x = 0;
@@ -77,6 +81,9 @@ struct Project {
     std::map<AttributeId, Attribute> attributes;
     std::map<RelationshipId, Relationship> relationships;
     std::map<ElementRef, Rect> layout;
+    // Signed perpendicular bend, in canvas units, for connectors the user has
+    // shaped. An absent entry means the connector is routed automatically.
+    std::map<ConnectorRef, double> connectors;
     auto operator<=>(const Project&) const = default;
 };
 
@@ -91,6 +98,9 @@ struct Issue {
 
 [[nodiscard]] Uuid uuid(const ElementRef& ref);
 [[nodiscard]] bool exists(const Project& project, const ElementRef& ref);
+// A connector exists while the record that draws it does: an owned attribute,
+// or a participant still listed by its relationship.
+[[nodiscard]] bool connector_exists(const Project& project, const ConnectorRef& ref);
 [[nodiscard]] std::string name(const Project& project, const ElementRef& ref);
 [[nodiscard]] std::string description(const Project& project, const ElementRef& ref);
 [[nodiscard]] std::vector<Issue> validate(const Project& project);

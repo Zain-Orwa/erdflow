@@ -428,6 +428,104 @@ void limits_deep_ownership_and_compact_history() {
     CHECK(undos < 1400);
     CHECK(editor.dirty()); // The clean state has been evicted, never falsely clean.
 }
+// A connector shape is layout state attached to the link that draws it, so it
+// must follow that link through undo, detach, delete and duplicate.
+void connector_shapes_follow_their_link() {
+    TestIds ids;
+    Editor editor(ids);
+    const auto student = entity(editor, "Student");
+    const auto course = entity(editor, "Course");
+    const auto enrolled = relationship(editor, "Enrolled");
+    const auto side = connect(editor, enrolled, student);
+    connect(editor, enrolled, course);
+    const auto grade = attribute(editor, "Grade", AttributeOwner{ElementRef{enrolled}});
+
+    // Bending is stored per connector; absence means automatic routing.
+    CHECK(editor.project().connectors.empty());
+    CHECK(editor.bend_connector(ConnectorRef{side}, 40));
+    CHECK(editor.project().connectors.at(ConnectorRef{side}) == 40);
+    CHECK(editor.bend_connector(ConnectorRef{grade}, -25));
+    CHECK(editor.project().connectors.size() == 2);
+
+    // Passing no offset restores automatic routing rather than storing zero.
+    CHECK(editor.bend_connector(ConnectorRef{grade}, {}));
+    CHECK(!editor.project().connectors.contains(ConnectorRef{grade}));
+    CHECK(editor.undo());
+    CHECK(editor.project().connectors.at(ConnectorRef{grade}) == -25);
+
+    // Re-bending the same connector to its current shape is not an edit.
+    const auto revision = editor.revision();
+    CHECK(editor.bend_connector(ConnectorRef{side}, 40));
+    CHECK(editor.revision() == revision);
+
+    // A shape cannot outlive its link, and undo restores both together.
+    CHECK(editor.set_attribute_owner(grade, {}));
+    CHECK(!editor.project().connectors.contains(ConnectorRef{grade}));
+    CHECK(!blocks(editor.project()));
+    CHECK(editor.undo());
+    CHECK(editor.project().connectors.at(ConnectorRef{grade}) == -25);
+
+    CHECK(editor.disconnect(enrolled, side));
+    CHECK(!editor.project().connectors.contains(ConnectorRef{side}));
+    CHECK(!blocks(editor.project()));
+    CHECK(editor.undo());
+    CHECK(editor.project().connectors.at(ConnectorRef{side}) == 40);
+
+    // Deleting the relationship drops every participant shape it drew.
+    CHECK(editor.erase({ElementRef{enrolled}}));
+    CHECK(editor.project().connectors.empty());
+    CHECK(!blocks(editor.project()));
+    CHECK(editor.undo());
+    CHECK(editor.project().connectors.size() == 2);
+
+    // A copy keeps the shape under its own new connector identity.
+    const auto copy = editor.duplicate({ElementRef{enrolled}});
+    CHECK(copy);
+    const auto& copied = editor.project().relationships.at(std::get<RelationshipId>(*copy.created));
+    CHECK(copied.participants.size() == 2);
+    std::size_t carried = 0;
+    for (const auto& participant : copied.participants) {
+        CHECK(participant.id != side);
+        if (editor.project().connectors.contains(ConnectorRef{participant.id})) {
+            CHECK(editor.project().connectors.at(ConnectorRef{participant.id}) == 40);
+            ++carried;
+        }
+    }
+    CHECK(carried == 1);
+    CHECK(!blocks(editor.project()));
+}
+
+// Connector shapes are validated like any other persisted reference.
+void hostile_connector_shapes_are_rejected() {
+    TestIds ids;
+    Editor editor(ids);
+    const auto student = entity(editor, "Student");
+    const auto enrolled = relationship(editor, "Enrolled");
+    const auto side = connect(editor, enrolled, student);
+    const auto orphan = attribute(editor, "Loose");
+
+    auto project = editor.project();
+    CHECK(!blocks(project));
+    // An unowned attribute draws no link, so it can carry no shape.
+    project.connectors.emplace(ConnectorRef{orphan}, 10.0);
+    CHECK(blocks(project));
+
+    project = editor.project();
+    project.connectors.emplace(ConnectorRef{ParticipantId{}}, 10.0);
+    CHECK(blocks(project));
+
+    for (const auto bad : {std::numeric_limits<double>::quiet_NaN(),
+                           std::numeric_limits<double>::infinity(), 1e9}) {
+        project = editor.project();
+        project.connectors.insert_or_assign(ConnectorRef{side}, bad);
+        CHECK(blocks(project));
+    }
+    // A bend the editor would accept must also survive validation directly.
+    project = editor.project();
+    project.connectors.insert_or_assign(ConnectorRef{side}, -99999.0);
+    CHECK(!blocks(project));
+}
+
 } // namespace
 
 int main() {
@@ -442,6 +540,8 @@ int main() {
         {"selected subgraph duplication", duplicate_remaps_selected_subgraph},
         {"hostile model validation", hostile_models_are_rejected},
         {"limits, deep ownership and compact history", limits_deep_ownership_and_compact_history},
+        {"connector shapes follow their link", connector_shapes_follow_their_link},
+        {"hostile connector shapes", hostile_connector_shapes_are_rejected},
     };
     std::size_t failures = 0;
     for (const auto& [name, test] : tests) {

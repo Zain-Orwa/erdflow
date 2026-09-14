@@ -24,8 +24,6 @@ using namespace domain;
 constexpr qreal grid_spacing = 20;
 constexpr qreal minimum_zoom = 0.15;
 constexpr qreal maximum_zoom = 3.0;
-const QColor canvas_color{19, 25, 34};
-const QColor selection_color{91, 211, 225};
 
 QPointF normal(const QPointF& delta) {
     const auto length = std::hypot(delta.x(), delta.y());
@@ -35,9 +33,10 @@ QPointF normal(const QPointF& delta) {
 // These items are projections only: all persistent changes go through Editor.
 class NodeItem final : public QGraphicsItem {
 public:
-    explicit NodeItem(ElementRef reference) : ref(std::move(reference)) {
+    NodeItem(ElementRef reference, const Theme& colors) : ref(std::move(reference)) {
         setFlags(ItemIsSelectable | ItemIsMovable | ItemSendsGeometryChanges);
         setZValue(1);
+        set_theme(colors);
     }
 
     ElementRef ref;
@@ -45,6 +44,21 @@ public:
     AttributeKind attribute_kind = AttributeKind::Normal;
     std::function<void(NodeItem*)> moved;
     std::function<QPointF(QPointF)> constrain;
+
+    void set_theme(const Theme& colors) {
+        fill_ = colors.attribute_fill;
+        border_ = colors.attribute_border;
+        if (std::holds_alternative<EntityId>(ref)) {
+            fill_ = colors.entity_fill;
+            border_ = colors.entity_border;
+        } else if (std::holds_alternative<RelationshipId>(ref)) {
+            fill_ = colors.relationship_fill;
+            border_ = colors.relationship_border;
+        }
+        text_ = colors.node_text;
+        selection_ = colors.accent;
+        update();
+    }
 
     QRectF boundingRect() const override { return bounds_.adjusted(-4, -4, 4, 4); }
     QRectF body_rect() const { return bounds_; }
@@ -89,15 +103,11 @@ public:
     }
     void paint(QPainter* painter, const QStyleOptionGraphicsItem*, QWidget*) override {
         painter->setRenderHint(QPainter::Antialiasing);
-        QColor fill{37, 46, 61};
-        QColor border{137, 154, 175};
-        if (std::holds_alternative<EntityId>(ref)) { fill = QColor(34, 54, 76); border = QColor(115, 160, 195); }
-        if (std::holds_alternative<RelationshipId>(ref)) { fill = QColor(29, 62, 64); border = QColor(97, 167, 161); }
-        QPen pen(isSelected() ? selection_color : border, isSelected() ? 2.4 : 1.6);
+        QPen pen(isSelected() ? selection_ : border_, isSelected() ? 2.4 : 1.6);
         if (std::holds_alternative<AttributeId>(ref) && attribute_kind == AttributeKind::Derived)
             pen.setStyle(Qt::DashLine);
         painter->setPen(pen);
-        painter->setBrush(fill);
+        painter->setBrush(fill_);
         painter->drawPath(shape());
         if (std::holds_alternative<AttributeId>(ref) && attribute_kind == AttributeKind::Multivalued)
             painter->drawEllipse(bounds_.adjusted(5, 5, -5, -5));
@@ -106,7 +116,7 @@ public:
         font.setWeight(std::holds_alternative<EntityId>(ref) ? QFont::DemiBold : QFont::Normal);
         font.setUnderline(std::holds_alternative<AttributeId>(ref) && attribute_kind == AttributeKind::Key);
         painter->setFont(font);
-        painter->setPen(QColor(233, 239, 246));
+        painter->setPen(text_);
         const auto inset = std::holds_alternative<RelationshipId>(ref) ? bounds_.width() * 0.22 : 15.0;
         const auto text_rect = bounds_.adjusted(inset, 8, -inset, -8);
         const auto text = QFontMetricsF(font).elidedText(label, Qt::ElideRight, text_rect.width());
@@ -121,9 +131,12 @@ protected:
     }
 private:
     QRectF bounds_{0, 0, 160, 80};
+    QColor fill_, border_, text_, selection_;
 };
 
-using EdgeKey = std::variant<AttributeId, ParticipantId>;
+// An edge is keyed by the record that draws it, which is exactly the Domain's
+// connector identity, so a canvas edge and a stored bend share one key.
+using EdgeKey = ConnectorRef;
 struct EdgeDescription {
     EdgeKey key;
     ElementRef from;
@@ -138,15 +151,24 @@ struct EdgeDescription {
 
 class EdgeItem final : public QGraphicsItem {
 public:
-    EdgeItem(EdgeDescription description, NodeItem* from, NodeItem* to)
+    EdgeItem(EdgeDescription description, NodeItem* from, NodeItem* to, const Theme& colors)
         : descriptor(std::move(description)), source(from), target(to) {
         setFlag(ItemIsSelectable);
         setZValue(-1);
+        set_theme(colors);
         refresh();
     }
     EdgeDescription descriptor;
     NodeItem* source;
     NodeItem* target;
+
+    void set_theme(const Theme& colors) {
+        connector_ = colors.connector;
+        selection_ = colors.accent;
+        canvas_ = colors.canvas;
+        text_ = colors.node_text;
+        update();
+    }
 
     QRectF boundingRect() const override { return bounds_; }
     QPainterPath shape() const override {
@@ -155,16 +177,24 @@ public:
         auto hit = stroker.createStroke(path_);
         if (descriptor.relationship) hit.addRect(cardinality_rect_);
         if (!descriptor.role.isEmpty()) hit.addRect(role_rect_);
+        if (isSelected()) hit.addRect(handle_rect_);
         return hit;
     }
+    // The bend handle only exists while the connector is selected, so an
+    // unselected diagram stays free of grab targets.
+    [[nodiscard]] QRectF handle_rect() const { return handle_rect_; }
+    [[nodiscard]] QPointF midpoint() const { return midpoint_; }
+    [[nodiscard]] QPointF perpendicular() const { return perpendicular_; }
     void refresh() {
         prepareGeometryChange();
         const auto first = source->scenePos() + source->body_rect().center();
         const auto last = target->scenePos() + target->body_rect().center();
         perpendicular_ = normal(last - first);
-        auto bend = (first + last) / 2 + perpendicular_ * descriptor.offset;
+        midpoint_ = (first + last) / 2;
+        auto bend = midpoint_ + perpendicular_ * descriptor.offset;
         if (std::hypot(last.x() - first.x(), last.y() - first.y()) < 1)
             bend = first + QPointF(80, -80);
+        handle_rect_ = QRectF(bend - QPointF(5, 5), QSizeF(10, 10));
         const auto start = source->boundary_toward(bend);
         const auto end = target->boundary_toward(bend);
         path_ = QPainterPath(start);
@@ -172,14 +202,30 @@ public:
         path_.lineTo(end);
         const auto entity_direction = bend - end;
         const auto distance = std::hypot(entity_direction.x(), entity_direction.y());
+        // Labels are filled, so one overlapping the line hides it and the
+        // connector reads as detached. An axis-aligned box clears a horizontal
+        // line at its half-height but a diagonal one only at its corner, so
+        // offset each label by its own support distance along that normal.
+        const auto clearance = [](const QPointF& unit, qreal half_width, qreal half_height) {
+            return half_width * std::abs(unit.x()) + half_height * std::abs(unit.y()) + 4;
+        };
+        const auto entity_normal = normal(entity_direction);
         const auto label_center = end + (distance > 0.01 ? entity_direction * (20 / distance) : QPointF(-20, 0))
-            + normal(entity_direction) * 13;
+            + entity_normal * clearance(entity_normal, 11, 10);
         cardinality_rect_ = QRectF(label_center - QPointF(11, 10), QSizeF(22, 20));
-        const auto role_center = path_.pointAtPercent(0.45) + perpendicular_ * 15;
-        role_rect_ = QRectF(role_center - QPointF(70, 10), QSizeF(140, 20));
+        // Size the role box to its text. A fixed-width box blanketed the area
+        // around the entity end and hid the connector arriving there.
+        QFont label_font;
+        label_font.setPointSizeF(10);
+        const auto role_width = descriptor.role.isEmpty()
+            ? 0.0 : std::min(140.0, QFontMetricsF(label_font).horizontalAdvance(descriptor.role) + 12);
+        const auto role_center = path_.pointAtPercent(0.45)
+            + perpendicular_ * clearance(perpendicular_, role_width / 2, 10);
+        role_rect_ = QRectF(role_center - QPointF(role_width / 2, 10), QSizeF(role_width, 20));
         bounds_ = path_.boundingRect().adjusted(-10, -10, 10, 10);
         if (descriptor.relationship) bounds_ = bounds_.united(cardinality_rect_);
         if (!descriptor.role.isEmpty()) bounds_ = bounds_.united(role_rect_);
+        bounds_ = bounds_.united(handle_rect_.adjusted(-2, -2, 2, 2));
         setToolTip(descriptor.relationship
             ? QStringLiteral("Participant: %1 · %2%3").arg(descriptor.cardinality == Cardinality::One ? "One" : "Many",
                 descriptor.participation == Participation::Total ? "total participation" : "partial participation",
@@ -189,7 +235,7 @@ public:
     }
     void paint(QPainter* painter, const QStyleOptionGraphicsItem*, QWidget*) override {
         painter->setRenderHint(QPainter::Antialiasing);
-        painter->setPen(QPen(isSelected() ? selection_color : QColor(139, 157, 177), isSelected() ? 2.2 : 1.6));
+        painter->setPen(QPen(isSelected() ? selection_ : connector_, isSelected() ? 2.2 : 1.6));
         painter->setBrush(Qt::NoBrush);
         if (descriptor.relationship && descriptor.participation == Participation::Total) {
             painter->save();
@@ -206,21 +252,29 @@ public:
         painter->setFont(font);
         auto draw_label = [&](const QRectF& rect, const QString& text) {
             painter->setPen(Qt::NoPen);
-            painter->setBrush(canvas_color);
+            painter->setBrush(canvas_);
             painter->drawRoundedRect(rect, 3, 3);
-            painter->setPen(isSelected() ? selection_color : QColor(208, 220, 232));
+            painter->setPen(isSelected() ? selection_ : text_);
             painter->drawText(rect, Qt::AlignCenter, QFontMetricsF(font).elidedText(text, Qt::ElideRight, rect.width() - 6));
         };
         if (descriptor.relationship)
             draw_label(cardinality_rect_, descriptor.cardinality == Cardinality::One ? QStringLiteral("1") : QStringLiteral("M"));
         if (!descriptor.role.isEmpty()) draw_label(role_rect_, descriptor.role);
+        if (isSelected()) {
+            painter->setPen(QPen(selection_, 1.4));
+            painter->setBrush(canvas_);
+            painter->drawEllipse(handle_rect_);
+        }
     }
 private:
     QPainterPath path_;
     QRectF bounds_;
     QRectF cardinality_rect_;
     QRectF role_rect_;
+    QRectF handle_rect_;
+    QPointF midpoint_;
     QPointF perpendicular_;
+    QColor connector_, selection_, canvas_, text_;
 };
 
 } // namespace
@@ -233,6 +287,7 @@ struct DiagramView::Impl {
     std::map<EdgeKey, EdgeItem*> edges;
     std::map<ElementRef, std::set<EdgeItem*>> incident;
     Tool active_tool = Tool::Select;
+    ThemeId theme_id = ThemeId::OfficeLight;
     bool grid = true;
     bool snap = false;
     bool synchronizing = false;
@@ -241,6 +296,8 @@ struct DiagramView::Impl {
     std::optional<ElementRef> connect_start;
     std::map<ElementRef, Rect> drag_start;
     QPointF drag_anchor;
+    // The connector being reshaped, previewed on its item until release.
+    std::optional<EdgeKey> bending;
     QPointF minimum_drag;
     QPointF maximum_drag;
     std::optional<std::uint64_t> displayed_revision;
@@ -265,6 +322,21 @@ struct DiagramView::Impl {
     NodeItem* node_at(const QPoint& viewport_position) const {
         for (auto* item : view.items(viewport_position)) {
             if (auto* node = dynamic_cast<NodeItem*>(item)) return node;
+        }
+        return nullptr;
+    }
+    EdgeItem* edge_at(const QPoint& viewport_position) const {
+        for (auto* item : view.items(viewport_position)) {
+            if (auto* edge = dynamic_cast<EdgeItem*>(item)) return edge;
+        }
+        return nullptr;
+    }
+    // Only a selected connector shows a handle, so only it can be grabbed.
+    EdgeItem* handle_at(const QPoint& viewport_position) const {
+        const auto scene_position = view.mapToScene(viewport_position);
+        for (auto* item : view.items(viewport_position)) {
+            auto* edge = dynamic_cast<EdgeItem*>(item);
+            if (edge && edge->isSelected() && edge->handle_rect().contains(scene_position)) return edge;
         }
         return nullptr;
     }
@@ -332,7 +404,7 @@ DiagramView::DiagramView(application::Editor& editor, QWidget* parent)
     setResizeAnchor(AnchorViewCenter);
     setDragMode(RubberBandDrag);
     setRubberBandSelectionMode(Qt::IntersectsItemShape);
-    setBackgroundBrush(canvas_color);
+    setBackgroundBrush(theme(impl_->theme_id).canvas);
     setFrameShape(QFrame::NoFrame);
     setFocusPolicy(Qt::StrongFocus);
     setMouseTracking(true);
@@ -356,9 +428,15 @@ void DiagramView::synchronize() {
     impl_->synchronizing = true;
     const auto& project = impl_->editor.project();
     std::map<EdgeKey, EdgeDescription> desired_edges;
+    // A stored bend is the user's choice and overrides automatic routing.
+    const auto shaped = [&](const EdgeKey& key, qreal automatic) {
+        const auto found = project.connectors.find(key);
+        return found == project.connectors.end() ? automatic : found->second;
+    };
     for (const auto& [id, attribute] : project.attributes) {
         if (attribute.owner && exists(project, *attribute.owner))
-            desired_edges.emplace(id, EdgeDescription{id, id, *attribute.owner, {}, Cardinality::Many, Participation::Partial, {}, 0});
+            desired_edges.emplace(id, EdgeDescription{id, id, *attribute.owner, {}, Cardinality::Many,
+                                                      Participation::Partial, {}, shaped(id, 0)});
     }
     for (const auto& [id, relationship] : project.relationships) {
         std::map<EntityId, std::size_t> counts;
@@ -369,7 +447,8 @@ void DiagramView::synchronize() {
             const auto ordinal = index[participant.entity]++;
             const auto offset = (static_cast<qreal>(ordinal) - (static_cast<qreal>(counts[participant.entity]) - 1) / 2) * 48;
             desired_edges.emplace(participant.id, EdgeDescription{participant.id, id, participant.entity, id,
-                participant.maximum, participant.participation, QString::fromStdString(participant.role), offset});
+                participant.maximum, participant.participation, QString::fromStdString(participant.role),
+                shaped(participant.id, offset)});
         }
     }
     for (auto it = impl_->edges.begin(); it != impl_->edges.end();) {
@@ -391,7 +470,7 @@ void DiagramView::synchronize() {
         auto [iterator, created] = impl_->nodes.try_emplace(ref, nullptr);
         auto*& node = iterator->second;
         if (created) {
-            node = new NodeItem(ref);
+            node = new NodeItem(ref, theme(impl_->theme_id));
             node->moved = [this](NodeItem* changed) { impl_->refresh_incident(changed); };
             node->constrain = [this, node](QPointF position) {
                 if (impl_->synchronizing) return position;
@@ -441,7 +520,7 @@ void DiagramView::synchronize() {
     for (const auto& [key, description] : desired_edges) {
         auto found = impl_->edges.find(key);
         if (found == impl_->edges.end()) {
-            auto* edge = new EdgeItem(description, impl_->nodes.at(description.from), impl_->nodes.at(description.to));
+            auto* edge = new EdgeItem(description, impl_->nodes.at(description.from), impl_->nodes.at(description.to), theme(impl_->theme_id));
             impl_->edges.emplace(key, edge);
             impl_->incident[description.from].insert(edge);
             impl_->incident[description.to].insert(edge);
@@ -514,6 +593,18 @@ void DiagramView::zoom_in() { impl_->zoom(zoom_factor() * 1.2); }
 void DiagramView::zoom_out() { impl_->zoom(zoom_factor() / 1.2); }
 void DiagramView::set_grid_visible(bool enabled) { impl_->grid = enabled; viewport()->update(); }
 void DiagramView::set_snap_enabled(bool enabled) { impl_->snap = enabled; }
+void DiagramView::set_theme(ThemeId id) {
+    const auto& colors = theme(id);
+    if (impl_->theme_id == colors.id) return;
+    impl_->theme_id = colors.id;
+    // Appearance is local presentation state. Repaint existing projections without
+    // touching revision, selection, viewport, or any in-progress pointer gesture.
+    for (auto& [ref, node] : impl_->nodes) { (void)ref; node->set_theme(colors); }
+    for (auto& [key, edge] : impl_->edges) { (void)key; edge->set_theme(colors); }
+    setBackgroundBrush(colors.canvas);
+    viewport()->update();
+}
+ThemeId DiagramView::theme_id() const { return impl_->theme_id; }
 double DiagramView::zoom_factor() const { return transform().m11(); }
 
 void DiagramView::delete_selection() {
@@ -549,19 +640,26 @@ void DiagramView::cancel_interaction() {
         impl_->drag_start.clear();
         if (auto* grabber = impl_->scene->mouseGrabberItem()) grabber->ungrabMouse();
     }
+    if (impl_->bending) {
+        // Discard the previewed bend; the next projection restores the stored one.
+        impl_->bending.reset();
+        impl_->displayed_revision.reset();
+        synchronize();
+    }
     impl_->connect_start.reset();
     impl_->panning = false;
     setCursor(impl_->active_tool == Tool::Pan ? Qt::OpenHandCursor : impl_->active_tool == Tool::Select ? Qt::ArrowCursor : Qt::CrossCursor);
 }
 
 void DiagramView::drawBackground(QPainter* painter, const QRectF& rect) {
-    painter->fillRect(rect, canvas_color);
+    const auto& colors = theme(impl_->theme_id);
+    painter->fillRect(rect, colors.canvas);
     if (!impl_->grid) return;
     // Keep the grid sparse when zoomed out; its iteration cost stays viewport-bound.
     const qreal step = zoom_factor() < 0.4 ? 100 : grid_spacing;
     const auto left = std::floor(rect.left() / step) * step;
     const auto top = std::floor(rect.top() / step) * step;
-    QPen pen(QColor(51, 62, 76));
+    QPen pen(colors.grid);
     pen.setCosmetic(true);
     painter->setPen(pen);
     for (qreal x = left; x <= rect.right(); x += step)
@@ -608,6 +706,16 @@ void DiagramView::mousePressEvent(QMouseEvent* event) {
         event->accept();
         return;
     }
+    // Grabbing a selected connector's handle reshapes it instead of starting a
+    // rubber band. The bend is previewed on the item and committed on release.
+    if (impl_->active_tool == Tool::Select) {
+        if (auto* edge = impl_->handle_at(event->position().toPoint())) {
+            impl_->bending = edge->descriptor.key;
+            setCursor(Qt::ClosedHandCursor);
+            event->accept();
+            return;
+        }
+    }
     // Qt's item selection uses Control; also accept Shift as advertised in UI.
     const auto original_modifiers = event->modifiers();
     if (original_modifiers.testFlag(Qt::ShiftModifier)) event->setModifiers(original_modifiers | Qt::ControlModifier);
@@ -631,6 +739,19 @@ void DiagramView::mousePressEvent(QMouseEvent* event) {
         }
     }
 }
+void DiagramView::mouseDoubleClickEvent(QMouseEvent* event) {
+    // Double-clicking a connector restores automatic routing. Nodes keep Qt's
+    // own double-click behaviour, so only clicks that miss every node count.
+    if (event->button() == Qt::LeftButton && impl_->active_tool == Tool::Select
+        && !impl_->node_at(event->position().toPoint())) {
+        if (auto* edge = impl_->edge_at(event->position().toPoint())) {
+            impl_->publish(impl_->editor.bend_connector(edge->descriptor.key, {}));
+            event->accept();
+            return;
+        }
+    }
+    QGraphicsView::mouseDoubleClickEvent(event);
+}
 void DiagramView::mouseMoveEvent(QMouseEvent* event) {
     if (impl_->panning) {
         const auto delta = event->position().toPoint() - impl_->pan_start;
@@ -640,12 +761,39 @@ void DiagramView::mouseMoveEvent(QMouseEvent* event) {
         event->accept();
         return;
     }
+    if (impl_->bending) {
+        const auto found = impl_->edges.find(*impl_->bending);
+        if (found != impl_->edges.end()) {
+            auto* edge = found->second;
+            // The handle slides along the connector's normal, so the bend is the
+            // pointer's signed distance from the straight line between endpoints.
+            const auto delta = mapToScene(event->position().toPoint()) - edge->midpoint();
+            const auto along = QPointF::dotProduct(delta, edge->perpendicular());
+            edge->descriptor.offset = std::clamp(along, -max_coordinate, max_coordinate);
+            edge->refresh();
+        }
+        event->accept();
+        return;
+    }
     QGraphicsView::mouseMoveEvent(event);
 }
 void DiagramView::mouseReleaseEvent(QMouseEvent* event) {
     if (impl_->panning && (event->button() == Qt::MiddleButton || event->button() == Qt::LeftButton)) {
         impl_->panning = false;
         setCursor(impl_->active_tool == Tool::Pan ? Qt::OpenHandCursor : impl_->active_tool == Tool::Select ? Qt::ArrowCursor : Qt::CrossCursor);
+        event->accept();
+        return;
+    }
+    if (impl_->bending) {
+        const auto key = *impl_->bending;
+        impl_->bending.reset();
+        setCursor(impl_->active_tool == Tool::Select ? Qt::ArrowCursor : Qt::CrossCursor);
+        const auto found = impl_->edges.find(key);
+        if (found != impl_->edges.end()) {
+            const auto result = impl_->editor.bend_connector(key, found->second->descriptor.offset);
+            if (!result) impl_->displayed_revision.reset(); // Restore the projection after a rejected bend.
+            impl_->publish(result);
+        }
         event->accept();
         return;
     }

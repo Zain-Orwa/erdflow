@@ -103,6 +103,65 @@ void group_movement_tests() {
     require(second_item->pos().x() == 99940, "Boundary includes full node width");
 }
 
+// Dragging a connector's handle must behave like dragging a node: previewed
+// live, committed once on release, and reversible in a single undo.
+void connector_shaping_tests() {
+    SequentialIds ids;
+    application::Editor editor(ids);
+    const auto student = std::get<domain::EntityId>(*editor.create_entity("Student", {-300, 0, 160, 80}).created);
+    const auto enrolled = std::get<domain::RelationshipId>(*editor.create_relationship("Enrolled", {-40, -20, 180, 100}).created);
+    require(editor.connect(enrolled, student), "Connect student");
+
+    desktop::DiagramView view(editor);
+    view.resize(1000, 700);
+    view.show();
+    view.actual_size();
+    view.centerOn(0, 0);
+    QApplication::processEvents();
+
+    // With no bend stored the handle sits midway between the two body centres.
+    const auto bend = (find_node(view, "Student")->sceneBoundingRect().center()
+                       + find_node(view, "Enrolled")->sceneBoundingRect().center()) / 2;
+    const auto from = view.mapFromScene(bend);
+
+    // An unselected connector shows no handle, so the same drag must not shape it.
+    mouse(view, QEvent::MouseButtonPress, from, Qt::LeftButton, Qt::LeftButton);
+    for (int step = 1; step <= 10; ++step)
+        mouse(view, QEvent::MouseMove, from + QPoint(0, step * 6), Qt::NoButton, Qt::LeftButton);
+    mouse(view, QEvent::MouseButtonRelease, from + QPoint(0, 60), Qt::LeftButton, Qt::NoButton);
+    require(editor.project().connectors.empty(), "An unselected connector has no grab handle");
+
+    auto* edge = find_edge(view);
+    edge->setSelected(true);
+    QApplication::processEvents();
+
+    const auto revision = editor.revision();
+    mouse(view, QEvent::MouseButtonPress, from, Qt::LeftButton, Qt::LeftButton);
+    for (int step = 1; step <= 10; ++step)
+        mouse(view, QEvent::MouseMove, from + QPoint(0, step * 6), Qt::NoButton, Qt::LeftButton);
+    // The bend is only a preview until the button is released.
+    require(editor.revision() == revision, "Dragging a handle does not commit until release");
+    mouse(view, QEvent::MouseButtonRelease, from + QPoint(0, 60), Qt::LeftButton, Qt::NoButton);
+
+    require(editor.project().connectors.size() == 1, "Release stores exactly one connector shape");
+    const auto shaped = editor.project().connectors.begin()->first;
+    require(editor.project().connectors.at(shaped) != 0, "The stored bend is non-zero");
+    require(editor.undo_label() == "Shape connector", "The drag is one named history entry");
+    require(editor.undo(), "Undo the bend");
+    require(editor.project().connectors.empty(), "One undo restores automatic routing");
+    require(editor.redo(), "Redo the bend");
+    require(editor.project().connectors.size() == 1, "Redo restores the shape");
+
+    // Double-clicking the connector restores automatic routing. The bend now
+    // lies where the pointer left it, which is the only point still on the path.
+    view.synchronize();
+    QApplication::processEvents();
+    const auto bent = from + QPoint(0, 60);
+    mouse(view, QEvent::MouseButtonDblClick, bent, Qt::LeftButton, Qt::LeftButton);
+    mouse(view, QEvent::MouseButtonRelease, bent, Qt::LeftButton, Qt::NoButton);
+    require(editor.project().connectors.empty(), "Double-click straightens the connector");
+}
+
 void synchronization_lifetime_tests() {
     SequentialIds ids;
     application::Editor editor(ids);
@@ -272,6 +331,7 @@ int main(int argc, char** argv) {
         require(view.zoom_factor() >= 0.15 && view.zoom_factor() <= 3, "Fit respects zoom bounds");
         group_movement_tests();
         synchronization_lifetime_tests();
+        connector_shaping_tests();
         std::cout << "Canvas tests passed\n";
     } catch (const std::exception& exception) {
         std::cerr << "Canvas test failed: " << exception.what() << '\n';

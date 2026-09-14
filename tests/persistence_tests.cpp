@@ -190,7 +190,7 @@ void malformed_json_and_text() {
 
 void strict_version_and_field_contract() {
     Fixture fixture;
-    for (const auto& version : {QJsonValue(0), QJsonValue(2), QJsonValue(1.5), QJsonValue("1"), QJsonValue(true)}) {
+    for (const auto& version : {QJsonValue(0), QJsonValue(3), QJsonValue(1.5), QJsonValue("1"), QJsonValue(true)}) {
         auto root = fixture.document();
         root["format_version"] = version;
         reject(bytes(root));
@@ -227,15 +227,21 @@ void strict_version_and_field_contract() {
         auto list = item["participants"].toArray(); auto p = list[0].toObject(); p["future_extension"] = 1; list[0] = p; item["participants"] = list;
     });
     reject(bytes(root));
+    // Derive the version text and assert it was found: hard-coding it let these
+    // cases silently pass against an unmodified document after a version bump.
+    const auto version_text = "\"format_version\":"
+        + QByteArray::number(fixture.document()["format_version"].toInt());
     auto duplicate = bytes(fixture.document());
-    duplicate.replace("\"format_version\":1", "\"format_version\":2,\"format_version\":1");
+    CHECK(duplicate.contains(version_text));
+    duplicate.replace(version_text, "\"format_version\":99," + version_text);
     reject(duplicate);
     duplicate = bytes(fixture.document());
+    CHECK(duplicate.contains("\"name\":\"University design\""));
     duplicate.replace("\"name\":\"University design\"", "\"name\":\"discarded\",\"name\":\"University design\"");
     reject(duplicate);
     // Escaped property names are the same key after JSON unescaping.
     duplicate = bytes(fixture.document());
-    duplicate.replace("\"format_version\":1", "\"format_version\":1,\"format_\\u0076ersion\":1");
+    duplicate.replace(version_text, version_text + ",\"format_\\u0076ersion\":1");
     reject(duplicate);
 }
 
@@ -271,6 +277,99 @@ void escaped_field_names() {
     }
     // A valid document must still load once escaped names are handled here.
     CHECK(ErdxProjectStore::decode(bytes(fixture.document())));
+}
+
+// Version 2 adds connector shapes. Version 1 files must still open, and the
+// shapes a user gives connectors must survive a full save/open cycle.
+void connector_shapes_persist_and_version_1_still_opens() {
+    Fixture fixture;
+    const auto side = fixture.editor.project().relationships.at(fixture.supervises).participants.front().id;
+    CHECK(fixture.editor.bend_connector(ConnectorRef{side}, 37.5));
+    CHECK(fixture.editor.bend_connector(ConnectorRef{fixture.address}, -12.25));
+
+    const auto encoded = ErdxProjectStore::encode(fixture.editor.project());
+    const auto root = QJsonDocument::fromJson(encoded).object();
+    CHECK(root["format_version"].toInt() == 2);
+    CHECK(root["project"].toObject()["connectors"].toArray().size() == 2);
+
+    const auto reopened = ErdxProjectStore::decode(encoded);
+    CHECK(reopened);
+    CHECK(reopened.project->connectors == fixture.editor.project().connectors);
+    CHECK(*reopened.project == fixture.editor.project());
+
+    // A version 1 document has no connectors field and opens with none.
+    auto legacy = fixture.document();
+    auto project = legacy["project"].toObject();
+    project.remove("connectors");
+    legacy["project"] = project;
+    legacy["format_version"] = 1;
+    const auto opened = ErdxProjectStore::decode(bytes(legacy));
+    CHECK(opened);
+    CHECK(opened.project->connectors.empty());
+    CHECK(opened.project->entities == fixture.editor.project().entities);
+    // Saving it again writes the current version without losing anything.
+    CHECK(QJsonDocument::fromJson(ErdxProjectStore::encode(*opened.project)).object()["format_version"].toInt() == 2);
+
+    // A version 1 document that carries connectors is refused, not silently read.
+    auto smuggled = fixture.document();
+    smuggled["format_version"] = 1;
+    reject(bytes(smuggled));
+    // A version 2 document without the field is equally refused.
+    auto missing = fixture.document();
+    project = missing["project"].toObject();
+    project.remove("connectors");
+    missing["project"] = project;
+    reject(bytes(missing));
+}
+
+void invalid_connector_shapes() {
+    Fixture fixture;
+    const auto side = fixture.editor.project().relationships.at(fixture.supervises).participants.front().id;
+    CHECK(fixture.editor.bend_connector(ConnectorRef{side}, 20));
+    const auto valid = uuid_text(side.value);
+
+    // The link must exist, and its type must be one the format defines.
+    for (const auto& link : {QJsonObject{{"type", "participant"}, {"id", uuid_text(fixture.employee.value)}},
+                             QJsonObject{{"type", "attribute"}, {"id", valid}},
+                             QJsonObject{{"type", "entity"}, {"id", valid}},
+                             QJsonObject{{"type", "relationship"}, {"id", valid}}}) {
+        auto root = fixture.document();
+        change_project(root, [&](QJsonObject& project) {
+            auto list = project["connectors"].toArray();
+            auto first = list[0].toObject();
+            first["link"] = link;
+            list[0] = first;
+            project["connectors"] = list;
+        });
+        reject(bytes(root));
+    }
+    // Offsets must be finite numbers inside the supported canvas.
+    for (const auto& offset : {QJsonValue("20"), QJsonValue(true), QJsonValue(QJsonValue::Null), QJsonValue(1e9)}) {
+        auto root = fixture.document();
+        change_project(root, [&](QJsonObject& project) {
+            auto list = project["connectors"].toArray();
+            auto first = list[0].toObject();
+            first["offset"] = offset;
+            list[0] = first;
+            project["connectors"] = list;
+        });
+        reject(bytes(root));
+    }
+    // Two shapes for one connector are contradictory rather than last-wins.
+    auto root = fixture.document();
+    change_project(root, [](QJsonObject& project) {
+        auto list = project["connectors"].toArray();
+        list.append(list.first());
+        project["connectors"] = list;
+    });
+    reject(bytes(root));
+    // Unknown and missing fields are refused like everywhere else.
+    root = fixture.document();
+    change_first(root, "connectors", [](QJsonObject& item) { item["future_extension"] = 1; });
+    reject(bytes(root));
+    root = fixture.document();
+    change_first(root, "connectors", [](QJsonObject& item) { item.remove("offset"); });
+    reject(bytes(root));
 }
 
 void invalid_identifiers_references_and_enums() {
@@ -437,6 +536,8 @@ int main() {
         {"malformed JSON and Unicode", malformed_json_and_text},
         {"strict version and field contract", strict_version_and_field_contract},
         {"escaped field name decoding", escaped_field_names},
+        {"connector shapes persist across versions", connector_shapes_persist_and_version_1_still_opens},
+        {"invalid connector shapes", invalid_connector_shapes},
         {"invalid IDs, references, enums and layout", invalid_identifiers_references_and_enums},
         {"bounded input and structural depth", resource_limits},
         {"failed saves preserve destination", failed_saves_preserve_existing_destination},
