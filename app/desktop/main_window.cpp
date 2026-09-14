@@ -270,15 +270,18 @@ void MainWindow::build_actions() {
     view->addAction("Actual size", QKeySequence("Ctrl+1"), canvas_, &DiagramView::actual_size);
     view->addAction("Zoom in", QKeySequence::ZoomIn, canvas_, &DiagramView::zoom_in);
     view->addAction("Zoom out", QKeySequence::ZoomOut, canvas_, &DiagramView::zoom_out);
+    // Dragging follows the pointer continuously by default. Snapping quantises
+    // movement to the grid step, which reads as stuttering rather than as
+    // alignment help, so it stays available but off until it is asked for.
     for (bool snap : {false, true}) {
         auto* action = view->addAction(snap ? "Snap to grid" : "Show grid");
         action->setCheckable(true);
-        action->setChecked(true);
+        action->setChecked(!snap);
         connect(action, &QAction::toggled, this, [this, snap](bool checked) {
             if (snap) canvas_->set_snap_enabled(checked); else canvas_->set_grid_visible(checked);
         });
     }
-    canvas_->set_snap_enabled(true);
+    canvas_->set_snap_enabled(false);
     canvas_->set_grid_visible(true);
     auto* help = menuBar()->addMenu("&Help");
     help->addAction("Quick guide", this, [this] {
