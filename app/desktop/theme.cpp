@@ -212,6 +212,13 @@ QToolBar#diagramTools QToolButton { text-align: left; padding: 6px 8px; }
 QToolButton#themeButton { border-color: @border@; background: @panel@; padding: 5px 22px 5px 9px; }
 QToolButton#themeButton::menu-indicator { subcontrol-origin: padding; subcontrol-position: center right; right: 4px; width: 12px; }
 QToolButton#themeButton:hover, QToolButton#themeButton:pressed { border-color: @accent@; background: @base@; color: @text@; }
+QToolBar#ribbonTabs { background: @panel@; border-bottom: 1px solid @border@; padding: 0px; spacing: 0px; }
+QToolBar#ribbonTabs QToolButton { background: transparent; color: @text@; border: none; border-bottom: 2px solid transparent; border-radius: 0px; padding: 6px 13px 4px 13px; }
+QToolBar#ribbonTabs QToolButton:hover { background: @hover@; color: @text@; border-bottom-color: @hoveredge@; }
+QToolBar#ribbonTabs QToolButton:checked, QToolBar#ribbonTabs QToolButton:pressed { background: @window@; color: @accent@; border-bottom-color: @accent@; }
+QToolBar#ribbonTabs QToolButton::menu-indicator { image: none; width: 0px; }
+QToolBar#designTools QToolButton { padding: 5px 22px 5px 9px; }
+QToolBar#designTools QToolButton::menu-indicator { subcontrol-origin: padding; subcontrol-position: center right; right: 4px; width: 12px; }
 QDockWidget { background: @panel@; color: @text@; }
 QDockWidget::title { background: @window@; color: @text@; padding: 6px 8px; border-bottom: 1px solid @border@; font-weight: 600; }
 QDockWidget::close-button, QDockWidget::float-button { border: 1px solid transparent; padding: 2px; }
@@ -284,6 +291,9 @@ QColor hover_surface(const Theme& colors) {
     }
     return mix(colors.panel, colors.accent, 0.04);
 }
+
+QColor note_surface(const Theme& colors) { return mix(colors.canvas, colors.warning, 0.22); }
+QColor over(const QColor& surface, const QColor& paint) { return mix(surface, paint, paint.alphaF()); }
 
 QColor readable_on(const QColor& surface) {
     return relative_luminance(surface) > 0.36 ? QColor(0x1a, 0x1a, 0x1a) : QColor(0xff, 0xff, 0xff);

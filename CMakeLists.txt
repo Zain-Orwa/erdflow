@@ -35,7 +35,7 @@ target_link_libraries(erdflow_infrastructure PUBLIC erdflow_application Qt6::Cor
 add_library(erdflow_canvas app/desktop/diagram_view.cpp app/desktop/theme.cpp)
 target_link_libraries(erdflow_canvas PUBLIC erdflow_application Qt6::Widgets PRIVATE erdflow_warnings)
 
-add_library(erdflow_desktop app/desktop/main_window.cpp app/desktop/icons.cpp)
+add_library(erdflow_desktop app/desktop/main_window.cpp app/desktop/ribbon.cpp app/desktop/icons.cpp)
 target_link_libraries(erdflow_desktop PUBLIC erdflow_canvas Qt6::Svg PRIVATE erdflow_warnings)
 # The icon set is compiled in rather than read from disk, so a built ERDFlow is
 # one file that cannot be started without its own artwork. Qt6::Svg brings the
@@ -46,7 +46,7 @@ qt_add_resources(erdflow_desktop "erdflow_icons"
     FILES
         assets/icons/select.svg assets/icons/entity.svg assets/icons/attribute.svg
         assets/icons/relationship.svg assets/icons/isa.svg assets/icons/connect.svg
-        assets/icons/note.svg assets/icons/comment.svg assets/icons/pan.svg
+        assets/icons/note.svg assets/icons/comment.svg assets/icons/picture.svg assets/icons/pan.svg
         assets/icons/zoom.svg assets/icons/new-project.svg assets/icons/open.svg
         assets/icons/save.svg assets/icons/import.svg assets/icons/export.svg
         assets/icons/undo.svg assets/icons/redo.svg assets/icons/duplicate.svg
@@ -54,6 +54,7 @@ qt_add_resources(erdflow_desktop "erdflow_icons"
         assets/icons/schema.svg assets/icons/physical.svg assets/icons/sql.svg
         assets/icons/data.svg assets/icons/explorer.svg assets/icons/properties.svg
         assets/icons/validate.svg assets/icons/theme.svg assets/icons/settings.svg
+        assets/icons/full-view.svg
 )
 
 qt_add_resources(erdflow_desktop "erdflow_icons_on_dark"
@@ -62,7 +63,7 @@ qt_add_resources(erdflow_desktop "erdflow_icons_on_dark"
     FILES
         assets/icons-on-dark/select.svg assets/icons-on-dark/entity.svg assets/icons-on-dark/attribute.svg
         assets/icons-on-dark/relationship.svg assets/icons-on-dark/isa.svg assets/icons-on-dark/connect.svg
-        assets/icons-on-dark/note.svg assets/icons-on-dark/comment.svg assets/icons-on-dark/pan.svg
+        assets/icons-on-dark/note.svg assets/icons-on-dark/comment.svg assets/icons-on-dark/picture.svg assets/icons-on-dark/pan.svg
         assets/icons-on-dark/zoom.svg assets/icons-on-dark/new-project.svg assets/icons-on-dark/open.svg
         assets/icons-on-dark/save.svg assets/icons-on-dark/import.svg assets/icons-on-dark/export.svg
         assets/icons-on-dark/undo.svg assets/icons-on-dark/redo.svg assets/icons-on-dark/duplicate.svg
@@ -70,6 +71,7 @@ qt_add_resources(erdflow_desktop "erdflow_icons_on_dark"
         assets/icons-on-dark/schema.svg assets/icons-on-dark/physical.svg assets/icons-on-dark/sql.svg
         assets/icons-on-dark/data.svg assets/icons-on-dark/explorer.svg assets/icons-on-dark/properties.svg
         assets/icons-on-dark/validate.svg assets/icons-on-dark/theme.svg assets/icons-on-dark/settings.svg
+        assets/icons-on-dark/full-view.svg
 )
 
 

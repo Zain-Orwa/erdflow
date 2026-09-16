@@ -49,8 +49,15 @@ std::size_t payload(const Relationship& value) {
 std::size_t payload(const Specialization& value) {
     return value.name.capacity() + value.description.capacity() + value.subtypes.capacity() * sizeof(EntityId);
 }
+// A picture's bytes are the one large thing history can hold, so a deleted
+// picture counts its image against the undo budget like any other payload.
+std::size_t payload(const Picture& value) {
+    return value.name.capacity() + value.description.capacity() + value.image.capacity();
+}
+std::size_t payload(const Note& value) { return value.name.capacity() + value.description.capacity(); }
 std::size_t payload(const Rect&) { return 0; }
 std::size_t payload(const Colour&) { return 0; }
+std::size_t payload(std::uint8_t) { return 0; }
 std::size_t payload(double) { return 0; }
 // A connector holds its bend and joins inline; only the route is on the heap.
 std::size_t payload(const Connector& value) { return value.waypoints.capacity() * sizeof(Point); }
@@ -76,9 +83,12 @@ struct Delta {
     Changes<AttributeId, Attribute> attributes;
     Changes<RelationshipId, Relationship> relationships;
     Changes<SpecializationId, Specialization> specializations;
+    Changes<PictureId, Picture> pictures;
+    Changes<NoteId, Note> notes;
     Changes<ElementRef, Rect> layout;
     Changes<ConnectorRef, Connector> connectors;
     Changes<ElementRef, Colour> colours;
+    Changes<ElementRef, std::uint8_t> transparency;
     std::size_t bytes = 0;
     std::uint64_t before_state = 0;
     std::uint64_t after_state = 0;
@@ -86,7 +96,9 @@ struct Delta {
     [[nodiscard]] bool empty() const {
         return !project_name && entities.keys.empty() && attributes.keys.empty()
             && relationships.keys.empty() && specializations.keys.empty()
-            && layout.keys.empty() && connectors.keys.empty() && colours.keys.empty();
+            && pictures.keys.empty() && notes.keys.empty()
+            && layout.keys.empty() && connectors.keys.empty() && colours.keys.empty()
+            && transparency.keys.empty();
     }
     void toggle(Project& project) {
         if (project_name) project.name.swap(*project_name);
@@ -94,17 +106,21 @@ struct Delta {
         attributes.toggle(project.attributes);
         relationships.toggle(project.relationships);
         specializations.toggle(project.specializations);
+        pictures.toggle(project.pictures);
+        notes.toggle(project.notes);
         layout.toggle(project.layout);
         connectors.toggle(project.connectors);
         colours.toggle(project.colours);
+        transparency.toggle(project.transparency);
     }
     [[nodiscard]] std::size_t estimate(const Project& project) const {
         return sizeof(Delta) + sizeof(std::unique_ptr<Delta>) + label.capacity()
             + (project_name ? project_name->capacity() + project.name.capacity() : 0)
             + cost(entities, project.entities) + cost(attributes, project.attributes)
             + cost(relationships, project.relationships) + cost(specializations, project.specializations)
+            + cost(pictures, project.pictures) + cost(notes, project.notes)
             + cost(layout, project.layout) + cost(connectors, project.connectors)
-            + cost(colours, project.colours);
+            + cost(colours, project.colours) + cost(transparency, project.transparency);
     }
 };
 
@@ -232,6 +248,9 @@ EditResult Editor::replace_project(Project project) {
             identities.insert(id.value);
             for (const auto& participant : relationship.participants) identities.insert(participant.id.value);
         }
+        for (const auto& [id, specialization] : project.specializations) { (void)specialization; identities.insert(id.value); }
+        for (const auto& [id, picture] : project.pictures) { (void)picture; identities.insert(id.value); }
+        for (const auto& [id, note] : project.notes) { (void)note; identities.insert(id.value); }
         impl_->project = std::move(project);
         impl_->issued.swap(identities);
         impl_->history.clear();
@@ -272,7 +291,7 @@ EditResult Editor::create_attribute(std::string name, Rect rect, std::optional<A
 EditResult Editor::create_relationship(std::string name, Rect rect) {
     return impl_->edit("Create relationship", [&](Delta& delta) {
         const RelationshipId id{impl_->next_id()};
-        delta.relationships.put(id, Relationship{id, std::move(name), {}, false, {}});
+        delta.relationships.put(id, Relationship{id, std::move(name), {}, false, false, {}});
         delta.layout.put(ElementRef{id}, rect);
         return EditResult{true, {}, ElementRef{id}, {}};
     });
@@ -284,6 +303,22 @@ EditResult Editor::create_specialization(std::string name, Rect rect, Inheritanc
         const SpecializationId id{impl_->next_id()};
         delta.specializations.put(id, Specialization{id, std::move(name), {}, direction, {}, {},
                                                      Disjointness::Disjoint, Completeness::Partial});
+        delta.layout.put(ElementRef{id}, rect);
+        return EditResult{true, {}, ElementRef{id}, {}};
+    });
+}
+EditResult Editor::create_picture(std::string name, Rect rect, std::vector<std::uint8_t> image) {
+    return impl_->edit("Insert picture", [&](Delta& delta) {
+        const PictureId id{impl_->next_id()};
+        delta.pictures.put(id, Picture{id, std::move(name), {}, std::move(image)});
+        delta.layout.put(ElementRef{id}, rect);
+        return EditResult{true, {}, ElementRef{id}, {}};
+    });
+}
+EditResult Editor::create_note(std::string name, Rect rect, std::string text) {
+    return impl_->edit("Insert note", [&](Delta& delta) {
+        const NoteId id{impl_->next_id()};
+        delta.notes.put(id, Note{id, std::move(name), std::move(text)});
         delta.layout.put(ElementRef{id}, rect);
         return EditResult{true, {}, ElementRef{id}, {}};
     });
@@ -365,6 +400,14 @@ template<class Edit> EditResult edit_element(const Project& project, Delta& delt
             auto value = project.specializations.at(id);
             edit(value);
             if (value != project.specializations.at(id)) delta.specializations.put(id, std::move(value));
+        } else if constexpr (std::is_same_v<T, PictureId>) {
+            auto value = project.pictures.at(id);
+            edit(value);
+            if (value != project.pictures.at(id)) delta.pictures.put(id, std::move(value));
+        } else if constexpr (std::is_same_v<T, NoteId>) {
+            auto value = project.notes.at(id);
+            edit(value);
+            if (value != project.notes.at(id)) delta.notes.put(id, std::move(value));
         } else {
             auto value = project.relationships.at(id);
             edit(value);
@@ -393,7 +436,7 @@ EditResult Editor::set_attribute_kind(AttributeId id, AttributeKind kind) {
         return EditResult{};
     });
 }
-EditResult Editor::set_attribute_owner(AttributeId id, std::optional<AttributeOwner> owner) {
+EditResult Editor::set_attribute_owner(AttributeId id, std::optional<AttributeOwner> owner, Connector shape) {
     return impl_->edit("Change attribute owner", [&](Delta& delta) {
         const auto found = project().attributes.find(id);
         if (found == project().attributes.end()) return failure("The attribute no longer exists.");
@@ -404,10 +447,13 @@ EditResult Editor::set_attribute_owner(AttributeId id, std::optional<AttributeOw
             // Detaching removes the link, and with it any shape given to it.
             if (!owner && project().connectors.contains(ConnectorRef{id})) delta.connectors.remove(id);
         }
+        // A link made by clicking two points is pinned to them here, in the
+        // same edit, so one undo takes back the link and its joins together.
+        if (owner && !shape.automatic()) delta.connectors.put(ConnectorRef{id}, std::move(shape));
         return EditResult{};
     });
 }
-EditResult Editor::connect(RelationshipId relationship, ParticipantTarget target) {
+EditResult Editor::connect(RelationshipId relationship, ParticipantTarget target, Connector shape) {
     return impl_->edit("Connect participant", [&](Delta& delta) {
         const auto found = project().relationships.find(relationship);
         if (found == project().relationships.end() || !exists(project(), target_ref(target)))
@@ -416,7 +462,27 @@ EditResult Editor::connect(RelationshipId relationship, ParticipantTarget target
         auto value = found->second;
         value.participants.push_back({id, target, Cardinality::Many, Participation::Partial, {}});
         delta.relationships.put(relationship, std::move(value));
+        if (!shape.automatic()) delta.connectors.put(ConnectorRef{id}, std::move(shape));
         return EditResult{true, {}, {}, id};
+    });
+}
+EditResult Editor::relate(EntityId first, EntityId second, Rect body, std::string name,
+                          Connector first_shape, Connector second_shape) {
+    return impl_->edit("Relate entities", [&](Delta& delta) {
+        if (!project().entities.contains(first) || !project().entities.contains(second))
+            return failure("One of those entities no longer exists.");
+        const RelationshipId id{impl_->next_id()};
+        const ParticipantId first_side{impl_->next_id()};
+        const ParticipantId second_side{impl_->next_id()};
+        Relationship relationship{id, std::move(name), {}, false, false, {}};
+        relationship.participants.push_back({first_side, first, Cardinality::Many, Participation::Partial, {}});
+        relationship.participants.push_back({second_side, second, Cardinality::Many, Participation::Partial, {}});
+        delta.relationships.put(id, std::move(relationship));
+        delta.layout.put(ElementRef{id}, body);
+        // Each side may be pinned where its entity was clicked, in this same edit.
+        if (!first_shape.automatic()) delta.connectors.put(ConnectorRef{first_side}, std::move(first_shape));
+        if (!second_shape.automatic()) delta.connectors.put(ConnectorRef{second_side}, std::move(second_shape));
+        return EditResult{true, {}, ElementRef{id}, {}};
     });
 }
 EditResult Editor::set_associative(RelationshipId relationship, bool associative, std::optional<Rect> body) {
@@ -431,6 +497,32 @@ EditResult Editor::set_associative(RelationshipId relationship, bool associative
             const ElementRef ref{relationship};
             const auto layout = project().layout.find(ref);
             if (layout != project().layout.end() && layout->second != *body) delta.layout.put(ref, *body);
+        }
+        return EditResult{};
+    });
+}
+EditResult Editor::set_entity_weak(EntityId id, bool weak) {
+    return impl_->edit("Change entity kind", [&](Delta& delta) {
+        const auto found = project().entities.find(id);
+        if (found == project().entities.end()) return failure("The entity no longer exists.");
+        if (found->second.weak == weak) return EditResult{};
+        auto value = found->second;
+        value.weak = weak;
+        delta.entities.put(id, std::move(value));
+        return EditResult{};
+    });
+}
+EditResult Editor::set_relationship_kind(RelationshipId relationship, RelationshipKind kind, std::optional<Rect> body) {
+    return impl_->edit("Change relationship kind", [&](Delta& delta) {
+        const auto found = project().relationships.find(relationship);
+        if (found == project().relationships.end()) return failure("The relationship no longer exists.");
+        auto value = found->second;
+        value.associative = kind == RelationshipKind::Associative;
+        value.identifying = kind == RelationshipKind::Identifying;
+        if (value != found->second) delta.relationships.put(relationship, std::move(value));
+        if (body) {
+            const auto layout = project().layout.find(ElementRef{relationship});
+            if (layout == project().layout.end() || layout->second != *body) delta.layout.put(ElementRef{relationship}, *body);
         }
         return EditResult{};
     });
@@ -562,6 +654,22 @@ EditResult Editor::recolour(const std::vector<ElementRef>& elements, std::option
     });
 }
 
+EditResult Editor::set_transparency(const std::vector<ElementRef>& elements, std::uint8_t percent) {
+    return impl_->edit("Set transparency", [&](Delta& delta) {
+        if (percent > max_transparency) return failure("Transparency is a percentage from 0 to 100.");
+        for (const auto& ref : elements)
+            if (!exists(project(), ref)) return failure("One of those elements no longer exists.");
+        for (const auto& ref : elements) {
+            const auto found = project().transparency.find(ref);
+            const std::uint8_t current = found == project().transparency.end() ? 0 : found->second;
+            if (current == percent) continue;
+            if (percent == 0) delta.transparency.remove(ref);
+            else delta.transparency.put(ref, percent);
+        }
+        return EditResult{};
+    });
+}
+
 EditResult Editor::route_connector(ConnectorRef ref, std::vector<domain::Point> waypoints) {
     return impl_->edit(waypoints.empty() ? "Straighten connector" : "Route connector", [&](Delta& delta) {
         if (!connector_exists(project(), ref)) return failure("That connector no longer exists.");
@@ -572,6 +680,13 @@ EditResult Editor::route_connector(ConnectorRef ref, std::vector<domain::Point> 
         if (!waypoints.empty()) shaped.offset = 0;
         shaped.waypoints = std::move(waypoints);
         return store_connector(project(), delta, ref, shaped);
+    });
+}
+
+EditResult Editor::shape_connector(ConnectorRef ref, Connector shape) {
+    return impl_->edit("Shape connector", [&](Delta& delta) {
+        if (!connector_exists(project(), ref)) return failure("That connector no longer exists.");
+        return store_connector(project(), delta, ref, shape);
     });
 }
 
@@ -633,6 +748,8 @@ EditResult Editor::erase(const std::vector<ElementRef>& elements,
                 if constexpr (std::is_same_v<T, EntityId>) delta.entities.remove(id);
                 else if constexpr (std::is_same_v<T, AttributeId>) { delta.attributes.remove(id); drop_connector(id); }
                 else if constexpr (std::is_same_v<T, SpecializationId>) delta.specializations.remove(id);
+                else if constexpr (std::is_same_v<T, PictureId>) delta.pictures.remove(id);
+                else if constexpr (std::is_same_v<T, NoteId>) delta.notes.remove(id);
                 else {
                     delta.relationships.remove(id);
                     for (const auto& participant : project().relationships.at(id).participants)
@@ -644,6 +761,7 @@ EditResult Editor::erase(const std::vector<ElementRef>& elements,
             // so undo restores the element and its colour together and
             // validation never sees one pointing at something that is gone.
             if (project().colours.contains(ref)) delta.colours.remove(ref);
+            if (project().transparency.contains(ref)) delta.transparency.remove(ref);
         }
         // A triangle without its supertype means nothing, so it goes with it;
         // a deleted subtype is simply detached from the ones that survive.
@@ -656,6 +774,7 @@ EditResult Editor::erase(const std::vector<ElementRef>& elements,
                 // and its layout but left its colour, and validation then
                 // refused the whole deletion for a colour with no element.
                 if (project().colours.contains(ElementRef{id})) delta.colours.remove(ElementRef{id});
+                if (project().transparency.contains(ElementRef{id})) delta.transparency.remove(ElementRef{id});
                 continue;
             }
             const auto cut = cuts.find(id);
@@ -726,6 +845,14 @@ EditResult Editor::duplicate(const std::vector<ElementRef>& elements, double dx,
                         if (const auto found = mapping.find(ElementRef{subtype}); found != mapping.end())
                             subtype = std::get<EntityId>(found->second);
                     delta.specializations.put(new_id, std::move(value));
+                } else if constexpr (std::is_same_v<T, PictureId>) {
+                    auto value = project().pictures.at(id);
+                    value.id = new_id;
+                    delta.pictures.put(new_id, std::move(value));
+                } else if constexpr (std::is_same_v<T, NoteId>) {
+                    auto value = project().notes.at(id);
+                    value.id = new_id;
+                    delta.notes.put(new_id, std::move(value));
                 } else {
                     auto value = project().relationships.at(id);
                     value.id = new_id;
@@ -753,6 +880,8 @@ EditResult Editor::duplicate(const std::vector<ElementRef>& elements, double dx,
             // colour the original was given along with its shape.
             const auto colour = project().colours.find(original);
             if (colour != project().colours.end()) delta.colours.put(replacement, colour->second);
+            const auto faded = project().transparency.find(original);
+            if (faded != project().transparency.end()) delta.transparency.put(replacement, faded->second);
         }
         EditResult result;
         if (!elements.empty()) result.created = mapping.at(elements.front());

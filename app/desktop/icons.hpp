@@ -13,7 +13,8 @@ namespace erdflow::desktop {
 // looks like the entity it places.
 enum class Glyph {
     New, Open, Save, Undo, Redo, Select, Entity, Attribute, Relationship,
-    Isa, Connect, Pan, Fit, Check, Duplicate, Rename, Delete, Theme
+    Isa, Connect, Pan, Fit, Check, Duplicate, Rename, Delete, Theme,
+    Picture, Note, FullView
 };
 
 // Which of the two sets a glyph is taken from. The painted one follows the

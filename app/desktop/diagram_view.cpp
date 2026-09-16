@@ -11,11 +11,17 @@
 #include <QKeySequence>
 #include <QLineEdit>
 #include <QMouseEvent>
+#include <QNativeGestureEvent>
 #include <QPainter>
 #include <QPainterPathStroker>
+#include <QTransform>
+#include <QHBoxLayout>
+#include <QLabel>
 #include <QScrollBar>
+#include <QSlider>
 #include <QStyleOptionGraphicsItem>
 #include <QWheelEvent>
+#include <QWidgetAction>
 
 #include <algorithm>
 #include <array>
@@ -65,6 +71,15 @@ QIcon swatch_icon(const QColor& colour) {
     painter.setPen(QPen(colour.darker(150), 1.2));
     painter.drawEllipse(QRectF(1.5, 1.5, 13, 13));
     return QIcon(pixmap);
+}
+
+// The shape a new link is given when its ends are pinned where the user
+// clicked. Either end may be left to route itself.
+Connector joined(std::optional<double> owner, std::optional<double> child) {
+    Connector shape;
+    shape.owner_anchor = owner;
+    shape.child_anchor = child;
+    return shape;
 }
 
 QPointF normal(const QPointF& delta) {
@@ -126,16 +141,28 @@ class NodeItem final : public QGraphicsItem {
 public:
     NodeItem(ElementRef reference, const Theme& colors) : ref(std::move(reference)) {
         setFlags(ItemIsSelectable | ItemIsMovable | ItemSendsGeometryChanges);
-        setZValue(1);
+        // A picture lies beneath the lines and the elements, so it can serve
+        // as a background they are drawn over; everything else sits above the lines.
+        setZValue(std::holds_alternative<PictureId>(ref) ? -2 : 1);
         set_theme(colors);
     }
 
     ElementRef ref;
     QString label;
+    // A note's text, drawn beneath its title.
+    QString body;
     AttributeKind attribute_kind = AttributeKind::Normal;
     // An associative relationship is drawn as its diamond inside a rectangle,
     // because it takes part in further relationships as an entity would.
     bool associative = false;
+    // A weak entity wears a second border and an identifying relationship a
+    // second diamond: the pair that identify together are marked alike. A
+    // weak entity's key is only a partial key, underlined in dashes.
+    bool weak = false;
+    bool identifying = false;
+    bool partial_key = false;
+    // Whether an ISA triangle's subtypes are disjoint, for the letter it wears.
+    bool disjoint = true;
     // An ISA triangle points up when generalising and down when specialising.
     bool generalising = false;
     std::function<void(NodeItem*)> moved;
@@ -159,6 +186,20 @@ public:
         apply_colors();
     }
     [[nodiscard]] const std::optional<QColor>& chosen_colour() const { return chosen_; }
+    // How see-through the surface is, in percent, over whatever colour it has.
+    void set_transparency(int percent) {
+        if (transparency_ == percent) return;
+        transparency_ = percent;
+        apply_colors();
+    }
+    [[nodiscard]] int transparency() const { return transparency_; }
+
+    // A picture's own pixels, decoded once from the bytes the model holds.
+    void set_image(const std::vector<std::uint8_t>& bytes) {
+        image_.loadFromData(bytes.data(), static_cast<uint>(bytes.size()));
+        update();
+    }
+    [[nodiscard]] bool has_image() const { return !image_.isNull(); }
 
     void apply_colors() {
         const auto& colors = *colors_;
@@ -167,6 +208,14 @@ public:
         if (std::holds_alternative<EntityId>(ref)) {
             fill_ = colors.entity_fill;
             border_ = colors.entity_border;
+        } else if (std::holds_alternative<PictureId>(ref)) {
+            // A picture is its own surface. A frame is drawn only around a
+            // selection or a chosen colour, which gives it a mount to sit on.
+            fill_ = colors.panel;
+            border_ = colors.border;
+        } else if (std::holds_alternative<NoteId>(ref)) {
+            fill_ = note_surface(colors);
+            border_ = colors.warning;
         } else if (std::holds_alternative<SpecializationId>(ref)) {
             fill_ = colors.relationship_fill;
             border_ = colors.relationship_border;
@@ -179,6 +228,9 @@ public:
             border_ = as_entity ? colors.entity_border : colors.relationship_border;
         }
         text_ = colors.node_text;
+        // A note's surface is derived rather than chosen by the theme, so its
+        // text is picked against it the way a chosen colour's is.
+        if (std::holds_alternative<NoteId>(ref)) text_ = readable_on(fill_);
         if (chosen_) {
             // A chosen colour replaces the fill and takes the border with it, or
             // the surface would sit inside an outline from a palette it has left.
@@ -187,6 +239,13 @@ public:
             // The label has to stay readable on a colour the theme knows nothing
             // about, so it is chosen against the surface rather than the theme.
             text_ = readable_on(*chosen_);
+        }
+        if (transparency_ > 0) {
+            // The fill fades; the outline stays, so the shape can still be read.
+            // The label is chosen against what the eye sees, which is the
+            // canvas showing through the faded surface.
+            fill_.setAlphaF(static_cast<float>(1.0 - transparency_ / 100.0));
+            text_ = readable_on(over(colors.canvas, fill_));
         }
         selection_ = colors.accent;
         update();
@@ -198,8 +257,10 @@ public:
     // associative one. This is what carries the fill.
     QPainterPath body_path() const {
         QPainterPath path;
-        if (std::holds_alternative<EntityId>(ref)) {
+        if (std::holds_alternative<EntityId>(ref) || std::holds_alternative<PictureId>(ref)) {
             path.addRect(bounds_);
+        } else if (std::holds_alternative<NoteId>(ref)) {
+            path.addRoundedRect(bounds_, 6, 6);
         } else if (std::holds_alternative<AttributeId>(ref)) {
             path.addEllipse(bounds_);
         } else if (std::holds_alternative<SpecializationId>(ref)) {
@@ -216,12 +277,17 @@ public:
             }
             path.closeSubpath();
         } else {
-            path.moveTo(bounds_.center().x(), bounds_.top());
-            path.lineTo(bounds_.right(), bounds_.center().y());
-            path.lineTo(bounds_.center().x(), bounds_.bottom());
-            path.lineTo(bounds_.left(), bounds_.center().y());
-            path.closeSubpath();
+            path = diamond(bounds_);
         }
+        return path;
+    }
+    static QPainterPath diamond(const QRectF& box) {
+        QPainterPath path;
+        path.moveTo(box.center().x(), box.top());
+        path.lineTo(box.right(), box.center().y());
+        path.lineTo(box.center().x(), box.bottom());
+        path.lineTo(box.left(), box.center().y());
+        path.closeSubpath();
         return path;
     }
     QPainterPath shape() const override {
@@ -309,8 +375,104 @@ public:
         }
         return center + delta / divisor;
     }
+    // A picture sits straight on the canvas; only a selection or a chosen
+    // colour draws a frame, and the colour gives it a mount to sit on.
+    void paint_picture(QPainter* painter) {
+        const bool mounted = chosen_.has_value();
+        // A faded picture is the whole picture faded, mount and all.
+        painter->setOpacity(1.0 - transparency_ / 100.0);
+        if (mounted || isSelected()) {
+            painter->setPen(QPen(isSelected() ? selection_ : border_, isSelected() ? 2.4 : 1.6));
+            painter->setBrush(mounted ? QBrush(fill_) : QBrush(Qt::NoBrush));
+            painter->drawRect(bounds_);
+        }
+        if (image_.isNull()) {
+            painter->setPen(text_);
+            painter->drawText(bounds_, Qt::AlignCenter, QStringLiteral("Picture"));
+            return;
+        }
+        // Fitted to the body without being stretched, so resizing the body
+        // never distorts the picture, and drawn from the pixels themselves so
+        // zooming in shows more of them rather than a scaled copy.
+        const auto inset = mounted ? bounds_.adjusted(6, 6, -6, -6) : bounds_;
+        const auto size = QSizeF(image_.size()).scaled(inset.size(), Qt::KeepAspectRatio);
+        const QRectF target(inset.center() - QPointF(size.width() / 2, size.height() / 2), size);
+        painter->setRenderHint(QPainter::SmoothPixmapTransform);
+        painter->drawPixmap(target, image_, QRectF(QPointF(0, 0), QSizeF(image_.size())));
+    }
+    // A note: its title in bold across the top, and its text wrapped beneath.
+    void paint_note(QPainter* painter) {
+        painter->setPen(QPen(isSelected() ? selection_ : border_, isSelected() ? 2.4 : 1.6));
+        painter->setBrush(fill_);
+        painter->drawPath(body_path());
+        const auto inner = bounds_.adjusted(10, 8, -10, -8);
+        painter->setClipRect(bounds_.adjusted(2, 2, -2, -2));
+        painter->setPen(text_);
+        auto font = painter->font();
+        qreal used = 0;
+        if (!label.isEmpty()) {
+            font.setPointSizeF(12.5);
+            font.setWeight(QFont::Bold);
+            painter->setFont(font);
+            const QRectF title(inner.left(), inner.top(), inner.width(), QFontMetricsF(font).height() * 1.25);
+            painter->drawText(title, Qt::AlignLeft | Qt::AlignVCenter,
+                              QFontMetricsF(font).elidedText(label, Qt::ElideRight, title.width()));
+            used = title.height() + 3;
+        }
+        font.setPointSizeF(11);
+        font.setWeight(QFont::Normal);
+        painter->setFont(font);
+        painter->drawText(QRectF(inner.left(), inner.top() + used, inner.width(), inner.height() - used),
+                          Qt::AlignLeft | Qt::AlignTop | Qt::TextWordWrap, body);
+    }
+    // The element's own shape, drawn small and without its name. Anything that
+    // wants to show what this element is uses this, so what it shows and what
+    // the canvas draws are the same drawing and cannot drift apart.
+    void paint_shape(QPainter* painter, const QRectF& into, bool fill_the_room = false) const {
+        if (bounds_.width() < 1 || bounds_.height() < 1 || into.isEmpty()) return;
+        // The shape is mapped into the room rather than the painter scaled, so
+        // an outline keeps its weight even where the room is a different shape
+        // from the element and the two axes are stretched by different amounts.
+        const auto across = into.width() / bounds_.width();
+        const auto down = into.height() / bounds_.height();
+        const auto sideways = fill_the_room ? across : std::min(across, down);
+        const auto upright = fill_the_room ? down : std::min(across, down);
+        QTransform into_place;
+        into_place.translate(into.center().x(), into.center().y());
+        into_place.scale(sideways, upright);
+        into_place.translate(-bounds_.center().x(), -bounds_.center().y());
+        painter->save();
+        if (std::holds_alternative<PictureId>(ref) && !image_.isNull()) {
+            // A picture is its own picture, fitted into the same room.
+            const auto room = into_place.mapRect(bounds_);
+            const auto fitted = QSizeF(image_.size()).scaled(room.size(), Qt::KeepAspectRatio);
+            painter->setRenderHint(QPainter::SmoothPixmapTransform);
+            painter->drawPixmap(QRectF(room.center() - QPointF(fitted.width() / 2, fitted.height() / 2), fitted),
+                                image_, QRectF(QPointF(0, 0), QSizeF(image_.size())));
+            painter->restore();
+            return;
+        }
+        QPen pen(border_, 1.6);
+        if (std::holds_alternative<AttributeId>(ref) && attribute_kind == AttributeKind::Derived)
+            pen.setStyle(Qt::DashLine);
+        painter->setPen(pen);
+        painter->setBrush(fill_.alpha() == 0 ? QBrush(Qt::NoBrush) : QBrush(fill_));
+        painter->drawPath(into_place.map(body_path()));
+        painter->setBrush(Qt::NoBrush);
+        // The marks that say what kind of thing it is, exactly as on the canvas.
+        if (associative) painter->drawRect(into_place.mapRect(bounds_));
+        if (std::holds_alternative<AttributeId>(ref) && attribute_kind == AttributeKind::Multivalued)
+            painter->drawEllipse(into_place.mapRect(bounds_.adjusted(5, 5, -5, -5)));
+        if (weak) painter->drawRect(into_place.mapRect(bounds_.adjusted(5, 5, -5, -5)));
+        if (identifying)
+            painter->drawPath(into_place.map(diamond(bounds_.adjusted(bounds_.width() * 0.07, bounds_.height() * 0.09,
+                                                                     -bounds_.width() * 0.07, -bounds_.height() * 0.09))));
+        painter->restore();
+    }
     void paint(QPainter* painter, const QStyleOptionGraphicsItem*, QWidget*) override {
         painter->setRenderHint(QPainter::Antialiasing);
+        if (std::holds_alternative<PictureId>(ref)) { paint_picture(painter); return; }
+        if (std::holds_alternative<NoteId>(ref)) { paint_note(painter); return; }
         QPen pen(isSelected() ? selection_ : border_, isSelected() ? 2.4 : 1.6);
         if (std::holds_alternative<AttributeId>(ref) && attribute_kind == AttributeKind::Derived)
             pen.setStyle(Qt::DashLine);
@@ -325,13 +487,22 @@ public:
         }
         if (std::holds_alternative<AttributeId>(ref) && attribute_kind == AttributeKind::Multivalued)
             painter->drawEllipse(bounds_.adjusted(5, 5, -5, -5));
+        if (weak) {
+            painter->setBrush(Qt::NoBrush);
+            painter->drawRect(bounds_.adjusted(5, 5, -5, -5));
+        }
+        if (identifying) {
+            painter->setBrush(Qt::NoBrush);
+            painter->drawPath(diamond(bounds_.adjusted(bounds_.width() * 0.07, bounds_.height() * 0.09,
+                                                       -bounds_.width() * 0.07, -bounds_.height() * 0.09)));
+        }
         // Names on the canvas are read at a glance and often at less than full
         // zoom, so they sit a step above the interface's own type and never
         // below medium weight.
         auto font = painter->font();
         font.setPointSizeF(12.5);
         font.setWeight(std::holds_alternative<EntityId>(ref) ? QFont::Bold : QFont::Medium);
-        font.setUnderline(std::holds_alternative<AttributeId>(ref) && attribute_kind == AttributeKind::Key);
+        font.setUnderline(std::holds_alternative<AttributeId>(ref) && attribute_kind == AttributeKind::Key && !partial_key);
         painter->setFont(font);
         painter->setPen(text_);
         const auto inset = std::holds_alternative<RelationshipId>(ref) ? bounds_.width() * 0.22 : 15.0;
@@ -342,6 +513,36 @@ public:
                                bounds_.width() - 12, bounds_.height() / 2 - 4);
         const auto text = QFontMetricsF(font).elidedText(label, Qt::ElideRight, text_rect.width());
         painter->drawText(text_rect, Qt::AlignCenter, text);
+        if (partial_key) {
+            // A partial key is underlined in dashes: it identifies the weak
+            // entity only together with its owner's key.
+            const QFontMetricsF metrics(font);
+            const auto width = metrics.horizontalAdvance(text);
+            const auto baseline = text_rect.center().y() + (metrics.ascent() - metrics.descent()) / 2;
+            QPen dashes(text_, 1.2, Qt::DashLine);
+            painter->setPen(dashes);
+            painter->drawLine(QPointF(text_rect.center().x() - width / 2, baseline + metrics.underlinePos() + 1),
+                              QPointF(text_rect.center().x() + width / 2, baseline + metrics.underlinePos() + 1));
+        }
+        if (std::holds_alternative<SpecializationId>(ref)) {
+            // The letter for the constraint, as Elmasri writes it: d for
+            // disjoint, o for overlapping. It sits in the corner of the box the
+            // triangle leaves free, beside its base.
+            const qreal radius = std::clamp(bounds_.height() * 0.15, 7.0, 10.0);
+            const QPointF at(bounds_.right() - radius - 1,
+                             generalising ? bounds_.top() + radius + 1 : bounds_.bottom() - radius - 1);
+            painter->setPen(QPen(isSelected() ? selection_ : border_, 1.2));
+            painter->setBrush(fill_);
+            painter->drawEllipse(at, radius, radius);
+            auto small = painter->font();
+            small.setPointSizeF(9.5);
+            small.setWeight(QFont::DemiBold);
+            small.setUnderline(false);
+            painter->setFont(small);
+            painter->setPen(text_);
+            painter->drawText(QRectF(at.x() - radius, at.y() - radius, radius * 2, radius * 2), Qt::AlignCenter,
+                              disjoint ? QStringLiteral("d") : QStringLiteral("o"));
+        }
     }
 protected:
     QVariant itemChange(GraphicsItemChange change, const QVariant& value) override {
@@ -355,6 +556,8 @@ private:
     const Theme* colors_ = nullptr;
     QColor fill_, border_, text_, selection_;
     std::optional<QColor> chosen_;
+    int transparency_ = 0;
+    QPixmap image_;
 };
 
 // An edge is keyed by the record that draws it. Attribute and participant links
@@ -384,6 +587,12 @@ struct EdgeDescription {
     std::optional<double> child_anchor;
     // Corners the line is routed through, when the user has given it any.
     std::vector<QPointF> waypoints;
+    // Which time this side meets the same element: 0 the first, 1 the second,
+    // and so on. A relationship that meets one entity twice is recursive, and
+    // its later sides cannot run straight or they would lie on the first.
+    int recursion = 0;
+    // A total specialization's link to its supertype, drawn as a double line.
+    bool total = false;
     bool operator==(const EdgeDescription&) const = default;
 };
 
@@ -400,7 +609,7 @@ public:
     NodeItem* source;
     NodeItem* target;
     Notation notation = Notation::Chen;
-    LineStyle style = LineStyle::Curved;
+    LineStyle style = LineStyle::Elbow;
 
     // Every notation reads the same two values: the minimum from participation
     // and the maximum from cardinality.
@@ -442,6 +651,7 @@ public:
         if (!descriptor.role.isEmpty()) hit.addRect(role_rect_);
         if (isSelected() && shapeable()) hit.addRect(handle_rect_);
         if (isSelected() && shapeable()) for (const auto& corner : corner_rects_) hit.addRect(corner);
+        if (isSelected() && shapeable()) { hit.addRect(owner_end_rect_); hit.addRect(child_end_rect_); }
         if (isSelected() && lockable()) hit.addRect(lock_rect_);
         return hit;
     }
@@ -462,6 +672,17 @@ public:
     [[nodiscard]] bool lockable() const { return shapeable(); }
     [[nodiscard]] bool locked() const { return descriptor.owner_anchor || descriptor.child_anchor; }
     [[nodiscard]] QRectF lock_rect() const { return lock_rect_; }
+    // The two ends of a selected line can be taken hold of and put down at
+    // another point on the same shape. Which end a point grabs: true for the
+    // owner end, false for the child end, nothing for neither.
+    [[nodiscard]] std::optional<bool> end_at(const QPointF& scene_point) const {
+        if (!shapeable()) return std::nullopt;
+        if (owner_end_rect_.contains(scene_point)) return true;
+        if (child_end_rect_.contains(scene_point)) return false;
+        return std::nullopt;
+    }
+    [[nodiscard]] QRectF owner_end_rect() const { return owner_end_rect_; }
+    [[nodiscard]] QRectF child_end_rect() const { return child_end_rect_; }
     // Where the line currently meets each shape, as the direction that would
     // pin it exactly where it is now.
     [[nodiscard]] double owner_direction() const { return head_node()->direction_of(owner_join_); }
@@ -507,6 +728,129 @@ public:
         }
         return best;
     }
+    // Which way a line leaves a shape at a given point: along whichever axis
+    // that point's face runs squarely to. A rectangle's bottom edge sends the
+    // line straight down, its right edge straight out to the side; a diamond's
+    // corner sends it out along its own axis. This is what keeps a right-angle
+    // line from setting off along the edge it is standing on.
+    [[nodiscard]] static bool leaves_vertically(const NodeItem* node, const QPointF& at) {
+        const auto box = node->body_rect().translated(node->scenePos());
+        const auto across = std::abs(at.x() - box.center().x()) / std::max(box.width() / 2, 0.001);
+        const auto down = std::abs(at.y() - box.center().y()) / std::max(box.height() / 2, 0.001);
+        return down > across;
+    }
+    // The face of a shape that looks at a point, met at the middle of it. An
+    // end that has not been pinned leaves from here, which is what makes two
+    // shapes standing in line join by one straight run.
+    [[nodiscard]] static QPointF facing_point(const NodeItem* node, const QPointF& toward) {
+        const auto box = node->body_rect().translated(node->scenePos());
+        const auto delta = toward - box.center();
+        const auto horizontal = std::abs(delta.x()) / std::max(box.width() / 2, 0.001)
+                             >= std::abs(delta.y()) / std::max(box.height() / 2, 0.001);
+        const QPointF axis = horizontal ? QPointF(delta.x() >= 0 ? 1000.0 : -1000.0, 0.0)
+                                        : QPointF(0.0, delta.y() >= 0 ? 1000.0 : -1000.0);
+        return node->boundary_toward(box.center() + axis);
+    }
+    // A line that breaks at right angles: out of one shape along the axis its
+    // face runs to, across, and in to the other the same way. Two ends leaving
+    // on different axes need one corner; two on the same axis need two, with
+    // the crossing midway between them.
+    [[nodiscard]] std::vector<QPointF> elbow_route() const {
+        auto* head = head_node();
+        auto* tail = tail_node();
+        const auto head_centre = head->scenePos() + head->body_rect().center();
+        const auto tail_centre = tail->scenePos() + tail->body_rect().center();
+        const auto from = descriptor.owner_anchor ? head->boundary_at(*descriptor.owner_anchor)
+                                                  : facing_point(head, tail_centre);
+        const auto to = descriptor.child_anchor ? tail->boundary_at(*descriptor.child_anchor)
+                                                : facing_point(tail, head_centre);
+        const bool from_vertical = leaves_vertically(head, from);
+        const bool to_vertical = leaves_vertically(tail, to);
+        std::vector<QPointF> corners;
+        if (from_vertical != to_vertical) {
+            corners.emplace_back(from_vertical ? from.x() : to.x(), from_vertical ? to.y() : from.y());
+        } else if (from_vertical) {
+            const auto middle = (from.y() + to.y()) / 2;
+            corners.emplace_back(from.x(), middle);
+            corners.emplace_back(to.x(), middle);
+        } else {
+            const auto middle = (from.x() + to.x()) / 2;
+            corners.emplace_back(middle, from.y());
+            corners.emplace_back(middle, to.y());
+        }
+        // Two shapes standing in line need no corner at all, and a corner that
+        // sits on an end is one the line does not turn at.
+        const auto pointless = [&](const QPointF& corner) {
+            return std::hypot(corner.x() - from.x(), corner.y() - from.y()) < 0.5
+                || std::hypot(corner.x() - to.x(), corner.y() - to.y()) < 0.5;
+        };
+        std::erase_if(corners, pointless);
+        if (corners.size() == 2 && std::hypot(corners[0].x() - corners[1].x(), corners[0].y() - corners[1].y()) < 0.5)
+            corners.pop_back();
+        return corners;
+    }
+    // A relationship that meets the same entity twice is drawn the way it is
+    // drawn by hand: the first side runs straight between the two shapes, and
+    // every later one leaves the diamond by its far corner and comes back
+    // around the entity at right angles, into another of its faces. The
+    // corners are worked out from where the two shapes are, so the loop
+    // follows them as they move; it is not stored until the user takes hold
+    // of it.
+    [[nodiscard]] std::vector<QPointF> loop_route() const {
+        const auto body_of = [](const NodeItem* node) {
+            return node->body_rect().translated(node->scenePos());
+        };
+        const auto diamond = body_of(head_node());
+        const auto box = body_of(tail_node());
+        const qreal gap = 26 + (descriptor.recursion - 1) * 22;
+        // The loop keeps to whichever side of the entity carries fewer of its
+        // own attributes, so it runs through the empty part of the diagram
+        // rather than across what is already drawn there. A second loop takes
+        // the other side, since the first has it.
+        const auto emptier = [&](bool vertical) {
+            int before = 0;
+            int after = 0;
+            for (const auto* child : tail_node()->attribute_children) {
+                const auto centre = child->scenePos() + child->body_rect().center();
+                const auto along = vertical ? centre.y() : centre.x();
+                const auto middle = vertical ? box.center().y() : box.center().x();
+                if (along < middle) ++before; else ++after;
+            }
+            const bool second = after <= before;
+            return descriptor.recursion % 2 == 1 ? second : !second;
+        };
+        const auto delta = diamond.center() - box.center();
+        std::vector<QPointF> corners;
+        if (std::abs(delta.x()) >= std::abs(delta.y())) {
+            // The diamond lies to one side, so the loop leaves past it and
+            // returns under or over the entity, into its top or bottom face.
+            const qreal out = delta.x() >= 0 ? diamond.right() + gap : diamond.left() - gap;
+            const bool below = emptier(true);
+            const qreal along = below ? std::max(box.bottom(), diamond.bottom()) + gap
+                                      : std::min(box.top(), diamond.top()) - gap;
+            corners.emplace_back(out, diamond.center().y());
+            corners.emplace_back(out, along);
+            corners.emplace_back(box.center().x(), along);
+        } else {
+            const qreal out = delta.y() >= 0 ? diamond.bottom() + gap : diamond.top() - gap;
+            const bool beyond = emptier(false);
+            const qreal along = beyond ? std::max(box.right(), diamond.right()) + gap
+                                       : std::min(box.left(), diamond.left()) - gap;
+            corners.emplace_back(diamond.center().x(), out);
+            corners.emplace_back(along, out);
+            corners.emplace_back(along, box.center().y());
+        }
+        return corners;
+    }
+    // A loop the canvas worked out becomes the user's the moment they take
+    // hold of it, so shaping one starts from the shape they can see rather
+    // than from the straight line underneath it.
+    void adopt_route() {
+        if (!descriptor.waypoints.empty() || computed_.empty()) return;
+        descriptor.waypoints = computed_;
+        refresh();
+    }
+    [[nodiscard]] const std::vector<QPointF>& computed_route() const { return computed_; }
     [[nodiscard]] QPointF midpoint() const { return midpoint_; }
     [[nodiscard]] QPointF perpendicular() const { return perpendicular_; }
     void refresh() {
@@ -521,6 +865,12 @@ public:
             bend = first + QPointF(80, -80);
         QPointF start;
         QPointF end;
+        // The point the line arrives from, which is not always the bend: an
+        // elbow turns the corner before it reaches its end, and a route comes
+        // in from its last corner. The end symbols and the labels are laid out
+        // along this, so they sit square to the line as it actually arrives
+        // rather than at an angle to it.
+        QPointF approach;
         // An attribute link leaves its owner at the point shared by every
         // attribute on that side, runs a short trunk, then branches to its own.
         const bool owned_attribute = std::holds_alternative<AttributeId>(descriptor.key)
@@ -535,7 +885,7 @@ public:
             child_join_ = end;
             path_ = QPainterPath(anchor);
             path_.lineTo(junction);
-            if (style == LineStyle::Straight) {
+            if (style != LineStyle::Curved) {
                 path_.lineTo(end);
             } else {
                 const auto reach = std::clamp(std::hypot(end.x() - junction.x(), end.y() - junction.y()) * 0.45, 18.0, 90.0);
@@ -557,7 +907,7 @@ public:
             const qreal reach = std::clamp(std::abs(end.y() - start.y()) * 0.55, 26.0, 110.0);
             const qreal away = to_supertype ? -1.0 : 1.0;
             path_ = QPainterPath(start);
-            if (style == LineStyle::Straight) path_.lineTo(end);
+            if (style != LineStyle::Curved) path_.lineTo(end);
             else path_.cubicTo(start + QPointF(0, away * reach), end - QPointF(0, away * reach), end);
             bend = path_.pointAtPercent(0.5);
             midpoint_ = bend;
@@ -572,12 +922,25 @@ public:
             path_ = QPainterPath(start);
             path_.lineTo(bend);
             path_.lineTo(end);
+            approach = bend;
+        }
+        // A recursive side loops back on its own while nothing has been stored
+        // for it. The moment anything has been -- a bend, a route, a pinned
+        // join -- that is the user's shape and it is drawn instead.
+        // What the canvas works out for a line nobody has shaped: a loop back
+        // for a recursive side, and right angles for every other line while
+        // that is the style. Either becomes the user's the moment they take
+        // hold of it, which is why it is kept rather than only drawn.
+        computed_.clear();
+        if (!inheritance && !owned_attribute && descriptor.waypoints.empty() && descriptor.offset == 0) {
+            if (descriptor.recursion > 0) computed_ = loop_route();
+            else if (style == LineStyle::Elbow) computed_ = elbow_route();
         }
         // A route replaces whatever the automatic shape would have been. Each
         // end aims at the corner nearest it rather than at the far endpoint, so
         // the first and last segments leave and arrive along the route itself.
-        if (!descriptor.waypoints.empty() && !inheritance) {
-            const auto& corners = descriptor.waypoints;
+        if (const auto& corners = descriptor.waypoints.empty() ? computed_ : descriptor.waypoints;
+            !corners.empty() && !inheritance) {
             // The route is listed from the path's start to its end, and an
             // attribute's line runs from its owner, so head and tail are not
             // always source and target. Getting this the wrong way round would
@@ -593,6 +956,7 @@ public:
             path_ = QPainterPath(start);
             for (const auto& corner : corners) path_.lineTo(corner);
             path_.lineTo(end);
+            approach = corners.back();
             bend = path_.pointAtPercent(0.5);
             midpoint_ = bend;
             perpendicular_ = normal(end - corners.back());
@@ -602,11 +966,19 @@ public:
         corner_rects_.clear();
         for (const auto& corner : descriptor.waypoints)
             corner_rects_.push_back(QRectF(corner - QPointF(5, 5), QSizeF(10, 10)));
-        handle_rect_ = descriptor.waypoints.empty() ? QRectF(bend - QPointF(5, 5), QSizeF(10, 10)) : QRectF();
+        handle_rect_ = descriptor.waypoints.empty() && computed_.empty()
+            ? QRectF(bend - QPointF(5, 5), QSizeF(10, 10)) : QRectF();
         // The padlock sits off to one side of the bend grip rather than on it,
         // so the two controls on a selected link never overlap.
         lock_rect_ = lockable() ? QRectF(bend + perpendicular_ * 16 - QPointF(6, 6), QSizeF(12, 12)) : QRectF();
-        const auto entity_direction = bend - end;
+        // A grip on each end, where the line meets its shape. Squares, so they
+        // are not mistaken for the round grips that bend and route the line.
+        owner_end_rect_ = shapeable() ? QRectF(owner_join_ - QPointF(4.5, 4.5), QSizeF(9, 9)) : QRectF();
+        child_end_rect_ = shapeable() ? QRectF(child_join_ - QPointF(4.5, 4.5), QSizeF(9, 9)) : QRectF();
+        // An attribute's link and an inheritance link carry no labels, so the
+        // bend serves them; everything else arrives from its own last corner.
+        if (approach.isNull()) approach = bend;
+        const auto entity_direction = approach - end;
         const auto distance = std::hypot(entity_direction.x(), entity_direction.y());
         // Labels are filled, so one overlapping the line hides it and the
         // connector reads as detached. An axis-aligned box clears a horizontal
@@ -633,13 +1005,17 @@ public:
         // around the entity end and hid the connector arriving there.
         const auto role_width = descriptor.role.isEmpty()
             ? 0.0 : std::min(140.0, QFontMetricsF(label_font).horizontalAdvance(descriptor.role) + 12);
-        const auto role_center = path_.pointAtPercent(0.45)
-            + perpendicular_ * clearance(perpendicular_, role_width / 2, 10);
+        // The role names this side, so it belongs beside the shape it names,
+        // opposite the number, rather than sitting in the middle of the line
+        // and cutting it. It is pushed far enough along to clear the shape.
+        const auto role_center = end + outward_ * (symbol_reach() + 20.0 + role_width / 2)
+            - entity_normal * clearance(entity_normal, role_width / 2, 10);
         role_rect_ = QRectF(role_center - QPointF(role_width / 2, 10), QSizeF(role_width, 20));
         bounds_ = path_.boundingRect().adjusted(-14, -14, 14, 14);
         if (descriptor.relationship && !end_label().isEmpty()) bounds_ = bounds_.united(cardinality_rect_);
         if (!descriptor.role.isEmpty()) bounds_ = bounds_.united(role_rect_);
         if (shapeable()) bounds_ = bounds_.united(handle_rect_.adjusted(-2, -2, 2, 2));
+        if (shapeable()) bounds_ = bounds_.united(owner_end_rect_.adjusted(-2, -2, 2, 2)).united(child_end_rect_.adjusted(-2, -2, 2, 2));
         for (const auto& corner : corner_rects_) bounds_ = bounds_.united(corner.adjusted(-2, -2, 2, 2));
         if (lockable()) bounds_ = bounds_.united(lock_rect_.adjusted(-2, -2, 2, 2));
         if (inheritance) {
@@ -663,7 +1039,11 @@ public:
         const qreal weight = isSelected() ? 4.0 : highlighted ? 3.4 : 2.2;
         painter->setPen(QPen(ink, weight));
         painter->setBrush(Qt::NoBrush);
-        if (descriptor.relationship && notation == Notation::Chen && descriptor.participation == Participation::Total) {
+        // A total participation in Chen, and a total specialization in every
+        // notation, are drawn as a double line.
+        const bool doubled = (descriptor.relationship && notation == Notation::Chen && descriptor.participation == Participation::Total)
+            || (std::holds_alternative<InheritanceKey>(descriptor.key) && descriptor.total);
+        if (doubled) {
             painter->save();
             painter->translate(perpendicular_ * 3);
             painter->drawPath(path_);
@@ -696,6 +1076,8 @@ public:
             painter->setBrush(canvas_);
             if (!handle_rect_.isNull()) painter->drawEllipse(handle_rect_);
             for (const auto& corner : corner_rects_) painter->drawEllipse(corner);
+            painter->drawRect(owner_end_rect_);
+            painter->drawRect(child_end_rect_);
         }
         if (isSelected() && lockable()) paint_lock(painter);
     }
@@ -721,7 +1103,11 @@ private:
     QRectF role_rect_;
     QRectF handle_rect_;
     std::vector<QRectF> corner_rects_;
+    // The corners this side loops through while nothing has been stored for it.
+    std::vector<QPointF> computed_;
     QRectF lock_rect_;
+    QRectF owner_end_rect_;
+    QRectF child_end_rect_;
     QPointF owner_join_;
     QPointF child_join_;
     QPointF midpoint_;
@@ -743,10 +1129,11 @@ struct DiagramView::Impl {
     Tool active_tool = Tool::Select;
     ThemeId theme_id = ThemeId::OfficeLight;
     Notation notation = Notation::Chen;
-    LineStyle style = LineStyle::Curved;
+    LineStyle style = LineStyle::Elbow;
+    JoinMode join_mode = JoinMode::WhereClicked;
     bool tool_locked = false;
     bool grid = true;
-    bool snap = false;
+    bool align_to_grid = false;
     bool synchronizing = false;
     bool panning = false;
     QPoint pan_start;
@@ -756,12 +1143,22 @@ struct DiagramView::Impl {
     QLineEdit* inline_editor = nullptr;
     std::optional<ElementRef> renaming;
     std::optional<ElementRef> connect_start;
+    // Where on its shape the source was clicked, as the direction the new
+    // line's join will be pinned to; nothing when joins are automatic.
+    std::optional<double> connect_start_direction;
     // While a connection is being made the pointer carries a preview line, so
     // the same gesture works as click-then-click or as one press-drag-release.
     std::optional<QPointF> connect_pointer;
     std::optional<ElementRef> connect_hover;
     std::map<ElementRef, Rect> drag_start;
     QPointF drag_anchor;
+    // The element the drag was begun on. Everything selected moves by one
+    // translation, and it is this one's edges that are lined up with the rest
+    // of the diagram, so the group keeps its own spacing.
+    std::optional<ElementRef> drag_anchor_ref;
+    // The lines drawn while a drag is meeting something: an edge or a middle
+    // that has come into line with another element's.
+    std::vector<QLineF> guides;
     // The connector being reshaped, previewed on its item until release.
     std::optional<EdgeKey> bending;
     // A corner being dragged. It is only created once the pointer has actually
@@ -773,6 +1170,16 @@ struct DiagramView::Impl {
         bool grabbed = false;
     };
     std::optional<RouteDrag> routing;
+    // An end of a selected line being carried to another point on its shape,
+    // previewed on the item and pinned there on release.
+    struct EndDrag {
+        EdgeKey key;
+        bool owner_end = false;
+        // Whether the pointer has left the shape, and so whether a corner is
+        // being carried at it. An end let go in open canvas stops there.
+        bool placed = false;
+    };
+    std::optional<EndDrag> rejoining;
     QPointF minimum_drag;
     QPointF maximum_drag;
     std::optional<std::uint64_t> displayed_revision;
@@ -781,6 +1188,30 @@ struct DiagramView::Impl {
         : view(owner), editor(controller), scene(new QGraphicsScene(&owner)) {}
 
     void status(const QString& text) const { if (view.on_status) view.on_status(text); }
+    // A note put down centred on a point, selected and opened for its title,
+    // since a note is for writing on. Used by the tool and by the menus.
+    void place_note(QPointF centre) {
+        if (snap_enabled()) centre = {std::round(centre.x() / grid_spacing) * grid_spacing,
+                                      std::round(centre.y() / grid_spacing) * grid_spacing};
+        const auto result = editor.create_note("Note", centred(centre, note_body));
+        publish(result);
+        if (result && result.created) {
+            view.select_elements({*result.created});
+            begin_inline_edit(*result.created);
+        }
+    }
+    [[nodiscard]] bool snap_enabled() const { return align_to_grid; }
+    // The Insert entries a right-click menu offers, placing at the point clicked.
+    void add_insert_menu(QMenu& menu, const QPointF& at) {
+        auto* insert = menu.addMenu("Insert");
+        insert->setObjectName("contextInsert");
+        auto* picture = insert->addAction("Picture…");
+        picture->setObjectName("contextInsertPicture");
+        QObject::connect(picture, &QAction::triggered, &view, [this, at] { if (view.on_insert_picture) view.on_insert_picture(at); });
+        auto* note = insert->addAction("Note");
+        note->setObjectName("contextInsertNote");
+        QObject::connect(note, &QAction::triggered, &view, [this, at] { place_note(at); });
+    }
     void publish(const application::EditResult& result) {
         view.synchronize();
         if (view.on_edit) view.on_edit(result);
@@ -809,6 +1240,94 @@ struct DiagramView::Impl {
         if (synchronizing) return;
         const auto found = incident.find(item->ref);
         if (found != incident.end()) for (auto* edge : found->second) edge->refresh();
+    }
+    // Elements line up with their neighbours as they are dragged, the way a
+    // page layout does: an edge or a middle that comes within a few pixels of
+    // another element's snaps to it, and a guide is drawn along what they now
+    // share. Nothing is snapped to while nothing is near, so a deliberate
+    // placement is never pulled off its mark.
+    [[nodiscard]] std::optional<QPointF> aligned_delta(const QPointF& delta) {
+        const auto previous = guides;
+        guides.clear();
+        const auto redraw = [&] { if (guides != previous) view.viewport()->update(); };
+        if (!drag_anchor_ref || !drag_start.contains(*drag_anchor_ref)) { redraw(); return std::nullopt; }
+        const auto& origin = drag_start.at(*drag_anchor_ref);
+        const QRectF moving(origin.x + delta.x(), origin.y + delta.y(), origin.width, origin.height);
+        // A few pixels on screen, whatever the diagram is zoomed to.
+        const auto reach = 7.0 / std::max(view.zoom_factor(), 0.05);
+        struct Match {
+            bool found = false;
+            qreal shift = 0;
+            qreal line = 0;
+            qreal from = 0;
+            qreal to = 0;
+        };
+        Match across;
+        Match down;
+        const auto consider = [&](Match& best, qreal mine, qreal theirs, qreal from, qreal to) {
+            const auto gap = theirs - mine;
+            if (std::abs(gap) > reach || (best.found && std::abs(gap) >= std::abs(best.shift))) return;
+            best = Match{true, gap, theirs, from, to};
+        };
+        for (const auto& [ref, item] : nodes) {
+            if (drag_start.contains(ref)) continue;
+            const QRectF other = item->body_rect().translated(item->scenePos());
+            const auto top = std::min(moving.top(), other.top());
+            const auto bottom = std::max(moving.bottom(), other.bottom());
+            const auto left = std::min(moving.left(), other.left());
+            const auto right = std::max(moving.right(), other.right());
+            for (const auto mine : {moving.left(), moving.center().x(), moving.right()})
+                for (const auto theirs : {other.left(), other.center().x(), other.right()})
+                    consider(across, mine, theirs, top, bottom);
+            for (const auto mine : {moving.top(), moving.center().y(), moving.bottom()})
+                for (const auto theirs : {other.top(), other.center().y(), other.bottom()})
+                    consider(down, mine, theirs, left, right);
+        }
+        if (!across.found && !down.found) { redraw(); return std::nullopt; }
+        auto snapped = delta;
+        if (across.found) {
+            snapped.setX(snapped.x() + across.shift);
+            guides.emplace_back(QPointF(across.line, across.from - 26), QPointF(across.line, across.to + 26));
+        }
+        if (down.found) {
+            snapped.setY(snapped.y() + down.shift);
+            guides.emplace_back(QPointF(down.from - 26, down.line), QPointF(down.to + 26, down.line));
+        }
+        redraw();
+        return snapped;
+    }
+    void clear_guides() {
+        if (guides.empty()) return;
+        guides.clear();
+        view.viewport()->update();
+    }
+    // Lining a selection up on one edge or one middle, as one edit. The line
+    // they meet on is the far edge of what is selected, or its middle, so
+    // nothing leaves the ground the selection already covers.
+    void align_selection(const std::vector<ElementRef>& chosen, bool along_x, int which) {
+        const auto& project = editor.project();
+        QRectF bounds;
+        for (const auto& ref : chosen) {
+            const auto found = project.layout.find(ref);
+            if (found != project.layout.end())
+                bounds = bounds.united(QRectF(found->second.x, found->second.y,
+                                              found->second.width, found->second.height));
+        }
+        if (bounds.isNull()) return;
+        std::map<ElementRef, Rect> moved;
+        for (const auto& ref : chosen) {
+            const auto found = project.layout.find(ref);
+            if (found == project.layout.end()) continue;
+            auto rect = found->second;
+            if (along_x)
+                rect.x = which == 0 ? bounds.left()
+                       : which == 1 ? bounds.center().x() - rect.width / 2 : bounds.right() - rect.width;
+            else
+                rect.y = which == 0 ? bounds.top()
+                       : which == 1 ? bounds.center().y() - rect.height / 2 : bounds.bottom() - rect.height;
+            if (rect != found->second) moved.emplace(ref, rect);
+        }
+        if (!moved.empty()) publish(editor.move(moved));
     }
     NodeItem* node_at(const QPoint& viewport_position) const {
         for (auto* item : view.items(viewport_position)) {
@@ -900,6 +1419,28 @@ struct DiagramView::Impl {
         }
         return nullptr;
     }
+    // An end grip of a selected line under the pointer, and which end it is.
+    EdgeItem* end_at(const QPoint& viewport_position, bool& owner_end) const {
+        const auto scene_position = view.mapToScene(viewport_position);
+        for (auto* item : view.items(viewport_position)) {
+            auto* edge = dynamic_cast<EdgeItem*>(item);
+            if (!edge || !edge->isSelected()) continue;
+            if (const auto end = edge->end_at(scene_position)) {
+                owner_end = *end;
+                return edge;
+            }
+        }
+        return nullptr;
+    }
+    // The direction a click on a shape pins the join to, or nothing when joins
+    // are automatic. A click on the exact centre has no direction to give, so
+    // it too leaves the join to route itself.
+    [[nodiscard]] std::optional<double> join_direction(const NodeItem* node, const QPointF& scene_point) const {
+        if (join_mode != JoinMode::WhereClicked) return std::nullopt;
+        const auto centre = node->scenePos() + node->body_rect().center();
+        if (std::hypot(scene_point.x() - centre.x(), scene_point.y() - centre.y()) < 0.5) return std::nullopt;
+        return node->direction_of(scene_point);
+    }
     void remove_edge(std::map<EdgeKey, EdgeItem*>::iterator& iterator) {
         auto* edge = iterator->second;
         incident[edge->descriptor.from].erase(edge);
@@ -917,13 +1458,14 @@ struct DiagramView::Impl {
         place_inline_editor();
         if (view.on_zoom) view.on_zoom(view.zoom_factor());
     }
-    void connect_node(NodeItem* node) {
+    void connect_node(NodeItem* node, const QPointF& scene_point) {
         if (!node) {
             // A click on empty canvas spends the tool's one use, whether it
             // abandons a half-made connection or lands before one was started.
             // Every other tool hands back to Select on such a click, and this
             // one behaving differently was read as it being stuck.
             connect_start.reset();
+            connect_start_direction.reset();
             connect_pointer.reset();
             if (!tool_locked) { view.set_tool(Tool::Select); return; }
             status(QStringLiteral("Connection cancelled. Select the first object."));
@@ -932,6 +1474,7 @@ struct DiagramView::Impl {
         if (!exists(editor.project(), node->ref)
             || (connect_start && !exists(editor.project(), *connect_start))) {
             connect_start.reset();
+            connect_start_direction.reset();
             connect_pointer.reset();
             view.synchronize();
             status(QStringLiteral("The selected object was removed. Select the first object again."));
@@ -939,19 +1482,24 @@ struct DiagramView::Impl {
         }
         if (!connect_start) {
             connect_start = node->ref;
+            // The point clicked is where this end of the line will be pinned.
+            connect_start_direction = join_direction(node, scene_point);
             view.select_elements({node->ref});
             status(QStringLiteral("Select an entity and relationship, or an attribute and its owner."));
             return;
         }
         const auto from = *connect_start;
         const auto to = node->ref;
+        const auto from_join = connect_start_direction;
+        const auto to_join = join_direction(node, scene_point);
         connect_start.reset();
+        connect_start_direction.reset();
         connect_pointer.reset();
         application::EditResult result{false, "Connect an entity to a relationship, or an attribute to its owner.", {}, {}};
         if (from == to) {
             result.error = "Select two different objects. For a recursive relationship, connect the same entity to its relationship twice.";
         } else if (const auto plan = plan_connection(from, to)) {
-            result = (*plan)();
+            result = (*plan)(from_join, to_join);
         }
         // The attempt is the tool's one use whether or not the pair was legal,
         // so an unlocked Connect hands back to Select the way every other tool
@@ -959,21 +1507,78 @@ struct DiagramView::Impl {
         // doing it afterwards would overwrite the reason a pair was refused.
         if (!tool_locked) view.set_tool(Tool::Select);
         publish(result);
+        // A pair that needed a relationship of its own has one now, which the
+        // user did not place: say so, and leave it selected and open for its
+        // name, since an unnamed relationship says nothing.
+        if (result && result.created) {
+            view.select_elements({*result.created});
+            // The editor announces itself as it opens, so the reason a diamond
+            // appeared is said after it, or it would be the message wiped out.
+            begin_inline_edit(*result.created);
+            status(QStringLiteral("Two entities read through a relationship, so one was created between them. "
+                                  "Type its name, then press Return."));
+            return;
+        }
         if (result && tool_locked)
             status(QStringLiteral("Connected. Locked: select the first object of the next connection."));
     }
+    // Where a new relationship between two entities belongs. It goes midway
+    // between them, and steps aside, along the perpendicular to the line
+    // joining them, once for each relationship already reading that same pair,
+    // so a second reading does not land on top of the first. The sides
+    // alternate as a diagram reads them: the second below the first, the third
+    // above, and so on. It is only a starting place; the diamond is an element
+    // like any other and can be dragged or given coordinates afterwards.
+    [[nodiscard]] QPointF relationship_place(const ElementRef& first, const ElementRef& second) const {
+        const auto& project = editor.project();
+        const auto centre_of = [&](const ElementRef& ref) {
+            const auto found = project.layout.find(ref);
+            if (found == project.layout.end()) return QPointF(0, 0);
+            return QPointF(found->second.x + found->second.width / 2,
+                           found->second.y + found->second.height / 2);
+        };
+        const auto from = centre_of(first);
+        const auto to = centre_of(second);
+        const auto midway = (from + to) / 2;
+        int existing = 0;
+        for (const auto& [id, relationship] : project.relationships) {
+            (void)id;
+            bool touches_first = false;
+            bool touches_second = false;
+            for (const auto& participant : relationship.participants) {
+                if (target_ref(participant.target) == first) touches_first = true;
+                if (target_ref(participant.target) == second) touches_second = true;
+            }
+            if (touches_first && touches_second) ++existing;
+        }
+        if (existing == 0) return midway;
+        const auto step = static_cast<qreal>((existing + 1) / 2);
+        const auto side = existing % 2 == 1 ? 1.0 : -1.0;
+        return midway + normal(to - from) * side * step * (relationship_body.height + 70);
+    }
+
     // The edit a pair of elements would produce, or nothing when the pair means
     // nothing. The hover highlight and the committed connection read the same
     // rule here, so what the pointer promises is what the release performs.
-    [[nodiscard]] std::optional<std::function<application::EditResult()>>
-    plan_connection(const ElementRef& from, const ElementRef& to) const {
+    //
+    // A plan is given the direction each of the two shapes was clicked in, and
+    // pins the new line's ends there. Which click is the owner end and which
+    // the child depends on the pair: a participant link is owned by its
+    // relationship, an attribute link by the element the attribute belongs to.
+    using Joins = std::optional<double>;
+    using Plan = std::function<application::EditResult(Joins from_join, Joins to_join)>;
+    [[nodiscard]] std::optional<Plan> plan_connection(const ElementRef& from, const ElementRef& to) const {
         const auto& project = editor.project();
         if (from == to || !exists(project, from) || !exists(project, to)) return {};
+        // A picture or a note is not in the model, so no line can join one.
+        if (is_figure(from) || is_figure(to)) return {};
         if (const auto* relationship = std::get_if<RelationshipId>(&from); relationship && std::holds_alternative<EntityId>(to)) {
-            return [this, id = *relationship, entity = std::get<EntityId>(to)] { return editor.connect(id, entity); };
+            return Plan{[this, id = *relationship, entity = std::get<EntityId>(to)](Joins from_join, Joins to_join) {
+                return editor.connect(id, entity, joined(from_join, to_join)); }};
         }
         if (const auto* relationship = std::get_if<RelationshipId>(&to); relationship && std::holds_alternative<EntityId>(from)) {
-            return [this, id = *relationship, entity = std::get<EntityId>(from)] { return editor.connect(id, entity); };
+            return Plan{[this, id = *relationship, entity = std::get<EntityId>(from)](Joins from_join, Joins to_join) {
+                return editor.connect(id, entity, joined(to_join, from_join)); }};
         }
         // An associative relationship acts as an entity, so it may join another
         // relationship. The plain one of the pair is the one that gains a participant.
@@ -981,36 +1586,57 @@ struct DiagramView::Impl {
             const auto first = std::get<RelationshipId>(from);
             const auto second = std::get<RelationshipId>(to);
             if (project.relationships.at(first).associative && !project.relationships.at(second).associative)
-                return [this, id = second, target = first] { return editor.connect(id, ParticipantTarget{target}); };
+                return Plan{[this, id = second, target = first](Joins from_join, Joins to_join) {
+                    return editor.connect(id, ParticipantTarget{target}, joined(to_join, from_join)); }};
             if (project.relationships.at(second).associative && !project.relationships.at(first).associative)
-                return [this, id = first, target = second] { return editor.connect(id, ParticipantTarget{target}); };
+                return Plan{[this, id = first, target = second](Joins from_join, Joins to_join) {
+                    return editor.connect(id, ParticipantTarget{target}, joined(from_join, to_join)); }};
             return {};
         }
         // The first entity connected to a triangle is what it generalises; every
         // one after that is a subtype. Properties can change either afterwards.
-        const auto isa_link = [this, &project](SpecializationId id, EntityId entity)
-            -> std::optional<std::function<application::EditResult()>> {
+        // An inheritance link is anchored to the triangle, so the clicks carry
+        // nothing for it.
+        const auto isa_link = [this, &project](SpecializationId id, EntityId entity) -> std::optional<Plan> {
             const auto found = project.specializations.find(id);
             if (found == project.specializations.end()) return {};
             if (!found->second.supertype)
-                return [this, id, entity] { return editor.set_supertype(id, entity); };
-            return [this, id, entity] { return editor.attach_subtype(id, entity); };
+                return Plan{[this, id, entity](Joins, Joins) { return editor.set_supertype(id, entity); }};
+            return Plan{[this, id, entity](Joins, Joins) { return editor.attach_subtype(id, entity); }};
         };
         if (const auto* isa = std::get_if<SpecializationId>(&from); isa && std::holds_alternative<EntityId>(to))
             return isa_link(*isa, std::get<EntityId>(to));
         if (const auto* isa = std::get_if<SpecializationId>(&to); isa && std::holds_alternative<EntityId>(from))
             return isa_link(*isa, std::get<EntityId>(from));
         if (std::holds_alternative<SpecializationId>(from) || std::holds_alternative<SpecializationId>(to)) return {};
+        // Two entities have no line of their own in Chen notation: they are
+        // read through a relationship. Rather than refuse the pair, the
+        // relationship they obviously mean is made between them, midway, with
+        // each line joined to the entity where it was clicked.
+        if (std::holds_alternative<EntityId>(from) && std::holds_alternative<EntityId>(to)) {
+            return Plan{[this, first = std::get<EntityId>(from), second = std::get<EntityId>(to)]
+                        (Joins from_join, Joins to_join) {
+                // Asked for as the edit is made rather than as the plan is
+                // built, so a pair connected twice in a row steps the second
+                // diamond past the first.
+                const auto place = relationship_place(ElementRef{first}, ElementRef{second});
+                return editor.relate(first, second, centred(place, relationship_body), "Relationship",
+                                     joined(std::nullopt, from_join), joined(std::nullopt, to_join));
+            }};
+        }
         if (std::holds_alternative<AttributeId>(from) && std::holds_alternative<AttributeId>(to)
             && project.attributes.at(std::get<AttributeId>(from)).kind == AttributeKind::Composite
             && project.attributes.at(std::get<AttributeId>(to)).kind != AttributeKind::Composite) {
-            return [this, id = std::get<AttributeId>(to), owner = from] { return editor.set_attribute_owner(id, owner); };
+            return Plan{[this, id = std::get<AttributeId>(to), owner = from](Joins from_join, Joins to_join) {
+                return editor.set_attribute_owner(id, owner, joined(from_join, to_join)); }};
         }
         if (const auto* attribute = std::get_if<AttributeId>(&from)) {
-            return [this, id = *attribute, owner = to] { return editor.set_attribute_owner(id, owner); };
+            return Plan{[this, id = *attribute, owner = to](Joins from_join, Joins to_join) {
+                return editor.set_attribute_owner(id, owner, joined(to_join, from_join)); }};
         }
         if (const auto* attribute = std::get_if<AttributeId>(&to)) {
-            return [this, id = *attribute, owner = from] { return editor.set_attribute_owner(id, owner); };
+            return Plan{[this, id = *attribute, owner = from](Joins from_join, Joins to_join) {
+                return editor.set_attribute_owner(id, owner, joined(from_join, to_join)); }};
         }
         return {};
     }
@@ -1078,28 +1704,29 @@ void DiagramView::synchronize() {
         }
     }
     for (const auto& [id, relationship] : project.relationships) {
-        std::map<ElementRef, std::size_t> counts;
+        // Which time each side meets the same element. The first runs straight
+        // between the two shapes; a second or third is a recursion and loops
+        // back around instead, which the item works out from where they are.
         std::map<ElementRef, std::size_t> index;
-        for (const auto& participant : relationship.participants) ++counts[target_ref(participant.target)];
         for (const auto& participant : relationship.participants) {
             if (!exists(project, target_ref(participant.target))) continue;
             const auto ordinal = index[target_ref(participant.target)]++;
-            const auto offset = (static_cast<qreal>(ordinal) - (static_cast<qreal>(counts[target_ref(participant.target)]) - 1) / 2) * 48;
-            const auto shape = shaped(participant.id, offset);
+            const auto shape = shaped(participant.id, 0);
             desired_edges.emplace(participant.id, EdgeDescription{
                 .key = participant.id, .from = id, .to = target_ref(participant.target), .relationship = id,
                 .cardinality = participant.maximum, .participation = participant.participation,
                 .show_constraints = participant.show_constraints,
                 .role = QString::fromStdString(participant.role), .offset = shape.offset,
                 .owner_anchor = shape.owner_anchor, .child_anchor = shape.child_anchor,
-                .waypoints = route_of(shape)});
+                .waypoints = route_of(shape), .recursion = static_cast<int>(ordinal)});
         }
     }
     for (const auto& [id, specialization] : project.specializations) {
         if (specialization.supertype && project.entities.contains(*specialization.supertype))
             desired_edges.emplace(EdgeKey{InheritanceKey{id, {}}},
                 EdgeDescription{.key = EdgeKey{InheritanceKey{id, {}}}, .from = id,
-                                .to = ElementRef{*specialization.supertype}});
+                                .to = ElementRef{*specialization.supertype},
+                                .total = specialization.completeness == Completeness::Total});
         for (const auto& subtype : specialization.subtypes) {
             if (!project.entities.contains(subtype)) continue;
             const EdgeKey key{InheritanceKey{id, subtype}};
@@ -1135,18 +1762,23 @@ void DiagramView::synchronize() {
                 if (original != impl_->drag_start.end()) {
                     const QPointF start{original->second.x, original->second.y};
                     auto delta = position - start;
-                    if (impl_->snap) {
+                    // Meeting a neighbour's edge or middle comes first, since
+                    // that is what the eye is going for; the grid catches
+                    // whatever is not meeting anything.
+                    if (const auto guided = impl_->aligned_delta(delta)) {
+                        delta = *guided;
+                    } else if (impl_->align_to_grid) {
                         const auto anchor = impl_->drag_anchor + delta;
                         delta = QPointF(std::round(anchor.x() / grid_spacing) * grid_spacing,
                                         std::round(anchor.y() / grid_spacing) * grid_spacing) - impl_->drag_anchor;
                     }
                     // All selected nodes use one translation, preserving their
-                    // relative spacing even when snapping or reaching a boundary.
+                    // relative spacing even when aligning or reaching a boundary.
                     delta.setX(std::clamp(delta.x(), impl_->minimum_drag.x(), impl_->maximum_drag.x()));
                     delta.setY(std::clamp(delta.y(), impl_->minimum_drag.y(), impl_->maximum_drag.y()));
                     return start + delta;
                 }
-                if (impl_->snap) position = {std::round(position.x() / grid_spacing) * grid_spacing, std::round(position.y() / grid_spacing) * grid_spacing};
+                if (impl_->align_to_grid) position = {std::round(position.x() / grid_spacing) * grid_spacing, std::round(position.y() / grid_spacing) * grid_spacing};
                 return QPointF(std::clamp(position.x(), -max_coordinate, max_coordinate - node->body_rect().width()),
                                std::clamp(position.y(), -max_coordinate, max_coordinate - node->body_rect().height()));
             };
@@ -1161,16 +1793,43 @@ void DiagramView::synchronize() {
         AttributeKind kind = AttributeKind::Normal;
         if (const auto* attribute_id = std::get_if<AttributeId>(&ref)) kind = project.attributes.at(*attribute_id).kind;
         bool associative = false;
-        if (const auto* relationship_id = std::get_if<RelationshipId>(&ref))
+        bool identifying = false;
+        if (const auto* relationship_id = std::get_if<RelationshipId>(&ref)) {
             associative = project.relationships.at(*relationship_id).associative;
+            identifying = project.relationships.at(*relationship_id).identifying;
+        }
+        bool weak = false;
+        if (const auto* entity_id = std::get_if<EntityId>(&ref)) weak = project.entities.at(*entity_id).weak;
+        // A key attribute of a weak entity is only a partial key.
+        bool partial_key = false;
+        if (const auto* attribute_id = std::get_if<AttributeId>(&ref)) {
+            const auto& attribute = project.attributes.at(*attribute_id);
+            if (const auto* owner = attribute.owner ? std::get_if<EntityId>(&*attribute.owner) : nullptr)
+                partial_key = kind == AttributeKind::Key && project.entities.contains(*owner) && project.entities.at(*owner).weak;
+        }
         bool generalising = false;
-        if (const auto* specialization_id = std::get_if<SpecializationId>(&ref))
+        bool disjoint = true;
+        if (const auto* specialization_id = std::get_if<SpecializationId>(&ref)) {
             generalising = project.specializations.at(*specialization_id).direction == Inheritance::Generalization;
-        if (node->label != label || node->attribute_kind != kind || node->associative != associative
-            || node->generalising != generalising) {
+            disjoint = project.specializations.at(*specialization_id).constraint == Disjointness::Disjoint;
+        }
+        QString body;
+        if (const auto* note_id = std::get_if<NoteId>(&ref)) body = QString::fromStdString(project.notes.at(*note_id).description);
+        // A picture's bytes never change once it is placed, so they are decoded
+        // once, when its node is first built.
+        if (const auto* picture_id = std::get_if<PictureId>(&ref); picture_id && !node->has_image())
+            node->set_image(project.pictures.at(*picture_id).image);
+        if (node->label != label || node->body != body || node->attribute_kind != kind || node->associative != associative
+            || node->generalising != generalising || node->weak != weak || node->identifying != identifying
+            || node->partial_key != partial_key || node->disjoint != disjoint) {
             node->label = label;
+            node->body = body;
             node->attribute_kind = kind;
             node->generalising = generalising;
+            node->weak = weak;
+            node->identifying = identifying;
+            node->partial_key = partial_key;
+            node->disjoint = disjoint;
             node->set_associative(associative);
             node->update();
         }
@@ -1179,6 +1838,8 @@ void DiagramView::synchronize() {
         node->set_chosen_colour(chosen == project.colours.end()
             ? std::optional<QColor>{}
             : std::optional{QColor(chosen->second.red, chosen->second.green, chosen->second.blue)});
+        const auto faded = project.transparency.find(ref);
+        node->set_transparency(faded == project.transparency.end() ? 0 : faded->second);
         if (geometry_changed) {
             const auto incident = impl_->incident.find(ref);
             if (incident != impl_->incident.end()) dirty_edges.insert(incident->second.begin(), incident->second.end());
@@ -1188,6 +1849,8 @@ void DiagramView::synchronize() {
     for (const auto& [id, attribute] : project.attributes) { (void)attribute; sync_node(id); }
     for (const auto& [id, relationship] : project.relationships) { (void)relationship; sync_node(id); }
     for (const auto& [id, specialization] : project.specializations) { (void)specialization; sync_node(id); }
+    for (const auto& [id, picture] : project.pictures) { (void)picture; sync_node(id); }
+    for (const auto& [id, note] : project.notes) { (void)note; sync_node(id); }
     for (const auto& [key, description] : desired_edges) {
         auto found = impl_->edges.find(key);
         if (found == impl_->edges.end()) {
@@ -1220,6 +1883,7 @@ void DiagramView::synchronize() {
     impl_->synchronizing = false;
     if (impl_->connect_start && !exists(project, *impl_->connect_start)) {
         impl_->connect_start.reset();
+        impl_->connect_start_direction.reset();
         impl_->connect_pointer.reset();
         impl_->connect_hover.reset();
     }
@@ -1256,8 +1920,13 @@ void DiagramView::set_tool(Tool tool, bool locked) {
     case Tool::Relationship: impl_->status(QStringLiteral("Click the canvas to create a relationship, then use Connect to add participants.")); break;
     case Tool::Specialization: impl_->status(QStringLiteral("Click the canvas to place an ISA triangle pointing down, then connect its supertype and subtypes.")); break;
     case Tool::Generalization: impl_->status(QStringLiteral("Click the canvas to place an ISA triangle pointing up, then connect its supertype and subtypes.")); break;
-    case Tool::Connect: impl_->status(QStringLiteral("Select an entity and relationship, an attribute and its owner, or a subtype and its triangle.")); break;
+    case Tool::Connect:
+        impl_->status(impl_->join_mode == JoinMode::WhereClicked
+            ? QStringLiteral("Select an entity and relationship, an attribute and its owner, or a subtype and its triangle. The line joins each shape where you click.")
+            : QStringLiteral("Select an entity and relationship, an attribute and its owner, or a subtype and its triangle."));
+        break;
     case Tool::Pan: impl_->status(QStringLiteral("Drag to pan. The middle mouse button pans in every tool.")); break;
+    case Tool::Note: impl_->status(QStringLiteral("Click the canvas to place a note, then type its title. Its text is written in Properties.")); break;
     }
 }
 bool DiagramView::tool_locked() const { return impl_->tool_locked; }
@@ -1320,6 +1989,8 @@ void DiagramView::set_line_style(LineStyle style) {
     viewport()->update();
 }
 LineStyle DiagramView::line_style() const { return impl_->style; }
+void DiagramView::set_join_mode(JoinMode mode) { impl_->join_mode = mode; }
+JoinMode DiagramView::join_mode() const { return impl_->join_mode; }
 
 // Both pickers draw a sample of a line. Drawn in the connector's own muted
 // grey at the canvas weight, those samples came out as hairlines that could not
@@ -1344,11 +2015,29 @@ QPixmap DiagramView::line_style_preview(LineStyle style, QSize size) const {
     const QPointF to(size.width() - 4.0, 4);
     if (style == LineStyle::Straight) {
         painter.drawLine(from, to);
+    } else if (style == LineStyle::Elbow) {
+        QPainterPath path(from);
+        path.lineTo((from.x() + to.x()) / 2, from.y());
+        path.lineTo((from.x() + to.x()) / 2, to.y());
+        path.lineTo(to);
+        painter.drawPath(path);
     } else {
         QPainterPath path(from);
         path.cubicTo(from + QPointF(size.width() * 0.45, 0), to - QPointF(size.width() * 0.45, 0), to);
         painter.drawPath(path);
     }
+    return pixmap;
+}
+
+QPixmap DiagramView::element_preview(const ElementRef& ref, QSize size, bool fill_the_room) const {
+    QPixmap pixmap(size * devicePixelRatioF());
+    pixmap.setDevicePixelRatio(devicePixelRatioF());
+    pixmap.fill(Qt::transparent);
+    const auto found = impl_->nodes.find(ref);
+    if (found == impl_->nodes.end()) return pixmap;
+    QPainter painter(&pixmap);
+    painter.setRenderHint(QPainter::Antialiasing);
+    found->second->paint_shape(&painter, QRectF(1, 1, size.width() - 2.0, size.height() - 2.0), fill_the_room);
     return pixmap;
 }
 
@@ -1378,7 +2067,7 @@ QPixmap DiagramView::notation_preview(Notation notation, QSize size) const {
     return pixmap;
 }
 void DiagramView::set_grid_visible(bool enabled) { impl_->grid = enabled; viewport()->update(); }
-void DiagramView::set_snap_enabled(bool enabled) { impl_->snap = enabled; }
+void DiagramView::set_align_to_grid(bool enabled) { impl_->align_to_grid = enabled; }
 void DiagramView::set_theme(ThemeId id) {
     const auto& colors = theme(id);
     if (impl_->theme_id == colors.id) return;
@@ -1416,6 +2105,19 @@ void DiagramView::delete_selection() {
         impl_->publish(impl_->editor.erase(elements, participants, detached_attributes, detached_inheritance));
 }
 
+void DiagramView::align_selection_for_test(const std::vector<ElementRef>& elements, bool along_x, int which) {
+    impl_->align_selection(elements, along_x, which);
+}
+void DiagramView::preview_transparency(const std::vector<ElementRef>& elements, int percent) {
+    for (const auto& ref : elements)
+        if (const auto found = impl_->nodes.find(ref); found != impl_->nodes.end()) found->second->set_transparency(percent);
+}
+void DiagramView::set_transparency(const std::vector<ElementRef>& elements, int percent) {
+    const auto result = impl_->editor.set_transparency(elements, static_cast<std::uint8_t>(std::clamp(percent, 0, 100)));
+    if (!result) impl_->displayed_revision.reset(); // Put back the stored value after a refused edit.
+    impl_->publish(result);
+}
+
 void DiagramView::cancel_interaction() {
     if (!impl_->drag_start.empty()) {
         impl_->synchronizing = true;
@@ -1433,14 +2135,17 @@ void DiagramView::cancel_interaction() {
         impl_->drag_start.clear();
         if (auto* grabber = impl_->scene->mouseGrabberItem()) grabber->ungrabMouse();
     }
-    if (impl_->bending) {
-        // Discard the previewed bend; the next projection restores the stored one.
+    impl_->clear_guides();
+    if (impl_->bending || impl_->rejoining) {
+        // Discard the previewed bend or join; the next projection restores the stored one.
         impl_->bending.reset();
+        impl_->rejoining.reset();
         impl_->displayed_revision.reset();
         synchronize();
     }
     impl_->cancel_inline_edit();
     impl_->connect_start.reset();
+    impl_->connect_start_direction.reset();
     impl_->connect_pointer.reset();
     impl_->connect_hover.reset();
     impl_->panning = false;
@@ -1502,11 +2207,76 @@ void DiagramView::contextMenuEvent(QContextMenuEvent* event) {
     const auto& project = impl_->editor.project();
     clear->setEnabled(std::any_of(chosen.begin(), chosen.end(),
                                   [&](const ElementRef& ref) { return project.colours.contains(ref); }));
+    // Transparency, as a bar from none to all, below the colours. It applies
+    // to the whole selection over whatever colour each element has, previews
+    // as it is dragged, and is written once when the slider is let go.
+    const auto stored = project.transparency.find(chosen.front());
+    int committed = stored == project.transparency.end() ? 0 : stored->second;
+    auto* row = new QWidget(&menu);
+    auto* row_layout = new QHBoxLayout(row);
+    row_layout->setContentsMargins(22, 4, 12, 4);
+    row_layout->setSpacing(8);
+    auto* caption = new QLabel("Transparency", row);
+    auto* slider = new QSlider(Qt::Horizontal, row);
+    slider->setObjectName("contextTransparency");
+    slider->setRange(0, 100);
+    slider->setValue(committed);
+    slider->setMinimumWidth(120);
+    auto* percent = new QLabel(QString("%1%").arg(committed), row);
+    percent->setMinimumWidth(36);
+    row_layout->addWidget(caption);
+    row_layout->addWidget(slider, 1);
+    row_layout->addWidget(percent);
+    auto* transparency = new QWidgetAction(&menu);
+    transparency->setObjectName("contextTransparencyRow");
+    transparency->setDefaultWidget(row);
+    menu.addAction(transparency);
+    connect(slider, &QSlider::valueChanged, &menu, [this, chosen, percent](int value) {
+        percent->setText(QString("%1%").arg(value));
+        preview_transparency(chosen, value);
+    });
+    const auto commit = [this, chosen, slider, &committed] {
+        if (slider->value() == committed) return;
+        committed = slider->value();
+        set_transparency(chosen, committed);
+    };
+    connect(slider, &QSlider::sliderReleased, &menu, commit);
+    // Arrow keys and clicks on the bar move it without a release, so whatever
+    // it reads when the menu goes is written then.
+    connect(&menu, &QMenu::aboutToHide, &menu, commit);
+    // Lining several elements up, which is what makes the lines between them
+    // run straight. It is offered only when there is more than one to line up.
+    struct Alignment { QAction* action; bool along_x; int which; };
+    std::vector<Alignment> alignments;
+    if (chosen.size() > 1) {
+        menu.addSeparator();
+        auto* align = menu.addMenu("Align");
+        align->setObjectName("contextAlign");
+        const std::array<std::tuple<const char*, const char*, bool, int>, 6> entries{{
+            {"Left edges", "alignLeft", true, 0}, {"Centres", "alignCentres", true, 1},
+            {"Right edges", "alignRight", true, 2}, {"Top edges", "alignTop", false, 0},
+            {"Middles", "alignMiddles", false, 1}, {"Bottom edges", "alignBottom", false, 2}}};
+        for (const auto& [label, name, along_x, which] : entries) {
+            if (!along_x && which == 0) align->addSeparator();  // the two axes read apart
+            auto* entry = align->addAction(QString::fromLatin1(label));
+            entry->setObjectName(QString::fromLatin1(name));
+            alignments.push_back({entry, along_x, which});
+        }
+    }
+    menu.addSeparator();
+    impl_->add_insert_menu(menu, mapToScene(event->pos()));
 
     auto* picked = menu.exec(event->globalPos());
-    if (!picked) return;
+    // The Insert entries act as they are triggered, so there is nothing left
+    // to do for them here.
+    if (!picked || picked->objectName().startsWith("contextInsert")) return;
     if (picked == duplicate) { impl_->publish(impl_->editor.duplicate(chosen)); return; }
     if (picked == remove) { delete_selection(); return; }
+    for (const auto& alignment : alignments)
+        if (picked == alignment.action) {
+            impl_->align_selection(chosen, alignment.along_x, alignment.which);
+            return;
+        }
     if (picked == clear) { impl_->publish(impl_->editor.recolour(chosen, {})); return; }
     QColor colour;
     if (picked == custom) {
@@ -1531,9 +2301,16 @@ void DiagramView::contextMenuEvent(QContextMenuEvent* event) {
 // The constraints on one side of a relationship, offered where that side is
 // drawn. They can be read off the line, so this is where the hand goes to
 // change them; the properties panel says the same thing in words.
+// Right-clicking empty canvas offers what can be put there.
+void DiagramView::canvas_menu(QContextMenuEvent* event) {
+    QMenu menu(this);
+    impl_->add_insert_menu(menu, mapToScene(event->pos()));
+    menu.exec(event->globalPos());
+}
+
 void DiagramView::participant_menu(QContextMenuEvent* event) {
     auto* edge = impl_->edge_at(event->pos());
-    if (!edge) { QGraphicsView::contextMenuEvent(event); return; }
+    if (!edge) { canvas_menu(event); return; }
     const auto* participant_key = std::get_if<ParticipantId>(&edge->descriptor.key);
     if (!participant_key || !edge->descriptor.relationship) { QGraphicsView::contextMenuEvent(event); return; }
     const auto relationship_id = *edge->descriptor.relationship;
@@ -1612,7 +2389,7 @@ void DiagramView::mousePressEvent(QMouseEvent* event) {
     }
     if (event->button() != Qt::LeftButton) { QGraphicsView::mousePressEvent(event); return; }
     if (impl_->active_tool == Tool::Connect) {
-        impl_->connect_node(impl_->node_at(event->position().toPoint()));
+        impl_->connect_node(impl_->node_at(event->position().toPoint()), mapToScene(event->position().toPoint()));
         // Arming a source starts carrying a preview line. Releasing over another
         // element completes the connection; releasing where it started leaves it
         // armed, so click-then-click still works for anyone who prefers it.
@@ -1637,18 +2414,28 @@ void DiagramView::mousePressEvent(QMouseEvent* event) {
         event->accept();
         return;
     }
-    if (impl_->active_tool == Tool::Entity || impl_->active_tool == Tool::Attribute || impl_->active_tool == Tool::Relationship) {
+    if (impl_->active_tool == Tool::Entity || impl_->active_tool == Tool::Attribute
+        || impl_->active_tool == Tool::Relationship || impl_->active_tool == Tool::Note) {
         auto center = mapToScene(event->position().toPoint());
-        if (impl_->snap) center = {std::round(center.x() / grid_spacing) * grid_spacing, std::round(center.y() / grid_spacing) * grid_spacing};
+        if (impl_->align_to_grid) center = {std::round(center.x() / grid_spacing) * grid_spacing, std::round(center.y() / grid_spacing) * grid_spacing};
         application::EditResult result;
         if (impl_->active_tool == Tool::Entity) {
             result = impl_->editor.create_entity("Entity", centred(center, entity_body));
         } else if (impl_->active_tool == Tool::Relationship) {
             result = impl_->editor.create_relationship("Relationship", centred(center, relationship_body));
+        } else if (impl_->active_tool == Tool::Note) {
+            // The tool hands back first, as the others do, and the note is
+            // then placed through the same path the menus use: handing back
+            // afterwards would close the title the note opens for.
+            if (!impl_->tool_locked) set_tool(Tool::Select);
+            impl_->place_note(center);
+            event->accept();
+            return;
         } else {
             std::optional<AttributeOwner> owner;
             const auto selection = selected_elements();
-            if (selection.size() == 1 && exists(impl_->editor.project(), selection.front())) {
+            if (selection.size() == 1 && exists(impl_->editor.project(), selection.front())
+                && !is_figure(selection.front())) {
                 const auto* attribute = std::get_if<AttributeId>(&selection.front());
                 if (!attribute || impl_->editor.project().attributes.at(*attribute).kind == AttributeKind::Composite) owner = selection.front();
             }
@@ -1686,8 +2473,18 @@ void DiagramView::mousePressEvent(QMouseEvent* event) {
             event->accept();
             return;
         }
+        // An end grip carries that end of the line to another point on its
+        // shape. It is previewed on the item and pinned there on release.
+        if (bool owner_end = false; auto* edge = impl_->end_at(event->position().toPoint(), owner_end)) {
+            impl_->rejoining = Impl::EndDrag{edge->descriptor.key, owner_end, false};
+            event->accept();
+            return;
+        }
         const auto scene_press = mapToScene(event->position().toPoint());
         if (auto* edge = impl_->selected_edge_at(event->position().toPoint())) {
+            // Shaping a loop starts from the loop, not from the straight line
+            // it would otherwise fall back to.
+            edge->adopt_route();
             // A grip grabs its own corner; anywhere else along the line arms a
             // drag that will put a new corner there. Neither changes anything
             // until the pointer moves, so a click that only meant to select is
@@ -1709,6 +2506,7 @@ void DiagramView::mousePressEvent(QMouseEvent* event) {
     if (const auto* anchor = impl_->node_at(event->position().toPoint()); anchor && anchor->isSelected()) {
         const auto& layout = impl_->editor.project().layout;
         impl_->drag_anchor = anchor->pos();
+        impl_->drag_anchor_ref = anchor->ref;
         impl_->minimum_drag = {-2 * max_coordinate, -2 * max_coordinate};
         impl_->maximum_drag = {2 * max_coordinate, 2 * max_coordinate};
         for (const auto& ref : selected_elements()) {
@@ -1725,6 +2523,17 @@ void DiagramView::mousePressEvent(QMouseEvent* event) {
 }
 void DiagramView::drawForeground(QPainter* painter, const QRectF& rect) {
     QGraphicsView::drawForeground(painter, rect);
+    // What a dragged element has come into line with. Thin and in the theme's
+    // own warning colour, which is the one hue no shape on the canvas wears,
+    // so a guide is never mistaken for part of the diagram.
+    if (!impl_->guides.empty()) {
+        painter->save();
+        QPen pen(theme(impl_->theme_id).warning, 1.0);
+        pen.setCosmetic(true);
+        painter->setPen(pen);
+        for (const auto& guide : impl_->guides) painter->drawLine(guide);
+        painter->restore();
+    }
     if (!impl_->connect_start || !impl_->connect_pointer) return;
     const auto source = impl_->nodes.find(*impl_->connect_start);
     if (source == impl_->nodes.end()) return;
@@ -1739,7 +2548,12 @@ void DiagramView::drawForeground(QPainter* painter, const QRectF& rect) {
     pen.setCosmetic(true);
     painter->setPen(pen);
     painter->setBrush(Qt::NoBrush);
-    painter->drawLine(source->second->boundary_toward(pointer), pointer);
+    // The line leaves the source where it was clicked when that is where the
+    // join will be pinned, so the preview shows the line that will be drawn.
+    const auto leaving = impl_->connect_start_direction
+        ? source->second->boundary_at(*impl_->connect_start_direction)
+        : source->second->boundary_toward(pointer);
+    painter->drawLine(leaving, pointer);
     if (valid) {
         const auto target = impl_->nodes.find(*impl_->connect_hover);
         if (target != impl_->nodes.end()) {
@@ -1747,6 +2561,13 @@ void DiagramView::drawForeground(QPainter* painter, const QRectF& rect) {
             outline.setCosmetic(true);
             painter->setPen(outline);
             painter->drawRoundedRect(target->second->sceneBoundingRect().adjusted(-4, -4, 4, 4), 6, 6);
+            // And a mark on the outline where this end will be pinned, so the
+            // join is seen before the button is released rather than after.
+            if (const auto direction = impl_->join_direction(target->second, pointer)) {
+                painter->setPen(Qt::NoPen);
+                painter->setBrush(colors.accent);
+                painter->drawEllipse(target->second->boundary_at(*direction), 4.5, 4.5);
+            }
         }
     } else {
         painter->setPen(Qt::NoPen);
@@ -1859,6 +2680,46 @@ void DiagramView::mouseMoveEvent(QMouseEvent* event) {
         event->accept();
         return;
     }
+    if (impl_->rejoining) {
+        const auto found = impl_->edges.find(impl_->rejoining->key);
+        if (found != impl_->edges.end()) {
+            auto* edge = found->second;
+            // The end follows the pointer around its own shape's outline: the
+            // join is the direction of the pointer from that shape's centre.
+            auto* node = impl_->rejoining->owner_end ? edge->head_node() : edge->tail_node();
+            const auto here = mapToScene(event->position().toPoint());
+            // Over its own shape, the end slides around the outline: the join
+            // is the direction of the pointer from that shape's centre. Once
+            // the pointer leaves the shape it is carrying a corner instead,
+            // and the line stops at wherever it is let go.
+            const auto body = node->body_rect().translated(node->scenePos());
+            auto& corners = edge->descriptor.waypoints;
+            if (body.contains(here)) {
+                if (impl_->rejoining->placed) {
+                    corners.erase(impl_->rejoining->owner_end ? corners.begin() : corners.end() - 1);
+                    impl_->rejoining->placed = false;
+                }
+                (impl_->rejoining->owner_end ? edge->descriptor.owner_anchor : edge->descriptor.child_anchor)
+                    = node->direction_of(here);
+            } else {
+                const QPointF stop(std::clamp(here.x(), -max_coordinate, max_coordinate),
+                                   std::clamp(here.y(), -max_coordinate, max_coordinate));
+                if (!impl_->rejoining->placed) {
+                    // The shape the canvas had worked out becomes the user's
+                    // here, so a stopping point is added to the line they can
+                    // see rather than replacing it with a straight one.
+                    edge->adopt_route();
+                    corners.insert(impl_->rejoining->owner_end ? corners.begin() : corners.end(), stop);
+                    impl_->rejoining->placed = true;
+                } else {
+                    corners[impl_->rejoining->owner_end ? 0 : corners.size() - 1] = stop;
+                }
+            }
+            edge->refresh();
+        }
+        event->accept();
+        return;
+    }
     if (impl_->bending) {
         const auto found = impl_->edges.find(*impl_->bending);
         if (found != impl_->edges.end()) {
@@ -1892,7 +2753,8 @@ void DiagramView::mouseReleaseEvent(QMouseEvent* event) {
         impl_->connect_hover.reset();
         // Releasing on a different element finishes the drag. Releasing on the
         // source is a plain click, which leaves the source armed.
-        if (released_over && released_over->ref != *impl_->connect_start) impl_->connect_node(released_over);
+        if (released_over && released_over->ref != *impl_->connect_start)
+            impl_->connect_node(released_over, mapToScene(event->position().toPoint()));
         viewport()->update();
         event->accept();
         return;
@@ -1926,6 +2788,28 @@ void DiagramView::mouseReleaseEvent(QMouseEvent* event) {
         event->accept();
         return;
     }
+    if (impl_->rejoining) {
+        const auto drag = *impl_->rejoining;
+        impl_->rejoining.reset();
+        const auto found = impl_->edges.find(drag.key);
+        if (found != impl_->edges.end() && !std::holds_alternative<InheritanceKey>(drag.key)) {
+            const auto connector = std::holds_alternative<AttributeId>(drag.key)
+                ? ConnectorRef{std::get<AttributeId>(drag.key)} : ConnectorRef{std::get<ParticipantId>(drag.key)};
+            // The join and the stopping point are one thing the user did, so
+            // they are written as one edit rather than as two.
+            domain::Connector shaped;
+            shaped.offset = found->second->descriptor.offset;
+            shaped.owner_anchor = found->second->descriptor.owner_anchor;
+            shaped.child_anchor = found->second->descriptor.child_anchor;
+            for (const auto& corner : found->second->descriptor.waypoints)
+                shaped.waypoints.push_back(domain::Point{corner.x(), corner.y()});
+            const auto result = impl_->editor.shape_connector(connector, std::move(shaped));
+            if (!result) impl_->displayed_revision.reset(); // Restore the projection after a rejected join.
+            impl_->publish(result);
+        }
+        event->accept();
+        return;
+    }
     if (impl_->bending) {
         const auto key = *impl_->bending;
         impl_->bending.reset();
@@ -1946,6 +2830,7 @@ void DiagramView::mouseReleaseEvent(QMouseEvent* event) {
     if (original_modifiers.testFlag(Qt::ShiftModifier)) event->setModifiers(original_modifiers | Qt::ControlModifier);
     QGraphicsView::mouseReleaseEvent(event);
     event->setModifiers(original_modifiers);
+    impl_->clear_guides();
     if (event->button() != Qt::LeftButton || impl_->drag_start.empty()) return;
     std::map<ElementRef, Rect> positions;
     for (const auto& [ref, start] : impl_->drag_start) {
@@ -1963,13 +2848,39 @@ void DiagramView::mouseReleaseEvent(QMouseEvent* event) {
         impl_->publish(result);
     }
 }
+// A pinch on a trackpad arrives from the system as a native gesture rather
+// than as wheel turns. It zooms about the pointer, as the wheel does.
+bool DiagramView::viewportEvent(QEvent* event) {
+    if (event->type() == QEvent::NativeGesture) {
+        auto* gesture = static_cast<QNativeGestureEvent*>(event);
+        if (gesture->gestureType() == Qt::ZoomNativeGesture) {
+            impl_->zoom(zoom_factor() * (1.0 + gesture->value()));
+            event->accept();
+            return true;
+        }
+    }
+    return QGraphicsView::viewportEvent(event);
+}
 void DiagramView::wheelEvent(QWheelEvent* event) {
+    // Two fingers travelling together are a palm laid on the diagram: they
+    // move it, and it is the pinch above that zooms it. A trackpad says it is
+    // one by reporting the distance its fingers actually covered, and by
+    // giving its scroll a phase; a mouse wheel reports neither, so its notches
+    // still zoom as they always have. The trackpad also fills in an angle for
+    // the benefit of anything expecting a wheel, which is why the fingers have
+    // to be asked about before the angle rather than after it.
+    const bool fingers = !event->pixelDelta().isNull() || event->phase() != Qt::NoScrollPhase;
+    if (fingers) {
+        // Some devices give the phase without the pixels; a wheel's eighth of
+        // a degree is the conventional pixel when that happens.
+        const auto moved = event->pixelDelta().isNull() ? event->angleDelta() / 8 : event->pixelDelta();
+        horizontalScrollBar()->setValue(horizontalScrollBar()->value() - moved.x());
+        verticalScrollBar()->setValue(verticalScrollBar()->value() - moved.y());
+        event->accept();
+        return;
+    }
     const auto delta = event->angleDelta().y();
     if (delta != 0) impl_->zoom(zoom_factor() * std::pow(1.0015, static_cast<qreal>(delta)));
-    else if (!event->pixelDelta().isNull()) {
-        horizontalScrollBar()->setValue(horizontalScrollBar()->value() - event->pixelDelta().x());
-        verticalScrollBar()->setValue(verticalScrollBar()->value() - event->pixelDelta().y());
-    }
     event->accept();
 }
 void DiagramView::keyPressEvent(QKeyEvent* event) {

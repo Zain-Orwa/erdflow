@@ -83,7 +83,7 @@ The project itself is MIT licensed; see [LICENSE](../LICENSE).
 main.cpp (composition root)
   ├── QtIdGenerator + ErdxProjectStore (Infrastructure)
   ├── Editor (Application) → model/validation (Domain)
-  └── MainWindow + DiagramView + theme/icons (Presentation)
+  └── MainWindow + Ribbon + DiagramView + theme/icons (Presentation)
 ```
 
 Themes carry the application palette and the diagram colours together, so the

@@ -23,7 +23,10 @@ namespace {
 // triangle wait for its supertype.
 // Earlier versions remain readable; the format specification states the
 // compatibility rule for each.
-constexpr int current_format_version = 10;
+// Version 11 adds pictures and notes, the visual aids placed on the canvas;
+// version 12 lets an element's surface be see-through by a percentage;
+// version 13 adds weak entities and identifying relationships.
+constexpr int current_format_version = 13;
 QString text(const std::string& value) { return QString::fromUtf8(value.data(), static_cast<qsizetype>(value.size())); }
 Uuid bytes_of(const QUuid& value) {
     Uuid result;
@@ -65,7 +68,9 @@ Uuid parse_id(const QJsonValue& value) {
 QJsonObject reference(const ElementRef& ref) {
     const char* type = std::holds_alternative<EntityId>(ref) ? "entity"
         : std::holds_alternative<AttributeId>(ref) ? "attribute"
-        : std::holds_alternative<SpecializationId>(ref) ? "specialization" : "relationship";
+        : std::holds_alternative<SpecializationId>(ref) ? "specialization"
+        : std::holds_alternative<PictureId>(ref) ? "picture"
+        : std::holds_alternative<NoteId>(ref) ? "note" : "relationship";
     return {{"type", QLatin1String(type)}, {"id", uuid_text(uuid(ref))}};
 }
 QJsonObject connector_reference(const ConnectorRef& ref) {
@@ -89,7 +94,26 @@ ElementRef parse_ref(const QJsonValue& value) {
     if (type == "attribute") return AttributeId{id};
     if (type == "relationship") return RelationshipId{id};
     if (type == "specialization") return SpecializationId{id};
+    if (type == "picture") return PictureId{id};
+    if (type == "note") return NoteId{id};
     invalid("Unsupported element type.");
+}
+// A picture's bytes travel as base64 text. Anything that is not base64, or
+// that decodes to more than a picture may hold, is refused rather than
+// trimmed; the domain then checks that the bytes could be an image at all.
+std::vector<std::uint8_t> image_bytes(const QJsonValue& value) {
+    if (!value.isString()) invalid("A picture's image must be base64 text.");
+    const auto encoded = value.toString().toLatin1();
+    if (static_cast<std::size_t>(encoded.size()) > (max_image_bytes + 2) / 3 * 4)
+        invalid("A picture's image exceeds the 2 MiB limit.");
+    const auto decoded = QByteArray::fromBase64Encoding(encoded, QByteArray::AbortOnBase64DecodingErrors);
+    if (!decoded) invalid("A picture's image must be base64 text.");
+    const auto& bytes = *decoded;
+    return {bytes.begin(), bytes.end()};
+}
+QString image_text(const std::vector<std::uint8_t>& image) {
+    return QString::fromLatin1(QByteArray::fromRawData(reinterpret_cast<const char*>(image.data()),
+                                                       static_cast<qsizetype>(image.size())).toBase64());
 }
 QString kind_name(AttributeKind kind) {
     switch (kind) {
@@ -255,9 +279,20 @@ QByteArray ErdxProjectStore::encode(const Project& project) {
         count(relationship.name); count(relationship.description);
         for (const auto& participant : relationship.participants) count(participant.role);
     }
+    for (const auto& [id, specialization] : project.specializations) { (void)id; count(specialization.name); count(specialization.description); }
+    for (const auto& [id, note] : project.notes) { (void)id; count(note.name); count(note.description); }
+    // An image is written as base64, which is a third again as long as the bytes.
+    for (const auto& [id, picture] : project.pictures) {
+        (void)id;
+        count(picture.name); count(picture.description);
+        const auto encoded = (picture.image.size() + 2) / 3 * 4;
+        if (encoded > budget - text_bytes) invalid("The project exceeds the 8 MiB file limit.");
+        text_bytes += encoded;
+    }
     QJsonArray entities, attributes, relationships, layout;
     for (const auto& [id, entity] : project.entities)
-        entities.append(QJsonObject{{"id", uuid_text(id.value)}, {"name", text(entity.name)}, {"description", text(entity.description)}});
+        entities.append(QJsonObject{{"id", uuid_text(id.value)}, {"name", text(entity.name)},
+                                    {"description", text(entity.description)}, {"weak", entity.weak}});
     for (const auto& [id, attribute] : project.attributes)
         attributes.append(QJsonObject{{"id", uuid_text(id.value)}, {"name", text(attribute.name)},
             {"description", text(attribute.description)}, {"kind", kind_name(attribute.kind)},
@@ -271,7 +306,7 @@ QByteArray ErdxProjectStore::encode(const Project& project) {
                 {"show_constraints", p.show_constraints}});
         relationships.append(QJsonObject{{"id", uuid_text(id.value)}, {"name", text(relationship.name)},
             {"description", text(relationship.description)}, {"associative", relationship.associative},
-            {"participants", participants}});
+            {"identifying", relationship.identifying}, {"participants", participants}});
     }
     for (const auto& [ref, rect] : project.layout)
         layout.append(QJsonObject{{"element", reference(ref)}, {"x", rect.x}, {"y", rect.y}, {"width", rect.width}, {"height", rect.height}});
@@ -292,6 +327,16 @@ QByteArray ErdxProjectStore::encode(const Project& project) {
     for (const auto& [ref, colour] : project.colours)
         colours.append(QJsonObject{{"element", reference(ref)},
                                    {"red", colour.red}, {"green", colour.green}, {"blue", colour.blue}});
+    QJsonArray transparency;
+    for (const auto& [ref, percent] : project.transparency)
+        transparency.append(QJsonObject{{"element", reference(ref)}, {"percent", percent}});
+    QJsonArray pictures, notes;
+    for (const auto& [id, picture] : project.pictures)
+        pictures.append(QJsonObject{{"id", uuid_text(id.value)}, {"name", text(picture.name)},
+            {"description", text(picture.description)}, {"image", image_text(picture.image)}});
+    for (const auto& [id, note] : project.notes)
+        notes.append(QJsonObject{{"id", uuid_text(id.value)}, {"name", text(note.name)},
+            {"description", text(note.description)}});
     QJsonArray connectors;
     for (const auto& [ref, connector] : project.connectors) {
         // Both anchors are always written, null when the join is not pinned, so
@@ -310,7 +355,8 @@ QByteArray ErdxProjectStore::encode(const Project& project) {
         {"project", QJsonObject{{"id", uuid_text(project.id.value)}, {"name", text(project.name)},
         {"entities", entities}, {"attributes", attributes}, {"relationships", relationships},
         {"layout", layout}, {"connectors", connectors}, {"colours", colours},
-        {"specializations", specializations}}}}).toJson(QJsonDocument::Indented);
+        {"specializations", specializations}, {"pictures", pictures}, {"notes", notes},
+        {"transparency", transparency}}}}).toJson(QJsonDocument::Indented);
     if (bytes.size() > max_file_bytes) invalid("The project exceeds the 8 MiB file limit.");
     return bytes;
 }
@@ -328,7 +374,7 @@ application::LoadResult ErdxProjectStore::decode(const QByteArray& input) {
         // routed automatically; saving then writes the current version.
         const auto version = root["format_version"];
         const auto number_version = version.isDouble() ? version.toDouble() : 0;
-        if (number_version < 1 || number_version > 10 || number_version != std::floor(number_version))
+        if (number_version < 1 || number_version > 13 || number_version != std::floor(number_version))
             invalid("Unsupported project version. Use a compatible ERDFlow release.");
         const bool shaped_connectors = number_version >= 2;
         const bool associative_entities = number_version >= 3;
@@ -349,7 +395,21 @@ application::LoadResult ErdxProjectStore::decode(const QByteArray& input) {
         // Version 10 lets one side of a relationship be drawn bare. Earlier
         // files draw both, which is what every one of them meant.
         const bool hidable_constraints = number_version >= 10;
-        const auto data = chosen_colours
+        // Version 11 adds the pictures and notes placed on the canvas. Earlier
+        // files have none, and could not have had.
+        const bool figures = number_version >= 11;
+        // Version 12 lets a surface be see-through by a percentage. Earlier
+        // files' surfaces are solid, which is all they could be.
+        const bool translucent = number_version >= 12;
+        // Version 13 adds weak entities and identifying relationships. Earlier
+        // files' entities are all regular and their relationships never
+        // identifying, which is all they could say.
+        const bool weak_entities = number_version >= 13;
+        const auto data = translucent
+            ? object(root["project"], {"id", "name", "entities", "attributes", "relationships", "layout", "connectors", "specializations", "colours", "pictures", "notes", "transparency"})
+            : figures
+            ? object(root["project"], {"id", "name", "entities", "attributes", "relationships", "layout", "connectors", "specializations", "colours", "pictures", "notes"})
+            : chosen_colours
             ? object(root["project"], {"id", "name", "entities", "attributes", "relationships", "layout", "connectors", "specializations", "colours"})
             : inheritance
             ? object(root["project"], {"id", "name", "entities", "attributes", "relationships", "layout", "connectors", "specializations"})
@@ -360,8 +420,13 @@ application::LoadResult ErdxProjectStore::decode(const QByteArray& input) {
         project.id = ProjectId{parse_id(data["id"])};
         project.name = string(data["name"]);
         for (const auto& value : array(data["entities"])) {
-            auto o = object(value, {"id", "name", "description"});
+            auto o = weak_entities ? object(value, {"id", "name", "description", "weak"})
+                                   : object(value, {"id", "name", "description"});
             Entity entity{EntityId{parse_id(o["id"])}, string(o["name"]), string(o["description"], max_description_bytes)};
+            if (weak_entities) {
+                if (!o["weak"].isBool()) invalid("An entity's weak flag must be true or false.");
+                entity.weak = o["weak"].toBool();
+            }
             if (!project.entities.emplace(entity.id, entity).second) invalid("Duplicate entity identifier.");
         }
         for (const auto& value : array(data["attributes"])) {
@@ -372,13 +437,19 @@ application::LoadResult ErdxProjectStore::decode(const QByteArray& input) {
         }
         std::size_t participant_count = 0;
         for (const auto& value : array(data["relationships"])) {
-            auto o = associative_entities
+            auto o = weak_entities
+                ? object(value, {"id", "name", "description", "associative", "identifying", "participants"})
+                : associative_entities
                 ? object(value, {"id", "name", "description", "associative", "participants"})
                 : object(value, {"id", "name", "description", "participants"});
-            Relationship relationship{RelationshipId{parse_id(o["id"])}, string(o["name"]), string(o["description"], max_description_bytes), false, {}};
+            Relationship relationship{RelationshipId{parse_id(o["id"])}, string(o["name"]), string(o["description"], max_description_bytes), false, false, {}};
             if (associative_entities) {
                 if (!o["associative"].isBool()) invalid("A relationship's associative flag must be true or false.");
                 relationship.associative = o["associative"].toBool();
+            }
+            if (weak_entities) {
+                if (!o["identifying"].isBool()) invalid("A relationship's identifying flag must be true or false.");
+                relationship.identifying = o["identifying"].toBool();
             }
             for (const auto& part : array(o["participants"])) {
                 if (++participant_count > max_elements) invalid("The project exceeds its participant limit.");
@@ -482,6 +553,30 @@ application::LoadResult ErdxProjectStore::decode(const QByteArray& input) {
                 }
                 if (!project.colours.emplace(parse_ref(o["element"]), colour).second)
                     invalid("Duplicate element colour.");
+            }
+        }
+        if (translucent) {
+            for (const auto& value : array(data["transparency"])) {
+                const auto o = object(value, {"element", "percent"});
+                const auto percent = number(o["percent"]);
+                // A percentage, whole, and never more than all of it.
+                if (percent < 0 || percent > max_transparency || percent != std::floor(percent))
+                    invalid("Transparency is a whole percentage from 0 to 100.");
+                if (!project.transparency.emplace(parse_ref(o["element"]), static_cast<std::uint8_t>(percent)).second)
+                    invalid("Duplicate element transparency.");
+            }
+        }
+        if (figures) {
+            for (const auto& value : array(data["pictures"])) {
+                const auto o = object(value, {"id", "name", "description", "image"});
+                Picture picture{PictureId{parse_id(o["id"])}, string(o["name"]),
+                                string(o["description"], max_description_bytes), image_bytes(o["image"])};
+                if (!project.pictures.emplace(picture.id, std::move(picture)).second) invalid("Duplicate picture identifier.");
+            }
+            for (const auto& value : array(data["notes"])) {
+                const auto o = object(value, {"id", "name", "description"});
+                Note note{NoteId{parse_id(o["id"])}, string(o["name"]), string(o["description"], max_description_bytes)};
+                if (!project.notes.emplace(note.id, std::move(note)).second) invalid("Duplicate note identifier.");
             }
         }
         require_valid(project);

@@ -119,11 +119,21 @@ def build_all():
         <path d="M82 18 V40 H104"/>
         <path d="M42 62 H86 M42 80 H70" stroke-width="{WT}"/>''')
 
+    G["picture"] = ("blue", f'''
+        <rect x="14" y="24" width="100" height="80" rx="10" {F}/>
+        <path d="M22 98 L50 60 L68 80 L82 68 L106 98 Z" {ink("blue")}/>
+        <circle cx="88" cy="46" r="8" {ink("blue")}/>''')
+
     G["comment"] = ("green", f'''
         <path d="M18 34 Q18 20 32 20 H96 Q110 20 110 34 V74 Q110 88 96 88 H56 L36 106 V88 H32 Q18 88 18 74 Z" {F}/>
         <circle cx="46" cy="54" r="6" {ink("green")}/>
         <circle cx="64" cy="54" r="6" {ink("green")}/>
         <circle cx="82" cy="54" r="6" {ink("green")}/>''')
+
+    G["full-view"] = ("blue", f'''
+        <rect x="10" y="26" width="108" height="76" rx="10" {F}/>
+        <rect x="38" y="26" width="52" height="76" {ink("blue")}/>
+        <path d="M38 26 V102 M90 26 V102" stroke-width="{WT}"/>''')
 
     G["zoom"] = ("blue", f'''
         <circle cx="56" cy="56" r="34" {F}/>
@@ -224,9 +234,9 @@ def build_all():
     return G
 
 
-ORDER = ["select","entity","attribute","relationship","isa","connect","note","comment","pan","zoom",
+ORDER = ["select","entity","attribute","relationship","isa","connect","note","comment","picture","pan","zoom",
          "new-project","open","save","import","export","undo","redo","duplicate","delete","search",
-         "conceptual","schema","physical","sql","data","explorer","properties","validate","theme","settings"]
+         "conceptual","schema","physical","sql","data","explorer","properties","validate","theme","settings","full-view"]
 
 for folder, dark in (("icons", False), ("icons-on-dark", True)):
     on_dark = dark

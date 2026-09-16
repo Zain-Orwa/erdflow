@@ -1,7 +1,7 @@
-# ERDX project format — versions 1 to 10
+# ERDX project format — versions 1 to 13
 
-**Status:** Implemented Conceptual ERD format; version 10 is current  
-**Date:** 2026-09-15
+**Status:** Implemented Conceptual ERD format; version 13 is current  
+**Date:** 2026-09-16
 
 ## What, why, and how
 
@@ -26,7 +26,7 @@ The root object has exactly three fields:
 | Field | Value |
 | --- | --- |
 | `format` | String, exactly `"erdflow"` |
-| `format_version` | JSON integer from `1` to `10` |
+| `format_version` | JSON integer from `1` to `13` |
 | `project` | Project object described below |
 
 A file with an unsupported version, missing field, unknown
@@ -94,7 +94,23 @@ and read as `true`, which is what every one of those diagrams meant. It changes
 only what is drawn: the side keeps its `maximum` and `participation` either way,
 and anything reasoning about the relationship still reads them.
 
-Saving always writes version 10, so opening an earlier file and saving upgrades
+**Version 11** adds the pictures and notes placed on the canvas as visual aids.
+The project gains required `pictures` and `notes` arrays, either of which may be
+empty, and an element reference may name a picture or a note; earlier versions
+must not carry them, and open with none, which is all they could hold.
+
+**Version 12** lets an element's surface be see-through. The project gains a
+required `transparency` array, which may be empty, of one percentage per
+element; earlier versions must not carry it, and every surface in such a file
+is solid, which is all it could be.
+
+**Version 13** adds weak entities and identifying relationships. An entity
+object gains a required `weak` boolean and a relationship object a required
+`identifying` boolean; earlier versions must not carry them, and read as
+regular entities and non-identifying relationships, which is all they could
+say. A relationship may not be both identifying and associative.
+
+Saving always writes version 13, so opening an earlier file and saving upgrades
 it in place and an older build will then refuse the result. This one-way upgrade
 is acceptable only because no release has shipped. A future version that must
 stay readable by older builds needs a different policy, recorded before it is
@@ -120,8 +136,16 @@ The project object has exactly these fields:
 | `connectors` | Array of connector-shape objects; version 2 onwards |
 | `colours` | Array of element-colour objects; version 9 onwards |
 | `specializations` | Array of specialization objects; version 4 onwards |
+| `pictures` | Array of picture objects; version 11 onwards |
+| `notes` | Array of note objects; version 11 onwards |
+| `transparency` | Array of element-transparency objects; version 12 onwards |
 
-An **entity** object has `id`, `name`, and `description`, all strings.
+An **entity** object has `id`, `name`, and `description`, all strings, and
+from version 13 a `weak` boolean. A weak entity has no key of its own: it is
+identified through an identifying relationship, and its key attribute is a
+partial key. It is drawn with a double border, its partial key underlined in
+dashes. A weak entity not yet connected to an identifying relationship is work
+in progress and produces a warning.
 
 An **attribute** object has these exact fields:
 
@@ -138,10 +162,14 @@ a relationship, or another attribute whose kind is `"composite"`. Composite
 ownership must be acyclic. A key attribute cannot be directly owned by a
 relationship. Unowned attributes are valid work in progress.
 
-A **relationship** object has `id`, `name`, `description`, `associative`, and
-`participants`. The first three fields are strings, `associative` is a boolean,
-and `participants` is an array of participant objects. A relationship may have
-fewer than two participants while being edited.
+A **relationship** object has `id`, `name`, `description`, `associative`,
+`identifying` (version 13 onwards), and `participants`. The first three fields
+are strings, `associative` and `identifying` are booleans, and `participants`
+is an array of participant objects. A relationship may have fewer than two
+participants while being edited. An **identifying** relationship is the one a
+weak entity is identified through, drawn as a double diamond; one not yet
+connected to a weak entity produces a warning. A relationship is identifying or
+associative, never both.
 
 An **associative** relationship carries its own identity and may take part in
 further relationships, as an entity does; it is drawn as a diamond inside a
@@ -172,15 +200,17 @@ An **element reference** has exactly two string fields:
 {"type": "entity", "id": "019947b9-7111-7000-8000-000000000002"}
 ```
 
-The `type` is `"entity"`, `"attribute"`, `"relationship"`, or `"specialization"`.
-It determines which typed element store the ID must reference; each field also
-restricts which element kinds it accepts.
+The `type` is `"entity"`, `"attribute"`, `"relationship"`, `"specialization"`,
+`"picture"`, or `"note"`. It determines which typed element store the ID must
+reference; each field also restricts which element kinds it accepts. An
+attribute's `owner` may not name a picture or a note, and a participant's
+`target` never does.
 
 A **layout** object has exactly `element`, `x`, `y`, `width`, and `height`.
 `element` is an element reference. The other fields are finite JSON numbers.
 Coordinates are canvas units; dimensions must be positive. There must be exactly
-one layout entry for every entity, attribute, relationship, and specialization. Layout references
-must not dangle or repeat. Connectors are reconstructed from attribute owners and
+one layout entry for every entity, attribute, relationship, specialization,
+picture, and note. Layout references must not dangle or repeat. Connectors are reconstructed from attribute owners and
 relationship participant records.
 
 Semantic and layout state are stored separately. Moving an element changes its
@@ -221,6 +251,31 @@ A specialization holds no attributes of its own; an attribute owned by one is
 rejected. Deleting a supertype removes the specialization with it, and deleting
 a subtype detaches it from the specializations that survive.
 
+## Pictures and notes
+
+A picture and a note are visual aids: they are placed on the canvas, and
+moved, coloured, copied and deleted like anything else on it, but they are not
+database objects. Nothing is converted from them, no attribute belongs to one,
+and no connector joins one.
+
+A **picture** object has exactly `id`, `name`, `description`, and `image`:
+
+```json
+{"id": "019947b9-7111-7000-8000-000000000006", "name": "Campus map",
+ "description": "", "image": "iVBORw0KGgoAAAANSUhEUg…"}
+```
+
+`image` is the encoded image file, PNG or JPEG, as base64 text. The bytes are
+kept exactly as they were inserted; they are not re-encoded on save. Text that
+is not base64 is refused, and so are decoded bytes that do not begin with a
+PNG or JPEG signature, or more of them than the limit below. The editor
+decodes the image only to draw it.
+
+A **note** object has exactly `id`, `name`, and `description`. The name is
+drawn as the note's title and the description as the text beneath it. Either
+may be empty: an unnamed picture or note is not a finding, unlike an unnamed
+element of the model.
+
 ## Element colours
 
 An **element-colour** object has exactly `element`, `red`, `green` and `blue`:
@@ -236,6 +291,22 @@ rather than approximate. The `element` must reference an element that exists. At
 most one colour may be given per element, and an element with none is drawn in
 whatever colour the active theme gives its kind — which is why a document that
 has never been recoloured follows the theme everywhere.
+
+## Transparency
+
+An **element-transparency** object has exactly `element` and `percent`:
+
+```json
+{"element": {"type": "entity", "id": "019947b9-7111-7000-8000-000000000001"},
+ "percent": 40}
+```
+
+`percent` is a whole number from 0 to 100: how see-through the element's
+surface is drawn. It applies over whatever colour the surface has, chosen or
+the theme's, which is why it is kept apart from the colour; at 100 only the
+outline is drawn and the canvas shows through. A solid surface stores nothing,
+so 0 is never written. The `element` must exist, and at most one entry may be
+given per element.
 
 ## Connector shapes
 
@@ -287,7 +358,8 @@ same edit, and undo restores both together.
 | Item | Initial enforced limit or rule |
 | --- | --- |
 | File size | At most 8 MiB (8,388,608 bytes), including JSON formatting |
-| Elements | At most 10,000 entities + attributes + relationships + specializations combined |
+| Elements | At most 10,000 entities + attributes + relationships + specializations + pictures + notes combined |
+| Picture image | PNG or JPEG bytes, at most 2 MiB (2,097,152 bytes) before base64 |
 | Participants | At most 10,000 participant records across the project |
 | JSON array size | At most 10,000 entries per array |
 | JSON nesting | At most 32 object/array levels |
@@ -323,7 +395,7 @@ An empty conceptual project is a valid saved draft:
 ```json
 {
   "format": "erdflow",
-  "format_version": 10,
+  "format_version": 13,
   "project": {
     "id": "019947b9-7111-7000-8000-000000000001",
     "name": "Untitled",
@@ -333,7 +405,10 @@ An empty conceptual project is a valid saved draft:
     "layout": [],
     "connectors": [],
     "colours": [],
-    "specializations": []
+    "specializations": [],
+    "pictures": [],
+    "notes": [],
+    "transparency": []
   }
 }
 ```
@@ -377,6 +452,11 @@ version 1 document opening with automatic routing, the upgrade on save, and the
 refusal of a document whose connector field contradicts its version.
 `invalid connector shapes` covers dangling and wrongly typed links, non-finite
 and out-of-range offsets, repeated links, and unknown or missing fields.
+
+`pictures and notes persist` covers the version 11 round trip of a picture's
+bytes and a note's text through the encoder and the adapter, the refusal of a
+document whose version and figure fields disagree, and of images that are not
+base64, not an image, or too large.
 
 Field names are unescaped by the loader rather than by a parser call per key,
 so `escaped field name decoding` pins that decoder against JSON: escaped and
