@@ -1,8 +1,10 @@
 #include "main_window.hpp"
+#include "ribbon.hpp"
 
 #include <QAction>
 #include <QActionGroup>
 #include <QApplication>
+#include <QBuffer>
 #include <QCloseEvent>
 #include <QCheckBox>
 #include <QComboBox>
@@ -12,14 +14,17 @@
 #include <QFileInfo>
 #include <QFocusEvent>
 #include <QFormLayout>
+#include <QHBoxLayout>
 #include <QHeaderView>
 #include <QInputDialog>
 #include <QIcon>
+#include <QImageReader>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenuBar>
 #include <QMenu>
 #include <QMessageBox>
+#include <QPaintEvent>
 #include <QPlainTextEdit>
 #include <QRegularExpression>
 #include <QPushButton>
@@ -50,6 +55,8 @@ QString kind_label(ElementRef ref) {
     if (std::holds_alternative<EntityId>(ref)) return QStringLiteral("Entity");
     if (std::holds_alternative<AttributeId>(ref)) return QStringLiteral("Attribute");
     if (std::holds_alternative<SpecializationId>(ref)) return QStringLiteral("Specialization");
+    if (std::holds_alternative<PictureId>(ref)) return QStringLiteral("Picture");
+    if (std::holds_alternative<NoteId>(ref)) return QStringLiteral("Note");
     return QStringLiteral("Relationship");
 }
 // The colour an element is actually drawn with on the canvas: the one it was
@@ -57,20 +64,191 @@ QString kind_label(ElementRef ref) {
 // panel reads this so that it shows the element's own colour rather than only
 // the colours a user happened to choose by hand.
 QColor surface_of(const Project& project, const Theme& colors, ElementRef ref) {
+    // A see-through surface shows the canvas through it, so what the panel
+    // has to match is the blend the eye sees rather than the paint on its own.
+    const auto faded = project.transparency.find(ref);
+    const auto seen = [&](QColor paint) {
+        if (faded != project.transparency.end()) paint.setAlphaF(static_cast<float>(1.0 - faded->second / 100.0));
+        return over(colors.canvas, paint);
+    };
     if (const auto chosen = project.colours.find(ref); chosen != project.colours.end())
-        return QColor(chosen->second.red, chosen->second.green, chosen->second.blue);
-    if (std::holds_alternative<AttributeId>(ref)) return colors.attribute_fill;
-    if (std::holds_alternative<EntityId>(ref)) return colors.entity_fill;
-    if (std::holds_alternative<SpecializationId>(ref)) return colors.isa_fill;
+        return seen(QColor(chosen->second.red, chosen->second.green, chosen->second.blue));
+    if (std::holds_alternative<AttributeId>(ref)) return seen(colors.attribute_fill);
+    if (std::holds_alternative<EntityId>(ref)) return seen(colors.entity_fill);
+    if (std::holds_alternative<SpecializationId>(ref)) return seen(colors.isa_fill);
+    if (std::holds_alternative<PictureId>(ref)) return seen(colors.panel);
+    if (std::holds_alternative<NoteId>(ref)) return seen(note_surface(colors));
     // An associative relationship converts to a relation of its own and wears
     // the entity palette on the canvas, so it wears it here too.
     const auto& relationship = project.relationships.at(std::get<RelationshipId>(ref));
-    return relationship.associative ? colors.entity_fill : colors.relationship_fill;
+    return seen(relationship.associative ? colors.entity_fill : colors.relationship_fill);
+}
+
+// The relationships that join one entity to itself: the ones naming it as a
+// participant more than once. A recursive entity is one that has any.
+std::vector<ElementRef> recursions_of(const Project& project, EntityId id) {
+    std::vector<ElementRef> found;
+    for (const auto& [relationship_id, relationship] : project.relationships) {
+        std::size_t touches = 0;
+        for (const auto& participant : relationship.participants)
+            if (participant.target == ParticipantTarget{id}) ++touches;
+        if (touches > 1) found.emplace_back(relationship_id);
+    }
+    return found;
 }
 
 QString display_name(const Project& project, ElementRef ref) {
     const auto value = text(name(project, ref));
     return value.isEmpty() ? QStringLiteral("(unnamed)") : value;
+}
+// The name at the top of a card. A side means nothing on its own: it is that
+// element as it takes part in this one, so the card says both, with an arrow
+// between them. Each wears the colour it is drawn in on the diagram, and each
+// ink is chosen against its own colour rather than taken from the theme, since
+// either colour may be one the user picked.
+// How much of a shape's width its outline takes before the name can start. A
+// diamond or a triangle narrows away from its middle and needs far more of it
+// than a rectangle or an oval does.
+double inset_of(bool pointed) { return pointed ? 0.22 : 0.09; }
+
+// The room an element's shape would like: its own proportions on the diagram,
+// and no less than its name takes to read in full. It is a wish rather than a
+// rule -- the panel gives what it has, and the name is elided when that is
+// less -- so nothing ever runs out of the panel whatever its width.
+int wanted_width(double aspect, const QString& name, bool pointed, int tall, double points) {
+    QFont font;
+    font.setPointSizeF(points);
+    font.setWeight(QFont::DemiBold);
+    const auto text = QFontMetricsF(font).horizontalAdvance(name);
+    const auto for_the_name = text / std::max(1.0 - 2 * inset_of(pointed), 0.2) + 14;
+    return static_cast<int>(std::lround(std::max<double>(tall * std::max(aspect, 0.2), for_the_name)));
+}
+
+// The element's own shape with its name written inside it. The name is the
+// thing the user gave it, so it is edited on the shape it belongs to rather
+// than in a box beside a picture of one. The shape is redrawn whenever the
+// room changes, so it stays crisp at any width.
+class ShapedName final : public QWidget {
+public:
+    ShapedName(std::function<QPixmap(QSize)> draw, double aspect, const QString& name, bool pointed, QWidget* parent)
+        : QWidget(parent), draw_(std::move(draw)), pointed_(pointed) {
+        setObjectName("elementShape");
+        setFixedHeight(56);
+        wanted_ = wanted_width(aspect, name, pointed, 56, 13.0);
+        // Asked for as much as the name wants, given as much as the panel has.
+        setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+    }
+    [[nodiscard]] QSize sizeHint() const override { return {wanted_, height()}; }
+    [[nodiscard]] QSize minimumSizeHint() const override { return {56, height()}; }
+    void hold(QLineEdit* field) {
+        field_ = field;
+        place();
+    }
+protected:
+    void resizeEvent(QResizeEvent* event) override {
+        QWidget::resizeEvent(event);
+        shape_ = draw_(size());
+        place();
+    }
+    void paintEvent(QPaintEvent*) override {
+        QPainter painter(this);
+        painter.drawPixmap(0, 0, shape_);
+    }
+private:
+    void place() {
+        if (!field_ || width() < 2) return;
+        // A diamond or a triangle narrows away from its middle, so the name
+        // is given only the room its shape actually has there.
+        const auto inset = width() * inset_of(pointed_);
+        const auto tall = std::min(30, height() - 10);
+        field_->setGeometry(static_cast<int>(inset), (height() - tall) / 2,
+                            std::max(24, static_cast<int>(width() - inset * 2)), tall);
+    }
+    std::function<QPixmap(QSize)> draw_;
+    bool pointed_;
+    int wanted_ = 56;
+    QPixmap shape_;
+    QLineEdit* field_ = nullptr;
+};
+
+// An element's shape with its name written inside it, for the places that only
+// show a name rather than letting it be edited. The name is drawn rather than
+// laid out, so it can be held inside an outline that narrows away from its
+// middle, which no ordinary label would respect.
+class ShapedTag final : public QWidget {
+public:
+    ShapedTag(std::function<QPixmap(QSize)> draw, QString name, QColor ink, double aspect, bool pointed,
+              const char* named, QWidget* parent)
+        : QWidget(parent), draw_(std::move(draw)), name_(std::move(name)), ink_(std::move(ink)), pointed_(pointed) {
+        setObjectName(QString::fromLatin1(named));
+        // Read out and hovered as the name it stands for, since the text is
+        // painted rather than held by a label of its own.
+        setAccessibleName(name_);
+        setToolTip(name_);
+        font_ = font();
+        font_.setPointSizeF(10.5);
+        font_.setWeight(QFont::DemiBold);
+        setFixedHeight(30);
+        wanted_ = wanted_width(aspect, name_, pointed, 30, 10.5);
+        setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+    }
+    [[nodiscard]] QSize sizeHint() const override { return {wanted_, height()}; }
+    // Never squeezed so far that its name is only a mark: an end that cannot
+    // show a few letters says nothing at all.
+    [[nodiscard]] QSize minimumSizeHint() const override { return {54, height()}; }
+protected:
+    void resizeEvent(QResizeEvent* event) override {
+        QWidget::resizeEvent(event);
+        shape_ = draw_(size());
+    }
+    void paintEvent(QPaintEvent*) override {
+        QPainter painter(this);
+        painter.drawPixmap(0, 0, shape_);
+        painter.setFont(font_);
+        painter.setPen(ink_);
+        const auto inset = width() * inset_of(pointed_);
+        const QRectF room(inset, 0, width() - inset * 2, height());
+        painter.drawText(room, Qt::AlignCenter,
+                         QFontMetricsF(font_).elidedText(name_, Qt::ElideRight, room.width()));
+    }
+private:
+    std::function<QPixmap(QSize)> draw_;
+    QString name_;
+    QColor ink_;
+    bool pointed_;
+    int wanted_ = 44;
+    QFont font_;
+    QPixmap shape_;
+};
+
+// The name at the top of a card. A side means nothing on its own: it is that
+// element as it takes part in this one, so the card says both, with an arrow
+// between them, each written inside the shape and colour it is drawn with.
+QWidget* card_title(QWidget* side, QWidget* toward, QWidget* parent) {
+    auto* row = new QWidget(parent);
+    row->setObjectName("cardTitle");
+    auto* layout = new QHBoxLayout(row);
+    layout->setContentsMargins(0, 2, 0, 4);
+    layout->setSpacing(7);
+    side->setParent(row);
+    toward->setParent(row);
+    layout->addWidget(side, 0);
+    auto* arrow = new QLabel(QStringLiteral("\u2192"), row);
+    arrow->setObjectName("cardArrow");
+    arrow->setStyleSheet(QStringLiteral("QLabel#cardArrow { font-size: 13px; font-weight: 800; }"));
+    layout->addWidget(arrow, 0);
+    layout->addWidget(toward, 0);
+    layout->addStretch();
+    return row;
+}
+// A field's name inside a card: bold, and in a hue of its own, so the several
+// things asked about one side are told apart at a glance rather than read in
+// order. The hues come from the theme and change with it.
+QLabel* field_label(const QString& text, const QColor& ink, QWidget* parent) {
+    auto* label = new QLabel(text, parent);
+    label->setObjectName("fieldLabel");
+    label->setStyleSheet(QStringLiteral("QLabel#fieldLabel { color: %1; font-weight: 700; }").arg(ink.name()));
+    return label;
 }
 QLabel* hint(const QString& value, QWidget* parent) {
     auto* label = new QLabel(value, parent);
@@ -107,6 +285,8 @@ MainWindow::MainWindow(application::Editor& editor, application::ProjectStore& s
     setMinimumSize(560, 460);
     build_shell();
     build_actions();
+    // The tabs go on once every action and menu they are built from exists.
+    ribbon_ = new Ribbon(*this);
     canvas_->on_edit = [this](const auto& result) { show_result(result); };
     canvas_->on_selection = [this](const auto& selected) { selection_changed(selected); };
     canvas_->on_tool = [this](Tool tool) {
@@ -258,6 +438,7 @@ const std::array<std::pair<Notation, QString>, 4>& notation_styles() {
 
 void MainWindow::build_actions() {
     auto* file = new QMenu("&File", this);
+    file->setObjectName("fileMenu");
     menuBar()->insertMenu(menuBar()->actions().front(), file);
     auto* action_new = file->addAction("&New project", QKeySequence::New, this, &MainWindow::new_project);
     action_new->setObjectName("newProject");
@@ -383,14 +564,40 @@ void MainWindow::build_actions() {
     action_glyphs_[connect_action] = Glyph::Connect;
     connect(connect_action, &QAction::triggered, this, [this] { choose_tool(Tool::Connect, false); });
     auto* line_menu = new QMenu(this);
-    for (const auto style : {LineStyle::Curved, LineStyle::Straight}) {
-        const QString label = style == LineStyle::Straight ? "Straight lines" : "Curved lines";
+    // Right angles first, since that is how a line between two points chosen
+    // by hand is drawn, and what the canvas draws unless told otherwise.
+    for (const auto style : {LineStyle::Elbow, LineStyle::Curved, LineStyle::Straight}) {
+        const QString label = style == LineStyle::Straight ? "Straight lines"
+            : style == LineStyle::Elbow ? "Right-angle lines" : "Curved lines";
         auto* entry = line_menu->addAction(QIcon(canvas_->line_style_preview(style, line_style_sample)), label);
         entry->setCheckable(true);
         entry->setChecked(style == canvas_->line_style());
-        entry->setObjectName(style == LineStyle::Straight ? "lineStraight" : "lineCurved");
+        entry->setObjectName(style == LineStyle::Straight ? "lineStraight"
+            : style == LineStyle::Elbow ? "lineElbow" : "lineCurved");
         line_actions_[style] = entry;
         connect(entry, &QAction::triggered, this, [this, style] { choose_line_style(style); });
+    }
+    // Where a new line meets each shape is the other thing Connect decides
+    // about the lines it draws, so that choice sits on the same arrow. It is
+    // remembered between sessions: it is a way of working, not a property of
+    // one diagram.
+    canvas_->set_join_mode(QSettings().value("joinMode", "clicked").toString() == "automatic"
+        ? JoinMode::Automatic : JoinMode::WhereClicked);
+    line_menu->addSeparator();
+    auto* join_group = new QActionGroup(this);
+    for (const auto mode : {JoinMode::WhereClicked, JoinMode::Automatic}) {
+        auto* entry = line_menu->addAction(mode == JoinMode::WhereClicked ? "Join where I click" : "Join automatically");
+        entry->setCheckable(true);
+        entry->setChecked(mode == canvas_->join_mode());
+        entry->setActionGroup(join_group);
+        entry->setObjectName(mode == JoinMode::WhereClicked ? "joinWhereClicked" : "joinAutomatic");
+        entry->setToolTip(mode == JoinMode::WhereClicked
+            ? "Each end of a new line is pinned to the point you click on the shape. Drag a selected line's end to move it."
+            : "Each end of a new line slides around its shape to face the other end as things move.");
+        connect(entry, &QAction::triggered, this, [this, mode] {
+            canvas_->set_join_mode(mode);
+            QSettings().setValue("joinMode", mode == JoinMode::Automatic ? "automatic" : "clicked");
+        });
     }
     auto* connect_button = new QToolButton(toolbar);
     connect_button->setObjectName("connectButton");
@@ -402,6 +609,34 @@ void MainWindow::build_actions() {
     toolbar->addWidget(connect_button);
     tool_actions_[Tool::Connect] = connect_action;
     connect_button->installEventFilter(this);
+
+    // Pictures and notes are the visual aids. A picture comes from a file, so
+    // it is an action and lives on Insert; a note is put down by a click, so
+    // it is a tool like the elements, sits with them after Connect, and locks
+    // like them.
+    auto* picture = new QAction("Picture…", this);
+    picture->setObjectName("insertPicture");
+    picture->setToolTip("Insert a picture from a file.");
+    action_glyphs_[picture] = Glyph::Picture;
+    connect(picture, &QAction::triggered, this, [this] { insert_picture_dialog(); });
+    auto* note_action = new QAction("Note", this);
+    note_action->setCheckable(true);
+    note_action->setData("Note");
+    note_action->setObjectName("toolNote");
+    note_action->setActionGroup(group);
+    action_glyphs_[note_action] = Glyph::Note;
+    tool_actions_[Tool::Note] = note_action;
+    connect(note_action, &QAction::triggered, this, [this] { choose_tool(Tool::Note, false); });
+    toolbar->addAction(note_action);
+    if (auto* button = toolbar->widgetForAction(note_action)) button->installEventFilter(this);
+    // The picture in the menu bar too, for the keyboard and for anyone who
+    // looks there first. The ribbon's Insert row is built from this menu, and
+    // the canvas's right-click menu offers both a picture and a note.
+    auto* insert_menu = new QMenu("&Insert", this);
+    insert_menu->setObjectName("insertMenu");
+    menuBar()->insertMenu(findChild<QMenu*>("viewMenu")->menuAction(), insert_menu);
+    insert_menu->addAction(picture);
+    canvas_->on_insert_picture = [this](QPointF at) { insert_picture_dialog(at); };
 
     // Notation follows Connect: it decides how the lines Connect draws are read.
     // The picker draws each option, so the cardinality symbols can be recognised
@@ -448,8 +683,19 @@ void MainWindow::build_actions() {
     auto* fit = new QAction("Fit", this);
     fit->setObjectName("viewFit");
     fit->setShortcut(QKeySequence("Ctrl+0"));
+    fit->setToolTip("Fit the whole diagram in the view.");
     connect(fit, &QAction::triggered, canvas_, &DiagramView::fit_diagram);
     action_glyphs_[fit] = Glyph::Fit;
+
+    // Putting the panels away is about looking rather than modelling, so it
+    // joins the controls on the canvas. It is written out in the View menu,
+    // and named by its tooltip on the raft, where there is only room for a
+    // picture.
+    full_view_ = new QAction("Full view", this);
+    full_view_->setObjectName("viewFullView");
+    full_view_->setCheckable(true);
+    action_glyphs_[full_view_] = Glyph::FullView;
+    connect(full_view_, &QAction::toggled, this, [this](bool on) { set_full_view(on); });
 
     // What follows lives in the right-hand corner rather than in the row of
     // tools: checking the model and choosing a theme are about the whole
@@ -487,6 +733,7 @@ void MainWindow::build_actions() {
         stack->addWidget(button, 0, Qt::AlignHCenter);
         return button;
     };
+    raft_button(full_view_, "canvasFullView");
     raft_button(fit, "canvasFit");
     // Pan locks on a double-click, exactly as the tools on the toolbar do, so
     // a long look around the diagram does not need the button pressed again
@@ -510,23 +757,26 @@ void MainWindow::build_actions() {
     place_canvas_controls();
 
     auto* view = findChild<QMenu*>("viewMenu");
+    view->addAction(full_view_);
     view->addSeparator();
     view->addAction(fit);
     view->addAction("Actual size", QKeySequence("Ctrl+1"), canvas_, &DiagramView::actual_size);
     view->addAction("Zoom in", QKeySequence::ZoomIn, canvas_, &DiagramView::zoom_in);
     view->addAction("Zoom out", QKeySequence::ZoomOut, canvas_, &DiagramView::zoom_out);
-    // Dragging follows the pointer continuously by default. Snapping quantises
-    // movement to the grid step, which reads as stuttering rather than as
-    // alignment help, so it stays available but off until it is asked for.
-    for (bool snap : {false, true}) {
-        auto* action = view->addAction(snap ? "Snap to grid" : "Show grid");
+    // Dragging follows the pointer continuously by default. Aligning to the
+    // grid rounds movement to the grid step, which reads as stuttering rather
+    // than as help, so it stays available but off until it is asked for.
+    for (bool align : {false, true}) {
+        auto* action = view->addAction(align ? "Align to grid" : "Show grid");
         action->setCheckable(true);
-        action->setChecked(!snap);
-        connect(action, &QAction::toggled, this, [this, snap](bool checked) {
-            if (snap) canvas_->set_snap_enabled(checked); else canvas_->set_grid_visible(checked);
+        action->setChecked(!align);
+        action->setObjectName(align ? "viewAlignToGrid" : "viewShowGrid");
+        if (align) action->setToolTip("Line elements up on the grid as you move or place them.");
+        connect(action, &QAction::toggled, this, [this, align](bool checked) {
+            if (align) canvas_->set_align_to_grid(checked); else canvas_->set_grid_visible(checked);
         });
     }
-    canvas_->set_snap_enabled(false);
+    canvas_->set_align_to_grid(false);
     canvas_->set_grid_visible(true);
     // The same participants can be read in several notations. This is a display
     // choice, so it lives with the other view settings rather than in the file.
@@ -591,10 +841,12 @@ void MainWindow::build_actions() {
         notation_actions_[style] = action;
         connect(action, &QAction::triggered, this, [this, style] { choose_notation(style); });
     }
+    full_view_->setToolTip("Full view — put the panels away and give the whole window to the diagram.");
     // Every action now exists, so give them their first icons. The window must
     // look right on its own, not only once a theme is chosen from outside it.
     refresh_icons();
     auto* help = menuBar()->addMenu("&Help");
+    help->setObjectName("helpMenu");
     help->addAction("Quick guide", this, [this] {
         QMessageBox::information(this, "Drawing a conceptual ERD",
             "1. Choose Entity, Attribute, or Relationship and click the canvas.\n"
@@ -715,6 +967,10 @@ void MainWindow::refresh_explorer() {
     append("Entities", Glyph::Entity, editor_.project().entities, true);
     append("Attributes", Glyph::Attribute, attributes, false);
     append("Relationships", Glyph::Relationship, editor_.project().relationships, true);
+    // Visual aids are listed only when there are any, so a diagram without
+    // them is not shown two empty groups.
+    if (!editor_.project().pictures.empty()) append("Pictures", Glyph::Picture, editor_.project().pictures, false);
+    if (!editor_.project().notes.empty()) append("Notes", Glyph::Note, editor_.project().notes, false);
 
     // The groups start open and the elements under them folded, so the tree
     // shows what there is without spilling every attribute twice. After that
@@ -763,19 +1019,57 @@ void MainWindow::refresh_properties() {
     }
     const auto ref = selection_.front();
     const auto& project = editor_.project();
+    const auto& colors = theme(theme_);
+    // Every field label is written the same way: bold, in the theme's own ink.
+    // The rows are already told apart by their words and by the controls
+    // beside them, so colouring each one would be decoration, and it would
+    // compete with the one colour here that carries meaning -- the colour an
+    // element is drawn in on the diagram, worn by its heading and its name.
+    const auto label_tone = colors.text;
+    // A choice whose words are long must not force the panel wider than the
+    // window can spare: the closed box shortens to what it is given and the
+    // list still reads in full when it is opened.
+    const auto narrowable = [](QComboBox* box) {
+        box->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+        box->setMinimumContentsLength(8);
+        return box;
+    };
+    // One element written inside its own shape, for a card.
+    // The proportions an element is drawn with on the diagram.
+    const auto aspect_of = [&project](const ElementRef& element) {
+        const auto found = project.layout.find(element);
+        if (found == project.layout.end() || found->second.height <= 0) return 2.0;
+        return found->second.width / found->second.height;
+    };
+    const auto shaped_tag = [this, &project, &colors, aspect_of](const ElementRef& element, const char* named, QWidget* parent) {
+        const auto pointed = std::holds_alternative<RelationshipId>(element)
+                          || std::holds_alternative<SpecializationId>(element);
+        return static_cast<QWidget*>(new ShapedTag(
+            [this, element](QSize size) { return canvas_->element_preview(element, size, true); },
+            display_name(project, element), readable_on(surface_of(project, colors, element)),
+            aspect_of(element), pointed, named, parent));
+    };
     auto* heading = new QLabel(kind_label(ref), panel);
     heading->setObjectName("propertyHeading");
-    // The heading says what kind of thing this is, so it stays a title and is
-    // left to the theme. Only the name carries the element's own colour: it is
-    // the box holding the thing being named, and colouring the kind as well
-    // would say the same thing twice and leave the panel shouting.
-    const auto surface = surface_of(project, theme(theme_), ref);
+    // The heading says what kind of thing this is, so it stays a title in the
+    // theme's own accent. The element's colour is carried by the name field
+    // below it and by the cards; wearing it here as well would say the same
+    // thing twice and leave the panel shouting.
+    const auto surface = surface_of(project, colors, ref);
     const auto ink = readable_on(surface);
     layout->addWidget(heading);
     auto* form = new QFormLayout;
     form->setRowWrapPolicy(QFormLayout::WrapAllRows);
-    auto* name_edit = new QLineEdit(text(name(project, ref)), panel);
+    // The name is written inside the shape the element is drawn as, in the ink
+    // that reads on its colour, so what is being named is plain.
+    const bool pointed = std::holds_alternative<RelationshipId>(ref)
+                      || std::holds_alternative<SpecializationId>(ref);
+    auto* shaped = new ShapedName([this, ref](QSize size) { return canvas_->element_preview(ref, size, true); },
+                                  aspect_of(ref), text(name(project, ref)), pointed, panel);
+    auto* name_edit = new QLineEdit(text(name(project, ref)), shaped);
     name_edit->setObjectName("elementName");
+    name_edit->setAlignment(Qt::AlignCenter);
+    shaped->hold(name_edit);
     // The name field carries the same colour. Its border is darkened from the
     // fill rather than taken from the theme, which would otherwise draw a line
     // the element's colour knows nothing about around it.
@@ -784,37 +1078,110 @@ void MainWindow::refresh_properties() {
     // it is drawn in the ink rather than the accent, which is the one colour
     // already known to contrast with whatever fill the element carries.
     name_edit->setStyleSheet(QStringLiteral(
-        "QLineEdit#elementName { background: %1; color: %2; border: 1px solid %3; }"
-        "QLineEdit#elementName:focus { border: 2px solid %2; }")
-        .arg(surface.name(), ink.name(), surface.darker(135).name()));
+        "QLineEdit#elementName { background: transparent; color: %1; border: 1px solid transparent;"
+        " border-radius: 2px; font-size: 13px; font-weight: 700; }"
+        "QLineEdit#elementName:focus { border: 1px solid %1; }")
+        .arg(ink.name()));
     name_edit->setMaxLength(512);
-    form->addRow("Name", name_edit);
+    name_edit->setToolTip(text(name(project, ref)));
+    // A name longer than its shape is read from its beginning.
+    name_edit->setCursorPosition(0);
+    form->addRow(field_label("Name", label_tone, panel), shaped);
     connect(name_edit, &QLineEdit::editingFinished, this, [this, ref, name_edit] {
         if (refreshing_ || !exists(editor_.project(), ref)) return;
         const auto value = bytes(name_edit->text());
         if (value != name(editor_.project(), ref)) show_result(editor_.rename(ref, value));
     });
     layout->addLayout(form);
+    if (const auto* entity_id = std::get_if<EntityId>(&ref)) {
+        // Regular or weak. A weak entity is identified through an identifying
+        // relationship rather than by a key of its own.
+        const auto& entity = project.entities.at(*entity_id);
+        auto* kind = narrowable(new QComboBox(panel));
+        kind->setObjectName("entityKind");
+        kind->addItem("Regular — identified by its own key");
+        kind->addItem("Weak — identified through a relationship");
+        kind->setCurrentIndex(entity.weak ? 1 : 0);
+        connect(kind, &QComboBox::activated, this, [this, id = *entity_id](int index) {
+            if (refreshing_) return;
+            show_result(editor_.set_entity_weak(id, index == 1));
+        });
+        auto* kind_form = new QFormLayout;
+        kind_form->setRowWrapPolicy(QFormLayout::WrapAllRows);
+        kind_form->addRow(field_label("Kind", label_tone, panel), kind);
+        layout->addLayout(kind_form);
+        if (entity.weak)
+            layout->addWidget(hint("Drawn with a double border. Connect it to an identifying relationship, usually with total "
+                                   "participation; its key attribute is a partial key, underlined in dashes.", panel));
+        // An entity that relates to itself, as an employee who manages
+        // employees does. Ticking it draws the relationship that says so;
+        // clearing it takes those relationships away again.
+        auto* recursive = new QCheckBox("Recursive — relates to itself", panel);
+        recursive->setObjectName("entityRecursive");
+        recursive->setChecked(!recursions_of(project, *entity_id).empty());
+        recursive->setToolTip("A relationship from this entity back to itself. Give each side a role to say which is which.");
+        connect(recursive, &QCheckBox::clicked, this, [this, id = *entity_id](bool on) {
+            if (refreshing_) return;
+            const auto& current = editor_.project();
+            const auto existing = recursions_of(current, id);
+            if (!on) {
+                if (!existing.empty()) show_result(editor_.erase(existing));
+                return;
+            }
+            if (!existing.empty()) return;
+            // Placed off the entity's side, which is where the loop is drawn
+            // from, so the shape is right the moment it appears.
+            const auto found = current.layout.find(ElementRef{id});
+            const auto box = found == current.layout.end() ? domain::Rect{} : found->second;
+            const domain::Rect body{box.x + box.width + 130,
+                                    box.y + box.height / 2 - relationship_body.height / 2,
+                                    relationship_body.width, relationship_body.height};
+            const auto result = editor_.relate(id, id, body, "Relationship");
+            show_result(result);
+            if (result && result.created) canvas_->select_elements({*result.created}, true);
+        });
+        layout->addWidget(recursive);
+        if (!recursions_of(project, *entity_id).empty())
+            layout->addWidget(hint("The second side loops back around the entity. Drag the line to shape it by hand, "
+                                   "or double-click it to hand it back.", panel));
+    }
+    if (const auto* picture_id = std::get_if<PictureId>(&ref)) {
+        // The picture itself, small, so the panel says which picture this is.
+        const auto& picture = project.pictures.at(*picture_id);
+        QPixmap pixmap;
+        pixmap.loadFromData(picture.image.data(), static_cast<uint>(picture.image.size()));
+        auto* preview = new QLabel(panel);
+        preview->setObjectName("picturePreview");
+        preview->setAlignment(Qt::AlignCenter);
+        if (!pixmap.isNull()) preview->setPixmap(pixmap.scaled(240, 160, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+        layout->addWidget(preview);
+        layout->addWidget(hint(QString("%1 × %2 pixels · %3 KB").arg(pixmap.width()).arg(pixmap.height())
+                                   .arg((picture.image.size() + 1023) / 1024), panel));
+        layout->addWidget(hint("A picture is a visual aid: it is not part of the model and nothing connects to it. "
+                               "Set its size below; it keeps its proportions.", panel));
+    }
+    if (std::holds_alternative<NoteId>(ref))
+        layout->addWidget(hint("The name is the note's title, drawn bold; the text below is drawn beneath it.", panel));
     if (const auto* id = std::get_if<AttributeId>(&ref)) {
         const auto attribute_id = *id;
         const auto attribute = project.attributes.at(attribute_id);
         auto* attr_form = new QFormLayout;
         attr_form->setRowWrapPolicy(QFormLayout::WrapAllRows);
-        auto* kind = new QComboBox(panel);
+        auto* kind = narrowable(new QComboBox(panel));
         kind->setObjectName("attributeKind");
         kind->addItems({"Normal", "Key", "Composite", "Multivalued", "Derived"});
         kind->setCurrentIndex(static_cast<int>(attribute.kind));
-        attr_form->addRow("Attribute kind", kind);
+        attr_form->addRow(field_label("Attribute kind", label_tone, panel), kind);
         connect(kind, &QComboBox::activated, this, [this, attribute_id](int index) {
             show_result(editor_.set_attribute_kind(attribute_id, static_cast<AttributeKind>(index)));
         });
-        auto* owner = new QComboBox(panel);
+        auto* owner = narrowable(new QComboBox(panel));
         owner->setObjectName("attributeOwner");
         owner->addItem("Unassigned");
         std::vector<std::optional<AttributeOwner>> owners{{}};
         for (const auto& [candidate_key, candidate] : references_) {
             (void)candidate_key;
-            if (candidate == ref) continue;
+            if (candidate == ref || is_figure(candidate)) continue;
             if (const auto* attr = std::get_if<AttributeId>(&candidate);
                 attr && project.attributes.at(*attr).kind != AttributeKind::Composite) continue;
             if (attribute.kind == AttributeKind::Key && std::holds_alternative<RelationshipId>(candidate)) continue;
@@ -822,7 +1189,7 @@ void MainWindow::refresh_properties() {
             owner->addItem(kind_label(candidate) + ": " + display_name(project, candidate));
             if (attribute.owner == owners.back()) owner->setCurrentIndex(owner->count() - 1);
         }
-        attr_form->addRow("Owner", owner);
+        attr_form->addRow(field_label("Owner", label_tone, panel), owner);
         connect(owner, &QComboBox::activated, this, [this, attribute_id, owners](int index) {
             show_result(editor_.set_attribute_owner(attribute_id, owners.at(static_cast<std::size_t>(index))));
         });
@@ -835,7 +1202,7 @@ void MainWindow::refresh_properties() {
                                "after that becomes a subtype. The two rules below decide how it converts to relations.", panel));
         // The triangle points the way the hierarchy is read, so the direction is
         // an editable property rather than only a choice made at creation.
-        auto* direction = new QComboBox(panel);
+        auto* direction = narrowable(new QComboBox(panel));
         direction->setObjectName("specializationDirection");
         direction->addItem("Specialization — points down at the subtypes");
         direction->addItem("Generalization — points up at the supertype");
@@ -848,12 +1215,14 @@ void MainWindow::refresh_properties() {
         });
         auto* direction_form = new QFormLayout;
         direction_form->setRowWrapPolicy(QFormLayout::WrapAllRows);
-        direction_form->addRow("Direction", direction);
+        direction_form->addRow(field_label("Direction", label_tone, panel), direction);
         layout->addLayout(direction_form);
         auto* super = new QLabel(specialization.supertype
             ? "Supertype: " + display_name(project, ElementRef{*specialization.supertype})
             : QStringLiteral("Supertype: not connected yet"), panel);
         super->setObjectName("specializationSupertype");
+        super->setStyleSheet(QStringLiteral("QLabel#specializationSupertype { color: %1; font-weight: 700; }")
+                                 .arg(label_tone.name()));
         layout->addWidget(super);
         if (specialization.supertype) {
             auto* detach_super = new QPushButton("Detach supertype", panel);
@@ -865,12 +1234,12 @@ void MainWindow::refresh_properties() {
         }
         // Disjoint or overlapping, and total or partial, are exactly the inputs
         // a later Conceptual to Relational conversion needs to choose a mapping.
-        auto* constraint = new QComboBox(panel);
+        auto* constraint = narrowable(new QComboBox(panel));
         constraint->setObjectName("specializationConstraint");
         constraint->addItem("Disjoint — at most one subtype");
         constraint->addItem("Overlapping — may be several subtypes");
         constraint->setCurrentIndex(specialization.constraint == Disjointness::Overlapping ? 1 : 0);
-        auto* completeness = new QComboBox(panel);
+        auto* completeness = narrowable(new QComboBox(panel));
         completeness->setObjectName("specializationCompleteness");
         completeness->addItem("Partial — need not be any subtype");
         completeness->addItem("Total — must be some subtype");
@@ -885,15 +1254,16 @@ void MainWindow::refresh_properties() {
         connect(completeness, &QComboBox::activated, this, [apply_rules](int) { apply_rules(); });
         auto* rules = new QFormLayout;
         rules->setRowWrapPolicy(QFormLayout::WrapAllRows);
-        rules->addRow("Constraint", constraint);
-        rules->addRow("Completeness", completeness);
+        rules->addRow(field_label("Constraint", label_tone, panel), constraint);
+        rules->addRow(field_label("Completeness", label_tone, panel), completeness);
         layout->addLayout(rules);
         for (const auto& subtype : specialization.subtypes) {
             auto* card = new QWidget(panel);
             card->setObjectName("participantCard");
             auto* row = new QFormLayout(card);
             row->setRowWrapPolicy(QFormLayout::WrapAllRows);
-            row->addRow(new QLabel(display_name(project, ElementRef{subtype}), card));
+            row->addRow(card_title(shaped_tag(ElementRef{subtype}, "cardShape", card),
+                                   shaped_tag(ref, "cardTowardShape", card), card));
             auto* detach = new QPushButton("Detach subtype", card);
             connect(detach, &QPushButton::clicked, this, [this, id = *specialization_id, subtype] {
                 show_result(editor_.detach_subtype(id, subtype));
@@ -905,31 +1275,44 @@ void MainWindow::refresh_properties() {
     if (const auto* id = std::get_if<RelationshipId>(&ref)) {
         const auto relationship_id = *id;
         const auto& relationship = project.relationships.at(*id);
-        // An associative relationship keeps its own identity, so it can take
-        // part in further relationships exactly as an entity does.
-        auto* associative = new QCheckBox("Associative entity", panel);
-        associative->setObjectName("relationshipAssociative");
-        associative->setChecked(relationship.associative);
-        associative->setToolTip("Give this relationship its own identity so it can take part in other relationships.");
-        connect(associative, &QCheckBox::toggled, this, [this, id = relationship.id](bool on) {
+        // Regular, identifying or associative. An identifying relationship is
+        // the one a weak entity is identified through; an associative one
+        // keeps its own identity, so it can take part in further relationships
+        // exactly as an entity does.
+        auto* kind = narrowable(new QComboBox(panel));
+        kind->setObjectName("relationshipKind");
+        kind->addItem("Regular");
+        kind->addItem("Identifying — identifies a weak entity");
+        kind->addItem("Associative — has an identity of its own");
+        kind->setCurrentIndex(static_cast<int>(relationship_kind(relationship)));
+        kind->setToolTip("An identifying relationship is drawn as a double diamond; an associative one as a diamond in a box.");
+        connect(kind, &QComboBox::activated, this, [this, id = relationship.id](int index) {
             if (refreshing_) return;
+            const auto found_relationship = editor_.project().relationships.find(id);
+            if (found_relationship == editor_.project().relationships.end()) return;
+            const auto chosen = static_cast<RelationshipKind>(index);
             // An associative entity takes the entity body size, since that is
             // what it behaves as. Keep it centred so the diagram does not shift.
             std::optional<domain::Rect> body;
+            const bool was = found_relationship->second.associative;
+            const bool becomes = chosen == RelationshipKind::Associative;
             const auto found = editor_.project().layout.find(domain::ElementRef{id});
-            if (found != editor_.project().layout.end()) {
-                const auto& size = on ? entity_body : relationship_body;
+            if (was != becomes && found != editor_.project().layout.end()) {
+                const auto& size = becomes ? entity_body : relationship_body;
                 const auto& current = found->second;
                 body = domain::Rect{current.x + current.width / 2 - size.width / 2,
                                     current.y + current.height / 2 - size.height / 2,
                                     size.width, size.height};
             }
-            show_result(editor_.set_associative(id, on, body));
+            show_result(editor_.set_relationship_kind(id, chosen, body));
         });
-        layout->addWidget(associative);
+        auto* kind_form = new QFormLayout;
+        kind_form->setRowWrapPolicy(QFormLayout::WrapAllRows);
+        kind_form->addRow(field_label("Kind", label_tone, panel), kind);
+        layout->addLayout(kind_form);
         // The ratio is the two maximums read together. Setting it here writes
         // both participants at once, so every notation redraws consistently.
-        auto* ratio = new QComboBox(panel);
+        auto* ratio = narrowable(new QComboBox(panel));
         ratio->setObjectName("relationshipRatio");
         const std::array<std::pair<Cardinality, Cardinality>, 4> ratios{{
             {Cardinality::One, Cardinality::One}, {Cardinality::One, Cardinality::Many},
@@ -960,7 +1343,7 @@ void MainWindow::refresh_properties() {
         });
         auto* ratio_form = new QFormLayout;
         ratio_form->setRowWrapPolicy(QFormLayout::WrapAllRows);
-        ratio_form->addRow("Ratio", ratio);
+        ratio_form->addRow(field_label("Ratio", label_tone, panel), ratio);
         layout->addLayout(ratio_form);
         layout->addWidget(reverse);
         layout->addWidget(hint(binary
@@ -972,20 +1355,21 @@ void MainWindow::refresh_properties() {
             card->setObjectName("participantCard");
             auto* participant_form = new QFormLayout(card);
             participant_form->setRowWrapPolicy(QFormLayout::WrapAllRows);
-            auto* title = new QLabel(display_name(project, target_ref(participant.target)), card);
-            participant_form->addRow(title);
-            auto* maximum = new QComboBox(card);
+            const auto side = target_ref(participant.target);
+            participant_form->addRow(card_title(shaped_tag(side, "cardShape", card),
+                                                shaped_tag(ref, "cardTowardShape", card), card));
+            auto* maximum = narrowable(new QComboBox(card));
             maximum->addItems({"1 — One", "M — Many"});
             maximum->setCurrentIndex(participant.maximum == Cardinality::One ? 0 : 1);
-            participant_form->addRow("Maximum cardinality", maximum);
-            auto* participation = new QComboBox(card);
+            participant_form->addRow(field_label("Maximum cardinality", label_tone, card), maximum);
+            auto* participation = narrowable(new QComboBox(card));
             participation->addItems({"Partial — optional", "Total — required"});
             participation->setCurrentIndex(participant.participation == Participation::Total ? 1 : 0);
-            participant_form->addRow("Participation", participation);
+            participant_form->addRow(field_label("Participation", label_tone, card), participation);
             auto* role = new QLineEdit(text(participant.role), card);
             role->setPlaceholderText("Role (especially for recursive links)");
             role->setMaxLength(512);
-            participant_form->addRow("Role", role);
+            participant_form->addRow(field_label("Role", label_tone, card), role);
             const auto apply = [this, relationship_id, participant, maximum, participation, role] {
                 if (refreshing_ || !editor_.project().relationships.contains(relationship_id)) return;
                 const auto max = maximum->currentIndex() == 0 ? Cardinality::One : Cardinality::Many;
@@ -1005,11 +1389,12 @@ void MainWindow::refresh_properties() {
             layout->addWidget(card);
         }
     }
-    layout->addWidget(new QLabel("Description", panel));
+    const bool note = std::holds_alternative<NoteId>(ref);
+    layout->addWidget(field_label(note ? "Text" : "Description", label_tone, panel));
     auto* description_edit = new DescriptionEdit(panel);
     description_edit->setObjectName("elementDescription");
     description_edit->setPlainText(text(description(project, ref)));
-    description_edit->setPlaceholderText("Explain this object’s meaning…");
+    description_edit->setPlaceholderText(note ? "Write the note’s text…" : "Explain this object’s meaning…");
     description_edit->setFixedHeight(100);
     description_edit->commit = [this, ref, description_edit] {
         if (refreshing_ || !exists(editor_.project(), ref)) return;
@@ -1030,7 +1415,7 @@ void MainWindow::refresh_properties() {
         fields[i]->setValue(values[i]);
         fields[i]->setKeyboardTracking(false);
         fields[i]->setObjectName("geometry" + names[i]);
-        geometry->addRow(names[i], fields[i]);
+        geometry->addRow(field_label(names[i], label_tone, panel), fields[i]);
     }
     layout->addLayout(geometry);
     auto* apply_geometry = new QPushButton("Apply position and size", panel);
@@ -1132,9 +1517,10 @@ void MainWindow::resizeEvent(QResizeEvent* event) {
 
 // A tool that has fallen off the end of the toolbar may as well not exist, so
 // the toolbar sheds what it can spare before it sheds a tool, and it sheds
-// the cheapest thing first: some of the icons' size, then the notation picker,
-// which the View menu also offers, and the names only when the window has been
-// made genuinely small.
+// the cheapest thing first: some of the icons' size, then the words on the
+// corner controls, whose check mark and half disc are read at a glance, then
+// the notation picker, which the View menu also offers, and the names only
+// when the window has been made genuinely small.
 //
 // Which of those is needed is measured rather than guessed from the window's
 // width. What fits depends on how many tools there are and how long their names
@@ -1148,31 +1534,43 @@ void MainWindow::fit_toolbar() {
         int icon;
         bool notation;
         bool notation_named;
+        bool corner_named;
     };
     // Names stay for as long as they possibly can: a tool's lock mark hangs on
     // its name, and a bar of bare icons is the state for a window that has
     // been made small, not for one at an ordinary size. The icons give up
-    // size first, then the picker its word, then the picker, and only then
-    // the names.
-    static constexpr std::array<Step, 8> steps{{
-        {Qt::ToolButtonTextBesideIcon, 34, true, true},
-        {Qt::ToolButtonTextBesideIcon, 28, true, true},
-        {Qt::ToolButtonTextBesideIcon, 24, true, true},
-        {Qt::ToolButtonTextBesideIcon, 24, true, false},
-        {Qt::ToolButtonTextBesideIcon, 24, false, false},
-        {Qt::ToolButtonIconOnly, 28, true, false},
-        {Qt::ToolButtonIconOnly, 24, false, false},
-        {Qt::ToolButtonIconOnly, 20, false, false},
+    // size first, then the picker its word, then the corner controls theirs,
+    // then the picker, and only then the names.
+    static constexpr std::array<Step, 9> steps{{
+        {Qt::ToolButtonTextBesideIcon, 34, true, true, true},
+        {Qt::ToolButtonTextBesideIcon, 28, true, true, true},
+        {Qt::ToolButtonTextBesideIcon, 24, true, true, true},
+        {Qt::ToolButtonTextBesideIcon, 24, true, false, true},
+        {Qt::ToolButtonTextBesideIcon, 24, true, false, false},
+        {Qt::ToolButtonTextBesideIcon, 24, false, false, false},
+        {Qt::ToolButtonIconOnly, 28, true, false, false},
+        {Qt::ToolButtonIconOnly, 24, false, false, false},
+        {Qt::ToolButtonIconOnly, 20, false, false, false},
     }};
     for (std::size_t index = 0; index < steps.size(); ++index) {
         const auto& step = steps[index];
         toolbar->setToolButtonStyle(step.style);
         toolbar->setIconSize(QSize(step.icon, step.icon));
-        for (const char* named : {"isaButton", "connectButton", "themeButton"})
+        for (const char* named : {"isaButton", "connectButton"})
             if (auto* button = findChild<QToolButton*>(named)) {
                 button->setToolButtonStyle(step.style);
                 button->setIconSize(toolbar->iconSize());
             }
+        // The corner controls are set after the bar, since the bar hands its
+        // own style to the buttons it made and the corner's may differ.
+        const auto corner_style = step.corner_named ? step.style : Qt::ToolButtonIconOnly;
+        if (auto* check = findChild<QAction*>("checkModel"))
+            if (auto* button = qobject_cast<QToolButton*>(toolbar->widgetForAction(check)))
+                button->setToolButtonStyle(corner_style);
+        if (theme_button_) {
+            theme_button_->setToolButtonStyle(corner_style);
+            theme_button_->setIconSize(toolbar->iconSize());
+        }
         // Hiding the widget would leave its room behind in the toolbar's layout;
         // it is the action holding it that has to go.
         for (auto* hidden : {notation_separator_, notation_action_})
@@ -1203,6 +1601,12 @@ void MainWindow::apply_appearance(ThemeId id) {
     canvas_->set_theme(id);
     refresh_icons();
     refresh_explorer();
+    // The panel's labels are written in the theme's own hues, so they are
+    // rebuilt with it rather than keeping the colours of the theme just left.
+    const auto was_refreshing = refreshing_;
+    refreshing_ = true;
+    refresh_properties();
+    refreshing_ = was_refreshing;
 }
 
 void MainWindow::preview_theme(ThemeId id) { apply_appearance(id); }
@@ -1308,6 +1712,15 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
                 choose_tool(tool, true);
                 return true;
             }
+        // A button on another row that carries one of the tool actions, as the
+        // ribbon's Insert row does, locks the tool exactly as Home's does. ISA
+        // is one action for two tools, so it locks the direction it is set to.
+        if (auto* button = qobject_cast<QToolButton*>(watched); button && button->defaultAction())
+            for (const auto& [tool, action] : tool_actions_)
+                if (button->defaultAction() == action && (action != isa_action_ || tool == isa_mode_)) {
+                    choose_tool(tool, true);
+                    return true;
+                }
     }
     return QMainWindow::eventFilter(watched, event);
 }
@@ -1366,6 +1779,80 @@ void MainWindow::new_project() {
     refresh();
     canvas_->actual_size();
     canvas_->centerOn(0, 0);
+}
+
+void MainWindow::insert_picture_dialog(std::optional<QPointF> at) {
+    const auto location = QFileDialog::getOpenFileName(this, "Insert picture", {},
+        "Images (*.png *.jpg *.jpeg *.bmp *.gif *.webp *.tif *.tiff);;All files (*)");
+    if (!location.isEmpty()) insert_picture(location, at);
+}
+
+bool MainWindow::insert_picture(const QString& path, std::optional<QPointF> at) {
+    finish_field_edit();
+    QImageReader reader(path);
+    reader.setAutoTransform(true);
+    const auto format = reader.format().toLower();
+    const auto image = reader.read();
+    if (image.isNull()) {
+        QMessageBox::warning(this, "Picture could not be inserted",
+            reader.errorString().isEmpty() ? QStringLiteral("The file is not an image ERDFlow can read.")
+                                           : reader.errorString());
+        return false;
+    }
+    // The file's own bytes are kept when they are already a PNG or JPEG of
+    // modest size, so nothing is lost. Anything else is re-encoded, and scaled
+    // down first when it is large: a picture on a diagram is a visual aid,
+    // and a project file has room for only so much of one.
+    QByteArray encoded;
+    QFile file(path);
+    if ((format == "png" || format == "jpeg" || format == "jpg") && file.size() <= 1024 * 1024
+        && file.open(QIODevice::ReadOnly)) {
+        encoded = file.readAll();
+    } else {
+        auto fitted = image;
+        if (fitted.width() > 1024 || fitted.height() > 1024)
+            fitted = fitted.scaled(1024, 1024, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+        QBuffer buffer(&encoded);
+        buffer.open(QIODevice::WriteOnly);
+        // A photograph is far smaller as a JPEG; anything transparent has to stay a PNG.
+        if (fitted.hasAlphaChannel()) fitted.save(&buffer, "PNG");
+        else fitted.save(&buffer, "JPEG", 88);
+    }
+    if (encoded.isEmpty() || static_cast<std::size_t>(encoded.size()) > domain::max_image_bytes) {
+        QMessageBox::warning(this, "Picture could not be inserted", "The picture is too large to keep in a project file.");
+        return false;
+    }
+    // Placed where it was asked for, or else in the middle of what is on
+    // screen, at a size that shows it without filling the view; a small image
+    // keeps its own size.
+    const auto centre = at.value_or(canvas_->mapToScene(canvas_->viewport()->rect().center()));
+    auto size = QSizeF(image.size());
+    if (size.width() > 320 || size.height() > 320) size = size.scaled(QSizeF(320, 320), Qt::KeepAspectRatio);
+    size = size.expandedTo(QSizeF(24, 24));
+    const domain::Rect rect{centre.x() - size.width() / 2, centre.y() - size.height() / 2, size.width(), size.height()};
+    const auto result = editor_.create_picture(bytes(QFileInfo(path).completeBaseName()), rect,
+                                               std::vector<std::uint8_t>(encoded.begin(), encoded.end()));
+    show_result(result);
+    if (result && result.created) canvas_->select_elements({*result.created}, true);
+    return bool(result);
+}
+
+void MainWindow::set_full_view(bool on) {
+    if (on) {
+        hidden_panels_.clear();
+        for (auto* dock : findChildren<QDockWidget*>())
+            if (dock->isVisible()) {
+                hidden_panels_.push_back(dock);
+                dock->hide();
+            }
+    } else {
+        for (auto* dock : hidden_panels_) dock->show();
+        hidden_panels_.clear();
+    }
+    full_view_->setToolTip(on ? "Full view. Press again to bring the panels back."
+                              : "Full view — put the panels away and give the whole window to the diagram.");
+    statusBar()->showMessage(on ? "Full view. Press it again to bring the panels back." : "Panels restored.", 5000);
+    place_canvas_controls();
 }
 
 void MainWindow::open_dialog() {

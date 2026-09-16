@@ -1,13 +1,22 @@
 #include "app/desktop/diagram_view.hpp"
 
 #include <QApplication>
+#include <QBuffer>
 #include <QGraphicsItem>
 #include <QGraphicsScene>
 #include <QImage>
 #include <QKeyEvent>
 #include <QLineEdit>
+#include <QContextMenuEvent>
+#include <QMenu>
 #include <QMouseEvent>
+#include <QNativeGestureEvent>
+#include <QScrollBar>
+#include <QSlider>
+#include <QTimer>
 #include <QPainter>
+#include <QPointingDevice>
+#include <QWheelEvent>
 
 #include <algorithm>
 #include <array>
@@ -97,21 +106,21 @@ void group_movement_tests() {
     mouse(view, QEvent::MouseButtonPress, second_center, Qt::LeftButton, Qt::LeftButton, Qt::ShiftModifier);
     mouse(view, QEvent::MouseButtonRelease, second_center, Qt::LeftButton, Qt::NoButton, Qt::ShiftModifier);
     require(view.selected_elements().size() == 2, "Shift-click extends selection");
-    view.set_snap_enabled(true);
+    view.set_align_to_grid(true);
     const auto spacing = second_item->pos() - first_item->pos();
     const auto revision = editor.revision();
     const auto start = view.mapFromScene(first_item->sceneBoundingRect().center());
     mouse(view, QEvent::MouseButtonPress, start, Qt::LeftButton, Qt::LeftButton);
     mouse(view, QEvent::MouseMove, start + QPoint(47, 32), Qt::NoButton, Qt::LeftButton);
-    require(second_item->pos() - first_item->pos() == spacing, "Snap preserves relative group spacing");
-    require(std::fmod(first_item->pos().x(), 20) == 0 && std::fmod(first_item->pos().y(), 20) == 0, "Drag anchor snaps to grid");
+    require(second_item->pos() - first_item->pos() == spacing, "Aligning preserves relative group spacing");
+    require(std::fmod(first_item->pos().x(), 20) == 0 && std::fmod(first_item->pos().y(), 20) == 0, "Drag anchor aligns to the grid");
     mouse(view, QEvent::MouseButtonRelease, start + QPoint(47, 32), Qt::LeftButton, Qt::NoButton);
     require(editor.revision() == revision + 1, "Group drag commits once");
     require(editor.undo(), "Undo group drag");
     view.synchronize();
     require(first_item->pos() == QPointF(13, 17) && second_item->pos() == QPointF(246, 61), "One undo restores both group members");
 
-    view.set_snap_enabled(false);
+    view.set_align_to_grid(false);
     require(editor.move({{first, {99800, 0, 80, 40}}, {second, {99920, 70, 60, 40}}}), "Boundary fixture");
     view.synchronize();
     view.centerOn(99880, 60);
@@ -138,6 +147,9 @@ void connector_shaping_tests() {
     desktop::DiagramView view(editor);
     view.resize(1000, 700);
     view.show();
+    // The single bend is the shape a straight line carries; a right-angle one
+    // is shaped by its corners instead, which the route tests cover.
+    view.set_line_style(desktop::LineStyle::Straight);
     view.actual_size();
     view.centerOn(0, 0);
     QApplication::processEvents();
@@ -239,6 +251,116 @@ void drag_to_connect_tests() {
     require(editor.revision() == revision, "Cancelling a carried connection changes nothing");
 }
 
+// Two entities have no line of their own, so connecting them creates the
+// relationship they mean, midway between them, in one edit, and says so.
+void entity_to_entity_creates_a_relationship_tests() {
+    SequentialIds ids;
+    application::Editor editor(ids);
+    const auto student = std::get<domain::EntityId>(*editor.create_entity("Student", {-400, -40, 160, 80}).created);
+    const auto course = std::get<domain::EntityId>(*editor.create_entity("Course", {240, 160, 160, 80}).created);
+
+    desktop::DiagramView view(editor);
+    QString announced;
+    view.on_status = [&](const QString& message) { announced = message; };
+    view.resize(1000, 700);
+    view.show();
+    view.actual_size();
+    view.centerOn(0, 60);
+    QApplication::processEvents();
+
+    const auto body_of = [&](const QString& name) {
+        auto* item = find_node(view, name);
+        return item->shape().boundingRect().translated(item->scenePos());
+    };
+    const auto first = body_of("Student");
+    const auto second = body_of("Course");
+    const auto revision = editor.revision();
+    view.set_tool(desktop::Tool::Connect);
+    // Clicked high on one and low on the other, so the joins can be told apart.
+    const QPointF on_student = first.center() + QPointF(50, -25);
+    const QPointF on_course = second.center() + QPointF(-50, 25);
+    click(view, on_student);
+    click(view, on_course);
+
+    require(editor.project().relationships.size() == 1, "A relationship was created between them");
+    const auto& made = *editor.project().relationships.begin();
+    require(made.second.participants.size() == 2, "With both entities as its sides");
+    require(made.second.participants.front().target == domain::ParticipantTarget{student}
+                && made.second.participants.back().target == domain::ParticipantTarget{course},
+            "In the order they were clicked");
+    require(editor.revision() == revision + 1, "The whole thing is one edit");
+    require(editor.undo_label() == "Relate entities", "Named for what it did");
+    require(announced.contains("created between them"), "And the user is told a relationship was made");
+
+    // It lies between the two entities, is selected, and is open for its name.
+    const auto body = editor.project().layout.at(domain::ElementRef{made.first});
+    const auto midway = (first.center() + second.center()) / 2;
+    require(std::abs(body.x + body.width / 2 - midway.x()) < 1 && std::abs(body.y + body.height / 2 - midway.y()) < 1,
+            "Placed midway between the pair");
+    require(view.selected_elements() == std::vector<domain::ElementRef>{made.first}, "The new relationship is selected");
+    require(view.renaming(), "And opened for its name, since an unnamed relationship says nothing");
+    auto* field = view.findChild<QLineEdit*>("inlineName");
+    require(field != nullptr, "With the name field on screen");
+    field->setText("Enrolled");
+    key_to(field, Qt::Key_Return);
+    require(editor.project().relationships.begin()->second.name == "Enrolled", "Typing names it");
+
+    // Each line is pinned to the point its entity was clicked, as any other
+    // connection made by clicking is.
+    const auto& shapes = editor.project().connectors;
+    require(shapes.size() == 2, "Both sides were pinned where they were clicked");
+    const auto direction_to = [](const QRectF& box, const QPointF& point) {
+        return std::atan2(point.y() - box.center().y(), point.x() - box.center().x());
+    };
+    const auto& student_side = shapes.at(domain::ConnectorRef{made.second.participants.front().id});
+    require(student_side.child_anchor && std::abs(*student_side.child_anchor - direction_to(first, on_student)) < 0.05,
+            "The student end where the student was clicked");
+    require(!student_side.owner_anchor, "And the relationship end left to route itself");
+
+    // A second relationship between the same pair reads it another way, so it
+    // steps aside rather than landing on the first, and is then an element
+    // like any other to put where it belongs.
+    {
+        const auto first_body = editor.project().layout.at(made.first);
+        view.set_tool(desktop::Tool::Connect);
+        click(view, on_student);
+        click(view, on_course);
+        require(editor.project().relationships.size() == 2, "The pair can be read a second way");
+        domain::ElementRef second_ref = made.first;
+        for (const auto& [id, relationship] : editor.project().relationships) {
+            (void)relationship;
+            if (id != made.first) second_ref = id;
+        }
+        const auto second_body = editor.project().layout.at(second_ref);
+        const auto clear = std::abs(second_body.y - first_body.y) > first_body.height
+            || std::abs(second_body.x - first_body.x) > first_body.width;
+        require(clear, "The second diamond does not land on the first");
+        // It steps across the line joining the entities rather than along it,
+        // which is what keeps two readings of one pair side by side.
+        const auto between = QPointF(second.center().x() - first.center().x(),
+                                     second.center().y() - first.center().y());
+        const QPointF stepped(second_body.x - first_body.x, second_body.y - first_body.y);
+        const auto along = QPointF::dotProduct(stepped, between) / std::hypot(between.x(), between.y());
+        require(std::abs(along) < 1.0, "It steps across the line joining the entities, not along it");
+        require(std::hypot(stepped.x(), stepped.y()) > first_body.height, "And far enough to stand clear");
+        // And it is an ordinary element afterwards.
+        require(editor.move({{second_ref, {900, 900, second_body.width, second_body.height}}}), "Put it elsewhere");
+        require(editor.project().layout.at(second_ref).x == 900, "Where it stays");
+        require(editor.undo(), "Undo the move");
+        require(editor.undo(), "Undo the second relationship");
+        require(editor.project().relationships.size() == 1, "Which leaves the first alone");
+        view.synchronize();
+    }
+
+    // The tool is spent by the use, and one undo takes the whole thing back.
+    require(view.tool() == desktop::Tool::Select, "The pair spent the tool");
+    require(editor.undo(), "Undo the naming");
+    require(editor.undo(), "Undo the relationship");
+    require(editor.project().relationships.empty() && editor.project().connectors.empty(),
+            "One undo removes the relationship and both of its lines");
+    require(editor.project().entities.size() == 2, "The entities are untouched");
+}
+
 // An unlocked tool is spent by a single use. Connect is where that matters
 // most: it is the only tool needing two clicks, so it is the only one that can
 // be abandoned part way, and a Connect left armed turns the next click on an
@@ -290,11 +412,16 @@ void connect_returns_to_select_tests() {
     // An illegal pair is still an attempt. The tool goes back, and the reason
     // the pair was refused has to survive the handover rather than being
     // overwritten by the message the incoming tool announces itself with.
+    // Two plain relationships are such a pair: only an associative one can
+    // take part in another relationship.
+    require(editor.create_relationship("Teaches", {-60, 320, 180, 100}), "A second relationship");
+    view.synchronize();
+    QApplication::processEvents();
     const auto revision = editor.revision();
     view.set_tool(desktop::Tool::Connect);
-    click(view, centre("Student"));
-    click(view, centre("Course"));
-    require(editor.revision() == revision, "Two entities do not connect");
+    click(view, centre("Enrolled"));
+    click(view, centre("Teaches"));
+    require(editor.revision() == revision, "Two plain relationships do not connect");
     require(view.tool() == desktop::Tool::Select, "A refused pair spends the tool too");
     require(announced.contains("Connect an entity to a relationship"),
             "The refusal is still on screen after the tool hands back");
@@ -624,6 +751,542 @@ void lock_participant_tests() {
 }
 
 
+// A connection made by clicking two points joins each shape at those two
+// points, and either end can then be carried to another point on its shape.
+// Two lines may leave one point. The automatic joins are still there for the
+// asking, and a connection made under them stores nothing.
+void join_where_clicked_tests() {
+    SequentialIds ids;
+    application::Editor editor(ids);
+    const auto student = std::get<domain::EntityId>(*editor.create_entity("Student", {-320, 0, 160, 80}).created);
+    const auto enrolled = std::get<domain::RelationshipId>(*editor.create_relationship("Enrolled", {220, 0, 190, 110}).created);
+    editor.create_entity("Course", {-320, 260, 160, 80});
+
+    desktop::DiagramView view(editor);
+    view.resize(1000, 700);
+    view.show();
+    view.actual_size();
+    view.centerOn(0, 80);
+    QApplication::processEvents();
+    require(view.join_mode() == desktop::JoinMode::WhereClicked, "New lines join where they are clicked unless told otherwise");
+
+    // A node's bounding rect is padded a little for its selection outline; the
+    // body itself is the shape, and the grips sit on the body's outline.
+    const auto body_of = [&](const QString& name) {
+        auto* item = find_node(view, name);
+        return item->shape().boundingRect().translated(item->scenePos());
+    };
+    const auto entity = body_of("Student");
+    const auto diamond = body_of("Enrolled");
+    // The point on a box or a diamond in a given direction from its centre.
+    const auto outline_at = [](const QRectF& box, double radians, bool is_diamond) {
+        const QPointF direction{std::cos(radians), std::sin(radians)};
+        const auto rx = box.width() / 2;
+        const auto ry = box.height() / 2;
+        const auto divisor = is_diamond ? std::abs(direction.x()) / rx + std::abs(direction.y()) / ry
+                                        : std::max(std::abs(direction.x()) / rx, std::abs(direction.y()) / ry);
+        return box.center() + direction / divisor;
+    };
+    const auto direction_to = [](const QRectF& box, const QPointF& point) {
+        return std::atan2(point.y() - box.center().y(), point.x() - box.center().x());
+    };
+    const auto participants = [&] { return editor.project().relationships.at(enrolled).participants; };
+    const auto lines_through = [&](const QPointF& point) {
+        int count = 0;
+        for (auto* item : view.scene()->items())
+            if (item->zValue() < 0 && item->shape().contains(item->mapFromScene(point))) ++count;
+        return count;
+    };
+
+    // Click the entity high on its right, and the diamond low on its left.
+    const QPointF on_entity = entity.center() + QPointF(50, -30);
+    const QPointF on_diamond = diamond.center() + QPointF(-50, 15);
+    view.set_tool(desktop::Tool::Connect, true);
+    click(view, on_entity);
+    click(view, on_diamond);
+    require(participants().size() == 1, "The pair connected");
+    const auto side = participants().front().id;
+    require(editor.project().connectors.size() == 1, "The line was given its shape as it was made");
+    const auto shape = editor.project().connectors.at(domain::ConnectorRef{side});
+    require(shape.owner_anchor && shape.child_anchor, "Both ends are pinned");
+    require(std::abs(*shape.child_anchor - direction_to(entity, on_entity)) < 0.05,
+            "The entity end is pinned in the direction it was clicked");
+    require(std::abs(*shape.owner_anchor - direction_to(diamond, on_diamond)) < 0.05,
+            "And the relationship end in the direction the diamond was clicked");
+    require(editor.undo_label() == "Connect participant", "The joins came with the connection, as one edit");
+    const auto entity_join = outline_at(entity, *shape.child_anchor, false);
+    require(lines_through(entity_join) == 1, "The line meets the entity where it was clicked");
+    require(lines_through(outline_at(diamond, *shape.owner_anchor, true)) == 1, "And the diamond where it was clicked");
+
+    // Moving the other end leaves a join made by clicking exactly where it was.
+    require(editor.move({{domain::ElementRef{enrolled}, {220, -300, 190, 110}}}), "Move the relationship away");
+    view.synchronize();
+    QApplication::processEvents();
+    require(lines_through(entity_join) == 1, "A join made by clicking stays put as the other end moves");
+    require(editor.undo(), "Put the relationship back");
+    view.synchronize();
+    QApplication::processEvents();
+
+    // Taking hold of the entity end and carrying it across the entity moves
+    // the join round the outline to meet it. It is previewed while carried
+    // and written once, on release.
+    view.set_tool(desktop::Tool::Select);
+    find_edge(view)->setSelected(true);
+    QApplication::processEvents();
+    const QPointF top{entity.center().x(), entity.top()};
+    const auto from = view.mapFromScene(entity_join);
+    const auto to = view.mapFromScene(top + QPointF(0, 12));
+    const auto revision = editor.revision();
+    mouse(view, QEvent::MouseButtonPress, from, Qt::LeftButton, Qt::LeftButton);
+    for (int step = 1; step <= 10; ++step)
+        mouse(view, QEvent::MouseMove, from + (to - from) * step / 10, Qt::NoButton, Qt::LeftButton);
+    require(editor.revision() == revision, "Carrying an end does not commit until release");
+    require(lines_through(top) == 1, "The carried end is previewed where the pointer is");
+    mouse(view, QEvent::MouseButtonRelease, to, Qt::LeftButton, Qt::NoButton);
+    require(editor.revision() == revision + 1, "Putting the end down commits once");
+    const auto carried = editor.project().connectors.at(domain::ConnectorRef{side});
+    require(std::abs(*carried.child_anchor + M_PI / 2) < 0.05, "The entity end now joins at the top");
+    require(carried.owner_anchor == shape.owner_anchor, "The other end was left alone");
+    require(carried.waypoints.empty(), "And the line still runs straight to it");
+    require(lines_through(top) == 1, "And the line is drawn to the top");
+    require(editor.undo_label() == "Shape connector", "Putting an end down is one named history entry");
+    require(editor.undo(), "Undo it");
+    view.synchronize();
+    QApplication::processEvents();
+    require(lines_through(entity_join) == 1, "Undo puts the end back where it was");
+    require(editor.redo(), "Redo it");
+    view.synchronize();
+    QApplication::processEvents();
+
+    // Carried past the shape and let go in open canvas, the end stops there:
+    // the line keeps a corner at the point rather than the gesture coming to
+    // nothing, and the join it was dragged from is left as it was.
+    {
+        auto* link = find_edge(view);
+        link->setSelected(true);
+        QApplication::processEvents();
+        const auto grip = view.mapFromScene(outline_at(entity, -M_PI / 2, false));
+        const QPointF stop{entity.center().x() - 210, entity.top() - 150};
+        const auto away = view.mapFromScene(stop);
+        const auto before = editor.revision();
+        mouse(view, QEvent::MouseButtonPress, grip, Qt::LeftButton, Qt::LeftButton);
+        for (int step = 1; step <= 8; ++step)
+            mouse(view, QEvent::MouseMove, grip + (away - grip) * step / 8, Qt::NoButton, Qt::LeftButton);
+        mouse(view, QEvent::MouseButtonRelease, away, Qt::LeftButton, Qt::NoButton);
+        require(editor.revision() == before + 1, "Letting go in open canvas is one edit");
+        const auto stopped = editor.project().connectors.at(domain::ConnectorRef{side});
+        require(!stopped.waypoints.empty(), "Which leaves a corner where the end was let go");
+        require(std::hypot(stopped.waypoints.back().x - stop.x(), stopped.waypoints.back().y - stop.y()) < 2.0,
+                "At the point itself");
+        require(stopped.child_anchor == carried.child_anchor, "The join it was dragged from is left where it was");
+        require(editor.undo(), "Undo the stopping point");
+        view.synchronize();
+        QApplication::processEvents();
+    }
+
+    // A second line may leave the very same point: connect the entity to the
+    // relationship again from its top.
+    view.set_tool(desktop::Tool::Connect, true);
+    click(view, top + QPointF(0, 6));
+    click(view, on_diamond);
+    require(participants().size() == 2, "A second connection was made");
+    const auto second = editor.project().connectors.at(domain::ConnectorRef{participants().back().id});
+    require(second.child_anchor && std::abs(*second.child_anchor + M_PI / 2) < 0.1, "It is pinned to the same point");
+    require(lines_through(top) == 2, "Two lines leave one point");
+
+    // Automatic joins are still there for the asking, and store nothing.
+    view.set_join_mode(desktop::JoinMode::Automatic);
+    click(view, find_node(view, "Course")->sceneBoundingRect().center() + QPointF(40, 20));
+    click(view, on_diamond);
+    require(participants().size() == 3, "The pair connected under automatic joins");
+    require(editor.project().connectors.size() == 2, "An automatic connection stores no shape");
+
+    // An attribute's link made by clicking is pinned the same way, with the
+    // owner end on the element that owns the attribute.
+    view.set_join_mode(desktop::JoinMode::WhereClicked);
+    const auto born = std::get<domain::AttributeId>(*editor.create_attribute("Born", {-320, -220, 130, 54}).created);
+    view.synchronize();
+    QApplication::processEvents();
+    const auto attribute = body_of("Born");
+    const QPointF on_attribute = attribute.center() + QPointF(20, 18);
+    const QPointF on_owner = entity.center() + QPointF(-45, -30);
+    click(view, on_attribute);
+    click(view, on_owner);
+    require(editor.project().attributes.at(born).owner == std::optional<domain::AttributeOwner>{domain::ElementRef{student}},
+            "The attribute now belongs to the entity");
+    const auto link = editor.project().connectors.at(domain::ConnectorRef{born});
+    require(link.owner_anchor && std::abs(*link.owner_anchor - direction_to(entity, on_owner)) < 0.05,
+            "The owner end of an attribute link is on the entity, where it was clicked");
+    require(link.child_anchor && std::abs(*link.child_anchor - direction_to(attribute, on_attribute)) < 0.05,
+            "And the child end on the attribute, where it was clicked");
+    require(editor.undo_label() == "Change attribute owner", "One edit made the link and its joins");
+    view.set_tool(desktop::Tool::Select);
+}
+
+// Pictures and notes are on the canvas without being in the model: a note is
+// put down by its tool and opens for its title, a picture draws its own
+// pixels, and nothing connects to either.
+void figure_tests() {
+    SequentialIds ids;
+    application::Editor editor(ids);
+    editor.create_entity("Student", {-320, 0, 160, 80});
+    desktop::DiagramView view(editor);
+    view.resize(900, 600);
+    view.show();
+    view.actual_size();
+    view.centerOn(0, 0);
+    QApplication::processEvents();
+
+    // The note tool puts a note where the canvas is clicked and opens it for
+    // its title, since a note is for writing on.
+    view.set_tool(desktop::Tool::Note);
+    click(view, QPointF(200, 150));
+    require(editor.project().notes.size() == 1, "A click places a note");
+    const domain::ElementRef note = editor.project().notes.begin()->first;
+    require(view.tool() == desktop::Tool::Select, "The note tool is one use, like the others");
+    require(view.selected_elements() == std::vector<domain::ElementRef>{note}, "The new note is selected");
+    require(view.renaming(), "And opens for its title at once");
+    auto* field = view.findChild<QLineEdit*>("inlineName");
+    require(field && field->isVisible(), "With the title field on screen");
+    field->setText("Assumptions");
+    key_to(field, Qt::Key_Return);
+    require(editor.project().notes.begin()->second.name == "Assumptions", "Typing gives the note its title");
+    require(editor.describe(note, "Each student enrols each term."), "Its text is its description");
+    view.synchronize();
+    QApplication::processEvents();
+    require(find_node(view, "Assumptions") != nullptr, "The note is a node like any other");
+
+    // A picture draws its own pixels: a solid red image comes out red.
+    QImage red(40, 30, QImage::Format_RGB32);
+    red.fill(QColor(220, 30, 30));
+    QByteArray encoded;
+    QBuffer buffer(&encoded);
+    buffer.open(QIODevice::WriteOnly);
+    require(red.save(&buffer, "PNG"), "Encode a test picture");
+    const auto placed = editor.create_picture("Red", {-100, -200, 120, 90},
+                                              std::vector<std::uint8_t>(encoded.begin(), encoded.end()));
+    require(placed && placed.created, "A picture is placed from PNG bytes");
+    view.set_grid_visible(false);
+    view.synchronize();
+    QApplication::processEvents();
+    const auto image = view.viewport()->grab().toImage();
+    const auto pixel = image.pixelColor(device_point(image, view.mapFromScene(QPointF(-40, -155))));
+    require(pixel.red() > 180 && pixel.green() < 90 && pixel.blue() < 90, "The picture's pixels are drawn on the canvas");
+    // It lies beneath the lines and the elements, so it can be a background.
+    for (auto* item : view.scene()->items())
+        if (item->toolTip() == "Red") require(item->zValue() < -1, "A picture is drawn beneath the lines");
+
+    // Nothing connects to a figure: Connect refuses the pair.
+    view.set_tool(desktop::Tool::Connect);
+    const auto revision = editor.revision();
+    click(view, find_node(view, "Assumptions")->sceneBoundingRect().center());
+    click(view, find_node(view, "Student")->sceneBoundingRect().center());
+    require(editor.revision() == revision, "A note and an entity do not connect");
+    require(view.tool() == desktop::Tool::Select, "The refused pair spends the tool");
+
+    // The right-click menu offers to insert either, at the point clicked.
+    QPointF asked_for;
+    view.on_insert_picture = [&](QPointF at) { asked_for = at; };
+    bool opened_for_title = false;
+    const auto right_click = [&](const QPointF& scene_point, const char* entry) {
+        opened_for_title = false;
+        QTimer::singleShot(0, [&, entry] {
+            auto* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+            require(menu != nullptr, "A right-click opens a menu");
+            auto* action = menu->findChild<QAction*>(QString::fromLatin1(entry));
+            require(action != nullptr, "It offers the entry asked for");
+            // A click closes the menu before the entry acts, and so does this.
+            menu->close();
+            action->trigger();
+            // Looked at here, the moment the entry has acted, which is what a
+            // user sees. The offscreen platform then deactivates the window as
+            // the popup goes, which closes any editor and which no desktop does.
+            opened_for_title = view.renaming();
+        });
+        const auto position = view.mapFromScene(scene_point);
+        QContextMenuEvent event(QContextMenuEvent::Mouse, position, view.viewport()->mapToGlobal(position));
+        QApplication::sendEvent(view.viewport(), &event);
+        QApplication::processEvents();
+        view.activateWindow();
+    };
+    right_click(QPointF(-300, 200), "contextInsertNote");
+    require(editor.project().notes.size() == 2, "Insert → Note from the menu places a note");
+    const auto latest = editor.project().layout.at(editor.project().notes.rbegin()->first);
+    require(std::abs(latest.x + latest.width / 2 + 300) < 1 && std::abs(latest.y + latest.height / 2 - 200) < 1,
+            "Centred where the canvas was clicked");
+    require(opened_for_title, "And opened for its title");
+    view.cancel_interaction();
+    right_click(QPointF(120, -80), "contextInsertPicture");
+    require(asked_for == QPointF(120, -80), "Insert → Picture asks the window for a file, for that point");
+    // The same entries sit at the end of an element's own menu.
+    right_click(find_node(view, "Student")->sceneBoundingRect().center(), "contextInsertNote");
+    require(editor.project().notes.size() == 3, "An element's menu offers Insert as well");
+    view.cancel_interaction();
+    require(editor.undo() && editor.undo(), "Take the two menu notes away again");
+    view.synchronize();
+
+    // Both go with the rest of a selection, and come back with one undo.
+    view.select_elements({note, *placed.created});
+    view.delete_selection();
+    require(editor.project().notes.empty() && editor.project().pictures.empty(), "Delete removes both");
+    require(editor.undo(), "Undo the deletion");
+    view.synchronize();
+    require(editor.project().notes.size() == 1 && editor.project().pictures.size() == 1, "One undo brings both back");
+}
+
+// The notation for the weak side of a model: a weak entity wears a double
+// border, its key a dashed underline, an identifying relationship a double
+// diamond, and a total specialization a double line to its supertype, with the
+// constraint's letter on the triangle.
+void weak_and_identifying_drawing_tests() {
+    SequentialIds ids;
+    application::Editor editor(ids);
+    const auto employee = std::get<domain::EntityId>(*editor.create_entity("Employee", {-340, -40, 160, 80}).created);
+    const auto dependant = std::get<domain::EntityId>(*editor.create_entity("Dependant", {180, -40, 160, 80}).created);
+    const auto has = std::get<domain::RelationshipId>(*editor.create_relationship("Has", {-100, -60, 190, 110}).created);
+    const auto owner = domain::AttributeOwner{domain::ElementRef{dependant}};
+    const auto name = std::get<domain::AttributeId>(*editor.create_attribute("Name", {200, 120, 150, 60}, owner).created);
+    require(editor.set_attribute_kind(name, domain::AttributeKind::Key), "A key on the dependant");
+    require(editor.connect(has, employee) && editor.connect(has, dependant), "Both take part");
+    const auto isa = std::get<domain::SpecializationId>(*editor.create_specialization("IS A", {-380, 160, 96, 74}, domain::Inheritance::Specialization).created);
+    require(editor.set_supertype(isa, employee), "The triangle hangs off the employee");
+
+    desktop::DiagramView view(editor);
+    view.resize(1000, 700);
+    view.show();
+    view.set_grid_visible(false);
+    view.actual_size();
+    view.centerOn(-60, 60);
+    QApplication::processEvents();
+    const auto render = [&](const QString& node) {
+        view.synchronize();
+        QApplication::processEvents();
+        const auto image = view.viewport()->grab().toImage();
+        const auto box = find_node(view, node)->sceneBoundingRect();
+        const QRect area(view.mapFromScene(box.topLeft()), view.mapFromScene(box.bottomRight()));
+        return image.copy(QRect(device_point(image, area.topLeft()), device_point(image, area.bottomRight())));
+    };
+    const auto plain_entity = render("Dependant");
+    const auto plain_key = render("Name");
+    require(editor.set_entity_weak(dependant, true), "Make it weak");
+    require(render("Dependant") != plain_entity, "A weak entity is drawn differently: its double border");
+    require(render("Name") != plain_key, "And its key differently: the dashed underline of a partial key");
+    const auto plain_diamond = render("Has");
+    require(editor.set_relationship_kind(has, domain::RelationshipKind::Identifying), "Make the relationship identifying");
+    require(render("Has") != plain_diamond, "An identifying relationship is drawn with its second diamond");
+    require(editor.set_relationship_kind(has, domain::RelationshipKind::Regular), "And back");
+    require(render("Has") == plain_diamond, "Regular again draws as before");
+
+    // The triangle wears the constraint's letter, and a total specialization's
+    // line to its supertype is doubled.
+    const auto disjoint = render("IS A");
+    require(editor.set_specialization_rules(isa, domain::Disjointness::Overlapping, domain::Completeness::Partial), "Overlapping");
+    require(render("IS A") != disjoint, "The letter changes from d to o");
+    const auto whole = [&] {
+        view.synchronize();
+        QApplication::processEvents();
+        return view.viewport()->grab().toImage();
+    };
+    const auto partial = whole();
+    require(editor.set_specialization_rules(isa, domain::Disjointness::Overlapping, domain::Completeness::Total), "Total");
+    require(whole() != partial, "A total specialization draws its link doubled");
+}
+
+// A relationship that meets one entity twice is recursive. Its first side runs
+// straight to the diamond; its second leaves the far corner and comes back
+// around the entity at right angles, and follows the shapes as they move until
+// the user takes hold of it.
+void recursive_loop_tests() {
+    SequentialIds ids;
+    application::Editor editor(ids);
+    const auto employee = std::get<domain::EntityId>(*editor.create_entity("Employee", {-260, -40, 180, 90}).created);
+    const auto manages = editor.relate(employee, employee, {160, -55, 190, 110}, "Manages");
+    require(manages && manages.created, "A relationship from the entity back to itself");
+    const auto id = std::get<domain::RelationshipId>(*manages.created);
+    require(editor.project().relationships.at(id).participants.size() == 2, "With two sides, both on the entity");
+
+    desktop::DiagramView view(editor);
+    view.resize(1100, 800);
+    view.show();
+    view.set_grid_visible(false);
+    view.actual_size();
+    view.centerOn(40, 60);
+    QApplication::processEvents();
+
+    const auto sides = [&] {
+        std::vector<QGraphicsItem*> found;
+        for (auto* item : view.scene()->items())
+            if (item->zValue() < 0 && item->toolTip().startsWith("Participant")) found.push_back(item);
+        require(found.size() == 2, "Both sides are drawn");
+        return found;
+    };
+    const auto entity_body = [&] {
+        auto* node = find_node(view, "Employee");
+        return node->shape().boundingRect().translated(node->scenePos());
+    };
+    const auto diamond_body = [&] {
+        auto* node = find_node(view, "Manages");
+        return node->shape().boundingRect().translated(node->scenePos());
+    };
+
+    // One of the two reaches well past both shapes: that is the loop. The
+    // other stays in the space between them.
+    const auto below_both = std::max(entity_body().bottom(), diamond_body().bottom());
+    auto* first = sides()[0];
+    auto* second = sides()[1];
+    const auto reaches = [&](QGraphicsItem* item) { return item->sceneBoundingRect().bottom() > below_both + 8; };
+    require(reaches(first) != reaches(second), "Exactly one of the two sides loops around");
+    auto* loop = reaches(first) ? first : second;
+    auto* straight = reaches(first) ? second : first;
+    require(straight->sceneBoundingRect().left() > entity_body().left(),
+            "The straight side keeps to the space between the two shapes");
+
+    // The loop comes back underneath the entity, which is what makes it read
+    // as a loop rather than as a line wandering off.
+    const auto returns_under = [&] {
+        for (qreal y = entity_body().bottom() + 4; y < entity_body().bottom() + 90; y += 2)
+            if (loop->shape().contains(loop->mapFromScene(QPointF(entity_body().center().x(), y)))) return true;
+        return false;
+    };
+    require(returns_under(), "The loop returns under the entity and into its face");
+
+    // It follows the shapes: move the entity and the loop moves with it.
+    require(editor.move({{domain::ElementRef{employee}, {-260, 260, 180, 90}}}), "Move the entity down");
+    view.synchronize();
+    QApplication::processEvents();
+    loop = reaches(sides()[0]) ? sides()[0] : sides()[1];
+    require(returns_under(), "And the loop is redrawn around where the entity now is");
+
+    // Nothing is stored for it until the user takes hold of it; dragging the
+    // line then keeps the shape they can see and adds a corner to it.
+    require(editor.project().connectors.empty(), "A loop the canvas worked out stores nothing");
+    loop->setSelected(true);
+    QApplication::processEvents();
+    const auto on_loop = [&] {
+        const auto bounds = loop->sceneBoundingRect();
+        for (qreal x = bounds.left(); x < bounds.right(); x += 2)
+            for (qreal y = bounds.bottom() - 30; y < bounds.bottom(); y += 2)
+                if (loop->shape().contains(loop->mapFromScene(QPointF(x, y)))) return QPointF(x, y);
+        throw std::runtime_error("No point found on the loop");
+    }();
+    const auto from = view.mapFromScene(on_loop);
+    mouse(view, QEvent::MouseButtonPress, from, Qt::LeftButton, Qt::LeftButton);
+    for (int step = 1; step <= 6; ++step)
+        mouse(view, QEvent::MouseMove, from + QPoint(0, step * 5), Qt::NoButton, Qt::LeftButton);
+    mouse(view, QEvent::MouseButtonRelease, from + QPoint(0, 30), Qt::LeftButton, Qt::NoButton);
+    require(editor.project().connectors.size() == 1, "Taking hold of it stores the route");
+    const auto& kept = editor.project().connectors.begin()->second;
+    require(kept.waypoints.size() >= 4, "Which keeps the loop's own corners and the new one");
+    require(editor.undo(), "Undo the shaping");
+    view.synchronize();
+    QApplication::processEvents();
+    require(editor.project().connectors.empty(), "And the loop is the canvas's again");
+}
+
+// Elements line up with their neighbours as they are dragged, the way a page
+// layout does, and a selection can be lined up on one edge or middle at once.
+void alignment_tests() {
+    SequentialIds ids;
+    application::Editor editor(ids);
+    const auto anchor = std::get<domain::EntityId>(*editor.create_entity("Anchor", {0, 0, 160, 80}).created);
+    const auto mover = std::get<domain::EntityId>(*editor.create_entity("Mover", {400, 260, 160, 80}).created);
+    const auto third = std::get<domain::EntityId>(*editor.create_entity("Third", {-300, 500, 120, 60}).created);
+
+    desktop::DiagramView view(editor);
+    view.resize(1100, 900);
+    view.show();
+    view.set_grid_visible(false);
+    view.actual_size();
+    view.centerOn(100, 250);
+    QApplication::processEvents();
+
+    // Dragged so its middle comes within a few pixels of the anchor's, it
+    // meets it exactly rather than stopping just short.
+    const auto centre_of = [&](domain::EntityId id) {
+        const auto rect = editor.project().layout.at(domain::ElementRef{id});
+        return QPointF(rect.x + rect.width / 2, rect.y + rect.height / 2);
+    };
+    const auto anchor_centre = centre_of(anchor);
+    view.select_elements({mover});
+    auto* item = find_node(view, "Mover");
+    const auto grab = view.mapFromScene(item->sceneBoundingRect().center());
+    // Four pixels short of standing in line with the anchor's middle.
+    const auto wanted = QPointF(anchor_centre.x() + 4, centre_of(mover).y());
+    const auto to = view.mapFromScene(wanted);
+    mouse(view, QEvent::MouseButtonPress, grab, Qt::LeftButton, Qt::LeftButton);
+    for (int step = 1; step <= 8; ++step)
+        mouse(view, QEvent::MouseMove, grab + (to - grab) * step / 8, Qt::NoButton, Qt::LeftButton);
+    require(std::abs(item->sceneBoundingRect().center().x() - anchor_centre.x()) < 0.51,
+            "A middle that comes near another's meets it exactly");
+    mouse(view, QEvent::MouseButtonRelease, to, Qt::LeftButton, Qt::NoButton);
+    require(std::abs(centre_of(mover).x() - anchor_centre.x()) < 0.51, "And it is written where it was drawn");
+
+    // Dropped well away from anything, nothing pulls it out of place.
+    const auto revision = editor.revision();
+    const auto free_grab = view.mapFromScene(find_node(view, "Mover")->sceneBoundingRect().center());
+    const auto free_to = free_grab + QPoint(133, 47);
+    mouse(view, QEvent::MouseButtonPress, free_grab, Qt::LeftButton, Qt::LeftButton);
+    for (int step = 1; step <= 8; ++step)
+        mouse(view, QEvent::MouseMove, free_grab + (free_to - free_grab) * step / 8, Qt::NoButton, Qt::LeftButton);
+    mouse(view, QEvent::MouseButtonRelease, free_to, Qt::LeftButton, Qt::NoButton);
+    require(editor.revision() == revision + 1, "The free drag is one edit");
+    require(std::abs(centre_of(mover).x() - anchor_centre.x()) > 40, "Nothing holds an element that is going elsewhere");
+
+    // The whole selection can be lined up at once, on one edge or one middle.
+    const auto lefts = [&] {
+        std::vector<double> found;
+        for (const auto id : {anchor, mover, third}) found.push_back(editor.project().layout.at(domain::ElementRef{id}).x);
+        return found;
+    };
+    require(lefts()[0] != lefts()[1] || lefts()[1] != lefts()[2], "They do not start on one line");
+    const auto before = editor.revision();
+    const std::vector<domain::ElementRef> all{anchor, mover, third};
+    const auto leftmost = std::min({lefts()[0], lefts()[1], lefts()[2]});
+    view.align_selection_for_test(all, true, 0);
+    require(editor.revision() == before + 1, "Lining a selection up is one edit");
+    for (const auto edge : lefts()) require(std::abs(edge - leftmost) < 0.51, "Every one of them sits on the left edge");
+    require(editor.undo(), "Which undoes in one step");
+    require(lefts()[0] != lefts()[1] || lefts()[1] != lefts()[2], "Putting them back where they were");
+}
+
+// Anything that names an element can draw it: the canvas renders one element's
+// own shape in its own colour, so a relationship shows as a diamond rather
+// than as a coloured box, and the panel and the diagram cannot disagree.
+void element_shape_preview_tests() {
+    SequentialIds ids;
+    application::Editor editor(ids);
+    const auto entity = *editor.create_entity("Person", {0, 0, 160, 80}).created;
+    const auto relationship = *editor.create_relationship("Knows", {300, 0, 190, 110}).created;
+    desktop::DiagramView view(editor);
+    view.resize(700, 500);
+    view.show();
+    QApplication::processEvents();
+
+    const auto drawn = [&](const domain::ElementRef& ref) {
+        return view.element_preview(ref, QSize(40, 28), true).toImage().convertToFormat(QImage::Format_ARGB32);
+    };
+    const auto box = drawn(entity);
+    const auto diamond = drawn(relationship);
+    require(box.pixelColor(box.width() / 2, box.height() / 2).alpha() > 200
+                && diamond.pixelColor(diamond.width() / 2, diamond.height() / 2).alpha() > 200,
+            "Both are drawn where their middles are");
+    require(box.pixelColor(3, 3).alpha() > 200, "A rectangle reaches its corners");
+    require(diamond.pixelColor(2, 2).alpha() < 60, "A diamond leaves them bare, which a box would not");
+
+    // It carries the element's own colour, including one the user chose.
+    const auto& colors = desktop::theme(view.theme_id());
+    const auto middle = [](const QImage& image) { return image.pixelColor(image.width() / 2, image.height() / 2); };
+    const auto near_enough = [](const QColor& first, const QColor& second) {
+        return std::abs(first.red() - second.red()) < 14 && std::abs(first.green() - second.green()) < 14
+            && std::abs(first.blue() - second.blue()) < 14;
+    };
+    require(near_enough(middle(box), colors.entity_fill), "An entity wears the theme's entity colour");
+    require(editor.recolour({entity}, domain::Colour{0x9E, 0xE8, 0xC4}), "Colour it by hand");
+    view.synchronize();
+    QApplication::processEvents();
+    require(near_enough(middle(drawn(entity)), QColor(0x9E, 0xE8, 0xC4)), "And then the one it was given");
+}
+
 // An element can be given a surface colour of its own, one colour can be given
 // to several at once, and a coloured element keeps a readable label.
 void element_colour_tests() {
@@ -694,6 +1357,58 @@ void element_colour_tests() {
             if (pixel.red() > 200 && pixel.green() > 200 && pixel.blue() > 200) light_ink = true;
         }
     require(light_ink, "A label on a dark surface is written in light ink");
+
+    // Transparency is a level over whatever colour the surface has, the
+    // theme's own included. All the way leaves only the outline with the
+    // canvas showing through; half way is a blend of the two.
+    view.set_grid_visible(false);
+    require(editor.recolour({domain::ElementRef{student}}, {}), "Back to the theme's colour");
+    const auto below_label = [&] {
+        return view.mapFromScene(find_node(view, "Student")->sceneBoundingRect().center() + QPointF(0, 26));
+    };
+    const auto seen = [&] {
+        view.synchronize();
+        QApplication::processEvents();
+        const auto image = view.viewport()->grab().toImage();
+        return image.pixelColor(device_point(image, below_label()));
+    };
+    const auto solid = seen();
+    const auto canvas = desktop::theme(view.theme_id()).canvas;
+    require(solid != canvas, "A solid surface differs from the canvas");
+    require(editor.set_transparency({domain::ElementRef{student}}, 100), "Fade it all the way");
+    require(seen() == canvas, "The canvas shows through a fully transparent element");
+    require(editor.set_transparency({domain::ElementRef{student}}, 50), "Half way");
+    const auto half = seen();
+    require(half != canvas && half != solid, "Half way is a blend of the surface and the canvas");
+    require(editor.set_transparency({domain::ElementRef{student}}, 0), "And back");
+    require(editor.project().transparency.empty(), "None stores nothing");
+
+    // The right-click menu carries a bar for it below the colours, which
+    // previews as it moves and writes once when it is let go.
+    view.select_elements({domain::ElementRef{student}});
+    QTimer::singleShot(0, [&] {
+        auto* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+        require(menu != nullptr, "A right-click opens a menu");
+        auto* slider = menu->findChild<QSlider*>("contextTransparency");
+        require(slider != nullptr, "It carries a transparency bar");
+        const auto revision = editor.revision();
+        slider->setSliderDown(true);
+        slider->setValue(60);
+        require(editor.revision() == revision, "Moving the bar previews without writing");
+        slider->setSliderDown(false);
+        emit slider->sliderReleased();
+        require(editor.revision() == revision + 1, "Letting go writes once");
+        menu->close();
+    });
+    const auto position = view.mapFromScene(find_node(view, "Student")->sceneBoundingRect().center());
+    QContextMenuEvent event(QContextMenuEvent::Mouse, position, view.viewport()->mapToGlobal(position));
+    QApplication::sendEvent(view.viewport(), &event);
+    QApplication::processEvents();
+    view.activateWindow();
+    require(editor.project().transparency.at(domain::ElementRef{student}) == 60, "The bar's value is what was stored");
+    require(editor.undo_label() == "Set transparency", "As one named edit");
+    require(editor.undo(), "Undo it");
+    view.synchronize();
 }
 
 
@@ -796,7 +1511,7 @@ void picker_sample_tests() {
         view.set_theme(id);
         QApplication::processEvents();
         const auto accent = desktop::theme(id).accent;
-        for (const auto style : {desktop::LineStyle::Curved, desktop::LineStyle::Straight}) {
+        for (const auto style : {desktop::LineStyle::Curved, desktop::LineStyle::Straight, desktop::LineStyle::Elbow}) {
             const auto sample = view.line_style_preview(style, QSize(48, 24));
             require(drawn(sample) > 60, "A line style sample is drawn heavily enough to see");
             require(carries(sample, accent), "And in the theme's own accent, not a muted grey");
@@ -1326,7 +2041,8 @@ void attribute_trunk_and_line_style_tests() {
     view.set_grid_visible(false);
     view.fit_diagram();
     QApplication::processEvents();
-    require(view.line_style() == desktop::LineStyle::Curved, "Connectors are curved by default");
+    require(view.line_style() == desktop::LineStyle::Elbow, "Lines break at right angles unless told otherwise");
+    view.set_line_style(desktop::LineStyle::Curved);
 
     const auto edge_for = [&](const QString& attribute) {
         auto* node = find_node(view, attribute);
@@ -1625,6 +2341,50 @@ int main(int argc, char** argv) {
         require(editor.project().attributes.at(child).owner == std::optional<domain::AttributeOwner>{composite}, "Owner-first composite connection");
         view.set_tool(desktop::Tool::Select);
 
+        // Two fingers travelling together move the diagram rather than zoom
+        // it. A trackpad reports the pixels they covered and gives its scroll
+        // a phase, and it fills in a wheel's angle as well, so the angle alone
+        // must not be taken for a wheel notch.
+        view.actual_size();
+        view.centerOn(0, 0);
+        QApplication::processEvents();
+        {
+            const auto before = view.zoom_factor();
+            const auto down = view.verticalScrollBar()->value();
+            const auto across = view.horizontalScrollBar()->value();
+            const QPointF at(300, 200);
+            QWheelEvent together(at, view.viewport()->mapToGlobal(at.toPoint()), QPoint(-30, -45), QPoint(-120, -180),
+                                 Qt::NoButton, Qt::NoModifier, Qt::ScrollUpdate, false);
+            QApplication::sendEvent(view.viewport(), &together);
+            QApplication::processEvents();
+            require(view.zoom_factor() == before, "Two fingers together do not zoom");
+            require(view.verticalScrollBar()->value() == down + 45
+                        && view.horizontalScrollBar()->value() == across + 30,
+                    "They move the diagram under them, both ways");
+
+            // A mouse wheel has neither pixels nor a phase, and still zooms.
+            QWheelEvent notch(at, view.viewport()->mapToGlobal(at.toPoint()), QPoint(), QPoint(0, 120),
+                              Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+            QApplication::sendEvent(view.viewport(), &notch);
+            QApplication::processEvents();
+            require(view.zoom_factor() > before, "A wheel notch still zooms in");
+        }
+
+        // A trackpad pinch zooms as the wheel does, in and out, within the same bounds.
+        view.actual_size();
+        const auto pinch = [&](qreal amount) {
+            QNativeGestureEvent gesture(Qt::ZoomNativeGesture, QPointingDevice::primaryPointingDevice(), 2,
+                                        QPointF(300, 200), QPointF(300, 200), QPointF(300, 200), amount, QPointF());
+            QApplication::sendEvent(view.viewport(), &gesture);
+            QApplication::processEvents();
+        };
+        pinch(0.5);
+        require(std::abs(view.zoom_factor() - 1.5) < 0.0001, "Spreading two fingers zooms in");
+        pinch(-0.5);
+        require(std::abs(view.zoom_factor() - 0.75) < 0.0001, "Pinching them zooms out");
+        for (int i = 0; i < 50; ++i) pinch(1.0);
+        require(std::abs(view.zoom_factor() - 3.0) < 0.0001, "A pinch is bounded like the wheel");
+        view.actual_size();
         for (int i = 0; i < 50; ++i) view.zoom_in();
         require(std::abs(view.zoom_factor() - 3.0) < 0.0001, "Maximum zoom bounded");
         for (int i = 0; i < 100; ++i) view.zoom_out();
@@ -1636,9 +2396,16 @@ int main(int argc, char** argv) {
         connector_shaping_tests();
         drag_to_connect_tests();
         connect_returns_to_select_tests();
+        entity_to_entity_creates_a_relationship_tests();
         lock_connector_tests();
         connector_route_tests();
         lock_participant_tests();
+        join_where_clicked_tests();
+        figure_tests();
+        recursive_loop_tests();
+        alignment_tests();
+        element_shape_preview_tests();
+        weak_and_identifying_drawing_tests();
         element_colour_tests();
         extend_selection_tests();
         picker_sample_tests();

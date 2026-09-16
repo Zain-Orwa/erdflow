@@ -1,6 +1,7 @@
 #include "domain/model.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <set>
 #include <type_traits>
@@ -29,11 +30,26 @@ template<class Visitor> auto visit_element(const Project& project, const Element
         } else if constexpr (std::is_same_v<T, RelationshipId>) {
             const auto found = project.relationships.find(id);
             return visitor(found == project.relationships.end() ? nullptr : &found->second);
+        } else if constexpr (std::is_same_v<T, PictureId>) {
+            const auto found = project.pictures.find(id);
+            return visitor(found == project.pictures.end() ? nullptr : &found->second);
+        } else if constexpr (std::is_same_v<T, NoteId>) {
+            const auto found = project.notes.find(id);
+            return visitor(found == project.notes.end() ? nullptr : &found->second);
         } else {
             const auto found = project.specializations.find(id);
             return visitor(found == project.specializations.end() ? nullptr : &found->second);
         }
     }, ref);
+}
+
+// The first bytes of a PNG or of a JPEG file. This is all the domain asks of
+// a picture: that its bytes could be an image at all.
+bool looks_like_image(const std::vector<std::uint8_t>& bytes) {
+    static constexpr std::array<std::uint8_t, 8> png{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a};
+    static constexpr std::array<std::uint8_t, 3> jpeg{0xff, 0xd8, 0xff};
+    return (bytes.size() >= png.size() && std::equal(png.begin(), png.end(), bytes.begin()))
+        || (bytes.size() >= jpeg.size() && std::equal(jpeg.begin(), jpeg.end(), bytes.begin()));
 }
 
 // Reject malformed UTF-8, NUL, and control characters that cannot safely be
@@ -74,6 +90,13 @@ bool empty_name(const std::string& value) {
 bool exists(const Project& project, const ElementRef& ref) {
     return visit_element(project, ref, [](const auto* element) { return element != nullptr; });
 }
+bool is_figure(const ElementRef& ref) {
+    return std::holds_alternative<PictureId>(ref) || std::holds_alternative<NoteId>(ref);
+}
+RelationshipKind relationship_kind(const Relationship& relationship) {
+    if (relationship.associative) return RelationshipKind::Associative;
+    return relationship.identifying ? RelationshipKind::Identifying : RelationshipKind::Regular;
+}
 ElementRef target_ref(const ParticipantTarget& target) {
     if (const auto* entity = std::get_if<EntityId>(&target)) return *entity;
     return std::get<RelationshipId>(target);
@@ -107,7 +130,8 @@ std::vector<Issue> validate(const Project& project) {
         issues.push_back({Severity::Warning, std::move(code), std::move(message), ref, false});
     };
     const auto elements = project.entities.size() + project.attributes.size()
-        + project.relationships.size() + project.specializations.size();
+        + project.relationships.size() + project.specializations.size()
+        + project.pictures.size() + project.notes.size();
     std::size_t participants = 0;
     for (const auto& [id, relationship] : project.relationships) {
         (void)id;
@@ -123,10 +147,13 @@ std::vector<Issue> validate(const Project& project) {
         if (!id.valid()) error("identity.invalid", "A persistent identifier is not a valid UUIDv7.", ref);
         if (!identifiers.insert(id).second) error("identity.duplicate", "Persistent identifiers must be globally unique within the project.", ref);
     };
-    auto text_fields = [&](const std::string& title, const std::string& details, std::optional<ElementRef> ref = {}) {
+    // A figure need not be named: a picture speaks for itself, and a note is
+    // often only its text. Everything in the model is asked for a name.
+    auto text_fields = [&](const std::string& title, const std::string& details, std::optional<ElementRef> ref = {},
+                           bool named = true) {
         if (title.size() > max_name_bytes || !valid_text(title, false))
             error("text.name.invalid", "Names must be valid UTF-8, contain no control characters, and fit in 512 bytes.", ref);
-        else if (empty_name(title)) warning("name.missing", "Give this element a name when you are ready.", ref);
+        else if (named && empty_name(title)) warning("name.missing", "Give this element a name when you are ready.", ref);
         if (details.size() > max_description_bytes || !valid_text(details, true))
             error("text.description.invalid", "Descriptions must be valid UTF-8 and fit in 16,384 bytes.", ref);
     };
@@ -158,6 +185,8 @@ std::vector<Issue> validate(const Project& project) {
         }
         if (attribute.owner && std::holds_alternative<SpecializationId>(*attribute.owner))
             error("attribute.owner.specialization", "A specialization holds no attributes of its own.", ref);
+        if (attribute.owner && is_figure(*attribute.owner))
+            error("attribute.owner.figure", "A picture or a note holds no attributes.", ref);
         if (attribute.kind == AttributeKind::Key && attribute.owner && std::holds_alternative<RelationshipId>(*attribute.owner))
             error("attribute.key.relationship", "A relationship-owned attribute cannot be an entity identifier.", ref);
     }
@@ -192,6 +221,8 @@ std::vector<Issue> validate(const Project& project) {
         text_fields(relationship.name, relationship.description, ref);
         if (relationship.participants.size() < 2)
             warning("relationship.participants.incomplete", "Connect at least two participant roles to complete this relationship.", ref);
+        if (relationship.associative && relationship.identifying)
+            error("relationship.kind.conflict", "A relationship is identifying or associative, not both.", ref);
         std::map<ElementRef, std::vector<std::string>> roles;
         for (const auto& participant : relationship.participants) {
             identity(participant.id.value, ref);
@@ -226,6 +257,25 @@ std::vector<Issue> validate(const Project& project) {
                 warning("relationship.recursive.roles", "Give repeated participants distinct role names to explain this recursive relationship.", ref);
         }
     }
+    // A weak entity is identified through an identifying relationship, so each
+    // side is asked about the other, as advice rather than as a fault: both
+    // are work in progress until they are connected.
+    std::set<EntityId> identified;
+    for (const auto& [id, relationship] : project.relationships) {
+        if (!relationship.identifying) continue;
+        bool weak_side = false;
+        for (const auto& participant : relationship.participants)
+            if (const auto* entity = std::get_if<EntityId>(&participant.target))
+                if (const auto found = project.entities.find(*entity); found != project.entities.end() && found->second.weak) {
+                    identified.insert(*entity);
+                    weak_side = true;
+                }
+        if (!weak_side)
+            warning("relationship.identifying.no_weak", "Connect the weak entity this relationship identifies.", ElementRef{id});
+    }
+    for (const auto& [id, entity] : project.entities)
+        if (entity.weak && !identified.contains(id))
+            warning("entity.weak.unidentified", "Connect this weak entity to an identifying relationship.", ElementRef{id});
     // Associative relationships can take part in one another, so the same
     // iterative colouring used for composite attributes guards against a cycle
     // that no traversal could terminate on.
@@ -327,6 +377,24 @@ std::vector<Issue> validate(const Project& project) {
             stack.pop_back();
         }
     }
+    for (const auto& [id, picture] : project.pictures) {
+        const ElementRef ref = id;
+        if (!project.layout.contains(ref)) error("layout.element.missing", "The picture has no canvas layout.", ref);
+        identity(id.value, ref);
+        if (picture.id != id) error("identity.key_mismatch", "The picture key and identifier differ.", ref);
+        text_fields(picture.name, picture.description, ref, false);
+        if (picture.image.empty() || !looks_like_image(picture.image))
+            error("picture.image.invalid", "A picture must hold a PNG or JPEG image.", ref);
+        else if (picture.image.size() > max_image_bytes)
+            error("picture.image.limit", "A picture's image must fit in 2 MiB.", ref);
+    }
+    for (const auto& [id, note] : project.notes) {
+        const ElementRef ref = id;
+        if (!project.layout.contains(ref)) error("layout.element.missing", "The note has no canvas layout.", ref);
+        identity(id.value, ref);
+        if (note.id != id) error("identity.key_mismatch", "The note key and identifier differ.", ref);
+        text_fields(note.name, note.description, ref, false);
+    }
     if (project.connectors.size() > max_elements) error("connector.limit", "The connector shapes exceed the element limit.");
     for (const auto& [ref, connector] : project.connectors) {
         // Report against the owning element so the canvas can highlight it; a
@@ -356,6 +424,11 @@ std::vector<Issue> validate(const Project& project) {
     for (const auto& [ref, colour] : project.colours) {
         (void)colour; // Every channel is already a byte, so only the reference can be wrong.
         if (!exists(project, ref)) error("colour.reference.missing", "A colour refers to a missing element.", ref);
+    }
+    if (project.transparency.size() > max_elements) error("transparency.limit", "The transparency entries exceed the element limit.");
+    for (const auto& [ref, percent] : project.transparency) {
+        if (!exists(project, ref)) error("transparency.reference.missing", "A transparency refers to a missing element.", ref);
+        if (percent > max_transparency) error("transparency.invalid", "Transparency is a percentage from 0 to 100.", ref);
     }
     if (project.layout.size() > max_elements) error("layout.limit", "The layout exceeds the element limit.");
     for (const auto& [ref, rect] : project.layout) {

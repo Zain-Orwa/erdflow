@@ -516,6 +516,223 @@ void connector_shapes_follow_their_link() {
     CHECK(!blocks(editor.project()));
 }
 
+// A link can be given its shape as it is made, in the same edit as the link,
+// so a connection drawn by clicking two points is one step to undo.
+void connections_can_be_pinned_as_they_are_made() {
+    TestIds ids;
+    Editor editor(ids);
+    const auto student = entity(editor, "Student");
+    const auto enrolled = relationship(editor, "Enrolled");
+    Connector shape;
+    shape.owner_anchor = 0.5;
+    shape.child_anchor = -2.0;
+    const auto side = editor.connect(enrolled, student, shape);
+    CHECK(side && side.participant);
+    CHECK(editor.project().connectors.at(ConnectorRef{*side.participant}) == shape);
+    CHECK(editor.undo_label() == "Connect participant");
+    CHECK(editor.undo());
+    CHECK(editor.project().connectors.empty());
+    CHECK(editor.project().relationships.at(enrolled).participants.empty());
+    CHECK(editor.redo());
+    CHECK(editor.project().connectors.size() == 1);
+    // An automatic shape stores nothing, as the plain call always did.
+    const auto plain = editor.connect(enrolled, student, Connector{});
+    CHECK(plain && plain.participant);
+    CHECK(!editor.project().connectors.contains(ConnectorRef{*plain.participant}));
+
+    // The same for an attribute's link, pinned at either end or both.
+    const auto born = attribute(editor, "Born");
+    Connector link;
+    link.child_anchor = 1.0;
+    CHECK(editor.set_attribute_owner(born, AttributeOwner{ElementRef{student}}, link));
+    CHECK(editor.project().connectors.at(ConnectorRef{born}) == link);
+    CHECK(editor.undo_label() == "Change attribute owner");
+    CHECK(editor.undo());
+    CHECK(!editor.project().attributes.at(born).owner);
+    CHECK(!editor.project().connectors.contains(ConnectorRef{born}));
+    // Detaching has no link to pin, so a shape given with it is not stored.
+    CHECK(editor.redo());
+    CHECK(editor.set_attribute_owner(born, std::nullopt, link));
+    CHECK(!editor.project().attributes.at(born).owner);
+    CHECK(editor.project().connectors.size() == 1);
+    CHECK(!blocks(editor.project()));
+}
+
+// A picture and a note are placed elements without being database objects:
+// named, described, moved, coloured, copied and deleted through the same
+// commands as everything else, owning nothing and connected to nothing.
+void pictures_and_notes_are_placed_like_elements() {
+    TestIds ids;
+    Editor editor(ids);
+    const std::vector<std::uint8_t> png{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13};
+    const auto placed = editor.create_picture("Map", {10, 20, 200, 120}, png);
+    CHECK(placed && placed.created && std::holds_alternative<PictureId>(*placed.created));
+    const auto picture = std::get<PictureId>(*placed.created);
+    CHECK(editor.undo_label() == "Insert picture");
+    CHECK(editor.project().pictures.at(picture).image == png);
+    CHECK((editor.project().layout.at(*placed.created) == Rect{10, 20, 200, 120}));
+    const auto noted = editor.create_note("Assumptions", {300, 20, 200, 120}, "Each student enrols each term.");
+    CHECK(noted && noted.created);
+    const auto note = std::get<NoteId>(*noted.created);
+    CHECK(editor.undo_label() == "Insert note");
+    CHECK(name(editor.project(), *noted.created) == "Assumptions");
+    CHECK(description(editor.project(), *noted.created) == "Each student enrols each term.");
+
+    CHECK(editor.rename(*placed.created, "Campus map"));
+    CHECK(editor.project().pictures.at(picture).name == "Campus map");
+    CHECK(editor.describe(*noted.created, "Grades are per enrolment."));
+    CHECK(editor.project().notes.at(note).description == "Grades are per enrolment.");
+    CHECK(editor.move({{*placed.created, {40, 60, 200, 120}}}));
+    CHECK((editor.project().layout.at(*placed.created) == Rect{40, 60, 200, 120}));
+    CHECK(editor.recolour({*noted.created}, Colour{255, 224, 138}));
+    CHECK((editor.project().colours.at(*noted.created) == Colour{255, 224, 138}));
+    const auto copy = editor.duplicate({*placed.created, *noted.created});
+    CHECK(copy);
+    CHECK(editor.project().pictures.size() == 2 && editor.project().notes.size() == 2);
+    for (const auto& [id, value] : editor.project().pictures) { (void)id; CHECK(value.image == png); }
+    CHECK(editor.erase({*placed.created, *noted.created}));
+    CHECK(editor.project().pictures.size() == 1 && editor.project().notes.size() == 1);
+    CHECK(!editor.project().colours.contains(*noted.created));
+    CHECK(!blocks(editor.project()));
+    CHECK(editor.undo());
+    CHECK(editor.project().pictures.contains(picture) && editor.project().notes.contains(note));
+    CHECK(editor.project().colours.contains(*noted.created));
+
+    // How see-through a surface is goes with it: copied, dropped on delete and
+    // restored by undo, over whatever colour it has. Zero stores nothing.
+    CHECK(editor.set_transparency({*noted.created, *placed.created}, 45));
+    CHECK(editor.undo_label() == "Set transparency");
+    CHECK(editor.project().transparency.at(*noted.created) == 45 && editor.project().transparency.at(*placed.created) == 45);
+    CHECK(!editor.set_transparency({*noted.created}, 101));
+    const auto faded_copy = editor.duplicate({*noted.created});
+    CHECK(faded_copy && editor.project().transparency.at(*faded_copy.created) == 45);
+    CHECK(editor.erase({*faded_copy.created}));
+    CHECK(!editor.project().transparency.contains(*faded_copy.created));
+    CHECK(!blocks(editor.project()));
+    CHECK(editor.set_transparency({*noted.created, *placed.created}, 0));
+    CHECK(editor.project().transparency.empty());
+    CHECK(editor.undo());
+    CHECK(editor.project().transparency.size() == 2);
+    CHECK(editor.redo());
+
+    // Neither is in the model, so no attribute belongs to one.
+    const auto born = attribute(editor, "Born");
+    CHECK(!editor.set_attribute_owner(born, AttributeOwner{*noted.created}));
+    CHECK(!editor.set_attribute_owner(born, AttributeOwner{*placed.created}));
+    CHECK(!editor.project().attributes.at(born).owner);
+    // An unnamed figure is not a finding: a picture speaks for itself.
+    CHECK(editor.rename(*noted.created, ""));
+    const auto issues = validate(editor.project());
+    CHECK(std::none_of(issues.begin(), issues.end(), [&](const Issue& issue) {
+        return issue.code == "name.missing" && issue.element == std::optional<ElementRef>{*noted.created};
+    }));
+    // A picture holds an image or nothing at all: bytes that could not be one
+    // are refused, and so is more than a project file has room for.
+    CHECK(!editor.create_picture("Not an image", {0, 0, 10, 10}, {'h', 'e', 'l', 'l', 'o'}));
+    CHECK(!editor.create_picture("Empty", {0, 0, 10, 10}, {}));
+    std::vector<std::uint8_t> huge(max_image_bytes + 1, 0);
+    std::copy(png.begin(), png.end(), huge.begin());
+    CHECK(!editor.create_picture("Huge", {0, 0, 10, 10}, huge));
+    CHECK(editor.project().pictures.size() == 2);
+    CHECK(!blocks(editor.project()));
+}
+
+// Relating two entities creates the relationship and both of its sides as one
+// edit, so it is one step of history rather than three.
+void relating_two_entities_is_one_edit() {
+    TestIds ids;
+    Editor editor(ids);
+    const auto student = entity(editor, "Student");
+    const auto course = entity(editor, "Course");
+    const auto revision = editor.revision();
+    const auto made = editor.relate(student, course, Rect{0, 0, 180, 100}, "Enrolled");
+    CHECK(made && made.created);
+    CHECK(editor.revision() == revision + 1);
+    CHECK(editor.undo_label() == "Relate entities");
+    const auto id = std::get<RelationshipId>(*made.created);
+    const auto& relationship = editor.project().relationships.at(id);
+    CHECK(relationship.name == "Enrolled");
+    CHECK(relationship.participants.size() == 2);
+    CHECK(relationship.participants.front().target == ParticipantTarget{student});
+    CHECK(relationship.participants.back().target == ParticipantTarget{course});
+    // Every identity is fresh and distinct, participants included.
+    CHECK(relationship.participants.front().id != relationship.participants.back().id);
+    CHECK((editor.project().layout.at(*made.created) == Rect{0, 0, 180, 100}));
+    CHECK(!blocks(editor.project()));
+    CHECK(editor.undo());
+    CHECK(editor.project().relationships.empty());
+    CHECK(editor.project().entities.size() == 2);
+    CHECK(editor.redo());
+    CHECK(editor.project().relationships.size() == 1);
+
+    // Either side may be pinned in the same edit, and a missing entity is refused.
+    Connector pinned;
+    pinned.child_anchor = 1.25;
+    const auto second = editor.relate(student, course, Rect{0, 300, 180, 100}, "Advises", pinned, Connector{});
+    CHECK(second && second.created);
+    const auto& sides = editor.project().relationships.at(std::get<RelationshipId>(*second.created)).participants;
+    CHECK(editor.project().connectors.at(ConnectorRef{sides.front().id}).child_anchor == 1.25);
+    CHECK(!editor.project().connectors.contains(ConnectorRef{sides.back().id}));
+    CHECK(editor.erase({ElementRef{course}}));
+    CHECK(!editor.relate(student, course, Rect{0, 0, 180, 100}));
+}
+
+// A weak entity and the identifying relationship it is identified through
+// are two flags that undo, copy and validate like the rest of the model.
+void weak_entities_and_identifying_relationships() {
+    TestIds ids;
+    Editor editor(ids);
+    const auto employee = entity(editor, "Employee");
+    const auto dependant = entity(editor, "Dependant");
+    const auto has = relationship(editor, "Has");
+    CHECK(!editor.project().entities.at(dependant).weak);
+    CHECK(relationship_kind(editor.project().relationships.at(has)) == RelationshipKind::Regular);
+
+    CHECK(editor.set_entity_weak(dependant, true));
+    CHECK(editor.undo_label() == "Change entity kind");
+    CHECK(editor.project().entities.at(dependant).weak);
+    auto issues = validate(editor.project());
+    CHECK(std::any_of(issues.begin(), issues.end(), [](const Issue& issue) { return issue.code == "entity.weak.unidentified"; }));
+
+    CHECK(editor.set_relationship_kind(has, RelationshipKind::Identifying));
+    CHECK(editor.undo_label() == "Change relationship kind");
+    CHECK(editor.project().relationships.at(has).identifying && !editor.project().relationships.at(has).associative);
+    issues = validate(editor.project());
+    CHECK(std::any_of(issues.begin(), issues.end(), [](const Issue& issue) { return issue.code == "relationship.identifying.no_weak"; }));
+    CHECK(editor.connect(has, employee) && editor.connect(has, dependant));
+    issues = validate(editor.project());
+    CHECK(std::none_of(issues.begin(), issues.end(), [](const Issue& issue) {
+        return issue.code == "relationship.identifying.no_weak" || issue.code == "entity.weak.unidentified";
+    }));
+    CHECK(!blocks(editor.project()));
+
+    // The kinds are exclusive: making an identifying relationship associative
+    // through the older command is refused rather than leaving it both.
+    CHECK(!editor.set_associative(has, true));
+    CHECK(editor.project().relationships.at(has).identifying);
+    // Through the kind, one replaces the other in a single edit, with the
+    // body resized as an associative entity is.
+    CHECK(editor.set_relationship_kind(has, RelationshipKind::Associative, Rect{0, 0, 160, 80}));
+    CHECK(relationship_kind(editor.project().relationships.at(has)) == RelationshipKind::Associative);
+    CHECK((editor.project().layout.at(ElementRef{has}) == Rect{0, 0, 160, 80}));
+    CHECK(editor.undo());
+    CHECK(relationship_kind(editor.project().relationships.at(has)) == RelationshipKind::Identifying);
+    CHECK(editor.set_relationship_kind(has, RelationshipKind::Regular));
+    CHECK(!editor.project().relationships.at(has).identifying && !editor.project().relationships.at(has).associative);
+    // Setting what is already set is not an edit.
+    const auto revision = editor.revision();
+    CHECK(editor.set_entity_weak(dependant, true));
+    CHECK(editor.set_relationship_kind(has, RelationshipKind::Regular));
+    CHECK(editor.revision() == revision);
+    // A copy is as weak as its original.
+    const auto copy = editor.duplicate({ElementRef{dependant}});
+    CHECK(copy && editor.project().entities.at(std::get<EntityId>(*copy.created)).weak);
+    CHECK(editor.set_entity_weak(dependant, false));
+    CHECK(!editor.project().entities.at(dependant).weak);
+    CHECK(editor.undo());
+    CHECK(editor.project().entities.at(dependant).weak);
+}
+
 // Connector shapes are validated like any other persisted reference.
 void hostile_connector_shapes_are_rejected() {
     TestIds ids;
@@ -946,6 +1163,10 @@ int main() {
         {"hostile model validation", hostile_models_are_rejected},
         {"limits, deep ownership and compact history", limits_deep_ownership_and_compact_history},
         {"connector shapes follow their link", connector_shapes_follow_their_link},
+        {"connections can be pinned as they are made", connections_can_be_pinned_as_they_are_made},
+        {"pictures and notes are placed like elements", pictures_and_notes_are_placed_like_elements},
+        {"relating two entities is one edit", relating_two_entities_is_one_edit},
+        {"weak entities and identifying relationships", weak_entities_and_identifying_relationships},
         {"hostile connector shapes", hostile_connector_shapes_are_rejected},
         {"associative relationships act as entities", associative_relationships_act_as_entities},
         {"associative graph branches and cycles", associative_graph_branches_and_cycles},

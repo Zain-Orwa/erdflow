@@ -5,7 +5,10 @@
 #include "application/project_store.hpp"
 
 #include <QMainWindow>
+#include <QPointF>
 #include <map>
+#include <optional>
+#include <vector>
 
 class QAction;
 class QDockWidget;
@@ -17,6 +20,8 @@ class QStandardItemModel;
 class QTreeView;
 
 namespace erdflow::desktop {
+
+class Ribbon;
 
 class MainWindow final : public QMainWindow {
 public:
@@ -33,8 +38,15 @@ public:
     void set_icon_mode(IconMode mode);
     [[nodiscard]] IconMode icon_mode() const { return icon_mode_; }
     void load_example();
+    // Places a picture read from a file, centred on the given canvas point or
+    // else in the middle of the view. The file's own bytes are kept when it is
+    // a PNG or JPEG of modest size; anything else is re-encoded, scaled down if
+    // it is large. False if it could not be read.
+    bool insert_picture(const QString& path, std::optional<QPointF> at = {});
     [[nodiscard]] const application::Editor& editor() const { return editor_; }
     [[nodiscard]] DiagramView* canvas() const { return canvas_; }
+    // The row of tabs above the tool row: File, Home, Insert, Design, View, Help.
+    [[nodiscard]] Ribbon* ribbon() const { return ribbon_; }
 
 protected:
     void closeEvent(QCloseEvent* event) override;
@@ -89,6 +101,11 @@ private:
     QAction* notation_separator_ = nullptr;
     bool fitting_ = false;
     QToolButton* theme_button_ = nullptr;
+    QAction* full_view_ = nullptr;
+    // The panels put away by full view, so exactly those come back. Model
+    // checks is often closed already, and full view must not open it.
+    std::vector<QDockWidget*> hidden_panels_;
+    Ribbon* ribbon_ = nullptr;
     std::map<QString, domain::ElementRef> references_;
     std::vector<domain::ElementRef> selection_;
     QString path_;
@@ -114,6 +131,10 @@ private:
     bool save(bool choose_path = false);
     void new_project();
     void open_dialog();
+    // Hides the panels and gives the whole window to the diagram, or brings
+    // back exactly the panels that were showing when it was turned on.
+    void set_full_view(bool on);
+    void insert_picture_dialog(std::optional<QPointF> at = {});
 };
 
 } // namespace erdflow::desktop

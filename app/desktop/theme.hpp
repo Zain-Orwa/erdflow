@@ -43,6 +43,18 @@ struct Theme {
 // like having selected it.
 [[nodiscard]] QColor hover_surface(const Theme& colors);
 
+// The surface a note is drawn on: the canvas carried a little way towards the
+// theme's warning colour, which is the amber every palette has, so a note
+// reads as the slip it stands for without a colour of its own in the table.
+// Its text is chosen against this surface, as it is for a chosen colour.
+[[nodiscard]] QColor note_surface(const Theme& colors);
+
+// A paint laid over a surface by its own alpha: what the eye sees where a
+// see-through colour is drawn on the canvas, and so what a label over it, or
+// a panel matching it, has to be chosen against.
+[[nodiscard]] QColor over(const QColor& surface, const QColor& paint);
+
+
 const std::array<Theme, theme_count>& themes();
 const Theme& theme(ThemeId id);
 ThemeId theme_from_key(const QString& key);

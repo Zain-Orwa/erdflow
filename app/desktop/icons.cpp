@@ -269,6 +269,65 @@ void draw(QPainter& painter, Glyph glyph, const Theme& colors, qreal side) {
         painter.drawPath(body);
         break;
     }
+    case Glyph::Picture: {
+        // A framed landscape, which is the picture everyone draws for a picture.
+        painter.setBrush(depth(box, colors.base));
+        painter.setPen(outline(colors.muted, weight * 0.85));
+        painter.drawRoundedRect(box, 2, 2);
+        QPainterPath hills(QPointF(box.left(), box.bottom()));
+        hills.lineTo(box.left() + box.width() * 0.36, box.top() + box.height() * 0.42);
+        hills.lineTo(box.left() + box.width() * 0.56, box.top() + box.height() * 0.68);
+        hills.lineTo(box.left() + box.width() * 0.72, box.top() + box.height() * 0.52);
+        hills.lineTo(box.right(), box.bottom());
+        hills.closeSubpath();
+        painter.setBrush(depth(box, accent));
+        painter.setPen(outline(accent.darker(140), weight * 0.7));
+        painter.drawPath(hills);
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(colors.warning);
+        painter.drawEllipse(QPointF(box.right() - box.width() * 0.26, box.top() + box.height() * 0.28),
+                            weight * 1.2, weight * 1.2);
+        break;
+    }
+    case Glyph::FullView: {
+        // A window with its side panels drawn as empty margins and its middle
+        // filled: what is left when the panels are put away.
+        painter.setBrush(Qt::NoBrush);
+        painter.setPen(outline(colors.muted, weight * 0.85));
+        painter.drawRoundedRect(box, 2, 2);
+        const auto margin = box.width() * 0.22;
+        const QRectF middle(box.left() + margin, box.top() + weight * 0.5,
+                            box.width() - margin * 2, box.height() - weight);
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(depth(box, accent));
+        painter.drawRect(middle);
+        painter.setPen(outline(colors.muted, weight * 0.7));
+        painter.drawLine(middle.topLeft(), middle.bottomLeft());
+        painter.drawLine(middle.topRight(), middle.bottomRight());
+        break;
+    }
+    case Glyph::Note: {
+        // A slip with a folded corner and two lines of writing on it.
+        const auto fold = box.width() * 0.28;
+        const QRectF slip(box.left() + box.width() * 0.08, box.top(), box.width() * 0.84, box.height());
+        QPainterPath sheet(QPointF(slip.left(), slip.top()));
+        sheet.lineTo(slip.right() - fold, slip.top());
+        sheet.lineTo(slip.right(), slip.top() + fold);
+        sheet.lineTo(slip.right(), slip.bottom());
+        sheet.lineTo(slip.left(), slip.bottom());
+        sheet.closeSubpath();
+        painter.setBrush(depth(box, note_surface(colors)));
+        painter.setPen(outline(colors.warning.darker(115), weight * 0.85));
+        painter.drawPath(sheet);
+        painter.drawLine(QPointF(slip.right() - fold, slip.top()), QPointF(slip.right() - fold, slip.top() + fold));
+        painter.drawLine(QPointF(slip.right() - fold, slip.top() + fold), QPointF(slip.right(), slip.top() + fold));
+        painter.setPen(outline(ink, weight * 0.7));
+        painter.drawLine(QPointF(slip.left() + slip.width() * 0.22, centre.y()),
+                         QPointF(slip.right() - slip.width() * 0.22, centre.y()));
+        painter.drawLine(QPointF(slip.left() + slip.width() * 0.22, centre.y() + box.height() * 0.2),
+                         QPointF(slip.left() + slip.width() * 0.55, centre.y() + box.height() * 0.2));
+        break;
+    }
     }
 }
 
@@ -303,6 +362,9 @@ QString icon_name(Glyph glyph) {
     case Glyph::Rename: return QStringLiteral("properties");
     case Glyph::Delete: return QStringLiteral("delete");
     case Glyph::Theme: return QStringLiteral("theme");
+    case Glyph::Picture: return QStringLiteral("picture");
+    case Glyph::Note: return QStringLiteral("note");
+    case Glyph::FullView: return QStringLiteral("full-view");
     }
     return QStringLiteral("select");
 }

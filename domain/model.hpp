@@ -27,9 +27,13 @@ using AttributeId = Id<struct AttributeTag>;
 using RelationshipId = Id<struct RelationshipTag>;
 using SpecializationId = Id<struct SpecializationTag>;
 using ParticipantId = Id<struct ParticipantTag>;
+using PictureId = Id<struct PictureTag>;
+using NoteId = Id<struct NoteTag>;
 // A specialization is a placed element of its own: it carries the ISA triangle
 // on the canvas and the constraints that decide how it converts to relations.
-using ElementRef = std::variant<EntityId, AttributeId, RelationshipId, SpecializationId>;
+// A picture and a note are placed elements too, though not database objects:
+// see Picture below for what that means.
+using ElementRef = std::variant<EntityId, AttributeId, RelationshipId, SpecializationId, PictureId, NoteId>;
 // An attribute belongs to an entity, a relationship, or a composite attribute;
 // never to a specialization, which owns no data of its own.
 using AttributeOwner = ElementRef;
@@ -106,6 +110,10 @@ struct Entity {
     EntityId id;
     std::string name;
     std::string description;
+    // A weak entity has no key of its own: it is identified through an
+    // identifying relationship with its owner, and its key attribute is only
+    // a partial key. Drawn with a double border.
+    bool weak = false;
     auto operator<=>(const Entity&) const = default;
 };
 struct Attribute {
@@ -141,9 +149,16 @@ struct Relationship {
     // An associative relationship carries its own identity and may participate
     // in further relationships. It is drawn as a diamond inside a rectangle.
     bool associative = false;
+    // An identifying relationship is the one through which a weak entity is
+    // identified. Drawn as a double diamond. A relationship is identifying or
+    // associative, never both.
+    bool identifying = false;
     std::vector<Participant> participants;
     auto operator<=>(const Relationship&) const = default;
 };
+// The three kinds a relationship can be, read off its two flags.
+enum class RelationshipKind { Regular, Identifying, Associative };
+[[nodiscard]] RelationshipKind relationship_kind(const Relationship& relationship);
 struct Specialization {
     SpecializationId id;
     std::string name;
@@ -157,6 +172,31 @@ struct Specialization {
     Completeness completeness = Completeness::Partial;
     auto operator<=>(const Specialization&) const = default;
 };
+// Visual aids placed on the canvas. Neither is a database object: nothing is
+// converted from them, no attribute belongs to them and no line may join them,
+// and validation asks no more of them than that they are well formed. They are
+// part of the drawing, though, so they are placed, moved, coloured, saved and
+// undone exactly as everything else on it is.
+//
+// A picture holds the encoded bytes of an image, PNG or JPEG, as the file gave
+// them. The domain cannot decode an image and does not try: decoding is the
+// presentation's business, and the domain only refuses bytes that could not be
+// one, or more of them than a project file can hold.
+struct Picture {
+    PictureId id;
+    std::string name;
+    std::string description;
+    std::vector<std::uint8_t> image;
+    auto operator<=>(const Picture&) const = default;
+};
+// A note is free text: its name is drawn as a title and its description as
+// the text beneath, which is why it has the same two fields as everything else.
+struct Note {
+    NoteId id;
+    std::string name;
+    std::string description;
+    auto operator<=>(const Note&) const = default;
+};
 struct Project {
     ProjectId id;
     std::string name = "Untitled";
@@ -164,6 +204,8 @@ struct Project {
     std::map<AttributeId, Attribute> attributes;
     std::map<RelationshipId, Relationship> relationships;
     std::map<SpecializationId, Specialization> specializations;
+    std::map<PictureId, Picture> pictures;
+    std::map<NoteId, Note> notes;
     std::map<ElementRef, Rect> layout;
     // How the user has shaped each connector they have touched. An absent entry
     // means the connector is bent and joined entirely automatically.
@@ -172,6 +214,11 @@ struct Project {
     // drawn in whatever colour the active theme gives its kind, which is what
     // keeps a document that has never been recoloured following the theme.
     std::map<ElementRef, Colour> colours;
+    // How see-through each element's surface is, in percent: 0 is solid and
+    // 100 leaves only the outline and whatever lies behind. It applies to
+    // whichever colour the surface has, chosen or the theme's, which is why
+    // it is kept apart from the colour. An absent entry means solid.
+    std::map<ElementRef, std::uint8_t> transparency;
     auto operator<=>(const Project&) const = default;
 };
 
@@ -186,6 +233,9 @@ struct Issue {
 
 [[nodiscard]] Uuid uuid(const ElementRef& ref);
 [[nodiscard]] bool exists(const Project& project, const ElementRef& ref);
+// A picture or a note: on the canvas, but not in the database model. Nothing
+// connects to one and no attribute belongs to one.
+[[nodiscard]] bool is_figure(const ElementRef& ref);
 // A connector exists while the record that draws it does: an owned attribute,
 // or a participant still listed by its relationship.
 [[nodiscard]] bool connector_exists(const Project& project, const ConnectorRef& ref);
@@ -199,5 +249,10 @@ inline constexpr std::size_t max_elements = 10000;
 inline constexpr std::size_t max_name_bytes = 512;
 inline constexpr std::size_t max_description_bytes = 16384;
 inline constexpr double max_coordinate = 100000;
+// A picture's bytes, before the text encoding a project file gives them. Kept
+// well inside the file limit, so a diagram can carry a few pictures and still
+// have room for the model.
+inline constexpr std::size_t max_image_bytes = 2U * 1024U * 1024U;
+inline constexpr std::uint8_t max_transparency = 100;
 
 } // namespace erdflow::domain

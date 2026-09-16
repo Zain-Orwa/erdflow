@@ -4,9 +4,11 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QCheckBox>
 #include <QComboBox>
 #include <QDockWidget>
 #include <QFile>
+#include <QImage>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
@@ -27,6 +29,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <map>
+#include <set>
 #include <stdexcept>
 
 namespace {
@@ -136,6 +139,127 @@ int main(int argc, char** argv) {
         // in the panel: the panel also carries the relationship's own controls.
         auto cards = child<QDockWidget>(window, "propertiesDock")->findChildren<QWidget*>("participantCard");
         require(cards.size() == 2, "Relationship renders two independent participant forms");
+
+        // A card names its side in the colour that element is drawn in, and
+        // gives each thing it asks about a bold hue of its own, so the rows
+        // are told apart at a glance rather than read in order.
+        {
+            auto* first_card = cards.front();
+            auto* title = first_card->findChild<QWidget*>("cardTitle");
+            require(title != nullptr, "A card names its side");
+            const auto display_name_of_relationship =
+                QString::fromStdString(domain::name(window.editor().project(), domain::ElementRef{relationship}));
+            require(!display_name_of_relationship.isEmpty(), "The relationship has a name to show");
+            const auto& colors = desktop::theme(window.canvas()->theme_id());
+            const auto tag = [&](QWidget* row, const char* named) {
+                auto* found = row->findChild<QWidget*>(QString::fromLatin1(named));
+                require(found != nullptr, "Each end of a card is shown as its own shape");
+                return found;
+            };
+            auto* side_tag = tag(title, "cardShape");
+            auto* toward_tag = tag(title, "cardTowardShape");
+            require(toward_tag->toolTip() == display_name_of_relationship,
+                    "The far one being the relationship itself");
+            require(!side_tag->toolTip().isEmpty() && side_tag->toolTip() != toward_tag->toolTip(),
+                    "And the near one the element taking part in it");
+            require(title->findChild<QLabel*>("cardArrow") != nullptr,
+                    "With a mark between them that says it is joined to it");
+
+            // Each name is written inside its element's own shape, in that
+            // element's colour, rather than in a box beside a picture of one.
+            const auto shows = [](QWidget* widget, const QColor& wanted) {
+                const auto drawn = widget->grab().toImage().convertToFormat(QImage::Format_ARGB32);
+                for (int y = 0; y < drawn.height(); ++y)
+                    for (int x = 0; x < drawn.width(); ++x) {
+                        const auto pixel = drawn.pixelColor(x, y);
+                        if (pixel.alpha() > 200 && std::abs(pixel.red() - wanted.red()) < 12
+                            && std::abs(pixel.green() - wanted.green()) < 12
+                            && std::abs(pixel.blue() - wanted.blue()) < 12) return true;
+                    }
+                return false;
+            };
+            require(shows(side_tag, colors.entity_fill), "The side wears the entity's own colour");
+            require(shows(toward_tag, colors.relationship_fill), "And the relationship its own");
+
+            // A recoloured entity carries its new colour into the card.
+            const auto side = window.editor().project().relationships.at(relationship).participants.front().target;
+            require(bool(editor.recolour({domain::target_ref(side)}, domain::Colour{0x9E, 0xE8, 0xC4})), "Colour that entity");
+            // An edit made straight on the editor does not pass through the
+            // window, so the canvas is brought up to date and the panel asked
+            // to rebuild, which is the order every edit through the window
+            // follows: the shapes the panel shows are the canvas's own.
+            window.canvas()->synchronize();
+            window.canvas()->select_elements({});
+            window.canvas()->select_elements({relationship});
+            settle();
+            cards = child<QDockWidget>(window, "propertiesDock")->findChildren<QWidget*>("participantCard");
+            title = cards.front()->findChild<QWidget*>("cardTitle");
+            require(title && shows(tag(title, "cardShape"), QColor(0x9E, 0xE8, 0xC4)),
+                    "The card follows the element's own colour");
+            child<QAction>(window, "undoCommand")->trigger();
+            settle();
+            cards = child<QDockWidget>(window, "propertiesDock")->findChildren<QWidget*>("participantCard");
+            require(cards.size() == 2, "The cards are still there after the undo");
+
+            const auto labels = cards.front()->findChildren<QLabel*>("fieldLabel");
+            require(labels.size() == 3, "Its three questions are each named");
+            std::set<QString> inks;
+            for (auto* label : labels) {
+                require(label->styleSheet().contains("font-weight: 700"), "Each name is bold");
+                inks.insert(label->styleSheet());
+            }
+            require(inks.size() == 1, "All in one ink: the words tell them apart, so colour is left to the element");
+        }
+
+        // The rest of the panel is named the same way: every field label bold
+        // and in one ink, with the colour kept for the heading, which wears
+        // the colour its element is drawn in on the diagram.
+        {
+            auto* properties = child<QDockWidget>(window, "propertiesDock");
+            const auto ink_of = [](QLabel* label) {
+                return label->styleSheet().section("color: ", 1, 1).section(';', 0, 0).trimmed();
+            };
+            const auto label_named = [&](const QString& text) -> QLabel* {
+                for (auto* label : properties->findChildren<QLabel*>("fieldLabel"))
+                    if (label->text() == text) return label;
+                return nullptr;
+            };
+            require(label_named("Name") && label_named("Kind") && label_named("Ratio"),
+                    "A relationship names its Name, Kind and Ratio");
+            std::set<QString> panel_inks;
+            for (auto* label : properties->findChildren<QLabel*>("fieldLabel")) {
+                require(label->styleSheet().contains("font-weight: 700"), "Every label is bold");
+                panel_inks.insert(ink_of(label));
+            }
+            require(panel_inks.size() == 1, "And every one of them is written in the same ink");
+            require(*panel_inks.begin() == desktop::theme(window.canvas()->theme_id()).text.name(),
+                    "Which is the theme's own");
+
+            // The heading names the kind being edited and is left to the
+            // theme, so it reads as a title rather than as a second copy of
+            // the colour the name field already carries.
+            auto* heading = child<QLabel>(window, "propertyHeading");
+            require(heading->text() == "Relationship", "The heading names the kind being edited");
+            require(heading->styleSheet().isEmpty(), "And is left to the theme");
+
+            // The labels follow a theme change without having to be reselected.
+            child<QAction>(window, "themeplain")->trigger();
+            settle();
+            std::set<QString> grey_inks;
+            for (auto* label : properties->findChildren<QLabel*>("fieldLabel")) grey_inks.insert(ink_of(label));
+            require(grey_inks.size() == 1
+                        && *grey_inks.begin() == desktop::theme(desktop::ThemeId::Plain).text.name(),
+                    "They are rewritten in the new theme's ink");
+            child<QAction>(window, "themeofficelight")->trigger();
+            settle();
+            require(child<QDockWidget>(window, "propertiesDock")->findChildren<QLabel*>("fieldLabel").size() > 1
+                        && label_named("Kind") != nullptr,
+                    "And the panel comes back with the theme");
+            // Changing the theme rebuilds the panel, so anything held from
+            // before it is gone: the cards are found again for what follows.
+            cards = properties->findChildren<QWidget*>("participantCard");
+            require(cards.size() == 2, "The two cards are still shown");
+        }
         QList<QComboBox*> combos;
         for (auto* card : cards) combos.append(card->findChildren<QComboBox*>());
         require(combos.size() == 4, "Each side carries its own cardinality and participation");
@@ -291,20 +415,27 @@ int main(int argc, char** argv) {
 
         // The line style sits on the Connect button's own arrow, with each
         // option drawn rather than only named.
-        require(window.canvas()->line_style() == desktop::LineStyle::Curved, "Connectors start curved");
+        require(window.canvas()->line_style() == desktop::LineStyle::Elbow,
+                "Lines break at right angles unless told otherwise");
         auto* straight = child<QAction>(window, "lineStraight");
         auto* curved = child<QAction>(window, "lineCurved");
-        require(!straight->icon().isNull() && !curved->icon().isNull(), "Each line style is drawn, not just named");
-        require(curved->isChecked() && !straight->isChecked(), "The menu marks the style in use");
+        auto* elbow = child<QAction>(window, "lineElbow");
+        require(!straight->icon().isNull() && !curved->icon().isNull() && !elbow->icon().isNull(),
+                "Each line style is drawn, not just named");
+        require(elbow->isChecked() && !curved->isChecked() && !straight->isChecked(),
+                "The menu marks the style in use");
         straight->trigger();
         settle();
         require(window.canvas()->line_style() == desktop::LineStyle::Straight, "The menu changes the line style");
-        require(straight->isChecked() && !curved->isChecked(), "The mark follows the choice");
+        require(straight->isChecked() && !curved->isChecked() && !elbow->isChecked(), "The mark follows the choice");
         // Choosing a style must not silently change which tool is active.
         const auto tool_before = window.canvas()->tool();
         curved->trigger();
         settle();
-        require(window.canvas()->line_style() == desktop::LineStyle::Curved, "And back again");
+        require(window.canvas()->line_style() == desktop::LineStyle::Curved, "And the other two are offered too");
+        elbow->trigger();
+        settle();
+        require(window.canvas()->line_style() == desktop::LineStyle::Elbow, "And back again");
         require(window.canvas()->tool() == tool_before, "Choosing a line style leaves the active tool alone");
         // The button still behaves like a tool, including its double-click lock.
         auto* connect_button = child<QToolButton>(window, "connectButton");
@@ -372,24 +503,42 @@ int main(int argc, char** argv) {
             const auto entity = window.editor().project().entities.begin()->first;
             window.canvas()->select_elements({domain::ElementRef{entity}});
             settle();
-            // The name field wears the colour the element is drawn with, even
-            // when that colour came from the theme rather than from a choice.
-            const auto entity_fill = desktop::theme(window.canvas()->theme_id()).entity_fill.name();
-            require(child<QLineEdit>(window, "elementName")->styleSheet().contains(entity_fill),
-                    "The name box wears the element's theme colour");
+            // The name is written inside the shape the element is drawn as, so
+            // the colour is carried by that shape rather than by a plain box.
+            const auto& palette = desktop::theme(window.canvas()->theme_id());
+            const auto shape_shows = [](QWidget* widget, const QColor& wanted) {
+                const auto drawn = widget->grab().toImage().convertToFormat(QImage::Format_ARGB32);
+                for (int y = 0; y < drawn.height(); ++y)
+                    for (int x = 0; x < drawn.width(); ++x) {
+                        const auto pixel = drawn.pixelColor(x, y);
+                        if (pixel.alpha() > 200 && std::abs(pixel.red() - wanted.red()) < 12
+                            && std::abs(pixel.green() - wanted.green()) < 12
+                            && std::abs(pixel.blue() - wanted.blue()) < 12) return true;
+                    }
+                return false;
+            };
+            require(shape_shows(child<QWidget>(window, "elementShape"), palette.entity_fill),
+                    "The name is written in a shape wearing the element's theme colour");
+            require(child<QLineEdit>(window, "elementName")->parent() == child<QWidget>(window, "elementShape"),
+                    "And the name is inside that shape rather than beside it");
             // The heading says what kind of thing this is and stays a title.
             require(child<QLabel>(window, "propertyHeading")->styleSheet().isEmpty(),
                     "The kind heading is left to the theme");
 
             require(bool(editor.recolour({domain::ElementRef{entity}}, domain::Colour{0x20, 0x20, 0x30})),
                     "Colour the entity a dark shade");
+            // The shapes the panel shows are the canvas's own, so the canvas is
+            // brought up to date first, which is the order every edit made
+            // through the window follows.
+            window.canvas()->synchronize();
             window.canvas()->select_elements({});
             settle();
             window.canvas()->select_elements({domain::ElementRef{entity}});
             settle();
-            const auto sheet = child<QLineEdit>(window, "elementName")->styleSheet();
-            require(sheet.contains("#202030"), "The name box is filled with the element's own colour");
-            require(sheet.contains("#ffffff"), "And written in ink chosen against it, not against the theme");
+            require(shape_shows(child<QWidget>(window, "elementShape"), QColor(0x20, 0x20, 0x30)),
+                    "The shape is filled with the element's own colour");
+            require(child<QLineEdit>(window, "elementName")->styleSheet().contains("#ffffff"),
+                    "And the name written in ink chosen against it, not against the theme");
             require(child<QLabel>(window, "propertyHeading")->styleSheet().isEmpty(),
                     "The heading still carries no colour of the element's");
             require(bool(editor.undo()), "Undo the colour");
@@ -464,15 +613,21 @@ int main(int argc, char** argv) {
             settle();
             require(bar->toolButtonStyle() == Qt::ToolButtonTextBesideIcon, "A wide window shows the names");
             require(picker->isVisible(), "And the notation picker with them");
+            auto* check_button = qobject_cast<QToolButton*>(bar->widgetForAction(child<QAction>(window, "checkModel")));
+            require(check_button && check_button->toolButtonStyle() == Qt::ToolButtonTextBesideIcon,
+                    "And names the corner controls too");
             const auto wide = bar->iconSize().width();
 
             // The names stay as long as they can: a tool's lock mark hangs on
-            // its name. The icons shrink first, and the picker goes before the
-            // names do.
+            // its name. The icons shrink first, the corner controls give up
+            // their words, and the picker goes, all before the names do.
             window.resize(1300, 820);
             settle();
             require(bar->toolButtonStyle() == Qt::ToolButtonTextBesideIcon, "A tighter one keeps the names");
             require(bar->iconSize().width() < wide, "And gives up some of the icons' size instead");
+            require(check_button->toolButtonStyle() == Qt::ToolButtonIconOnly
+                        && child<QToolButton>(window, "themeButton")->toolButtonStyle() == Qt::ToolButtonIconOnly,
+                    "The corner controls have given up their words before any tool did");
 
             window.resize(700, 620);
             settle();
@@ -485,6 +640,51 @@ int main(int argc, char** argv) {
             require(bar->toolButtonStyle() == Qt::ToolButtonTextBesideIcon, "Widening brings the names back");
             require(bar->iconSize().width() == wide, "And the size with them");
             require(picker->isVisible(), "And the picker");
+        }
+
+        // Full view puts the panels away and gives the whole window to the
+        // diagram, and brings back exactly the ones that were showing.
+        {
+            auto* full_view = child<QAction>(window, "viewFullView");
+            auto* explorer_dock = child<QDockWidget>(window, "explorerDock");
+            auto* properties_dock = child<QDockWidget>(window, "propertiesDock");
+            auto* checks_dock = child<QDockWidget>(window, "validationDock");
+            require(child<QMenu>(window, "viewMenu")->actions().contains(full_view),
+                    "It is written out in the View menu");
+            auto* raft_button = child<QToolButton>(window, "canvasFullView");
+            require(raft_button->defaultAction() == full_view, "And is on the canvas raft as well");
+            require(raft_button->toolButtonStyle() == Qt::ToolButtonIconOnly && !raft_button->icon().isNull(),
+                    "There it is a picture, since the raft has no room for a word");
+            require(!full_view->toolTip().isEmpty(), "Which names itself on hover");
+
+            // Model checks starts closed, so full view must not open it.
+            require(!checks_dock->isVisible(), "Model checks is closed to begin with");
+            require(explorer_dock->isVisible() && properties_dock->isVisible(), "The other two are open");
+            full_view->trigger();
+            settle();
+            require(!explorer_dock->isVisible() && !properties_dock->isVisible() && !checks_dock->isVisible(),
+                    "Full view puts every panel away");
+            require(full_view->isChecked(), "And the control shows it is on");
+            full_view->trigger();
+            settle();
+            require(explorer_dock->isVisible() && properties_dock->isVisible(), "Pressing it again brings them back");
+            require(!checks_dock->isVisible(), "But not one that was closed before");
+            require(!full_view->isChecked(), "And the control shows it is off");
+
+            // A panel opened while full view is on is put away by it too, and
+            // comes back with the rest.
+            child<QAction>(window, "checkModel")->trigger();
+            settle();
+            require(checks_dock->isVisible(), "Model checks opens");
+            full_view->trigger();
+            settle();
+            require(!checks_dock->isVisible(), "Full view puts it away with the others");
+            full_view->trigger();
+            settle();
+            require(checks_dock->isVisible() && explorer_dock->isVisible() && properties_dock->isVisible(),
+                    "And all three come back together");
+            checks_dock->hide();
+            settle();
         }
 
         // The raft's Pan locks on a double-click just as the toolbar's tools do,
@@ -575,6 +775,267 @@ int main(int argc, char** argv) {
                     "A menu button on the toolbar shows its glyph like every other button");
             require(!widget->icon().isNull() && widget->iconSize() == child<QToolBar>(window, "modelTools")->iconSize(),
                     "And shows it at the toolbar's size");
+        }
+
+        // Where a new line joins each shape is chosen on Connect's own arrow,
+        // beside the line style, and the choice is remembered.
+        {
+            auto* connect_menu = child<QToolButton>(window, "connectButton")->menu();
+            auto* clicked = child<QAction>(window, "joinWhereClicked");
+            auto* automatic = child<QAction>(window, "joinAutomatic");
+            require(connect_menu->actions().contains(clicked) && connect_menu->actions().contains(automatic),
+                    "Both join modes are on the Connect menu");
+            require(clicked->isChecked() && window.canvas()->join_mode() == desktop::JoinMode::WhereClicked,
+                    "New lines join where they are clicked unless told otherwise");
+            automatic->trigger();
+            settle();
+            require(window.canvas()->join_mode() == desktop::JoinMode::Automatic, "The menu changes the canvas");
+            require(automatic->isChecked() && !clicked->isChecked(), "And marks the mode in use");
+            require(QSettings().value("joinMode").toString() == "automatic", "The choice is remembered");
+            clicked->trigger();
+            settle();
+            require(window.canvas()->join_mode() == desktop::JoinMode::WhereClicked, "And back again");
+        }
+
+        // An entity says in Properties whether it relates to itself, and
+        // ticking it draws the relationship that says so.
+        {
+            const auto entity_id = window.editor().project().entities.begin()->first;
+            window.canvas()->select_elements({entity_id});
+            settle();
+            auto* recursive = child<QCheckBox>(window, "entityRecursive");
+            require(!recursive->isChecked(), "An entity is not recursive to begin with");
+            const auto before = window.editor().project().relationships.size();
+            recursive->click();
+            settle();
+            require(window.editor().project().relationships.size() == before + 1, "Ticking it makes a relationship");
+            const auto& made = window.editor().project().relationships.rbegin()->second;
+            require(made.participants.size() == 2
+                        && made.participants.front().target == domain::ParticipantTarget{entity_id}
+                        && made.participants.back().target == domain::ParticipantTarget{entity_id},
+                    "Both of its sides are that same entity");
+            require(window.editor().undo_label() == "Relate entities", "In one edit");
+
+            // The box reads the model rather than its own memory.
+            window.canvas()->select_elements({});
+            window.canvas()->select_elements({entity_id});
+            settle();
+            recursive = child<QCheckBox>(window, "entityRecursive");
+            require(recursive->isChecked(), "And the entity now reads as recursive");
+            recursive->click();
+            settle();
+            require(window.editor().project().relationships.size() == before, "Clearing it takes the relationship away");
+            child<QAction>(window, "undoCommand")->trigger();
+            settle();
+            require(window.editor().project().relationships.size() == before + 1, "Which undoes");
+            child<QAction>(window, "undoCommand")->trigger();
+            settle();
+            require(window.editor().project().relationships.size() == before, "As does making it");
+            window.canvas()->select_elements({});
+            settle();
+        }
+
+        // Properties names the kind of an entity and of a relationship, and
+        // changing it is one edit; an associative relationship also takes the
+        // entity body, as it did.
+        {
+            const auto& example = window.editor().project();
+            const auto entity_id = example.entities.begin()->first;
+            window.canvas()->select_elements({entity_id});
+            settle();
+            auto* entity_kind = child<QComboBox>(window, "entityKind");
+            require(entity_kind->count() == 2 && entity_kind->currentIndex() == 0, "An entity starts regular");
+            entity_kind->setCurrentIndex(1);
+            QMetaObject::invokeMethod(entity_kind, "activated", Q_ARG(int, 1));
+            settle();
+            require(window.editor().project().entities.at(entity_id).weak, "Choosing Weak makes it weak");
+            child<QAction>(window, "undoCommand")->trigger();
+            settle();
+            require(!window.editor().project().entities.at(entity_id).weak, "And undoes as one step");
+
+            const auto relationship_id = example.relationships.begin()->first;
+            window.canvas()->select_elements({relationship_id});
+            settle();
+            auto* relationship_kind = child<QComboBox>(window, "relationshipKind");
+            require(relationship_kind->count() == 3 && relationship_kind->currentIndex() == 0, "A relationship starts regular");
+            relationship_kind->setCurrentIndex(1);
+            QMetaObject::invokeMethod(relationship_kind, "activated", Q_ARG(int, 1));
+            settle();
+            require(window.editor().project().relationships.at(relationship_id).identifying, "Identifying is a kind of its own");
+            relationship_kind = child<QComboBox>(window, "relationshipKind");
+            relationship_kind->setCurrentIndex(2);
+            QMetaObject::invokeMethod(relationship_kind, "activated", Q_ARG(int, 2));
+            settle();
+            const auto& made = window.editor().project().relationships.at(relationship_id);
+            require(made.associative && !made.identifying, "Associative replaces identifying");
+            const auto body = window.editor().project().layout.at(domain::ElementRef{relationship_id});
+            require(body.width == desktop::entity_body.width && body.height == desktop::entity_body.height,
+                    "And the body takes the entity size, as before");
+            child<QAction>(window, "undoCommand")->trigger();
+            child<QAction>(window, "undoCommand")->trigger();
+            settle();
+            require(relationship_kind == nullptr || !window.editor().project().relationships.at(relationship_id).identifying,
+                    "Both changes undo");
+            window.canvas()->select_elements({});
+            settle();
+        }
+
+        // Pictures and notes come from the Insert row: a picture from a file,
+        // a note by a click like the elements. Both then appear in the explorer
+        // and the properties panel like anything else placed on the canvas.
+        {
+            child<QAction>(window, "tabInsert")->trigger();
+            settle();
+            auto* insert = child<QToolBar>(window, "insertTools");
+            auto* picture_action = child<QAction>(window, "insertPicture");
+            auto* note_tool = child<QAction>(window, "toolNote");
+            require(insert->actions().contains(picture_action), "Insert offers a picture");
+            require(child<QToolBar>(window, "modelTools")->actions().contains(note_tool), "The note tool is on Home");
+            require(!picture_action->icon().isNull() && !note_tool->icon().isNull(), "Each with a glyph of its own");
+            require(child<QMenu>(window, "insertMenu")->actions().contains(picture_action),
+                    "And the Insert menu offers the picture too");
+
+            QTemporaryDir pictures;
+            require(pictures.isValid(), "Temporary picture directory");
+            QImage sample(64, 48, QImage::Format_RGB32);
+            sample.fill(QColor(40, 120, 200));
+            const auto file = pictures.filePath("sample.png");
+            require(sample.save(file), "Write a sample picture");
+            const auto count = window.editor().project().pictures.size();
+            require(window.insert_picture(file), "A picture is inserted from a file");
+            require(window.editor().project().pictures.size() == count + 1, "And is in the project");
+            const auto placed = window.canvas()->selected_elements();
+            require(placed.size() == 1 && std::holds_alternative<domain::PictureId>(placed.front()), "The new picture is selected");
+            require(window.editor().project().pictures.at(std::get<domain::PictureId>(placed.front())).name == "sample",
+                    "It is named after its file");
+            settle();
+            require(child<QLabel>(window, "propertyHeading")->text() == "Picture", "Properties show it as a picture");
+            require(!child<QLabel>(window, "picturePreview")->pixmap().isNull(), "With a preview of the image");
+            auto* tree = child<QTreeView>(window, "explorer");
+            auto* model = qobject_cast<QStandardItemModel*>(tree->model());
+            bool listed = false;
+            for (int row = 0; row < model->item(0)->rowCount(); ++row)
+                if (model->item(0)->child(row)->text().startsWith("Pictures (1)")) listed = true;
+            require(listed, "The explorer lists the picture under a group of its own");
+
+            note_tool->trigger();
+            click_canvas(*window.canvas(), QPointF(700, 400));
+            require(window.editor().project().notes.size() == 1, "The note tool places a note");
+            require(window.canvas()->renaming(), "Which opens for its title");
+            window.canvas()->commit_rename();
+            settle();
+            require(child<QLabel>(window, "propertyHeading")->text() == "Note", "Properties show it as a note");
+
+            // A file that is not a picture is refused, and says so.
+            dismiss(QMessageBox::Ok);
+            require(!window.insert_picture(pictures.filePath("missing.png")), "A missing file inserts nothing");
+            require(window.editor().project().pictures.size() == count + 1, "And leaves the project alone");
+
+            child<QAction>(window, "undoCommand")->trigger();
+            child<QAction>(window, "undoCommand")->trigger();
+            require(window.editor().project().notes.empty() && window.editor().project().pictures.size() == count,
+                    "Undo takes both away again");
+            child<QAction>(window, "tabHome")->trigger();
+            settle();
+        }
+
+        // A row of tabs sits above the tool row, the way an office application
+        // arranges its commands. Home is the tool row itself, untouched; the
+        // other tabs bring up rows built from the same actions, so nothing on
+        // them can disagree with it.
+        {
+            auto* tabs = child<QToolBar>(window, "ribbonTabs");
+            auto* home = child<QToolBar>(window, "modelTools");
+            require(window.toolBarArea(tabs) == Qt::TopToolBarArea && window.toolBarBreak(home),
+                    "The tabs are at the top, and the tools start a line of their own beneath them");
+            require(tabs->isVisible() && tabs->y() + tabs->height() <= home->y(), "The tabs are above the tools");
+            auto* home_tab = child<QAction>(window, "tabHome");
+            auto* insert_tab = child<QAction>(window, "tabInsert");
+            auto* insert = child<QToolBar>(window, "insertTools");
+            require(home_tab->isChecked() && home->isVisible() && !insert->isVisible(), "The window opens on Home");
+            const auto row_height = home->height();
+
+            insert_tab->trigger();
+            settle();
+            require(insert->isVisible() && !home->isVisible(), "Insert brings its row up in place of Home");
+            require(insert_tab->isChecked() && !home_tab->isChecked(), "And is marked as the current tab");
+            require(insert->height() == row_height, "The rows are one height, so nothing beneath them moves");
+            auto* note_tool = child<QAction>(window, "toolNote");
+            require(insert->actions().contains(child<QAction>(window, "insertPicture")), "Insert offers a picture");
+            require(!insert->actions().contains(child<QAction>(window, "toolEntity")) && !insert->actions().contains(note_tool),
+                    "And not the model's elements or the note, which stay on Home");
+            require(insert->iconSize() == home->iconSize() && insert->toolButtonStyle() == home->toolButtonStyle(),
+                    "The Insert row is drawn the way Home is");
+
+            // The note is a tool among the elements, after Connect, and locks
+            // by a double click exactly as they do.
+            const auto home_actions = home->actions();
+            require(home_actions.indexOf(note_tool) > home_actions.indexOf(child<QAction>(window, "toolSelect")),
+                    "Note sits on Home with the element tools");
+            const auto count = window.editor().project().notes.size();
+            auto* note_button = home->widgetForAction(note_tool);
+            require(note_button != nullptr, "The note tool has a button on Home");
+            QMouseEvent twice(QEvent::MouseButtonDblClick, QPointF(5, 5), QPointF(5, 5),
+                              Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+            QApplication::sendEvent(note_button, &twice);
+            settle();
+            require(window.canvas()->tool() == desktop::Tool::Note && window.canvas()->tool_locked(),
+                    "Double-clicking the note tool locks it");
+            require(note_tool->text() != "Note", "And the button is marked");
+            click_canvas(*window.canvas(), QPointF(700, 250));
+            window.canvas()->commit_rename();
+            click_canvas(*window.canvas(), QPointF(860, 250));
+            window.canvas()->commit_rename();
+            require(window.editor().project().notes.size() == count + 2, "A locked note tool keeps placing");
+            child<QAction>(window, "toolSelect")->trigger();
+            settle();
+            child<QAction>(window, "undoCommand")->trigger();
+            child<QAction>(window, "undoCommand")->trigger();
+            require(window.editor().project().notes.size() == count, "Both placings undo");
+
+            // Fitting the window resizes Home's icons, and the rows follow,
+            // whichever of them is showing at the time.
+            window.resize(700, 620);
+            settle();
+            require(insert->iconSize() == home->iconSize() && insert->toolButtonStyle() == home->toolButtonStyle(),
+                    "The Insert row follows Home as the window narrows");
+            window.resize(1800, 820);
+            settle();
+            require(insert->height() == row_height, "And comes back to Home's height with it");
+
+            auto* design = child<QToolBar>(window, "designTools");
+            child<QAction>(window, "tabDesign")->trigger();
+            settle();
+            require(design->isVisible() && !insert->isVisible(), "Design takes over from Insert");
+            require(design->height() == row_height, "At the same height");
+            auto* theme_menu = child<QMenu>(window, "themeMenu");
+            require(design->actions().contains(theme_menu->menuAction()), "Design offers the theme menu the View menu has");
+            auto* theme_on_design = qobject_cast<QToolButton*>(design->widgetForAction(theme_menu->menuAction()));
+            require(theme_on_design && theme_on_design->popupMode() == QToolButton::InstantPopup,
+                    "A click on it opens the menu rather than doing nothing");
+            require(child<QToolButton>(window, "designLinesButton")->menu() == child<QToolButton>(window, "connectButton")->menu(),
+                    "Lines is Connect's own line-style menu");
+
+            auto* view = child<QToolBar>(window, "viewTools");
+            child<QAction>(window, "tabView")->trigger();
+            settle();
+            require(view->isVisible() && view->height() == row_height, "View has a row of the same height");
+            require(view->actions().contains(child<QAction>(window, "viewFit")), "With the View menu's commands on it");
+            require(!view->actions().contains(theme_menu->menuAction()), "The View menu's submenus are on Design, not here");
+
+            auto* file_tab = child<QToolButton>(window, "tabFile");
+            require(file_tab->menu() == child<QMenu>(window, "fileMenu") && file_tab->popupMode() == QToolButton::InstantPopup,
+                    "File drops the File menu from its tab");
+            require(file_tab->menu()->actions().contains(child<QAction>(window, "saveProject")), "With Save in it");
+            child<QAction>(window, "tabHelp")->trigger();
+            settle();
+            require(child<QToolBar>(window, "helpTools")->isVisible(), "Help has a row of its own");
+
+            home_tab->trigger();
+            settle();
+            require(home->isVisible() && !view->isVisible() && !child<QToolBar>(window, "helpTools")->isVisible(),
+                    "Home brings the tool row back");
+            require(home->height() == row_height, "At the height it had");
         }
 
         child<QAction>(window, "toolSelect")->trigger();

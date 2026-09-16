@@ -1,6 +1,6 @@
 # Implementation status
 
-**Updated:** 2026-09-15
+**Updated:** 2026-09-16
 
 **Scope:** Part 1 — a single-page Conceptual ERD editor foundation.
 
@@ -12,6 +12,30 @@ not been built yet. Their presence in those documents is not a completion claim.
 
 - Native Qt window with modeling toolbar, Explorer, Properties, model checks,
   status/zoom display, and a university example.
+- A row of tabs above the toolbar, the way an office application arranges its
+  commands: **File** drops the File menu from its tab; **Home** is the modeling
+  toolbar, with Note after Connect; **Insert** carries Picture; **Design** carries Theme,
+  Icons, Notation and Lines; **View** carries the panels, framing, grid and
+  align-to-grid; **Help** carries the guide and About. The rows are built from the same
+  actions as the menus and the Home toolbar, so a tool chosen or locked on one
+  row is chosen or locked on the other. Convert and Export tabs wait until
+  there is something to convert or export.
+- Pictures and notes as visual aids on the canvas. **Insert → Picture…** places
+  an image from a file (PNG and JPEG bytes are kept as they are; other formats
+  and large images are re-encoded, scaled to at most 1024 pixels) in the
+  middle of the view; **Note**, on the Home toolbar after Connect, places a
+  note by a click and opens it for its title, with its text edited in
+  Properties. Both are also offered by the canvas's right-click menu, placed
+  at the point clicked. Both are moved, coloured,
+  duplicated, deleted, undone and saved like elements, appear in the explorer
+  under groups of their own, and are not database objects: nothing connects to
+  them and no attribute belongs to them. Project files are version 11.
+- Connections join where they are clicked. With **Connect ▾ → Join where I
+  click** (the default, remembered between sessions) each end of a new line is
+  pinned to the point clicked on its shape, in the same edit as the connection;
+  **Join automatically** restores the sliding joins. A selected line carries a
+  square grip on each end that can be dragged to any point on the same shape,
+  and two lines may leave one point. The padlock still releases a line's joins.
 - Six themes covering both the application chrome and the diagram, chosen under
   **View → Theme** and remembered between sessions. **View → Icons** chooses
   between glyphs painted from the active theme and embedded SVG artwork with
@@ -48,7 +72,9 @@ not been built yet. Their presence in those documents is not a completion claim.
   Escape is pressed. Select cannot be locked.
 - Selecting an element draws every link touching it heavier and lifts it above
   the other links, so what it connects to can be read at a glance.
-- Single/multiple/rubber-band selection, Select All, zoom, pan, fit, grid/snap,
+- Single/multiple/rubber-band selection, Select All, zoom (mouse wheel, or a
+  trackpad pinch: apart to zoom in, together to zoom out), pan (two fingers
+  travelling together, the middle mouse button, or the hand), fit, grid and align to grid,
   selection navigation, and cancellation of an uncommitted drag.
 - One drag or duplicate/delete group is one history entry. Deletion restores
   dependent attributes and participant records on undo. Duplicate generates new
@@ -68,7 +94,78 @@ not been built yet. Their presence in those documents is not a completion claim.
   Each carries a disjoint/overlapping constraint and total/partial completeness,
   the two inputs a later conversion needs to choose a relational mapping.
   Hierarchies nest, and inheritance cycles are rejected.
-- Associative entities: mark a relationship associative in Properties and it
+- Every label in Properties is bold and written in the theme's own ink: the
+  words and the controls beside them already tell the rows apart, so colour is
+  kept for what carries meaning. The heading naming the kind being edited
+  stays a title in the theme's accent. The colour an element is drawn in on
+  the diagram, the one its owner chose or the one its theme gives its kind,
+  fills the shape its name is written in: the Name field is the element's own
+  shape, at the proportions it is drawn with on the diagram, with the name
+  inside it in ink chosen against that colour. A shape asks for the width its
+  name needs and takes what the panel has, so nothing runs out of the panel at
+  any width: a name too long for the room is shown from its start, and on a
+  card it is elided. Each end of a card is the same again, smaller: a rectangle for an
+  entity, an oval for an attribute, a diamond for a relationship, a triangle
+  for an ISA, with the double border of a weak entity, the second diamond of
+  an identifying one, the box of an associative one, and a picture's own
+  picture. It is the canvas's drawing, so the panel and the diagram cannot
+  disagree, and it carries a colour the user chose, which the icon sets cannot.
+  A card names both ends of what it is about, as **Student → WorkOn**: a side
+  means nothing on its own, it is that element as it takes part in this one. The panel is redrawn when the theme changes.
+- Elements line up with their neighbours as they are dragged, the way a page
+  layout does. An edge or a middle that comes within a few pixels of another
+  element's meets it exactly, and a thin guide is drawn along what the two now
+  share. Nothing is pulled out of place when nothing is near. A selection can
+  also be lined up at once from the canvas's right-click **Align**, on left
+  edges, centres, right edges, top edges, middles or bottom edges, as one edit.
+- Lines break at right angles. **Right-angle lines** is what the canvas draws
+  unless told otherwise, chosen on Connect's own arrow beside **Curved** and
+  **Straight**: a line leaves each shape squarely to the face it meets, turns,
+  and comes in to the other the same way, so two elements standing in line are
+  joined by one clean run rather than by a kink. Where an end has been pinned
+  by clicking, the line leaves that point; where it has not, it leaves the
+  middle of the face that looks at the other shape. The shape is worked out
+  rather than stored, so it follows both elements as they move, and it becomes
+  an ordinary route the moment the line is taken hold of.
+- A line's end can be carried away from its shape. Dragging an end grip across
+  its own shape moves the join around the outline as before; carried past the
+  shape and let go in open canvas, the end stops there, leaving a corner at
+  that point rather than the gesture coming to nothing. The join and the
+  stopping point are written as one edit.
+- Each side's number and role are drawn beside the shape they belong to and
+  clear of the line, rather than the role sitting in the middle of the line
+  and cutting it. They are laid out along the line as it actually arrives,
+  which for a right-angle line is its last segment rather than its middle.
+- Recursive relationships. An entity's Properties says whether it **relates to
+  itself**; ticking it creates the relationship, with both sides on that
+  entity, in one edit, and clearing it takes those relationships away. A
+  relationship meeting the same entity twice is drawn the way it is drawn by
+  hand: the first side runs straight to the diamond, and the second leaves the
+  far corner and returns around the entity at right angles into another of its
+  faces. The loop keeps to whichever side carries fewer of the entity's
+  attributes, follows both shapes as they are moved, and stores nothing until
+  the line is taken hold of, when its corners become an ordinary route to
+  shape. Double-clicking hands it back.
+- Connecting two entities creates the relationship they mean. Two entities have
+  no line of their own in Chen notation, so rather than refusing the pair,
+  **Connect** creates a relationship midway between them, joins both sides to
+  it, selects it and opens it for its name, saying so in the status bar. A pair
+  may be read more than once, as Employee both works on and manages a Project:
+  each new relationship steps aside along the perpendicular to the line joining
+  the two entities, alternating sides, so it does not land on the one already
+  there, and is then an element like any other to drag or place by its
+  coordinates. The
+  relationship, both of its sides and their joins are one edit, so one undo
+  takes the whole thing back.
+- Weak entities and identifying relationships: an entity's **Kind** in
+  Properties is Regular or Weak, and a relationship's is Regular, Identifying
+  or Associative. A weak entity is drawn with a double border and its key
+  attribute as a partial key with a dashed underline; an identifying
+  relationship as a double diamond. A weak entity without an identifying
+  relationship, or the reverse, is a warning, not a fault. The ISA triangle
+  wears **d** or **o** for disjoint or overlapping, and a total specialization
+  draws its link to the supertype as a double line. Project files are version 13.
+- Associative entities: choose Associative as a relationship's kind in Properties and it
   takes the entity body size and palette, since it converts to a relation of its
   own, and is drawn as a filled diamond inside an unfilled rectangle, which is
   what keeps it distinguishable from a solid entity. It may then take
@@ -91,9 +188,12 @@ not been built yet. Their presence in those documents is not a completion claim.
   can be moved and removed individually; double-clicking the line clears its
   route or bend. The padlock pins or releases both endpoint joins. These changes
   are undoable, saved, and removed with their link. ISA links retain their fixed
-  triangle anchors. Dragging nodes follows the pointer; snap to grid is opt-in.
+  triangle anchors. Dragging nodes follows the pointer; align to grid is opt-in.
 - Element colours can be set for one element or a selection from the context
-  menu, using a swatch or custom colour, and reset to the theme colour. Colour
+  menu, using a swatch or custom colour, and reset to the theme colour. A
+  **Transparency** bar, below the colours in that menu, fades
+  the surface from solid to outline-only over whatever colour it has, the
+  theme's own included, for one element or the whole selection. Colour
   changes are undoable and saved with the project.
 - Versioned `.erdx` JSON save/load, currently format version 10. Versions 1 to 9
   still open and upgrade on save. Incomplete but structurally valid diagrams
@@ -118,8 +218,8 @@ geometry changes use **Apply position and size**.
 | 6 — Basic Chen | Implemented; university example and desktop workflow tests. |
 | 7 — Cardinality | Implemented per participant, with correct entity-side labels. |
 | 8 — Participation | Implemented partial/total and one/many combinations on the same participant, including a min–max notation option. |
-| 9 — Advanced attributes | Partial: composite, multivalued, derived implemented. Partial keys and combined kind semantics remain open with weak entities. |
-| 10–12 — Weak/ISA/associative | Partial: associative entities and ISA generalization/specialization implemented, including nesting and the disjoint/total rules. Weak entities and identifying relationships remain. |
+| 9 — Advanced attributes | Partial: composite, multivalued, derived and partial keys (on weak entities) implemented. Combined kind semantics remain open. |
+| 10–12 — Weak/ISA/associative | Implemented: weak entities with identifying relationships, associative entities, and ISA generalization/specialization including nesting and the disjoint/total rules, drawn on the triangle. |
 | 13–14 — Modes/readiness | Basic properties and structural checks exist. Convertible mode, logical types, key groups, and conversion-readiness policy are not implemented. |
 | 15 — Project files | Single-page native format foundation delivered early to protect the current editor's work. No historical migration or recovery system. |
 | 16–17 — Pages/editor milestone | Not complete; multiple pages and the remaining conceptual semantics are required. |
@@ -154,12 +254,11 @@ Useful regression checks include identity-preserving undo/redo; atomic rejection
 without losing the redo branch; owned-graph deletion/duplication; participant
 roles; hostile file inputs; preserving existing files on failed saves; cancelling
 open; saving an active property field; save-then-reopen; Shift group selection;
-group snap/bounds; stale gesture cancellation; and incident-only live connector updates.
+group align-to-grid/bounds; stale gesture cancellation; and incident-only live connector updates.
 
 ## Still to build in Part 1
 
-Weak entities/identifying relationships/partial keys; logical metadata and
-conversion readiness;
+Logical metadata and conversion readiness;
 multiple pages; cross-project clipboard; alignment/distribution; drag resize
 handles; freely draggable connector endpoint handles; search; export;
 autosave and recovery. Connector joins can be pinned at their current positions,

@@ -201,7 +201,7 @@ void malformed_json_and_text() {
 
 void strict_version_and_field_contract() {
     Fixture fixture;
-    for (const auto& version : {QJsonValue(0), QJsonValue(11), QJsonValue(1.5), QJsonValue("1"), QJsonValue(true)}) {
+    for (const auto& version : {QJsonValue(0), QJsonValue(14), QJsonValue(1.5), QJsonValue("1"), QJsonValue(true)}) {
         auto root = fixture.document();
         root["format_version"] = version;
         reject(bytes(root));
@@ -300,7 +300,7 @@ void connector_shapes_persist_and_older_versions_still_open() {
 
     const auto encoded = ErdxProjectStore::encode(fixture.editor.project());
     const auto root = QJsonDocument::fromJson(encoded).object();
-    CHECK(root["format_version"].toInt() == 10);
+    CHECK(root["format_version"].toInt() == 13);
     CHECK(root["project"].toObject()["connectors"].toArray().size() == 2);
 
     // A pinned join survives the same round trip.
@@ -413,6 +413,30 @@ void connector_shapes_persist_and_older_versions_still_open() {
             }
             project["layout"] = layout;
         }
+        // Before version 13 every entity was regular and no relationship identifying.
+        if (version < 13) {
+            QJsonArray entities;
+            for (const auto& value : project["entities"].toArray()) {
+                auto entity = value.toObject();
+                entity.remove("weak");
+                entities.append(entity);
+            }
+            project["entities"] = entities;
+            QJsonArray relationships;
+            for (const auto& value : project["relationships"].toArray()) {
+                auto relationship = value.toObject();
+                relationship.remove("identifying");
+                relationships.append(relationship);
+            }
+            project["relationships"] = relationships;
+        }
+        // Before version 12 every surface was solid.
+        if (version < 12) project.remove("transparency");
+        // Before version 11 there were no pictures or notes on the canvas.
+        if (version < 11) {
+            project.remove("pictures");
+            project.remove("notes");
+        }
         // Before version 9 an element could not carry a colour of its own.
         if (version < 9) project.remove("colours");
         // Before version 10 both sides of a relationship were always drawn.
@@ -453,7 +477,7 @@ void connector_shapes_persist_and_older_versions_still_open() {
         return document;
     };
 
-    for (const int version : {1, 2, 3, 4, 5, 6, 7, 8, 9}) {
+    for (const int version : {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}) {
         const auto opened = ErdxProjectStore::decode(bytes(downgrade(version)));
         if (!opened) throw std::runtime_error("version " + std::to_string(version) + ": " + opened.error);
         CHECK(opened.project->entities == fixture.editor.project().entities);
@@ -476,7 +500,7 @@ void connector_shapes_persist_and_older_versions_still_open() {
             // and reads as specialization, which is how those files were drawn.
             CHECK(specialization.direction == (version >= 5 ? Inheritance::Generalization : Inheritance::Specialization));
         }
-        CHECK(QJsonDocument::fromJson(ErdxProjectStore::encode(*opened.project)).object()["format_version"].toInt() == 10);
+        CHECK(QJsonDocument::fromJson(ErdxProjectStore::encode(*opened.project)).object()["format_version"].toInt() == 13);
     }
 
     // A document whose shape contradicts its declared version is refused rather
@@ -498,6 +522,158 @@ void connector_shapes_persist_and_older_versions_still_open() {
     project.remove("connectors");
     missing["project"] = project;
     reject(bytes(missing));
+}
+
+// Pictures and notes are written with the model and come back byte for byte.
+// A document from before version 11 must not carry them, one that declares
+// version 11 must, and a picture's image has to be base64 that decodes to
+// something that could be an image.
+void pictures_and_notes_persist() {
+    Fixture fixture;
+    const std::vector<std::uint8_t> png{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 'I', 'H', 'D', 'R'};
+    const auto picture = fixture.editor.create_picture("Campus map", {400, -200, 240, 160}, png);
+    CHECK(picture && picture.created);
+    const auto note = fixture.editor.create_note("Assumptions", {-400, 300, 200, 120},
+                                                 "Each student enrols each term.\nGrades per enrolment.");
+    CHECK(note && note.created);
+    CHECK(fixture.editor.recolour({*note.created}, Colour{255, 224, 138}));
+
+    const auto encoded = ErdxProjectStore::encode(fixture.editor.project());
+    const auto root = QJsonDocument::fromJson(encoded).object();
+    CHECK(root["format_version"].toInt() == 13);
+    const auto project = root["project"].toObject();
+    CHECK(project["pictures"].toArray().size() == 1);
+    CHECK(project["notes"].toArray().size() == 1);
+    const auto written = project["pictures"].toArray()[0].toObject();
+    CHECK(written.size() == 4 && written["image"].isString());
+    CHECK(QByteArray::fromBase64(written["image"].toString().toLatin1())
+          == QByteArray(reinterpret_cast<const char*>(png.data()), static_cast<qsizetype>(png.size())));
+
+    const auto reopened = ErdxProjectStore::decode(encoded);
+    CHECK(reopened);
+    CHECK(*reopened.project == fixture.editor.project());
+    CHECK(reopened.project->pictures.at(std::get<PictureId>(*picture.created)).image == png);
+    CHECK(reopened.project->notes.at(std::get<NoteId>(*note.created)).description.find("Grades") != std::string::npos);
+    CHECK(reopened.project->colours.contains(*note.created));
+
+    // Through the adapter and back, the same.
+    QTemporaryDir directory;
+    CHECK(directory.isValid());
+    ErdxProjectStore store;
+    const auto path = directory.filePath("figures.erdx").toStdString();
+    CHECK(store.save(path, fixture.editor.project()).ok);
+    const auto loaded = store.load(path);
+    CHECK(loaded && *loaded.project == fixture.editor.project());
+
+    // The version and the fields have to agree, in both directions.
+    auto stale = root;
+    stale["format_version"] = 10;
+    reject(bytes(stale));
+    auto missing = root;
+    change_project(missing, [](QJsonObject& item) { item.remove("pictures"); });
+    reject(bytes(missing));
+    // The image is base64 text that decodes to an image, of at most 2 MiB.
+    auto garbled = root;
+    change_first(garbled, "pictures", [](QJsonObject& item) { item["image"] = "not base64!!"; });
+    reject_because(bytes(garbled), "base64");
+    auto not_image = root;
+    change_first(not_image, "pictures", [](QJsonObject& item) {
+        item["image"] = QString::fromLatin1(QByteArray("hello world").toBase64());
+    });
+    reject_because(bytes(not_image), "PNG or JPEG");
+    auto oversized = root;
+    change_first(oversized, "pictures", [&](QJsonObject& item) {
+        QByteArray huge(static_cast<qsizetype>(max_image_bytes) + 1, '\0');
+        std::copy(png.begin(), png.end(), huge.begin());
+        item["image"] = QString::fromLatin1(huge.toBase64());
+    });
+    reject_because(bytes(oversized), "2 MiB");
+    // A picture is placed like everything else, and nothing belongs to one.
+    auto unplaced = root;
+    change_project(unplaced, [](QJsonObject& item) {
+        QJsonArray layout;
+        for (const auto& value : item["layout"].toArray())
+            if (value.toObject()["element"].toObject()["type"].toString() != "picture") layout.append(value);
+        item["layout"] = layout;
+    });
+    reject(bytes(unplaced));
+    auto owned_by_note = root;
+    change_first(owned_by_note, "attributes", [&](QJsonObject& item) {
+        item["owner"] = QJsonObject{{"type", "note"}, {"id", uuid_text(uuid(*note.created))}};
+    });
+    reject_because(bytes(owned_by_note), "holds no attributes");
+}
+
+// How see-through each surface is travels with the model from version 12, as
+// a percentage per element. Earlier files' surfaces are solid and must not
+// carry one.
+void transparency_persists() {
+    Fixture fixture;
+    CHECK(fixture.editor.set_transparency({ElementRef{fixture.employee}}, 100));
+    CHECK(fixture.editor.set_transparency({ElementRef{fixture.supervises}}, 40));
+    const auto encoded = ErdxProjectStore::encode(fixture.editor.project());
+    const auto root = QJsonDocument::fromJson(encoded).object();
+    const auto entries = root["project"].toObject()["transparency"].toArray();
+    CHECK(entries.size() == 2);
+    for (const auto& value : entries) CHECK(value.toObject().size() == 2 && value.toObject().contains("percent"));
+    const auto reopened = ErdxProjectStore::decode(encoded);
+    CHECK(reopened);
+    CHECK(reopened.project->transparency.at(ElementRef{fixture.employee}) == 100);
+    CHECK(reopened.project->transparency.at(ElementRef{fixture.supervises}) == 40);
+    CHECK(*reopened.project == fixture.editor.project());
+    // A whole percentage, and never more than all of it.
+    auto too_much = root;
+    change_first(too_much, "transparency", [](QJsonObject& item) { item["percent"] = 101; });
+    reject_because(bytes(too_much), "0 to 100");
+    auto fractional = root;
+    change_first(fractional, "transparency", [](QJsonObject& item) { item["percent"] = 12.5; });
+    reject_because(bytes(fractional), "whole");
+    // The version and the field have to agree, in both directions.
+    auto stale = root;
+    stale["format_version"] = 11;
+    reject(bytes(stale));
+    auto solid = root;
+    change_project(solid, [](QJsonObject& item) { item.remove("transparency"); });
+    reject(bytes(solid));
+    // A dangling entry is refused like a dangling colour.
+    auto dangling = root;
+    change_first(dangling, "transparency", [](QJsonObject& item) {
+        item["element"] = QJsonObject{{"type", "entity"}, {"id", "019947b9-7111-7000-8000-0000000000ff"}};
+    });
+    reject(bytes(dangling));
+}
+
+// A weak entity and an identifying relationship travel with the model from
+// version 13; earlier files carry neither flag and read as regular.
+void weak_entities_and_identifying_relationships_persist() {
+    Fixture fixture;
+    const auto dependant = fixture.editor.create_entity("Dependant", {400, 20, 160, 80});
+    CHECK(dependant && dependant.created);
+    CHECK(fixture.editor.set_entity_weak(std::get<EntityId>(*dependant.created), true));
+    CHECK(fixture.editor.set_relationship_kind(fixture.supervises, RelationshipKind::Identifying));
+    const auto encoded = ErdxProjectStore::encode(fixture.editor.project());
+    const auto root = QJsonDocument::fromJson(encoded).object();
+    for (const auto& value : root["project"].toObject()["entities"].toArray()) CHECK(value.toObject().contains("weak"));
+    for (const auto& value : root["project"].toObject()["relationships"].toArray()) CHECK(value.toObject().contains("identifying"));
+    const auto reopened = ErdxProjectStore::decode(encoded);
+    CHECK(reopened);
+    CHECK(reopened.project->entities.at(std::get<EntityId>(*dependant.created)).weak);
+    CHECK(reopened.project->relationships.at(fixture.supervises).identifying);
+    CHECK(*reopened.project == fixture.editor.project());
+    // The version and the fields have to agree, in both directions.
+    auto stale = root;
+    stale["format_version"] = 12;
+    reject(bytes(stale));
+    auto missing = root;
+    change_first(missing, "entities", [](QJsonObject& item) { item.remove("weak"); });
+    reject(bytes(missing));
+    // A flag is true or false, and a relationship is not both kinds at once.
+    auto wrong = root;
+    change_first(wrong, "entities", [](QJsonObject& item) { item["weak"] = "yes"; });
+    reject(bytes(wrong));
+    auto both = root;
+    change_first(both, "relationships", [](QJsonObject& item) { item["associative"] = true; item["identifying"] = true; });
+    reject_because(bytes(both), "not both");
 }
 
 void invalid_connector_shapes() {
@@ -715,6 +891,9 @@ int main() {
         {"strict version and field contract", strict_version_and_field_contract},
         {"escaped field name decoding", escaped_field_names},
         {"connector shapes persist across versions", connector_shapes_persist_and_older_versions_still_open},
+        {"pictures and notes persist", pictures_and_notes_persist},
+        {"transparency persists", transparency_persists},
+        {"weak entities and identifying relationships persist", weak_entities_and_identifying_relationships_persist},
         {"invalid connector shapes", invalid_connector_shapes},
         {"invalid IDs, references, enums and layout", invalid_identifiers_references_and_enums},
         {"bounded input and structural depth", resource_limits},
