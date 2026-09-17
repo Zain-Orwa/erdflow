@@ -211,6 +211,11 @@ QToolBar#diagramTools { background: @panel@; spacing: 2px; padding: 4px; }
 QToolBar#diagramTools QToolButton { text-align: left; padding: 6px 8px; }
 QToolButton#themeButton { border-color: @border@; background: @panel@; padding: 5px 22px 5px 9px; }
 QToolButton#themeButton::menu-indicator { subcontrol-origin: padding; subcontrol-position: center right; right: 4px; width: 12px; }
+/* The same again for the search's own options button: a style drops a menu
+   arrow into the bottom-right corner unless it is told where to put it, which
+   leaves it sitting low beside the word rather than level with it. */
+QToolButton#searchSettings { padding: 4px 22px 4px 8px; }
+QToolButton#searchSettings::menu-indicator { subcontrol-origin: padding; subcontrol-position: center right; right: 5px; width: 12px; }
 QToolButton#themeButton:hover, QToolButton#themeButton:pressed { border-color: @accent@; background: @base@; color: @text@; }
 QToolBar#ribbonTabs { background: @panel@; border-bottom: 1px solid @border@; padding: 0px; spacing: 0px; }
 QToolBar#ribbonTabs QToolButton { background: transparent; color: @text@; border: none; border-bottom: 2px solid transparent; border-radius: 0px; padding: 6px 13px 4px 13px; }

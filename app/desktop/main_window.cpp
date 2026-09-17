@@ -477,9 +477,15 @@ protected:
 };
 
 void finish_field_edit() {
-    if (auto* widget = QApplication::focusWidget();
-        qobject_cast<QLineEdit*>(widget) || qobject_cast<QPlainTextEdit*>(widget))
-        widget->clearFocus();
+    auto* widget = QApplication::focusWidget();
+    if (!qobject_cast<QLineEdit*>(widget) && !qobject_cast<QPlainTextEdit*>(widget)) return;
+    // The search box is not one of the model's fields. Nothing it holds needs
+    // committing, and taking the caret out of it would end the word somebody is
+    // in the middle of writing -- which is what happened: the first letter
+    // filtered the diagram, the caret left, and the second could not be typed.
+    for (const auto* ancestor = widget; ancestor; ancestor = ancestor->parentWidget())
+        if (ancestor->objectName() == QLatin1String("searchBar")) return;
+    widget->clearFocus();
 }
 }
 
@@ -2953,7 +2959,8 @@ bool MainWindow::comment_on_selected_text(const QString& field_name, const QStri
 }
 
 void MainWindow::search_diagram(const DiagramSearch& search) {
-    finish_field_edit();
+    // Nothing is committed here on purpose. A search changes nothing in the
+    // model, so it has no reason to end an edit anybody has in progress.
     canvas_->set_search(search);
     const auto found = canvas_->found_elements();
     if (search_bar_) search_bar_->report(static_cast<int>(found.size()));

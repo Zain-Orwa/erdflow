@@ -1595,6 +1595,33 @@ int main(int argc, char** argv) {
             for (const char* part : {"searchKind", "searchSettings", "searchCount", "searchClose"})
                 require(window.findChild<QWidget*>(part) != nullptr, part);
 
+            // Typing a word must be possible. Filtering the diagram used to
+            // end the edit in progress, which took the caret out of the box
+            // after the first letter and left the second with nowhere to go.
+            auto* box = child<QLineEdit>(window, "searchText");
+            window.activateWindow();
+            box->setFocus();
+            settle();
+            require(QApplication::focusWidget() == box, "The caret starts in the box");
+            for (const auto letter : QString("Course")) {
+                QKeyEvent press(QEvent::KeyPress, letter.unicode(), Qt::NoModifier, QString(letter));
+                QApplication::sendEvent(box, &press);
+                settle();
+                // The filter is applied as the typing settles, so drive that
+                // here rather than waiting on the clock.
+                window.search_diagram(desktop::DiagramSearch{box->text(), desktop::SearchKind::Everything, false, false});
+                settle();
+                // Asked of the application rather than the window, because
+                // that is what decides whether an edit in progress is ended,
+                // and so what the bug turned on.
+                require(QApplication::focusWidget() == box,
+                        "The caret stays in the box while a word is written");
+            }
+            require(box->text() == "Course", "So the whole word arrives, not just its first letter");
+            box->clear();
+            window.search_diagram({});
+            settle();
+
             // A kind with nothing typed asks for every element of that kind.
             desktop::DiagramSearch asked;
             asked.kind = desktop::SearchKind::Entities;
