@@ -14,14 +14,17 @@ namespace erdflow::desktop {
 enum class Glyph {
     New, Open, Save, Undo, Redo, Select, Entity, Attribute, Relationship,
     Isa, Connect, Pan, Fit, Check, Duplicate, Rename, Delete, Theme,
-    Picture, Note, FullView
+    Picture, Note, FullView, Dismiss, Symbols
 };
 
-// Which of the two sets a glyph is taken from. The painted one follows the
-// theme's colours and needs no files; the modern one is the 3D artwork, which
-// carries its own colour and so looks the same under every theme. That is the
-// trade, and it is the user's to make.
-enum class IconMode { Normal, Modern };
+// Which set a glyph is taken from. Painted follows the theme's colours and
+// needs no files. Modern is the coloured artwork, which carries its own colour
+// and so looks the same under every theme. Outline is line art -- Lucide for
+// the ordinary commands, ERDFlow's own for the database shapes Lucide has no
+// icon for -- drawn in one stroke weight and inked from the theme, so it is
+// both quiet and part of whatever palette is on. That is the trade, and it is
+// the user's to make.
+enum class IconMode { Normal, Modern, Outline };
 
 [[nodiscard]] QString icon_mode_key(IconMode mode);
 [[nodiscard]] IconMode icon_mode_from_key(const QString& key);

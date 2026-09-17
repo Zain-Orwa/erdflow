@@ -195,8 +195,30 @@ struct Note {
     NoteId id;
     std::string name;
     std::string description;
+    // A plain note is one character standing on its own: it is drawn as the
+    // character alone, with no card, no border and no title, the way an emoji
+    // sits in a line of chat. It is still a note in every other way, so it is
+    // moved, coloured, copied, deleted and undone like one.
+    bool plain = false;
     auto operator<=>(const Note&) const = default;
 };
+// The paper a diagram is drawn on. Theme leaves the canvas the plain colour
+// its palette gives it; the others lay a ruling or a picture over that colour,
+// as strongly as the strength says. It is part of how the diagram looks rather
+// than of what it means, but it travels with the document: a diagram drawn on
+// graph paper should open on graph paper.
+enum class BackgroundStyle { Theme, Squares, Lines, Dots, Image };
+struct Background {
+    BackgroundStyle style = BackgroundStyle::Theme;
+    // How much of the ruling or picture shows through, in percent. A hundred
+    // is full strength and nothing is invisible below it that was not already.
+    std::uint8_t strength = 100;
+    // The encoded picture, PNG or JPEG, for the Image style and empty for the
+    // rest. Held the same way a placed picture is: bytes as the file gave them.
+    std::vector<std::uint8_t> image;
+    auto operator<=>(const Background&) const = default;
+};
+
 struct Project {
     ProjectId id;
     std::string name = "Untitled";
@@ -219,6 +241,8 @@ struct Project {
     // whichever colour the surface has, chosen or the theme's, which is why
     // it is kept apart from the colour. An absent entry means solid.
     std::map<ElementRef, std::uint8_t> transparency;
+    // The paper the diagram is drawn on.
+    Background background;
     auto operator<=>(const Project&) const = default;
 };
 
@@ -249,10 +273,17 @@ inline constexpr std::size_t max_elements = 10000;
 inline constexpr std::size_t max_name_bytes = 512;
 inline constexpr std::size_t max_description_bytes = 16384;
 inline constexpr double max_coordinate = 100000;
+// A symbol is drawn as its character grown to fill its box, so the box is how
+// big the character is. The smallest is still a mark that can be read beside a
+// name; the largest heads a region of the diagram without becoming the paper
+// it is drawn on. Between them a symbol can be enlarged and shrunk freely.
+inline constexpr double min_symbol_size = 16;
+inline constexpr double max_symbol_size = 4000;
 // A picture's bytes, before the text encoding a project file gives them. Kept
 // well inside the file limit, so a diagram can carry a few pictures and still
 // have room for the model.
 inline constexpr std::size_t max_image_bytes = 2U * 1024U * 1024U;
 inline constexpr std::uint8_t max_transparency = 100;
+inline constexpr std::uint8_t max_strength = 100;
 
 } // namespace erdflow::domain

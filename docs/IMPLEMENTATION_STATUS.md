@@ -10,16 +10,87 @@ not been built yet. Their presence in those documents is not a completion claim.
 
 ## What works
 
+- The diagram has paper of its own, chosen under **View → Background** and so
+  also on the Design row: **None**, the plain canvas its theme gives it;
+  **Squares**, like graph paper; **Lines**, ruled like a notebook; **Dots**; or
+  **Picture…**, one of the user's own drawn once behind the diagram, covering
+  the view and fixed to it, so zooming never magnifies it. A background
+  picture is kept at up to 2560 pixels, at the best size a project file has
+  room for. A picture
+  carries a **Strength** bar saying how much of it shows, from full down to
+  none, which is what holds it behind the diagram rather than in front; a
+  ruling is drawn as the ruling it is and is offered no such bar. While a
+  ruling is in use the editing grid's own dots step aside. The paper travels
+  with the document rather than with the application, unlike the theme: a
+  diagram drawn on graph paper opens on graph paper. Project files are
+  version 14.
+- A selection's lines can be locked or released together. Right-click an
+  element and **Lock these connectors** pins every line the selection touches
+  where it is drawn now, so they stop sliding as the shapes are moved;
+  **Release** hands the joins back. Each is offered only while it has something
+  to do, and covers whatever is selected: one element, a region, or, from the
+  menu on empty canvas, every connector in the diagram. A line's bend and
+  corners are left as they are, and the whole set is one edit however many
+  lines it covers. Inheritance links are left out, since they are anchored to
+  their triangle and have no joins to pin.
+- A choice or a number never changes because the pointer passed over it. A
+  wheel or a trackpad turn over a combo box or a spin box goes to the panel
+  behind it, so the panel scrolls and the value stays; values change by
+  pressing the control and choosing, or by typing. This holds for the
+  notation picker on the toolbar as well.
+- **Check model** is a switch: it opens the findings and puts them away again,
+  wearing a green tick while they are closed and a red cross while they are
+  open. It follows the panel however that is opened or closed, including from
+  the View menu and from Full view.
 - Native Qt window with modeling toolbar, Explorer, Properties, model checks,
   status/zoom display, and a university example.
 - A row of tabs above the toolbar, the way an office application arranges its
   commands: **File** drops the File menu from its tab; **Home** is the modeling
-  toolbar, with Note after Connect; **Insert** carries Picture; **Design** carries Theme,
+  toolbar, with Note after Connect; **Insert** carries Picture and Symbols; **Design** carries Theme,
   Icons, Notation and Lines; **View** carries the panels, framing, grid and
   align-to-grid; **Help** carries the guide and About. The rows are built from the same
   actions as the menus and the Home toolbar, so a tool chosen or locked on one
   row is chosen or locked on the other. Convert and Export tabs wait until
   there is something to convert or export.
+- **Insert → Symbols…** opens a gallery of the characters a conceptual diagram
+  wants and a keyboard has not got: relational algebra (select, project,
+  rename, the six joins, union, intersection, difference, product, division),
+  logic and sets, arrows, mathematics, Greek letters, punctuation and marks,
+  about 130 emoji, and the people an ERD is usually about: men, women, older
+  people, children and babies, whole standing figures, and the roles an entity
+  is named after, with man and woman forms of the common ones — student,
+  teacher, health worker, office worker, technologist and scientist. Every
+  character is named, and the search reaches across all eight
+  groups at once, so the natural join is found by typing "join" rather than
+  hunted for by eye. A character goes into whatever field was last being
+  written in, at the caret, and the gallery stays open so a caption can take
+  several. "Being written in" means where the keyboard actually is, so a
+  character never lands in a box that has closed or in a field the user never
+  went to. Committing a name rebuilds the properties panel, so the caret goes
+  back to where the writing stopped rather than in front of the name. With
+  nothing being written in, the character goes on the diagram instead, drawn
+  bare: no card, no border and no title, the way an emoji sits in a line of
+  chat. It is sized to the box it is given, so resizing the box resizes the
+  character, and a chosen colour is the colour it is written in. A symbol is
+  the one element with a size of its own to choose, and there are three ways to
+  choose it: its four corner grips, hauled by hand and keeping its proportions
+  with the opposite corner anchored; **Edit → Enlarge symbol** and **Shrink
+  symbol** (Ctrl+Shift+= and Ctrl+Shift+-, and the same pair on the canvas's
+  right-click menu), which step it by a quarter about its own centre; and a
+  **Size** field in the properties panel for an exact figure. All three go
+  through one named edit, "Resize symbol", so any of them undoes in a step.
+  Sizes are held between 16 and 4000 units, a drag in progress is previewed on
+  the diagram and written only when the grip is let go, and Escape abandons it.
+  These act only when everything selected is a symbol: an entity's box is sized
+  by the name it has to hold, so the commands stay disabled for one. It lands
+  where the pointer last was over the diagram rather than in the middle of the
+  view, and is left unchosen, so picking several in a row does not keep
+  swapping the properties panel over to them; one that would land exactly on
+  another steps down and across until it finds room. It is moved, coloured,
+  copied, deleted and undone like any other element, and underneath it is a
+  note marked plain, which is what the file records, so project files are
+  version 15. The gallery is a tool window that never takes activation, so
+  the field being written in keeps its caret while its character is chosen.
 - Pictures and notes as visual aids on the canvas. **Insert → Picture…** places
   an image from a file (PNG and JPEG bytes are kept as they are; other formats
   and large images are re-encoded, scaled to at most 1024 pixels) in the
@@ -36,10 +107,16 @@ not been built yet. Their presence in those documents is not a completion claim.
   **Join automatically** restores the sliding joins. A selected line carries a
   square grip on each end that can be dragged to any point on the same shape,
   and two lines may leave one point. The padlock still releases a line's joins.
-- Six themes covering both the application chrome and the diagram, chosen under
+- Nineteen themes covering both the application chrome and the diagram, chosen under
   **View → Theme** and remembered between sessions. **View → Icons** chooses
-  between glyphs painted from the active theme and embedded SVG artwork with
-  light/dark variants; the icon choice is also remembered.
+  between three sets, and the choice is remembered: Outline, the default, is
+  single-weight line art inked from the active theme, with a second inking for
+  a tool that is on so its glyph reads against the accent it sits on; Modern is
+  coloured artwork with light and dark variants; Painted is glyphs drawn from
+  the theme with no files at all, and stands in whenever a file cannot be read.
+  The outline set is Lucide (ISC) for the ordinary commands and ERDFlow's own
+  drawings, on the same grid and stroke weight, for the Chen shapes Lucide has
+  no icon for.
 - Entity rectangles, attribute ovals, relationship diamonds, names and descriptions.
 - Stable typed UUIDv7 IDs for projects, entities, attributes, relationships, and
   each relationship participant. Rename and undo preserve identity.

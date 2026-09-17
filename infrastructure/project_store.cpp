@@ -25,8 +25,10 @@ namespace {
 // compatibility rule for each.
 // Version 11 adds pictures and notes, the visual aids placed on the canvas;
 // version 12 lets an element's surface be see-through by a percentage;
-// version 13 adds weak entities and identifying relationships.
-constexpr int current_format_version = 13;
+// version 13 adds weak entities and identifying relationships; version 14 adds
+// the paper the diagram is drawn on; version 15 lets a note be a plain one, a
+// single character drawn bare on the diagram.
+constexpr int current_format_version = 15;
 QString text(const std::string& value) { return QString::fromUtf8(value.data(), static_cast<qsizetype>(value.size())); }
 Uuid bytes_of(const QUuid& value) {
     Uuid result;
@@ -104,6 +106,7 @@ ElementRef parse_ref(const QJsonValue& value) {
 std::vector<std::uint8_t> image_bytes(const QJsonValue& value) {
     if (!value.isString()) invalid("A picture's image must be base64 text.");
     const auto encoded = value.toString().toLatin1();
+    if (encoded.isEmpty()) return {};
     if (static_cast<std::size_t>(encoded.size()) > (max_image_bytes + 2) / 3 * 4)
         invalid("A picture's image exceeds the 2 MiB limit.");
     const auto decoded = QByteArray::fromBase64Encoding(encoded, QByteArray::AbortOnBase64DecodingErrors);
@@ -114,6 +117,25 @@ std::vector<std::uint8_t> image_bytes(const QJsonValue& value) {
 QString image_text(const std::vector<std::uint8_t>& image) {
     return QString::fromLatin1(QByteArray::fromRawData(reinterpret_cast<const char*>(image.data()),
                                                        static_cast<qsizetype>(image.size())).toBase64());
+}
+QString background_name(BackgroundStyle style) {
+    switch (style) {
+    case BackgroundStyle::Theme: return "theme";
+    case BackgroundStyle::Squares: return "squares";
+    case BackgroundStyle::Lines: return "lines";
+    case BackgroundStyle::Dots: return "dots";
+    case BackgroundStyle::Image: return "image";
+    }
+    invalid("Invalid background style.");
+}
+BackgroundStyle parse_background_style(const QJsonValue& value) {
+    const auto style = string(value);
+    if (style == "theme") return BackgroundStyle::Theme;
+    if (style == "squares") return BackgroundStyle::Squares;
+    if (style == "lines") return BackgroundStyle::Lines;
+    if (style == "dots") return BackgroundStyle::Dots;
+    if (style == "image") return BackgroundStyle::Image;
+    invalid("Unsupported background style.");
 }
 QString kind_name(AttributeKind kind) {
     switch (kind) {
@@ -336,7 +358,7 @@ QByteArray ErdxProjectStore::encode(const Project& project) {
             {"description", text(picture.description)}, {"image", image_text(picture.image)}});
     for (const auto& [id, note] : project.notes)
         notes.append(QJsonObject{{"id", uuid_text(id.value)}, {"name", text(note.name)},
-            {"description", text(note.description)}});
+            {"description", text(note.description)}, {"plain", note.plain}});
     QJsonArray connectors;
     for (const auto& [ref, connector] : project.connectors) {
         // Both anchors are always written, null when the join is not pinned, so
@@ -356,7 +378,10 @@ QByteArray ErdxProjectStore::encode(const Project& project) {
         {"entities", entities}, {"attributes", attributes}, {"relationships", relationships},
         {"layout", layout}, {"connectors", connectors}, {"colours", colours},
         {"specializations", specializations}, {"pictures", pictures}, {"notes", notes},
-        {"transparency", transparency}}}}).toJson(QJsonDocument::Indented);
+        {"transparency", transparency},
+        {"background", QJsonObject{{"style", background_name(project.background.style)},
+                                   {"strength", project.background.strength},
+                                   {"image", image_text(project.background.image)}}}}}}).toJson(QJsonDocument::Indented);
     if (bytes.size() > max_file_bytes) invalid("The project exceeds the 8 MiB file limit.");
     return bytes;
 }
@@ -374,7 +399,7 @@ application::LoadResult ErdxProjectStore::decode(const QByteArray& input) {
         // routed automatically; saving then writes the current version.
         const auto version = root["format_version"];
         const auto number_version = version.isDouble() ? version.toDouble() : 0;
-        if (number_version < 1 || number_version > 13 || number_version != std::floor(number_version))
+        if (number_version < 1 || number_version > current_format_version || number_version != std::floor(number_version))
             invalid("Unsupported project version. Use a compatible ERDFlow release.");
         const bool shaped_connectors = number_version >= 2;
         const bool associative_entities = number_version >= 3;
@@ -405,7 +430,15 @@ application::LoadResult ErdxProjectStore::decode(const QByteArray& input) {
         // files' entities are all regular and their relationships never
         // identifying, which is all they could say.
         const bool weak_entities = number_version >= 13;
-        const auto data = translucent
+        // Version 14 gives the diagram its paper. Earlier files are drawn on
+        // the plain colour their theme gives the canvas, which is all they had.
+        const bool papered = number_version >= 14;
+        // Version 15 lets a note be a plain one. A note written by an earlier
+        // version is a card, which is what those files meant.
+        const bool plain_notes = number_version >= 15;
+        const auto data = papered
+            ? object(root["project"], {"id", "name", "entities", "attributes", "relationships", "layout", "connectors", "specializations", "colours", "pictures", "notes", "transparency", "background"})
+            : translucent
             ? object(root["project"], {"id", "name", "entities", "attributes", "relationships", "layout", "connectors", "specializations", "colours", "pictures", "notes", "transparency"})
             : figures
             ? object(root["project"], {"id", "name", "entities", "attributes", "relationships", "layout", "connectors", "specializations", "colours", "pictures", "notes"})
@@ -574,10 +607,24 @@ application::LoadResult ErdxProjectStore::decode(const QByteArray& input) {
                 if (!project.pictures.emplace(picture.id, std::move(picture)).second) invalid("Duplicate picture identifier.");
             }
             for (const auto& value : array(data["notes"])) {
-                const auto o = object(value, {"id", "name", "description"});
+                const auto o = plain_notes ? object(value, {"id", "name", "description", "plain"})
+                                           : object(value, {"id", "name", "description"});
                 Note note{NoteId{parse_id(o["id"])}, string(o["name"]), string(o["description"], max_description_bytes)};
+                if (plain_notes) {
+                    if (!o["plain"].isBool()) invalid("A note's plain flag must be true or false.");
+                    note.plain = o["plain"].toBool();
+                }
                 if (!project.notes.emplace(note.id, std::move(note)).second) invalid("Duplicate note identifier.");
             }
+        }
+        if (papered) {
+            const auto o = object(data["background"], {"style", "strength", "image"});
+            project.background.style = parse_background_style(o["style"]);
+            const auto strength = number(o["strength"]);
+            if (strength < 0 || strength > max_strength || strength != std::floor(strength))
+                invalid("A background's strength is a whole percentage from 0 to 100.");
+            project.background.strength = static_cast<std::uint8_t>(strength);
+            project.background.image = image_bytes(o["image"]);
         }
         require_valid(project);
         return {std::move(project), {}};

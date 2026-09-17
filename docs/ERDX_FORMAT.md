@@ -1,6 +1,6 @@
-# ERDX project format — versions 1 to 13
+# ERDX project format — versions 1 to 15
 
-**Status:** Implemented Conceptual ERD format; version 13 is current  
+**Status:** Implemented Conceptual ERD format; version 15 is current  
 **Date:** 2026-09-16
 
 ## What, why, and how
@@ -26,7 +26,7 @@ The root object has exactly three fields:
 | Field | Value |
 | --- | --- |
 | `format` | String, exactly `"erdflow"` |
-| `format_version` | JSON integer from `1` to `13` |
+| `format_version` | JSON integer from `1` to `15` |
 | `project` | Project object described below |
 
 A file with an unsupported version, missing field, unknown
@@ -110,7 +110,17 @@ object gains a required `weak` boolean and a relationship object a required
 regular entities and non-identifying relationships, which is all they could
 say. A relationship may not be both identifying and associative.
 
-Saving always writes version 13, so opening an earlier file and saving upgrades
+**Version 14** gives a diagram the paper it is drawn on. The project gains a
+required `background` object; earlier versions must not carry it, and are drawn
+on the plain colour their theme gives the canvas, which is all they had.
+
+**Version 15** lets a note be a plain one: a single character placed on the
+diagram and drawn bare, with no card, no border and no title, the way an emoji
+sits in a line of chat. Every note object gains a required `plain` boolean;
+earlier versions must not carry it, and their notes are all cards, which is
+what those files meant.
+
+Saving always writes version 15, so opening an earlier file and saving upgrades
 it in place and an older build will then refuse the result. This one-way upgrade
 is acceptable only because no release has shipped. A future version that must
 stay readable by older builds needs a different policy, recorded before it is
@@ -139,6 +149,7 @@ The project object has exactly these fields:
 | `pictures` | Array of picture objects; version 11 onwards |
 | `notes` | Array of note objects; version 11 onwards |
 | `transparency` | Array of element-transparency objects; version 12 onwards |
+| `background` | Background object; version 14 onwards |
 
 An **entity** object has `id`, `name`, and `description`, all strings, and
 from version 13 a `weak` boolean. A weak entity has no key of its own: it is
@@ -271,10 +282,23 @@ is not base64 is refused, and so are decoded bytes that do not begin with a
 PNG or JPEG signature, or more of them than the limit below. The editor
 decodes the image only to draw it.
 
-A **note** object has exactly `id`, `name`, and `description`. The name is
-drawn as the note's title and the description as the text beneath it. Either
-may be empty: an unnamed picture or note is not a finding, unlike an unnamed
-element of the model.
+A **note** object has exactly `id`, `name`, `description`, and `plain` from
+version 15 onwards. The name is drawn as the note's title and the description
+as the text beneath it. Either may be empty: an unnamed picture or note is not
+a finding, unlike an unnamed element of the model.
+
+`plain` says the note is a symbol rather than a card. A plain note is drawn as
+its name alone, sized to the box it is given, with no surface, no border and
+no title, and its description is not drawn at all:
+
+```json
+{"id": "019947b9-7111-7000-8000-000000000007", "name": "⋈",
+ "description": "", "plain": true}
+```
+
+It is still a note in every other way, so it is moved, resized, coloured,
+copied, deleted and undone like one, and a chosen colour is the colour the
+character is drawn in rather than a surface behind it.
 
 ## Element colours
 
@@ -307,6 +331,32 @@ the theme's, which is why it is kept apart from the colour; at 100 only the
 outline is drawn and the canvas shows through. A solid surface stores nothing,
 so 0 is never written. The `element` must exist, and at most one entry may be
 given per element.
+
+## Background
+
+The **background** object has exactly `style`, `strength` and `image`:
+
+```json
+{"style": "squares", "strength": 40, "image": ""}
+```
+
+`style` is `"theme"`, `"squares"`, `"lines"`, `"dots"` or `"image"`. Theme
+leaves the canvas the plain colour its palette gives it; the others lay a
+ruling or a picture over that colour. `strength` is a whole number from 0 to
+100 saying how much of it shows, where 0 draws none of it. It is a picture's
+setting: the editor writes 100 for every other style, since a ruling is drawn
+as the ruling it is and only a picture needs holding back behind the diagram.
+`image` is the encoded picture as base64, the same as a placed picture's, and
+is empty for every style but `"image"`; a picture given for another style is
+refused rather than kept out of sight, and a picture style with no readable
+PNG or JPEG is refused too.
+
+The paper travels with the document rather than with the application, unlike
+the theme and the notation: a diagram drawn on graph paper opens on graph
+paper. While a ruling is in use the editing grid's own dots are not drawn,
+since the paper already rules the canvas. A picture is drawn once, covering
+the view and cropped to it, and is fixed to the view rather than to the
+canvas, so zooming the diagram never magnifies it.
 
 ## Connector shapes
 
@@ -395,7 +445,7 @@ An empty conceptual project is a valid saved draft:
 ```json
 {
   "format": "erdflow",
-  "format_version": 13,
+  "format_version": 15,
   "project": {
     "id": "019947b9-7111-7000-8000-000000000001",
     "name": "Untitled",
@@ -408,7 +458,8 @@ An empty conceptual project is a valid saved draft:
     "specializations": [],
     "pictures": [],
     "notes": [],
-    "transparency": []
+    "transparency": [],
+    "background": {"style": "theme", "strength": 100, "image": ""}
   }
 }
 ```

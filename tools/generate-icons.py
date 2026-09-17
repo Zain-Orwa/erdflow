@@ -119,6 +119,12 @@ def build_all():
         <path d="M82 18 V40 H104"/>
         <path d="M42 62 H86 M42 80 H70" stroke-width="{WT}"/>''')
 
+    # Special characters and emoji. Omega is what a document editor has meant by
+    # "symbols" for thirty years, so it is what the button wears here too.
+    G["symbols"] = ("purple", f'''
+        <rect x="14" y="14" width="100" height="100" rx="20" {F}/>
+        <path d="M38 96 H54 V84 A24 24 0 1 1 74 84 V96 H90" fill="none" stroke-width="{W}"/>''')
+
     G["picture"] = ("blue", f'''
         <rect x="14" y="24" width="100" height="80" rx="10" {F}/>
         <path d="M22 98 L50 60 L68 80 L82 68 L106 98 Z" {ink("blue")}/>
@@ -129,6 +135,10 @@ def build_all():
         <circle cx="46" cy="54" r="6" {ink("green")}/>
         <circle cx="64" cy="54" r="6" {ink("green")}/>
         <circle cx="82" cy="54" r="6" {ink("green")}/>''')
+
+    G["close"] = ("red", f'''
+        <circle cx="64" cy="64" r="48" {F}/>
+        <path d="M46 46 L82 82 M82 46 L46 82"/>''')
 
     G["full-view"] = ("blue", f'''
         <rect x="10" y="26" width="108" height="76" rx="10" {F}/>
@@ -236,7 +246,7 @@ def build_all():
 
 ORDER = ["select","entity","attribute","relationship","isa","connect","note","comment","picture","pan","zoom",
          "new-project","open","save","import","export","undo","redo","duplicate","delete","search",
-         "conceptual","schema","physical","sql","data","explorer","properties","validate","theme","settings","full-view"]
+         "symbols","conceptual","schema","physical","sql","data","explorer","properties","validate","theme","settings","full-view","close"]
 
 for folder, dark in (("icons", False), ("icons-on-dark", True)):
     on_dark = dark

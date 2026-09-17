@@ -7,6 +7,7 @@
 #include <QPixmap>
 #include <functional>
 #include <memory>
+#include <optional>
 
 namespace erdflow::desktop {
 
@@ -44,6 +45,11 @@ inline constexpr BodySize attribute_body{150, 60};
 inline constexpr BodySize relationship_body{190, 110};
 inline constexpr BodySize isa_body{96, 74};
 inline constexpr BodySize note_body{200, 120};
+// The size a symbol is placed at, and the step Enlarge and Shrink move it by.
+// A quarter is enough to see at a glance and small enough that three or four
+// presses land on the size that was wanted, rather than overshooting it.
+inline constexpr BodySize symbol_body{56, 56};
+inline constexpr double symbol_step = 1.25;
 
 class DiagramView : public QGraphicsView {
 public:
@@ -96,12 +102,25 @@ public:
     // menu so it can be driven from a test.
     void align_selection_for_test(const std::vector<domain::ElementRef>& elements, bool along_x, int which);
     void set_transparency(const std::vector<domain::ElementRef>& elements, int percent);
+    // The selected elements that are symbols. A symbol is the one thing on the
+    // diagram whose size is the user's to choose, so the commands that enlarge
+    // and shrink ask this first and do nothing when the answer is empty.
+    [[nodiscard]] std::vector<domain::ElementRef> selected_symbols() const;
+    // Grows every selected symbol about its own centre by the given factor, or
+    // shrinks it when the factor is below one, as a single edit. Each symbol
+    // keeps its own size and its own place: a selection of several does not
+    // collapse onto one size or drift together.
+    void resize_symbols(double factor);
     // Editing a name on the canvas itself, as an alternative to the properties
     // panel. Commit writes the pending text through the normal command path.
     void begin_rename(const domain::ElementRef& element);
     [[nodiscard]] bool renaming() const;
     void commit_rename();
     [[nodiscard]] double zoom_factor() const;
+    // Where the pointer last was over the canvas, in scene coordinates.
+    // Nothing is returned until the pointer has been over it, so a caller can
+    // fall back to the middle of the view rather than guess at the corner.
+    [[nodiscard]] std::optional<QPointF> pointer_place() const;
 
     std::function<void(const application::EditResult&)> on_edit;
     std::function<void(const std::vector<domain::ElementRef>&)> on_selection;

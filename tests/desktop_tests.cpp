@@ -1,4 +1,5 @@
 #include "app/desktop/icons.hpp"
+#include "app/desktop/symbols.hpp"
 #include "app/desktop/main_window.hpp"
 #include "infrastructure/project_store.hpp"
 
@@ -6,22 +7,30 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDialog>
 #include <QDockWidget>
+#include <QFontMetrics>
+#include <QDoubleSpinBox>
 #include <QFile>
 #include <QImage>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
+#include <QSpinBox>
+#include <QListWidget>
 #include <QMenu>
 #include <QMessageBox>
 #include <QMouseEvent>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSettings>
+#include <QSlider>
+#include <QWidgetAction>
 #include <QStandardItemModel>
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QToolBar>
+#include <QWheelEvent>
 #include <QToolButton>
 #include <QTreeView>
 
@@ -544,29 +553,381 @@ int main(int argc, char** argv) {
             require(bool(editor.undo()), "Undo the colour");
         }
 
-        // The modern set is artwork rather than drawing, so it neither follows
-        // the theme nor needs to: switching to it must change every button, and
-        // switching back must restore what the theme was drawing.
+        // Three sets, and the window has to be able to wear any of them. The
+        // outline set is line art inked from the theme, the modern set is
+        // artwork carrying its own colour, and the painted set is drawn from
+        // the palette; each must cover every glyph the window uses, or a
+        // button silently falls back and the sets disagree about what is there.
         {
-            const auto drawn = child<QAction>(window, "toolEntity")->icon().pixmap(22, 22).toImage();
+            require(window.icon_mode() == desktop::IconMode::Outline, "The window wears the line art to begin with");
+            const auto lined = child<QAction>(window, "toolEntity")->icon().pixmap(22, 22).toImage();
+            for (int index = 0; index <= static_cast<int>(desktop::Glyph::Symbols); ++index) {
+                const auto glyph = static_cast<desktop::Glyph>(index);
+                for (const char* set : {"icons", "icons-on-dark", "icons-outline"}) {
+                    const QIcon file(QStringLiteral(":/erdflow/%1/%2.svg")
+                                         .arg(QString::fromLatin1(set), desktop::icon_name(glyph)));
+                    require(!file.pixmap(22, 22).isNull(), "Every set has a file for every glyph the window draws");
+                }
+            }
             child<QAction>(window, "iconsmodern")->trigger();
             settle();
             require(window.icon_mode() == desktop::IconMode::Modern, "The menu changes the icon set");
             const auto artwork = child<QAction>(window, "toolEntity")->icon().pixmap(22, 22).toImage();
-            require(!artwork.isNull() && artwork != drawn, "Every button takes the new set");
+            require(!artwork.isNull() && artwork != lined, "Every button takes the new set");
             require(QSettings().value("iconMode").toString() == "modern", "The choice is remembered");
-            // Every glyph the window uses has to exist in the set, or a button
-            // silently falls back and the two sets disagree about what is there.
-            for (int index = 0; index <= static_cast<int>(desktop::Glyph::Theme); ++index) {
-                const auto glyph = static_cast<desktop::Glyph>(index);
-                const QIcon file(QStringLiteral(":/erdflow/icons/%1.svg").arg(desktop::icon_name(glyph)));
-                require(!file.pixmap(22, 22).isNull(),
-                        "The modern set has artwork for every glyph the window draws");
-            }
             child<QAction>(window, "iconsnormal")->trigger();
             settle();
-            require(child<QAction>(window, "toolEntity")->icon().pixmap(22, 22).toImage() == drawn,
-                    "Going back restores the drawn glyphs");
+            const auto painted = child<QAction>(window, "toolEntity")->icon().pixmap(22, 22).toImage();
+            require(painted != artwork && painted != lined, "And the painted set is a third thing again");
+            child<QAction>(window, "iconsoutline")->trigger();
+            settle();
+            require(child<QAction>(window, "toolEntity")->icon().pixmap(22, 22).toImage() == lined,
+                    "Going back restores the line art");
+
+            // The line art is inked from the theme, which is what the artwork
+            // cannot do: changing the palette has to change the drawing.
+            child<QAction>(window, "themedracula")->trigger();
+            settle();
+            require(child<QAction>(window, "toolEntity")->icon().pixmap(22, 22).toImage() != lined,
+                    "The line art is inked from the theme");
+            child<QAction>(window, "themeofficelight")->trigger();
+            settle();
+
+            // A tool that is on sits on a chip of the theme's accent. Inked for
+            // the panel it would all but vanish there, so the "on" state has to
+            // be a second inking that reads against the accent instead.
+            for (const auto glyph : {desktop::Glyph::Select, desktop::Glyph::Connect, desktop::Glyph::Pan}) {
+                const auto& colors = desktop::theme(desktop::ThemeId::OfficeLight);
+                const auto icon = desktop::glyph_icon(glyph, colors, 22, desktop::IconMode::Outline);
+                const auto resting = icon.pixmap(22, 22, QIcon::Normal, QIcon::Off).toImage();
+                const auto lit = icon.pixmap(22, 22, QIcon::Normal, QIcon::On).toImage();
+                require(!lit.isNull() && lit != resting, "A tool that is on is inked again");
+                // The solidest pixel of the drawing is the ink itself, the rest
+                // of the line being the softened edge of the same colour.
+                QColor ink;
+                int most = 0;
+                for (int y = 0; y < lit.height(); ++y)
+                    for (int x = 0; x < lit.width(); ++x) {
+                        const auto pixel = lit.pixelColor(x, y);
+                        if (pixel.alpha() > most) { most = pixel.alpha(); ink = pixel; }
+                    }
+                require(most > 200, "The lit drawing is actually there");
+                const auto wanted = desktop::readable_on(colors.accent);
+                require(std::abs(ink.red() - wanted.red()) < 24 && std::abs(ink.green() - wanted.green()) < 24
+                            && std::abs(ink.blue() - wanted.blue()) < 24,
+                        "And it is inked in whatever reads on the accent");
+            }
+        }
+
+        // Insert offers the characters an ERD wants and a keyboard has not
+        // got: the relational algebra signs above all, and the marks and emoji
+        // a note is annotated with. They go into whatever field is being
+        // written in, which means the gallery has to find that field again
+        // after a commit has rebuilt the properties panel underneath it.
+        {
+            require(child<QMenu>(window, "insertMenu")->actions().contains(child<QAction>(window, "insertSymbols")),
+                    "Insert carries the symbol gallery");
+            require(child<QToolBar>(window, "insertTools")->actions().contains(child<QAction>(window, "insertSymbols")),
+                    "And the ribbon's Insert row carries it too");
+
+            // A character no font can draw would show as an empty box, so the
+            // table is measured against the interface font rather than trusted.
+            QFont measuring = QApplication::font();
+            measuring.setPointSizeF(17);
+            const QFontMetrics metrics(measuring);
+            std::size_t characters = 0;
+            for (const auto& group : desktop::symbol_groups()) {
+                require(!group.symbols.empty(), "Every group offers something");
+                for (const auto& symbol : group.symbols) {
+                    require(!symbol.character.isEmpty() && !symbol.name.isEmpty(), "Every character is named");
+                    require(metrics.horizontalAdvance(symbol.character) > 0, "And something can draw every character");
+                    // Several of the people are joined sequences: a person and
+                    // what they do, written as two emoji the font draws as one.
+                    // A font that does not join them draws two, which is wider
+                    // than the picker's cell and comes out as an ellipsis, so
+                    // the width is measured rather than assumed.
+                    require(metrics.horizontalAdvance(symbol.character) <= 44,
+                            "And every character fits the cell it is drawn in");
+                    ++characters;
+                }
+            }
+            require(characters > 150, "The gallery is worth opening");
+
+            // With nothing chosen there is no field to write in, so the
+            // character goes on the diagram itself, as a note carrying it.
+            // That is the whole point of picking one, and it undoes like any
+            // other edit.
+            window.canvas()->select_elements({});
+            window.canvas()->setFocus();
+            settle();
+            require(window.findChild<QLineEdit*>("elementName") == nullptr, "Nothing chosen means no name field");
+            const auto notes_before = window.editor().project().notes.size();
+            require(window.insert_symbol(QStringLiteral("⋈")), "With no field open the character goes on the diagram");
+            require(window.editor().project().notes.size() == notes_before + 1, "As a note carrying it");
+            require(std::any_of(window.editor().project().notes.begin(), window.editor().project().notes.end(),
+                                [](const auto& entry) { return entry.second.name == "⋈" && entry.second.plain; }),
+                    "And the note is the character, drawn bare");
+            require(window.editor().undo_label() == "Insert symbol", "The history says what was done");
+            // Putting a character down is not choosing something to work on,
+            // so the panel is left alone rather than swapped over to it.
+            require(window.canvas()->selected_elements().empty(), "Placing one chooses nothing");
+            require(window.findChild<QLabel*>("propertyHeading") == nullptr, "So the panel is left as it was");
+            // Chosen deliberately, though, it says what it is: a card and a
+            // character drawn bare are not the same thing to anyone looking.
+            const auto placed = std::find_if(window.editor().project().notes.begin(),
+                                             window.editor().project().notes.end(),
+                                             [](const auto& entry) { return entry.second.plain; });
+            require(placed != window.editor().project().notes.end(), "The symbol is there to be chosen");
+            window.canvas()->select_elements({domain::ElementRef{placed->first}});
+            settle();
+            require(child<QLabel>(window, "propertyHeading")->text() == QStringLiteral("Symbol"),
+                    "And the panel calls it a symbol, not a note");
+            window.canvas()->select_elements({});
+            settle();
+            child<QAction>(window, "undoCommand")->trigger();
+            settle();
+            require(window.editor().project().notes.size() == notes_before, "Placing one undoes like any other edit");
+
+            // It goes where the user was working, which is where the pointer
+            // last was over the diagram, not in the middle of the view.
+            {
+                auto* canvas = window.canvas();
+                const QPoint spot(canvas->viewport()->width() / 4, canvas->viewport()->height() / 4);
+                QMouseEvent move(QEvent::MouseMove, QPointF(spot), canvas->viewport()->mapToGlobal(spot),
+                                 Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+                QApplication::sendEvent(canvas->viewport(), &move);
+                settle();
+                const auto wanted = canvas->mapToScene(spot);
+                require(canvas->pointer_place().has_value(), "The canvas remembers where the pointer was");
+                require(window.insert_symbol(QStringLiteral("π")), "A character is placed");
+                const auto found = std::find_if(window.editor().project().notes.begin(),
+                                                window.editor().project().notes.end(),
+                                                [](const auto& entry) { return entry.second.name == "π"; });
+                require(found != window.editor().project().notes.end(), "And it is there");
+                const auto box = window.editor().project().layout.at(domain::ElementRef{found->first});
+                require(std::abs(box.x + box.width / 2 - wanted.x()) < 1.5
+                            && std::abs(box.y + box.height / 2 - wanted.y()) < 1.5,
+                        "Centred where the pointer last was");
+                child<QAction>(window, "undoCommand")->trigger();
+                settle();
+            }
+
+            auto chosen = window.editor().project().entities.begin()->first;
+            for (const auto& [id, entity] : window.editor().project().entities)
+                if (entity.name == "Course") chosen = id;
+            window.canvas()->select_elements({chosen});
+            auto* name = child<QLineEdit>(window, "elementName");
+            name->setText("Course");
+            name->setFocus();
+            name->setCursorPosition(static_cast<int>(name->text().size()));
+            settle();
+            require(window.insert_symbol(QStringLiteral("σ")), "A character goes into the field being written in");
+            require(child<QLineEdit>(window, "elementName")->text() == QStringLiteral("Courseσ"),
+                    "At the caret, rather than at the start");
+
+            // Committing rebuilds the panel and takes the field with it, so the
+            // next character has to find the field that replaced it, and has to
+            // land where the writing stopped rather than in front of the name.
+            // Return commits a line edit exactly as leaving it does, and a key
+            // sent straight to the widget does not depend on the window being
+            // the active one, which offscreen it is not.
+            {
+                auto* writing = child<QLineEdit>(window, "elementName");
+                QKeyEvent commit(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+                QApplication::sendEvent(writing, &commit);
+                settle();
+            }
+            require(window.editor().project().entities.at(chosen).name == "Courseσ",
+                    "The name commits with the character in it");
+            // The keyboard lands in the field that replaced the one being
+            // written in, and that field reads from its beginning, so the
+            // caret has to be put back or the next character lands in front
+            // of the name instead of after it.
+            auto* rebuilt = child<QLineEdit>(window, "elementName");
+            rebuilt->setFocus();
+            settle();
+            require(window.insert_symbol(QStringLiteral("π")), "And the rebuilt field takes the next character");
+            require(rebuilt->text() == QStringLiteral("Courseσπ"),
+                    "Where the writing stopped, not in front of the name");
+
+            window.show_symbols(QStringLiteral("Emoji"));
+            settle();
+            auto* picker = child<QDialog>(window, "symbolPicker");
+            require(picker->isVisible(), "The gallery opens");
+            auto* groups = picker->findChild<QListWidget*>("symbolGroups");
+            require(groups && groups->currentItem() && groups->currentItem()->text() == QStringLiteral("Emoji"),
+                    "On the group it was asked for");
+
+            // Searching reaches across every group, so no one group stays lit.
+            auto* search = picker->findChild<QLineEdit*>("symbolSearch");
+            search->setText(QStringLiteral("join"));
+            settle();
+            require(groups->currentRow() < 0, "A search reaches across every group, so none stays highlighted");
+            const auto cells = [&] {
+                std::vector<QToolButton*> found;
+                // The search box has a clear button of its own, which is not a
+                // character; the characters are the ones that carry a name.
+                for (auto* button : picker->findChildren<QToolButton*>())
+                    if (!button->accessibleName().isEmpty()) found.push_back(button);
+                return found;
+            }();
+            require(cells.size() >= 6, "The search finds the joins");
+            for (auto* cell : cells)
+                require(cell->accessibleName().contains(QStringLiteral("join"), Qt::CaseInsensitive),
+                        "And shows nothing that does not match");
+
+            name = child<QLineEdit>(window, "elementName");
+            name->setFocus();
+            name->setCursorPosition(static_cast<int>(name->text().size()));
+            settle();
+            const auto before = name->text();
+            cells.front()->click();
+            settle();
+            require(child<QLineEdit>(window, "elementName")->text() != before, "Clicking a character writes it");
+            require(picker->isVisible(), "And the gallery stays open for the next one");
+
+            // Typing in the search box must not make the search box the place
+            // the characters land.
+            search->setFocus();
+            settle();
+            require(window.insert_symbol(QStringLiteral("π")), "Searching does not move where the characters go");
+            require(child<QLineEdit>(window, "elementName")->text().endsWith(QStringLiteral("π")),
+                    "They still go into the field being written in");
+            require(search->text() == QStringLiteral("join"), "And never into the search box");
+
+            // Renaming on the canvas puts the keyboard in the box over the
+            // element, and a character goes there. Once that box closes the
+            // keyboard belongs to the diagram again, so the next character
+            // goes on the diagram rather than into a box nobody can see.
+            {
+                window.canvas()->select_elements({chosen});
+                window.canvas()->begin_rename(chosen);
+                settle();
+                auto* box = child<QLineEdit>(window, "inlineName");
+                require(box->isVisible(), "Renaming on the canvas opens a box over the element");
+                // Offscreen the window is never the desktop's active one, so
+                // the box is given the keyboard here as the desktop would.
+                box->setFocus();
+                settle();
+                require(window.focusWidget() == box, "The box is where the keyboard is");
+                box->setText(QStringLiteral("Course"));
+                box->setCursorPosition(static_cast<int>(box->text().size()));
+                require(window.insert_symbol(QStringLiteral("σ")), "A character goes into that box");
+                require(box->text() == QStringLiteral("Courseσ"), "At its caret");
+                window.canvas()->commit_rename();
+                settle();
+                require(!box->isVisible(), "The box closes when the rename is done");
+                require(window.focusWidget() == window.canvas(), "And the diagram has the keyboard again");
+                const auto notes_now = window.editor().project().notes.size();
+                require(window.insert_symbol(QStringLiteral("π")), "The next character goes somewhere");
+                require(window.editor().project().notes.size() == notes_now + 1,
+                        "On the diagram, not into the closed box");
+                require(box->text() == QStringLiteral("Courseσ"), "Which is left exactly as it was");
+                child<QAction>(window, "undoCommand")->trigger();
+                settle();
+            }
+
+            // Clearing the search puts the highlight back where it was.
+            search->clear();
+            settle();
+            require(groups->currentItem() && groups->currentItem()->text() == QStringLiteral("Emoji"),
+                    "Clearing a search puts the group back");
+            picker->close();
+            settle();
+            child<QAction>(window, "undoCommand")->trigger();
+            settle();
+        }
+
+        // A symbol is the one element with a size of its own to choose, so the
+        // window offers two commands and a field for it, and offers them only
+        // while what is chosen is a symbol.
+        {
+            window.canvas()->select_elements({});
+            settle();
+            require(window.insert_symbol(QStringLiteral("\U0001F9D1\u200D\U0001F393")),
+                    "A symbol goes on the diagram");
+            const auto placed = std::find_if(window.editor().project().notes.begin(),
+                                             window.editor().project().notes.end(),
+                                             [](const auto& entry) { return entry.second.plain; });
+            require(placed != window.editor().project().notes.end(), "It is there to be chosen");
+            const domain::ElementRef symbol{placed->first};
+            auto* enlarge = child<QAction>(window, "enlargeSymbol");
+            auto* shrink = child<QAction>(window, "shrinkSymbol");
+            require(child<QMenu>(window, "editMenu")->actions().contains(enlarge), "Edit carries Enlarge");
+            require(child<QMenu>(window, "editMenu")->actions().contains(shrink), "And Shrink");
+
+            // The view's own zoom already means something else, so the pair
+            // does not take its keys.
+            require(enlarge->shortcut() != QKeySequence(QKeySequence::ZoomIn)
+                        && shrink->shortcut() != QKeySequence(QKeySequence::ZoomOut),
+                    "Neither takes the keys that zoom the diagram");
+
+            window.canvas()->select_elements({symbol});
+            settle();
+            require(enlarge->isEnabled() && shrink->isEnabled(), "Both apply to a chosen symbol");
+            const auto before = window.editor().project().layout.at(symbol);
+            enlarge->trigger();
+            settle();
+            const auto after = window.editor().project().layout.at(symbol);
+            require(after.width > before.width, "Enlarge makes it bigger");
+            require(std::abs(after.x + after.width / 2 - (before.x + before.width / 2)) < 0.01,
+                    "Without moving it off where it was put");
+            require(window.editor().undo_label() == "Resize symbol", "The history says what was done");
+            shrink->trigger();
+            settle();
+            require(std::abs(window.editor().project().layout.at(symbol).width - before.width) < 0.01,
+                    "And Shrink puts it back");
+
+            // The panel says the size in one figure, because a symbol is drawn
+            // to the smaller of its two sides and so is square in practice.
+            auto* size = child<QSpinBox>(window, "symbolSize");
+            require(size->value() == static_cast<int>(before.width), "The panel shows the size it is drawn at");
+            size->setValue(size->value() * 2);
+            settle();
+            const auto typed = window.editor().project().layout.at(symbol);
+            require(std::abs(typed.width - before.width * 2) < 0.01, "Typing a size resizes the symbol");
+            require(std::abs(typed.x + typed.width / 2 - (before.x + before.width / 2)) < 0.01,
+                    "About its centre, as the commands do");
+
+            // A number field is not a place a character belongs. The size box
+            // has a line edit inside it like any other, so a character picked
+            // while it has the keyboard goes on the diagram instead of being
+            // typed into a figure and silently thrown away.
+            {
+                // Applying a size rebuilds the panel and takes the box with it,
+                // so the one to ask is the one that replaced it.
+                auto* rebuilt_size = child<QSpinBox>(window, "symbolSize");
+                auto* inside = rebuilt_size->findChild<QLineEdit*>();
+                require(inside != nullptr, "The size box has a field inside it");
+                inside->setFocus();
+                settle();
+                const auto notes_before = window.editor().project().notes.size();
+                const auto figure = rebuilt_size->value();
+                require(window.insert_symbol(QStringLiteral("σ")), "A character picked here goes somewhere");
+                require(window.editor().project().notes.size() == notes_before + 1, "On the diagram");
+                require(child<QSpinBox>(window, "symbolSize")->value() == figure, "And never into the size");
+                child<QAction>(window, "undoCommand")->trigger();
+                settle();
+                window.canvas()->select_elements({symbol});
+                settle();
+            }
+
+            // An entity's box is sized by the name it holds, so none of this
+            // is offered for one.
+            window.canvas()->select_elements({window.editor().project().entities.begin()->first});
+            settle();
+            require(!enlarge->isEnabled() && !shrink->isEnabled(), "Neither applies to an entity");
+            require(window.findChild<QSpinBox*>("symbolSize") == nullptr, "And the panel offers it no size field");
+
+            // Everything this block put on the diagram comes off it again, so
+            // what follows sees the model it expects.
+            window.canvas()->select_elements({});
+            settle();
+            while (window.editor().project().notes.contains(placed->first)) {
+                child<QAction>(window, "undoCommand")->trigger();
+                settle();
+            }
+            require(!window.editor().project().notes.contains(placed->first), "The symbol is taken away again");
         }
 
         // A theme can be seen on the window before it is chosen, and looking at
@@ -640,6 +1001,109 @@ int main(int argc, char** argv) {
             require(bar->toolButtonStyle() == Qt::ToolButtonTextBesideIcon, "Widening brings the names back");
             require(bar->iconSize().width() == wide, "And the size with them");
             require(picker->isVisible(), "And the picker");
+        }
+
+        // The paper the diagram is drawn on is chosen under View, so it reaches
+        // the Design row as well, and it travels with the document.
+        {
+            auto* papers = child<QMenu>(window, "backgroundMenu");
+            require(child<QMenu>(window, "viewMenu")->actions().contains(papers->menuAction()),
+                    "Background sits with the other choices about how the diagram looks");
+            auto* squares = child<QAction>(window, "backgroundSquares");
+            auto* plain = child<QAction>(window, "backgroundTheme");
+            emit papers->aboutToShow();
+            settle();
+            require(plain->isChecked() && !squares->isChecked(), "A diagram starts on the plain canvas");
+            squares->trigger();
+            settle();
+            require(window.editor().project().background.style == domain::BackgroundStyle::Squares,
+                    "Choosing graph paper lays it on the canvas");
+            require(window.editor().undo_label() == "Change background", "As one named edit");
+
+            // Asking for less of it is a picture's business, so the bar is not
+            // offered for a ruling.
+            auto* row = window.findChild<QWidgetAction*>("backgroundStrengthRow");
+            require(row != nullptr && !row->isVisible(), "A ruling is drawn as the ruling it is");
+            child<QAction>(window, "undoCommand")->trigger();
+            settle();
+            require(window.editor().project().background.style == domain::BackgroundStyle::Theme,
+                    "The change undoes");
+            emit papers->aboutToShow();
+            settle();
+            require(child<QAction>(window, "backgroundTheme")->isChecked(),
+                    "And the menu shows the paper the document actually has");
+        }
+
+        // A choice or a number must not change because the pointer passed
+        // over it: these are changed by pressing them and choosing, or by
+        // typing, and a wheel is meant for the panel behind them.
+        {
+            window.canvas()->select_elements({relationship});
+            settle();
+            const auto turn = [](QWidget* widget, int notches) {
+                QWheelEvent wheel(QPointF(5, 5), widget->mapToGlobal(QPoint(5, 5)), QPoint(),
+                                  QPoint(0, notches), Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+                QApplication::sendEvent(widget, &wheel);
+                settle();
+            };
+            auto* ratio = child<QComboBox>(window, "relationshipRatio");
+            const auto chosen = ratio->currentIndex();
+            turn(ratio, 120);
+            turn(ratio, -120);
+            require(ratio->currentIndex() == chosen, "A wheel over a choice leaves it as it was");
+
+            auto* width = child<QDoubleSpinBox>(window, "geometryWidth");
+            const auto measured = width->value();
+            turn(width, 120);
+            turn(width, -120);
+            require(width->value() == measured, "And over a number too");
+
+            // The same on the toolbar, where the notation picker sits.
+            auto* picker = child<QComboBox>(window, "notationPicker");
+            const auto notation = picker->currentIndex();
+            turn(picker, 120);
+            require(picker->currentIndex() == notation, "And over the notation picker");
+            require(window.canvas()->notation() == static_cast<desktop::Notation>(notation),
+                    "So the diagram is not redrawn in a notation nobody asked for");
+
+            // Pressing and choosing still works, which is the way they change.
+            ratio->setCurrentIndex(2);
+            QMetaObject::invokeMethod(ratio, "activated", Q_ARG(int, 2));
+            settle();
+            require(window.editor().project().relationships.at(relationship).participants.front().maximum
+                        == domain::Cardinality::Many,
+                    "Choosing from the list still sets it");
+            child<QAction>(window, "undoCommand")->trigger();
+            settle();
+            window.canvas()->select_elements({});
+            settle();
+        }
+
+        // Check model is a switch: it opens the findings and puts them away
+        // again, and says which it will do by the mark it wears.
+        {
+            auto* check = child<QAction>(window, "checkModel");
+            auto* checks_dock = child<QDockWidget>(window, "validationDock");
+            require(!checks_dock->isVisible() && !check->isChecked(), "The findings start closed");
+            const auto closed_mark = check->icon().pixmap(22, 22).toImage();
+            check->trigger();
+            settle();
+            require(checks_dock->isVisible() && check->isChecked(), "Pressing it opens them");
+            const auto open_mark = check->icon().pixmap(22, 22).toImage();
+            require(open_mark != closed_mark, "And the button changes its mark to say so");
+            check->trigger();
+            settle();
+            require(!checks_dock->isVisible() && !check->isChecked(), "Pressing it again puts them away");
+            require(check->icon().pixmap(22, 22).toImage() == closed_mark, "And the first mark comes back");
+
+            // However the panel is opened or closed, the button follows it.
+            checks_dock->toggleViewAction()->trigger();
+            settle();
+            require(check->isChecked() && check->icon().pixmap(22, 22).toImage() == open_mark,
+                    "Opening it from the View menu marks the button too");
+            checks_dock->toggleViewAction()->trigger();
+            settle();
+            require(!check->isChecked(), "And closing it there clears the mark");
         }
 
         // Full view puts the panels away and gives the whole window to the

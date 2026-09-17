@@ -32,7 +32,7 @@ int main(int argc, char* argv[]) {
     erdflow::infrastructure::ErdxProjectStore store;
     erdflow::desktop::MainWindow window(editor, store, ids);
     window.set_icon_mode(erdflow::desktop::icon_mode_from_key(
-        settings.value("iconMode", "normal").toString()));
+        settings.value("iconMode", "outline").toString()));
     window.set_theme(chosen);
     window.show();
     QTimer::singleShot(0, &window, [&] {

@@ -3,6 +3,7 @@
 #include "domain/model.hpp"
 
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <string>
 #include <utility>
@@ -59,6 +60,10 @@ public:
     // any other element, through the same commands.
     EditResult create_picture(std::string name, domain::Rect rect, std::vector<std::uint8_t> image);
     EditResult create_note(std::string name, domain::Rect rect, std::string text = {});
+    // One character placed on the diagram on its own, drawn bare. It is a note
+    // underneath, so everything that can be done to a note can be done to it;
+    // it is a separate command only so that the history says "symbol".
+    EditResult create_symbol(std::string character, domain::Rect rect);
     EditResult set_supertype(domain::SpecializationId specialization, std::optional<domain::EntityId> supertype);
     EditResult set_inheritance_direction(domain::SpecializationId specialization, domain::Inheritance direction);
     EditResult attach_subtype(domain::SpecializationId specialization, domain::EntityId subtype);
@@ -116,6 +121,14 @@ public:
     EditResult reverse_participants(domain::RelationshipId relationship);
     EditResult disconnect(domain::RelationshipId relationship, domain::ParticipantId participant);
     EditResult move(const std::map<domain::ElementRef, domain::Rect>& positions);
+    // A symbol's box is how big its character is drawn: the character is grown
+    // to fill whatever room the box gives it. That makes size a property of a
+    // symbol in a way it is not of an entity, whose box is sized by the name
+    // it has to hold, so this is its own named edit rather than a move that
+    // happens to change a width. It takes several because a selection of
+    // symbols is enlarged together, and it refuses anything that is not a
+    // symbol so the command cannot quietly reshape the rest of the diagram.
+    EditResult resize_symbols(const std::map<domain::ElementRef, domain::Rect>& boxes);
     // A connector carries one signed perpendicular bend. Passing no offset
     // restores automatic routing rather than storing a zero-length bend.
     EditResult bend_connector(domain::ConnectorRef ref, std::optional<double> offset);
@@ -128,6 +141,9 @@ public:
     // one edit. Zero is solid and stores nothing; it applies over whatever
     // colour each element has, so the theme's own colour can be faded too.
     EditResult set_transparency(const std::vector<domain::ElementRef>& elements, std::uint8_t percent);
+    // The paper the diagram is drawn on: a ruling, a picture of the user's
+    // own, or the plain colour the theme gives the canvas.
+    EditResult set_background(domain::Background background);
     // Routes a connector through a list of points, in the order they are met
     // walking from its source to its target. Passing none straightens it. A
     // route supersedes the single bend, which is cleared in the same edit.
@@ -142,6 +158,12 @@ public:
     // and leaves a corner where it stopped, and that is one thing the user
     // did. A shape that says nothing stores nothing, as always.
     EditResult shape_connector(domain::ConnectorRef ref, domain::Connector shape);
+    // Several connectors reshaped together, for a change made to a whole
+    // selection rather than to one line. The label is given rather than fixed
+    // because the same write serves locking and releasing, and the history
+    // ought to say which was done.
+    EditResult shape_connectors(const std::map<domain::ConnectorRef, domain::Connector>& shapes,
+                                std::string label);
     // Review 2026-09-15, finding 1: an inheritance link is selectable, so it
     // can be deleted alongside anything else. Each entry names the triangle
     // and the subtype whose link goes; no subtype means the link up to the

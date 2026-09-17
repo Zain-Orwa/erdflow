@@ -201,7 +201,7 @@ void malformed_json_and_text() {
 
 void strict_version_and_field_contract() {
     Fixture fixture;
-    for (const auto& version : {QJsonValue(0), QJsonValue(14), QJsonValue(1.5), QJsonValue("1"), QJsonValue(true)}) {
+    for (const auto& version : {QJsonValue(0), QJsonValue(16), QJsonValue(1.5), QJsonValue("1"), QJsonValue(true)}) {
         auto root = fixture.document();
         root["format_version"] = version;
         reject(bytes(root));
@@ -300,7 +300,7 @@ void connector_shapes_persist_and_older_versions_still_open() {
 
     const auto encoded = ErdxProjectStore::encode(fixture.editor.project());
     const auto root = QJsonDocument::fromJson(encoded).object();
-    CHECK(root["format_version"].toInt() == 13);
+    CHECK(root["format_version"].toInt() == 15);
     CHECK(root["project"].toObject()["connectors"].toArray().size() == 2);
 
     // A pinned join survives the same round trip.
@@ -413,6 +413,8 @@ void connector_shapes_persist_and_older_versions_still_open() {
             }
             project["layout"] = layout;
         }
+        // Before version 14 a diagram had no paper of its own.
+        if (version < 14) project.remove("background");
         // Before version 13 every entity was regular and no relationship identifying.
         if (version < 13) {
             QJsonArray entities;
@@ -477,7 +479,7 @@ void connector_shapes_persist_and_older_versions_still_open() {
         return document;
     };
 
-    for (const int version : {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}) {
+    for (const int version : {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13}) {
         const auto opened = ErdxProjectStore::decode(bytes(downgrade(version)));
         if (!opened) throw std::runtime_error("version " + std::to_string(version) + ": " + opened.error);
         CHECK(opened.project->entities == fixture.editor.project().entities);
@@ -500,7 +502,7 @@ void connector_shapes_persist_and_older_versions_still_open() {
             // and reads as specialization, which is how those files were drawn.
             CHECK(specialization.direction == (version >= 5 ? Inheritance::Generalization : Inheritance::Specialization));
         }
-        CHECK(QJsonDocument::fromJson(ErdxProjectStore::encode(*opened.project)).object()["format_version"].toInt() == 13);
+        CHECK(QJsonDocument::fromJson(ErdxProjectStore::encode(*opened.project)).object()["format_version"].toInt() == 15);
     }
 
     // A document whose shape contradicts its declared version is refused rather
@@ -540,7 +542,7 @@ void pictures_and_notes_persist() {
 
     const auto encoded = ErdxProjectStore::encode(fixture.editor.project());
     const auto root = QJsonDocument::fromJson(encoded).object();
-    CHECK(root["format_version"].toInt() == 13);
+    CHECK(root["format_version"].toInt() == 15);
     const auto project = root["project"].toObject();
     CHECK(project["pictures"].toArray().size() == 1);
     CHECK(project["notes"].toArray().size() == 1);
@@ -555,6 +557,38 @@ void pictures_and_notes_persist() {
     CHECK(reopened.project->pictures.at(std::get<PictureId>(*picture.created)).image == png);
     CHECK(reopened.project->notes.at(std::get<NoteId>(*note.created)).description.find("Grades") != std::string::npos);
     CHECK(reopened.project->colours.contains(*note.created));
+    CHECK(!reopened.project->notes.at(std::get<NoteId>(*note.created)).plain);
+
+    // A symbol is a note that is one character drawn bare, so it travels the
+    // same way and says so in the file.
+    const auto symbol = fixture.editor.create_symbol("⋈", {120, 120, 56, 56});
+    CHECK(symbol && symbol.created);
+    const auto with_symbol = ErdxProjectStore::encode(fixture.editor.project());
+    const auto written_notes = QJsonDocument::fromJson(with_symbol).object()["project"].toObject()["notes"].toArray();
+    CHECK(written_notes.size() == 2);
+    for (const auto& value : written_notes) CHECK(value.toObject().size() == 4 && value.toObject()["plain"].isBool());
+    const auto reread = ErdxProjectStore::decode(with_symbol);
+    CHECK(reread);
+    CHECK(*reread.project == fixture.editor.project());
+    CHECK(reread.project->notes.at(std::get<NoteId>(*symbol.created)).plain);
+    CHECK(reread.project->notes.at(std::get<NoteId>(*symbol.created)).name == "⋈");
+
+    // A note written before version 15 is a card, which is what those files
+    // meant; the flag must not be invented for them.
+    auto older = QJsonDocument::fromJson(with_symbol).object();
+    older["format_version"] = 14;
+    auto older_project = older["project"].toObject();
+    auto stripped = QJsonArray();
+    for (const auto& value : older_project["notes"].toArray()) {
+        auto entry = value.toObject();
+        entry.remove("plain");
+        stripped.append(entry);
+    }
+    older_project["notes"] = stripped;
+    older["project"] = older_project;
+    const auto from_older = ErdxProjectStore::decode(QJsonDocument(older).toJson(QJsonDocument::Compact));
+    CHECK(from_older);
+    for (const auto& [id, kept] : from_older.project->notes) { (void)id; CHECK(!kept.plain); }
 
     // Through the adapter and back, the same.
     QTemporaryDir directory;
@@ -674,6 +708,73 @@ void weak_entities_and_identifying_relationships_persist() {
     auto both = root;
     change_first(both, "relationships", [](QJsonObject& item) { item["associative"] = true; item["identifying"] = true; });
     reject_because(bytes(both), "not both");
+}
+
+// The paper a diagram is drawn on travels with it from version 14: the style,
+// how strongly it shows, and a picture of the user's own when there is one.
+void backgrounds_persist() {
+    Fixture fixture;
+    CHECK(fixture.editor.set_background(Background{BackgroundStyle::Squares, 100, {}}));
+    auto encoded = ErdxProjectStore::encode(fixture.editor.project());
+    auto root = QJsonDocument::fromJson(encoded).object();
+    const auto paper = root["project"].toObject()["background"].toObject();
+    CHECK(paper.size() == 3);
+    CHECK(paper["style"].toString() == "squares" && paper["strength"].toInt() == 100);
+    CHECK(paper["image"].toString().isEmpty());
+    auto reopened = ErdxProjectStore::decode(encoded);
+    CHECK(reopened);
+    CHECK(reopened.project->background.style == BackgroundStyle::Squares);
+    CHECK(reopened.project->background.strength == 100);
+    CHECK(*reopened.project == fixture.editor.project());
+
+    // A picture of one's own comes back byte for byte.
+    const std::vector<std::uint8_t> png{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13};
+    CHECK(fixture.editor.set_background(Background{BackgroundStyle::Image, 70, png}));
+    encoded = ErdxProjectStore::encode(fixture.editor.project());
+    reopened = ErdxProjectStore::decode(encoded);
+    CHECK(reopened && reopened.project->background.image == png);
+    CHECK(reopened.project->background.style == BackgroundStyle::Image);
+
+    // Only a picture background carries one, and the style and strength have
+    // to be ones the format knows.
+    root = QJsonDocument::fromJson(encoded).object();
+    auto stray = root;
+    change_project(stray, [](QJsonObject& item) {
+        auto paper = item["background"].toObject();
+        paper["style"] = "lines";
+        item["background"] = paper;
+    });
+    reject_because(bytes(stray), "Only a picture background");
+    auto unknown = root;
+    change_project(unknown, [](QJsonObject& item) {
+        auto paper = item["background"].toObject();
+        paper["style"] = "marble";
+        item["background"] = paper;
+    });
+    reject_because(bytes(unknown), "Unsupported background style");
+    auto too_strong = root;
+    change_project(too_strong, [](QJsonObject& item) {
+        auto paper = item["background"].toObject();
+        paper["strength"] = 140;
+        item["background"] = paper;
+    });
+    reject_because(bytes(too_strong), "0 to 100");
+    auto not_an_image = root;
+    change_project(not_an_image, [](QJsonObject& item) {
+        auto paper = item["background"].toObject();
+        paper["image"] = QString::fromLatin1(QByteArray("hello world").toBase64());
+        item["background"] = paper;
+    });
+    reject_because(bytes(not_an_image), "PNG or JPEG");
+
+    // The version and the field have to agree, in both directions.
+    auto stale = root;
+    stale["format_version"] = 13;
+    reject(bytes(stale));
+    auto missing = root;
+    change_project(missing, [](QJsonObject& item) { item.remove("background"); });
+    reject(bytes(missing));
+    CHECK(fixture.editor.set_background(Background{}));
 }
 
 void invalid_connector_shapes() {
@@ -894,6 +995,7 @@ int main() {
         {"pictures and notes persist", pictures_and_notes_persist},
         {"transparency persists", transparency_persists},
         {"weak entities and identifying relationships persist", weak_entities_and_identifying_relationships_persist},
+        {"backgrounds persist", backgrounds_persist},
         {"invalid connector shapes", invalid_connector_shapes},
         {"invalid IDs, references, enums and layout", invalid_identifiers_references_and_enums},
         {"bounded input and structural depth", resource_limits},
