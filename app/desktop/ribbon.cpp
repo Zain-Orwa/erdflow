@@ -95,6 +95,20 @@ Ribbon::Ribbon(QMainWindow& window) : QObject(&window), window_(window) {
                     button->setPopupMode(QToolButton::InstantPopup);
         }
 
+    // Import has a tab of its own beside Export, because it is its pair and a
+    // reader looking for one expects the other in the same place. Its row is
+    // short, which is the truth about it: ERDFlow reads what ERDFlow writes,
+    // and the entry for reading what other tools write stands there greyed
+    // with the reason on it rather than being left out and silent.
+    auto* importing = add_row("Import", "tabImport", "importTools");
+    importing->setToolButtonStyle(home_->toolButtonStyle());
+    connect(home_, &QToolBar::toolButtonStyleChanged, importing, &QToolBar::setToolButtonStyle);
+    if (auto* import_menu = window.findChild<QMenu*>("importMenu"))
+        for (auto* action : import_menu->actions()) {
+            if (action->objectName().endsWith(QLatin1String("Heading"))) { importing->addSeparator(); continue; }
+            importing->addAction(action);
+        }
+
     // View is what the window shows and how much of it: the panels, the
     // framing and the grid, which is the rest of the View menu.
     auto* view = add_row("View", "tabView", "viewTools");

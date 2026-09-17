@@ -89,7 +89,7 @@ public:
     [[nodiscard]] const application::Editor& editor() const { return editor_; }
     [[nodiscard]] DiagramView* canvas() const { return canvas_; }
     // The row of tabs above the tool row: File, Home, Insert, Design, Export,
-    // View, Help.
+    // Import, View, Help.
     [[nodiscard]] Ribbon* ribbon() const { return ribbon_; }
     // Opens the symbol gallery, on the named group if one is named. The picker
     // is built the first time it is asked for and kept afterwards, so a search

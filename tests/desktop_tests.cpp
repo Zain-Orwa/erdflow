@@ -1972,6 +1972,22 @@ int main(int argc, char** argv) {
             require(child<QMenu>(window, "fileMenu")->actions().contains(
                         child<QMenu>(window, "importMenu")->menuAction()),
                     "With Import beside it, which is its pair");
+
+            // Import has a tab of its own beside Export, because a reader
+            // looking for one expects the other in the same place.
+            child<QAction>(window, "tabImport")->trigger();
+            settle();
+            auto* import_row = child<QToolBar>(window, "importTools");
+            require(import_row->isVisible(), "Import has a row of its own");
+            for (const char* name : {"importProject", "importPicture", "importFromOtherTools"})
+                require(import_row->actions().contains(child<QAction>(window, name)), name);
+            require(child<QAction>(window, "importProject")->isEnabled(),
+                    "Reading what ERDFlow writes can be done now");
+            require(!child<QAction>(window, "importFromOtherTools")->isEnabled(),
+                    "Reading what other tools write cannot, and stands there saying so");
+            child<QAction>(window, "tabExport")->trigger();
+            settle();
+            require(export_row->isVisible() && !import_row->isVisible(), "The two tabs swap rows like the rest");
             // The menu's group headings are entries that cannot be chosen,
             // which reads well in a menu and would be a button nobody can
             // press on a row. They stay off the row.

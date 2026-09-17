@@ -110,7 +110,8 @@ not been built yet. Their presence in those documents is not a completion claim.
 - A row of tabs above the toolbar, the way an office application arranges its
   commands: **File** drops the File menu from its tab; **Home** is the modeling
   toolbar, with Note after Connect; **Insert** carries Picture and Symbols; **Design** carries Theme,
-  Icons, Notation and Lines; **Export** carries everything that leaves;
+  Icons, Notation and Lines; **Export** carries everything that leaves and
+  **Import** everything that comes back, side by side;
   **View** carries the panels, framing, grid and
   align-to-grid; **Help** carries the guide and About. The rows are built from the same
   actions as the menus and the Home toolbar, so a tool chosen or locked on one
@@ -429,8 +430,9 @@ not been built yet. Their presence in those documents is not a completion claim.
   rule the grid and the comment switch follow. Closing it puts the whole diagram
   back, so a filter is never left on behind a bar nobody can see.
 - Work leaves ERDFlow through **Export** and comes back through **Import**, the
-  pair the database tools it sits beside use. Export is a tab of its own and a
-  menu under File; Import is the menu beside it.
+  pair the database tools it sits beside use. Each has a tab of its own on the
+  ribbon and a menu under File, side by side, because a reader looking for one
+  expects the other in the same place.
 - **Export → ERDFlow project** writes a copy of the project itself, losing
   nothing. It is not Save As: the project being worked on keeps its own file and
   its own unsaved state, so this is a copy put somewhere rather than a change of
