@@ -925,9 +925,7 @@ void MainWindow::build_actions() {
         item->setCheckable(true);
         item->setActionGroup(mode_group);
         item->setToolTip(QString::fromUtf8(entry.tip));
-        connect(item, &QAction::triggered, this, [this, mode = entry.mode] {
-            show_result(editor_.set_conceptual_mode(mode), false);
-        });
+        connect(item, &QAction::triggered, this, [this, mode = entry.mode] { set_conceptual_mode(mode); });
     }
     if (mode_button_) mode_button_->setMenu(modes);
 
@@ -3505,6 +3503,11 @@ bool MainWindow::import_project(const QString& path) {
                                                           : QString("%1 elements").arg(arrived.size()),
                                       QFileInfo(path).fileName()), 9000);
     return true;
+}
+
+void MainWindow::set_conceptual_mode(domain::ConceptualMode mode) {
+    finish_field_edit();
+    show_result(editor_.set_conceptual_mode(mode), false);
 }
 
 void MainWindow::refresh_mode_button() {

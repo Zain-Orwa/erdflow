@@ -76,6 +76,9 @@ public:
     void search_diagram(const DiagramSearch& search);
     // Opens the search bar, or closes it and puts the whole diagram back.
     void open_search(const QString& looking_for = {});
+    // How much the model is being asked to say about itself. Also how anything
+    // that already knows which mode it wants sets it.
+    void set_conceptual_mode(domain::ConceptualMode mode);
     void close_search();
     // Leaves a remark on the given things, asking for the words. With text
     // supplied it asks nothing, which is how anything that already has the
