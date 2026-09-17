@@ -869,6 +869,14 @@ void MainWindow::build_actions() {
     // report and a picture before they are choosing between PNG and SVG.
     auto* export_menu = new QMenu("Export", this);
     export_menu->setObjectName("exportMenu");
+    // The project itself leads, because it is the only one of these that loses
+    // nothing. Saving writes the project you are working on; this writes a copy
+    // of it somewhere else and leaves the one you are working on alone.
+    export_menu->addSection("Project");
+    auto* export_project = export_menu->addAction("ERDFlow project…", this, [this] { export_project_file(); });
+    export_project->setObjectName("exportProject");
+    export_project->setToolTip("Write a copy of the project, losing nothing. Saving keeps working on this one; "
+                               "this leaves it where it is.");
     export_menu->addSection("Documents");
     struct DocumentEntry { DocumentFormat format; const char* name; };
     for (const auto& entry : {DocumentEntry{DocumentFormat::Pdf, "exportPdfDocument"},
@@ -937,6 +945,31 @@ void MainWindow::build_actions() {
         export_actions_.push_back(action);
     }
     file->addMenu(export_menu);
+
+    // Import sits next to Export, because that is its pair. It reads what
+    // ERDFlow itself writes: the project, and the two pictures that carry one.
+    // Reading what other tools write is a later thing, and the entry that says
+    // so is left in place rather than the absence being silent.
+    auto* import_menu = new QMenu("Import", this);
+    import_menu->setObjectName("importMenu");
+    auto* import_project = import_menu->addAction("ERDFlow project…", QKeySequence("Ctrl+Shift+I"),
+                                                  this, [this] { import_dialog(false); });
+    import_project->setObjectName("importProject");
+    import_project->setToolTip("Bring another project's contents into this one. Everything arrives with "
+                               "identities of its own, so nothing collides, and it all undoes in one step.");
+    auto* import_picture = import_menu->addAction("Picture carrying a project…", this,
+                                                  [this] { import_dialog(true); });
+    import_picture->setObjectName("importPicture");
+    import_picture->setToolTip("An SVG or PNG that ERDFlow wrote carries the whole project inside it.");
+    import_menu->addSeparator();
+    auto* import_later = import_menu->addAction("From another tool…");
+    import_later->setObjectName("importFromOtherTools");
+    import_later->setEnabled(false);
+    import_later->setToolTip("SQL, CSV and JSON arrive with the Relational Schema workspace: they describe "
+                             "tables rather than a conceptual diagram, so there is nowhere yet to put them.");
+    for (auto* action : import_menu->actions())
+        if (!action->isSeparator() && action->isEnabled()) import_actions_.push_back(action);
+    file->addMenu(import_menu);
     file->addSeparator();
     file->addAction("Open example", this, &MainWindow::load_example);
     file->addSeparator();
@@ -3243,6 +3276,72 @@ void MainWindow::close_search() {
     // would be a diagram missing pieces for no visible reason.
     canvas_->set_search({});
     canvas_->setFocus();
+}
+
+bool MainWindow::export_project_file(const QString& location_given) {
+    finish_field_edit();
+    canvas_->cancel_interaction();
+    auto location = location_given;
+    if (location.isEmpty()) location = export_location(QStringLiteral("erdx"), QStringLiteral("ERDFlow project"));
+    if (location.isEmpty()) return false;
+    // Written through the store directly rather than through the save use case:
+    // this is a copy put somewhere, so the project being worked on keeps its own
+    // file and its own unsaved state.
+    const auto result = store_.save(bytes(location), editor_.project());
+    if (!result) {
+        QMessageBox::warning(this, "Project could not be written", text(result.error));
+        return false;
+    }
+    statusBar()->showMessage("Exported a copy to " + QFileInfo(location).fileName()
+                             + ". You are still working on this one.", 9000);
+    return true;
+}
+
+void MainWindow::import_dialog(bool pictures) {
+    const auto location = QFileDialog::getOpenFileName(this, pictures ? "Import from a picture" : "Import a project",
+        path_, pictures ? "Picture carrying a project (*.svg *.png)" : "ERDFlow project (*.erdx)");
+    if (!location.isEmpty()) import_project(location);
+}
+
+bool MainWindow::import_project(const QString& path) {
+    finish_field_edit();
+    canvas_->cancel_interaction();
+    auto incoming = read_project(path);
+    if (!incoming) {
+        QMessageBox::warning(this, "Nothing could be imported", text(incoming.error));
+        return false;
+    }
+    // Put down to the right of everything already drawn, with a gap, so an
+    // import never lands on top of the work it is joining. The incoming
+    // project has coordinates of its own, so the gap is measured from its own
+    // left edge rather than from nothing.
+    double offset_x = 0;
+    const auto drawn = canvas_->diagram_bounds();
+    if (!drawn.isEmpty() && !incoming.project->layout.empty()) {
+        auto leftmost = incoming.project->layout.begin()->second.x;
+        for (const auto& [ref, rect] : incoming.project->layout) {
+            (void)ref;
+            leftmost = std::min(leftmost, rect.x);
+        }
+        offset_x = drawn.right() + 140 - leftmost;
+    }
+    const auto before = editor_.project();
+    const auto result = editor_.merge_project(*incoming.project, offset_x, 0);
+    if (!result) { show_result(result); return false; }
+    refresh();
+    // What arrived is chosen and brought into view, so the reader can see what
+    // they just imported rather than having to go looking for it.
+    std::vector<domain::ElementRef> arrived;
+    for (const auto& [ref, rect] : editor_.project().layout) {
+        (void)rect;
+        if (!before.layout.contains(ref)) arrived.push_back(ref);
+    }
+    canvas_->select_elements(arrived, true);
+    statusBar()->showMessage(QString("Imported %1 from %2. One undo takes it all back out again.")
+                                 .arg(arrived.size() == 1 ? QString("1 element")
+                                                          : QString("%1 elements").arg(arrived.size()),
+                                      QFileInfo(path).fileName()), 9000);
+    return true;
 }
 
 void MainWindow::refresh_export_actions() {

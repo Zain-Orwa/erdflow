@@ -2025,6 +2025,52 @@ int main(int argc, char** argv) {
             require(clipboard && clipboard->hasFormat("image/png") && clipboard->hasFormat("image/svg+xml"),
                     "Copy as picture puts a raster and a vector on the clipboard together");
 
+            // The project itself is a format work leaves in, and the only one
+            // that loses nothing. Writing a copy leaves the open project alone:
+            // it keeps its own file and its own unsaved state, which is what
+            // makes it a copy rather than a Save As.
+            {
+                const auto copy = pictures.filePath("copy.erdx");
+                const auto working_on = window.editor().project();
+                require(window.export_project_file(copy), "A copy of the project is written");
+                infrastructure::ErdxProjectStore reader;
+                const auto read_back = reader.load(copy.toStdString());
+                require(read_back.project.has_value(), "And reads back");
+                require(*read_back.project == working_on, "As exactly the project that was open");
+            }
+
+            // Import is Export's pair. It brings another project's contents
+            // into this one rather than replacing it, everything arrives with
+            // identities of its own so nothing collides, and it undoes at once.
+            {
+                const auto source = pictures.filePath("to-import.erdx");
+                require(window.export_project_file(source), "A project to import from");
+                const auto before = window.editor().project();
+                require(window.import_project(source), "It imports");
+                const auto after = window.editor().project();
+                require(after.entities.size() == before.entities.size() * 2,
+                        "Everything arrives beside what was there, rather than replacing it");
+                // Not one identity in common, though the two are the same work:
+                // an import must be able to bring in a project copied from this
+                // very one without a single collision.
+                for (const auto& [id, entity] : before.entities) {
+                    (void)entity;
+                    require(after.entities.contains(id), "What was there is untouched");
+                }
+                std::size_t fresh = 0;
+                for (const auto& [id, entity] : after.entities) {
+                    (void)entity;
+                    if (!before.entities.contains(id)) ++fresh;
+                }
+                require(fresh == before.entities.size(), "And what arrived is all new identity");
+                require(after.comments.size() == before.comments.size() * 2
+                            || before.comments.empty(),
+                        "What was said about the work comes with the work");
+                child<QAction>(window, "undoCommand")->trigger();
+                settle();
+                require(window.editor().project() == before, "And one undo takes the whole import back out");
+            }
+
             // The four written listings, each of which reads the model that is
             // already there. They are listings and not the project, so nothing
             // reopens them; what is checked is that each is the thing it claims.

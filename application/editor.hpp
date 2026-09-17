@@ -85,6 +85,13 @@ public:
     // which is a matter of how the diagram is being looked at.
     EditResult set_comment_hidden(domain::CommentId id, bool hidden);
     EditResult erase_comment(domain::CommentId id);
+    // Brings another project's contents into this one, as one edit. Everything
+    // arrives with fresh identities, so the two projects can share names and
+    // even have been copied from one another without anything colliding, and
+    // the whole import undoes in a single step. The offset moves what arrives
+    // clear of what is already drawn. The paper and the project's own name are
+    // left alone: what is imported is the work, not the document around it.
+    EditResult merge_project(const domain::Project& other, double dx, double dy);
     EditResult rename(domain::ElementRef ref, std::string name);
     EditResult describe(domain::ElementRef ref, std::string description);
     EditResult set_attribute_kind(domain::AttributeId id, domain::AttributeKind kind);

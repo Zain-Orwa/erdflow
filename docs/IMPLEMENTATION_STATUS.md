@@ -428,9 +428,24 @@ not been built yet. Their presence in those documents is not a completion claim.
   not saved, does not enter the history and does not dirty the project, the same
   rule the grid and the comment switch follow. Closing it puts the whole diagram
   back, so a filter is never left on behind a bar nobody can see.
-- Work leaves ERDFlow through **Export**, a tab of its own and a menu under
-  File, the way a document application offers it. One word is used in both
-  places, and one list holds every format ERDFlow writes.
+- Work leaves ERDFlow through **Export** and comes back through **Import**, the
+  pair the database tools it sits beside use. Export is a tab of its own and a
+  menu under File; Import is the menu beside it.
+- **Export → ERDFlow project** writes a copy of the project itself, losing
+  nothing. It is not Save As: the project being worked on keeps its own file and
+  its own unsaved state, so this is a copy put somewhere rather than a change of
+  where the work lives. That, with **SVG** and **PNG**, makes three formats that
+  come back whole.
+- **Import** brings another project's contents **into** the one being worked on,
+  rather than replacing it, which is what the word means in this field and what
+  distinguishes it from Open. It reads an `.erdx`, or an SVG or PNG carrying a
+  project. Everything arrives with identities of its own, so a project copied
+  from this very one can be imported without a single collision; it is put down
+  clear of what is already drawn, selected and brought into view; and the whole
+  import undoes in one step. Reading what other tools write — SQL, CSV, JSON —
+  is named in the menu and left disabled, because those describe tables rather
+  than a conceptual diagram and there is nowhere to put them until the
+  Relational Schema workspace exists.
 - As a **picture**: **SVG**, **PNG**, **JPEG**, **WebP**, **TIFF** or a **PDF**
   page. The three anyone reaches for sit on the menu and the rest are gathered
   behind **Other picture formats**, so a common choice is never hunted for among

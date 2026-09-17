@@ -63,6 +63,13 @@ public:
     // selected, on the clipboard as both a PNG and an SVG, so whatever it is
     // pasted into can take whichever it prefers.
     bool copy_picture();
+    // Writes a copy of the project itself, losing nothing. Saving keeps working
+    // on the file it wrote; this leaves the open project where it is.
+    bool export_project_file(const QString& location = {});
+    // Brings another project's contents into this one, from a project file or
+    // from a picture carrying one. Everything arrives with fresh identities and
+    // clear of what is already drawn, and the whole import undoes in one step.
+    bool import_project(const QString& path);
     // Narrows the diagram to what is being looked for, bringing what it finds
     // into the middle of the view. Also how anything that already knows what to
     // look for drives the search.
@@ -178,6 +185,9 @@ private:
     // there is nothing drawn to make anything of.
     std::vector<QAction*> export_actions_;
     void export_dialog();
+    // Asks which file to import, looking among projects or among pictures.
+    void import_dialog(bool pictures);
+    std::vector<QAction*> import_actions_;
     // Asks where an export should go, suggesting a name beside the project.
     // Empty when the person cancelled or declined to replace a file.
     [[nodiscard]] QString export_location(const QString& suffix, const QString& label);

@@ -464,6 +464,109 @@ template<class Edit> EditResult edit_element(const Project& project, Delta& delt
 }
 } // namespace
 
+EditResult Editor::merge_project(const Project& other, double dx, double dy) {
+    return impl_->edit("Import project", [&](Delta& delta) {
+        if (&other == &project()) return failure("A project cannot be imported into itself.");
+        // Every element of the incoming project gets an identity of its own
+        // here, so nothing it carries can collide with anything already drawn.
+        std::map<ElementRef, ElementRef> mapping;
+        const auto claim = [&](const ElementRef& ref) {
+            mapping.emplace(ref, std::visit([&](const auto& id) -> ElementRef {
+                using T = std::decay_t<decltype(id)>;
+                (void)id;
+                return T{impl_->next_id()};
+            }, ref));
+        };
+        for (const auto& [id, value] : other.entities) { (void)value; claim(ElementRef{id}); }
+        for (const auto& [id, value] : other.attributes) { (void)value; claim(ElementRef{id}); }
+        for (const auto& [id, value] : other.relationships) { (void)value; claim(ElementRef{id}); }
+        for (const auto& [id, value] : other.specializations) { (void)value; claim(ElementRef{id}); }
+        for (const auto& [id, value] : other.pictures) { (void)value; claim(ElementRef{id}); }
+        for (const auto& [id, value] : other.notes) { (void)value; claim(ElementRef{id}); }
+
+        // The links are renamed too, so a shape drawn on an incoming line
+        // follows it in rather than being left pointing at the old identity.
+        std::map<ConnectorRef, ConnectorRef> links;
+        for (const auto& [id, attribute] : other.attributes) {
+            (void)attribute;
+            links.emplace(ConnectorRef{id}, ConnectorRef{std::get<AttributeId>(mapping.at(ElementRef{id}))});
+        }
+
+        for (const auto& [id, entity] : other.entities) {
+            auto value = entity;
+            value.id = std::get<EntityId>(mapping.at(ElementRef{id}));
+            delta.entities.put(value.id, std::move(value));
+        }
+        for (const auto& [id, attribute] : other.attributes) {
+            auto value = attribute;
+            value.id = std::get<AttributeId>(mapping.at(ElementRef{id}));
+            if (value.owner) value.owner = mapping.at(*value.owner);
+            delta.attributes.put(value.id, std::move(value));
+        }
+        for (const auto& [id, relationship] : other.relationships) {
+            auto value = relationship;
+            value.id = std::get<RelationshipId>(mapping.at(ElementRef{id}));
+            for (auto& participant : value.participants) {
+                const auto was = participant.id;
+                participant.id = ParticipantId{impl_->next_id()};
+                links.emplace(ConnectorRef{was}, ConnectorRef{participant.id});
+                const auto target = mapping.at(target_ref(participant.target));
+                if (const auto* entity = std::get_if<EntityId>(&target)) participant.target = *entity;
+                else participant.target = std::get<RelationshipId>(target);
+            }
+            delta.relationships.put(value.id, std::move(value));
+        }
+        for (const auto& [id, hierarchy] : other.specializations) {
+            auto value = hierarchy;
+            value.id = std::get<SpecializationId>(mapping.at(ElementRef{id}));
+            if (value.supertype) value.supertype = std::get<EntityId>(mapping.at(ElementRef{*value.supertype}));
+            for (auto& subtype : value.subtypes) subtype = std::get<EntityId>(mapping.at(ElementRef{subtype}));
+            delta.specializations.put(value.id, std::move(value));
+        }
+        for (const auto& [id, picture] : other.pictures) {
+            auto value = picture;
+            value.id = std::get<PictureId>(mapping.at(ElementRef{id}));
+            delta.pictures.put(value.id, std::move(value));
+        }
+        for (const auto& [id, note] : other.notes) {
+            auto value = note;
+            value.id = std::get<NoteId>(mapping.at(ElementRef{id}));
+            delta.notes.put(value.id, std::move(value));
+        }
+        // What was said about the work comes with the work.
+        for (const auto& [id, comment] : other.comments) {
+            (void)id;
+            auto value = comment;
+            value.id = CommentId{impl_->next_id()};
+            for (auto& target : value.targets) {
+                if (auto* element = std::get_if<ElementRef>(&target)) *element = mapping.at(*element);
+                else if (auto* link = std::get_if<ConnectorRef>(&target)) *link = links.at(*link);
+                else std::get<TextAnchor>(target).owner = mapping.at(std::get<TextAnchor>(target).owner);
+            }
+            delta.comments.put(value.id, std::move(value));
+        }
+        // Moved clear of what is already drawn, so an import never lands on
+        // top of the work it is joining.
+        for (const auto& [ref, rect] : other.layout) {
+            auto moved = rect;
+            moved.x += dx;
+            moved.y += dy;
+            delta.layout.put(mapping.at(ref), moved);
+        }
+        for (const auto& [ref, colour] : other.colours) delta.colours.put(mapping.at(ref), colour);
+        for (const auto& [ref, percent] : other.transparency) delta.transparency.put(mapping.at(ref), percent);
+        for (const auto& [ref, connector] : other.connectors) {
+            const auto found = links.find(ref);
+            if (found == links.end()) continue;
+            auto shaped = connector;
+            for (auto& point : shaped.waypoints) { point.x += dx; point.y += dy; }
+            delta.connectors.put(found->second, std::move(shaped));
+        }
+        if (delta.empty()) return failure("That project has nothing in it to import.");
+        return EditResult{};
+    });
+}
+
 EditResult Editor::rename(ElementRef ref, std::string name) {
     return impl_->edit("Rename element", [&](Delta& delta) {
         const auto characters = character_count(name);
