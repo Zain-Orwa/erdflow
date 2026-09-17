@@ -272,8 +272,8 @@ not been built yet. Their presence in those documents is not a completion claim.
   the surface from solid to outline-only over whatever colour it has, the
   theme's own included, for one element or the whole selection. Colour
   changes are undoable and saved with the project.
-- Versioned `.erdx` JSON save/load, currently format version 10. Versions 1 to 9
-  still open and upgrade on save. Incomplete but structurally valid diagrams
+- Versioned `.erdx` JSON save/load, currently format version 15. Versions 1 to
+  14 still open and upgrade on save. Incomplete but structurally valid diagrams
   can be saved. Invalid/unsupported files leave the open project intact.
 - Safe file replacement, Save/Discard/Cancel protection, focused text committed
   before save, clean-state tracking, and reopening the file saved at the prompt.
@@ -286,7 +286,7 @@ geometry changes use **Apply position and size**.
 
 | Phase | Evidence and remaining work |
 | --- | --- |
-| 0 — Architecture | Completed review; ADR-001–013 accepted. ADR-014 records implementation choices. |
+| 0 — Architecture | Completed review; ADR-001–013 accepted. ADR-014 records implementation choices; ADR-015 records export and interchange formats and ADR-016 project organisation and the start experience, neither of them implemented. |
 | 1 — Build foundation | Exit criteria met: layered CMake targets, warning flags, Debug/Release, passing suites, macOS launch, and committed repository state. Windows/Linux instructions exist but those platforms are unverified. |
 | 2 — Shell | Functional desktop shell delivered. Future Schema/Table/SQL/Data navigation waits for usable destinations. |
 | 3 — Commands | Implemented Qt-free semantic operations, atomic deltas, dirty state, bounded undo/redo. |
@@ -299,8 +299,8 @@ geometry changes use **Apply position and size**.
 | 10–12 — Weak/ISA/associative | Implemented: weak entities with identifying relationships, associative entities, and ISA generalization/specialization including nesting and the disjoint/total rules, drawn on the triangle. |
 | 13–14 — Modes/readiness | Basic properties and structural checks exist. Convertible mode, logical types, key groups, and conversion-readiness policy are not implemented. |
 | 15 — Project files | Single-page native format foundation delivered early to protect the current editor's work. No historical migration or recovery system. |
-| 16–17 — Pages/editor milestone | Not complete; multiple pages and the remaining conceptual semantics are required. |
-| 18 onward | Import, schema generation, provenance, physical design, SQL, data, and later production/ecosystem features remain planned. |
+| 16–17 — Pages/editor milestone | Not complete; multiple pages, the remaining conceptual semantics, and the start screen, templates and project folders of ADR-016 are required. |
+| 18 onward | Import, schema generation, provenance, physical design, SQL, data, and later production/ecosystem features remain planned. Export is planned in two halves per ADR-015: pictures need only the canvas, while relational interchange cannot precede the schema workspace. |
 
 The Part 1 checklist is a coverage inventory, not a replacement for semantic
 prerequisites. Persistence was deliberately pulled into this usable slice so
