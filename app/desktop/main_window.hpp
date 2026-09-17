@@ -154,6 +154,10 @@ private:
     QToolButton* theme_button_ = nullptr;
     QAction* full_view_ = nullptr;
     QAction* check_ = nullptr;
+    // Opens the search. It is on the tool row and in the Edit menu, so it is
+    // made once and shown in both.
+    QAction* find_action_ = nullptr;
+    QToolButton* search_button_ = nullptr;
     // Keeps a wheel from changing whatever the pointer happens to be over.
     QObject* wheel_guard_ = nullptr;
     std::map<domain::BackgroundStyle, QAction*> background_actions_;

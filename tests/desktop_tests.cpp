@@ -1657,6 +1657,18 @@ int main(int argc, char** argv) {
             require(!bar->isVisible(), "Closing puts the bar away");
             require(!window.canvas()->search().looking(), "And puts the whole diagram back");
             require(window.canvas()->found_elements().empty(), "With nothing left found");
+
+            // And it can be opened again in the same sitting, which needs
+            // something on screen to open it with: the bar itself is gone, so
+            // a button on the tool row is the only thing left to reach for.
+            require(child<QToolButton>(window, "searchButton")->defaultAction() == find,
+                    "Search has a button of its own, not only an entry in a menu");
+            require(child<QMenu>(window, "editMenu")->actions().contains(find),
+                    "And the very same action in the Edit menu, so the two cannot disagree");
+            require(!find->icon().isNull(), "With a glyph, so it reads as a button rather than a word");
+            find->trigger();
+            settle();
+            require(bar->isVisible(), "Closing the search is not the end of it: it opens again");
         }
 
         // Comments: remarks left on the work, which are not the Note element

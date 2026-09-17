@@ -562,6 +562,18 @@ void MainWindow::build_shell() {
     document_label_ = new QLabel(header);
     document_label_->setObjectName("documentTitle");
     header_layout->addWidget(document_label_, 1);
+    // Search has a button of its own, not only an entry in a menu and a key.
+    // The bar it opens takes no room until it is asked for, which is only worth
+    // doing if there is something on screen to ask with: without a button there
+    // is nothing to say the search is there at all, and nothing to reach for
+    // once the bar has been closed. It sits here rather than among the drawing
+    // tools, because it is about looking at the document rather than adding to
+    // it, and because that row is already tight enough to start dropping the
+    // names its tools are known by.
+    search_button_ = new QToolButton(header);
+    search_button_->setObjectName("searchButton");
+    search_button_->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    header_layout->addWidget(search_button_);
     auto* example = new QPushButton("Open example", header);
     example->setObjectName("openExample");
     connect(example, &QPushButton::clicked, this, &MainWindow::load_example);
@@ -680,6 +692,19 @@ const std::array<std::pair<Notation, QString>, 4>& notation_styles() {
 } // namespace
 
 void MainWindow::build_actions() {
+    // Find, where a document application keeps it, and on the key it keeps it
+    // on. It narrows the diagram to what is asked for rather than only walking
+    // from one match to the next, which is what makes it worth having on a
+    // drawing rather than in a list. It is made here because it goes in two
+    // places -- the Edit menu and the tool row -- and both must be the same
+    // action, or one of them would go stale.
+    find_action_ = new QAction("Search…", this);
+    find_action_->setObjectName("searchDiagram");
+    find_action_->setShortcut(QKeySequence::Find);
+    find_action_->setToolTip("Narrow the diagram to what you are looking for.");
+    connect(find_action_, &QAction::triggered, this, [this] { open_search(); });
+    action_glyphs_[find_action_] = Glyph::Search;
+
     auto* file = new QMenu("&File", this);
     file->setObjectName("fileMenu");
     menuBar()->insertMenu(menuBar()->actions().front(), file);
@@ -802,14 +827,10 @@ void MainWindow::build_actions() {
     action_glyphs_[duplicate_] = Glyph::Duplicate;
     action_glyphs_[edit->addAction("Delete selection", this, [this] { finish_field_edit(); canvas_->delete_selection(); })] = Glyph::Delete;
     edit->addSeparator();
-    // Find, where a document application keeps it, and on the key it keeps it
-    // on. It narrows the diagram to what is asked for rather than only walking
-    // from one match to the next, which is what makes it worth having on a
-    // drawing rather than in a list.
-    auto* find = edit->addAction("Search…", QKeySequence::Find, this, [this] { open_search(); });
-    find->setObjectName("searchDiagram");
-    find->setToolTip("Narrow the diagram to what you are looking for.");
-    action_glyphs_[find] = Glyph::Search;
+    edit->addAction(find_action_);
+    // The header's button and the menu entry are one action, so they cannot
+    // disagree about what searching is called or whether it can be done.
+    if (search_button_) search_button_->setDefaultAction(find_action_);
     edit->addSeparator();
     // A symbol is drawn as its character filling its box, so making the box
     // bigger is what makes the character bigger. The view's own zoom already

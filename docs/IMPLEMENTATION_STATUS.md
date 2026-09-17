@@ -345,9 +345,16 @@ not been built yet. Their presence in those documents is not a completion claim.
   remark about one goes on the triangle.
 - **Search** narrows the diagram to what is being looked for, rather than only
   walking from one match to the next, per
-  [ADR-018](adr/ADR-018-SEARCH-NARROWS-THE-DIAGRAM.md). **Edit → Search…**
-  (Ctrl+F) drops a bar in above the canvas, holding the box, the kind and the
-  options, and closing on Escape or its own ✕.
+  [ADR-018](adr/ADR-018-SEARCH-NARROWS-THE-DIAGRAM.md). A **Search** button in
+  the document header, **Edit → Search…** and Ctrl+F each drop a bar in above
+  the canvas, holding the box, the kind and the options, and closing on Escape
+  or its own ✕. The button is there because the bar takes no room until it is
+  asked for, and that is only worth doing while something on screen remains to
+  ask with: it is what says the search exists at all, and what there is to
+  reach for once the bar has been closed. It sits in the header rather than
+  among the drawing tools, being about looking at the document rather than
+  adding to it, and because that row is already tight enough to start dropping
+  the names its tools are known by.
 - Names are matched without regard to case, among **entities**, **attributes**,
   **relationships**, **hierarchies**, or all of them. A kind chosen with nothing
   typed asks for every element of that kind, which is how "show me only the
