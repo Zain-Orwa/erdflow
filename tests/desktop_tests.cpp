@@ -1643,6 +1643,41 @@ int main(int argc, char** argv) {
         {
             auto* find = child<QAction>(window, "searchDiagram");
             require(find->shortcut() == QKeySequence::Find, "Search is on the key a document application keeps it on");
+
+            // Fitting the diagram into the view and searching it are different
+            // things and must not be drawn as the same picture. The coloured
+            // set drew both as a magnifying glass, which said "look" for one
+            // and "look" for the other.
+            for (const auto mode : {desktop::IconMode::Normal, desktop::IconMode::Modern,
+                                    desktop::IconMode::Outline}) {
+                const auto& colors = desktop::theme(window.canvas()->theme_id());
+                const auto drawn = [&](desktop::Glyph glyph) {
+                    return desktop::glyph_icon(glyph, colors, 40, mode).pixmap(40, 40).toImage();
+                };
+                const auto fit = drawn(desktop::Glyph::Fit);
+                const auto searching = drawn(desktop::Glyph::Search);
+                require(!fit.isNull() && !searching.isNull(), "Both are drawn in every set");
+                require(fit != searching, "And never as the same picture, whichever set is on");
+                // Byte-inequality is too weak on its own: two different
+                // magnifying glasses are different pictures and still say the
+                // same thing. What is asked instead is that fitting is drawn
+                // as a frame -- a mark in each of the four corners -- which a
+                // glass, being a circle with one handle, never has.
+                const auto frames = [](const QImage& image) {
+                    const auto third_w = image.width() / 3;
+                    const auto third_h = image.height() / 3;
+                    const auto inked = [&](int x0, int y0) {
+                        for (int y = y0; y < y0 + third_h; ++y)
+                            for (int x = x0; x < x0 + third_w; ++x)
+                                if (qAlpha(image.pixel(x, y)) > 60) return true;
+                        return false;
+                    };
+                    return inked(0, 0) && inked(image.width() - third_w, 0)
+                        && inked(0, image.height() - third_h)
+                        && inked(image.width() - third_w, image.height() - third_h);
+                };
+                require(frames(fit), "Fitting is drawn as a frame, with a mark in every corner");
+            }
             auto* bar = window.findChild<QWidget*>("searchBar");
             require(bar != nullptr, "There is a search bar");
             require(!bar->isVisible(), "It takes no room until it is asked for");

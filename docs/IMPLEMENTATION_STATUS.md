@@ -55,6 +55,11 @@ not been built yet. Their presence in those documents is not a completion claim.
   the View menu and from Full view.
 - Native Qt window with modeling toolbar, Explorer, Properties, model checks,
   status/zoom display, and a university example.
+- Fitting the diagram into the view and searching it are drawn as different
+  things. In the coloured set they were the same file: a magnifying glass for
+  both, saying "look" for one and "look" for the other. Fitting is now a frame
+  with a mark in each corner, which is what the line-art set and the drawn set
+  already said, so all three agree.
 - Every Explorer row is drawn as **the element itself** rather than as a badge
   for its kind, using the canvas's own drawing: a derived attribute is dashed
   there as it is on the diagram, a multivalued one is doubled, a weak entity
