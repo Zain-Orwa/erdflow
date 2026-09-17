@@ -28,6 +28,9 @@ public:
     // Opens the bar and puts the caret in the box, keeping whatever was last
     // looked for so pressing the shortcut twice does not throw the search away.
     void open();
+    // Opens it already looking for something, which is how the command line
+    // and a test ask for a search without typing one.
+    void look_for(const QString& text);
     // Says how the search went, in the bar itself, so nobody has to count the
     // shapes that are left to know whether anything was found.
     void report(int found);

@@ -122,6 +122,14 @@ void SearchBar::open() {
     text_->selectAll();
 }
 
+void SearchBar::look_for(const QString& text) {
+    text_->setText(text);
+    open();
+    // Typed all at once rather than letter by letter, so there is nothing to
+    // settle and the diagram is filtered straight away.
+    changed(true);
+}
+
 void SearchBar::report(int found) {
     if (!search().looking()) { count_->clear(); return; }
     count_->setText(found == 0 ? QStringLiteral("Nothing found")

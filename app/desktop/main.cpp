@@ -30,6 +30,11 @@ int main(int argc, char* argv[]) {
     // the screenshot option, so a row other than Home can be looked at without
     // a person having to click the tab first.
     parser.addOption({"tab", "Show a ribbon tab before the screenshot, such as tabDownload.", "name"});
+    // Opens the search bar already looking for something, so the search can be
+    // seen without anyone having to find the shortcut first. Development
+    // tooling beside the two above, and the quickest way to see what a search
+    // does to a diagram.
+    parser.addOption({"search", "Open the search bar looking for this text.", "text"});
     parser.addPositionalArgument("project", "An .erdx project to open.", "[project]");
     parser.process(app);
     erdflow::infrastructure::QtIdGenerator ids;
@@ -44,6 +49,7 @@ int main(int argc, char* argv[]) {
         if (!parser.positionalArguments().isEmpty()) window.open_path(parser.positionalArguments().front());
         else if (parser.isSet("example")) window.load_example();
         if (parser.isSet("tab") && window.ribbon()) window.ribbon()->show_tab(parser.value("tab"));
+        if (parser.isSet("search")) window.open_search(parser.value("search"));
         QTimer::singleShot(500, &window, [&] {
             if (parser.isSet("screenshot") && !window.grab().save(parser.value("screenshot"))) {
                 app.exit(1);

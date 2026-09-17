@@ -68,7 +68,7 @@ public:
     // look for drives the search.
     void search_diagram(const DiagramSearch& search);
     // Opens the search bar, or closes it and puts the whole diagram back.
-    void open_search();
+    void open_search(const QString& looking_for = {});
     void close_search();
     // Leaves a remark on the given things, asking for the words. With text
     // supplied it asks nothing, which is how anything that already has the

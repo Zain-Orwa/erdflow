@@ -800,7 +800,7 @@ void MainWindow::build_actions() {
     // on. It narrows the diagram to what is asked for rather than only walking
     // from one match to the next, which is what makes it worth having on a
     // drawing rather than in a list.
-    auto* find = edit->addAction("Search…", QKeySequence::Find, this, &MainWindow::open_search);
+    auto* find = edit->addAction("Search…", QKeySequence::Find, this, [this] { open_search(); });
     find->setObjectName("searchDiagram");
     find->setToolTip("Narrow the diagram to what you are looking for.");
     action_glyphs_[find] = Glyph::Search;
@@ -2966,9 +2966,10 @@ void MainWindow::search_diagram(const DiagramSearch& search) {
                                    ? QString("1 element") : QString("%1 elements").arg(found.size())), 6000);
 }
 
-void MainWindow::open_search() {
+void MainWindow::open_search(const QString& looking_for) {
     if (!search_bar_) return;
-    search_bar_->open();
+    if (looking_for.isEmpty()) search_bar_->open();
+    else search_bar_->look_for(looking_for);
     search_diagram(search_bar_->search());
 }
 
