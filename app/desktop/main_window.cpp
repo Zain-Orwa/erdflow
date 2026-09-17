@@ -1315,12 +1315,18 @@ void MainWindow::build_actions() {
     raft_button(pan_action, "canvasPan")->installEventFilter(this);
     // Zooming has no glyph of its own in either set, and a pair of signs says
     // what it does more plainly than a picture would at this size.
+    // The name the platform gives the key that zooms: the Command symbol on a
+    // Mac, the word Control elsewhere. Taken from Qt rather than written out
+    // twice, so it can never be right on one platform and wrong on the other.
+    const auto zoom_key = QKeySequence(QKeySequence::ZoomIn)
+                              .toString(QKeySequence::NativeText).section(QChar('+'), 0, 0);
     for (const auto& [text, name, step] : std::initializer_list<std::tuple<const char*, const char*, int>>{
              {"+", "canvasZoomIn", 1}, {"\u2212", "canvasZoomOut", -1}}) {
         auto* button = new QToolButton(canvas_controls_);
         button->setObjectName(name);
         button->setText(QString::fromUtf8(text));
-        button->setToolTip(step > 0 ? "Zoom in" : "Zoom out");
+        button->setToolTip(QString("%1. Or hold %2 and scroll, which zooms about the pointer.")
+                               .arg(step > 0 ? "Zoom in" : "Zoom out", zoom_key));
         button->setAutoRaise(true);
         button->setFixedSize(26, 24);
         connect(button, &QToolButton::clicked, this,

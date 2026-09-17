@@ -33,6 +33,15 @@ not been built yet. Their presence in those documents is not a completion claim.
   corners are left as they are, and the whole set is one edit however many
   lines it covers. Inheritance links are left out, since they are anchored to
   their triangle and have no joins to pin.
+- Turning the wheel, or dragging two fingers, **moves** the diagram; holding the
+  platform's own zoom key — **⌘** on a Mac, **Ctrl** elsewhere — and turning
+  **zooms** it, about the pointer, so what is under the pointer stays under it.
+  A trackpad pinch zooms as it always did. The wheel used to zoom on its own,
+  but only on a device that reported no scroll phase, so the same turn of the
+  same wheel zoomed on one machine and scrolled on another depending on what the
+  driver chose to say; with a key of its own for zooming there is no longer
+  anything to guess at. The raft's **+** and **−** say so in their tooltips,
+  naming the key the way the platform names it.
 - A choice or a number never changes because the pointer passed over it. A
   wheel or a trackpad turn over a combo box or a spin box goes to the panel
   behind it, so the panel scrolls and the value stays; values change by

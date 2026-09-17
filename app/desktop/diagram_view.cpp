@@ -3731,25 +3731,43 @@ bool DiagramView::viewportEvent(QEvent* event) {
     return QGraphicsView::viewportEvent(event);
 }
 void DiagramView::wheelEvent(QWheelEvent* event) {
-    // Two fingers travelling together are a palm laid on the diagram: they
-    // move it, and it is the pinch above that zooms it. A trackpad says it is
-    // one by reporting the distance its fingers actually covered, and by
-    // giving its scroll a phase; a mouse wheel reports neither, so its notches
-    // still zoom as they always have. The trackpad also fills in an angle for
-    // the benefit of anything expecting a wheel, which is why the fingers have
-    // to be asked about before the angle rather than after it.
-    const bool fingers = !event->pixelDelta().isNull() || event->phase() != Qt::NoScrollPhase;
-    if (fingers) {
-        // Some devices give the phase without the pixels; a wheel's eighth of
-        // a degree is the conventional pixel when that happens.
-        const auto moved = event->pixelDelta().isNull() ? event->angleDelta() / 8 : event->pixelDelta();
-        horizontalScrollBar()->setValue(horizontalScrollBar()->value() - moved.x());
-        verticalScrollBar()->setValue(verticalScrollBar()->value() - moved.y());
+    // Held down, the platform's own modifier turns the turn into a zoom, the
+    // way it does in every drawing application: Command on a Mac and Control
+    // elsewhere, both of which reach here as ControlModifier, so one test
+    // serves both. It is asked about before anything else, so it works the
+    // same whether the turn came from a wheel or from two fingers, and it is
+    // anchored under the pointer by the view itself: what is beneath the
+    // pointer stays beneath it as the diagram grows and shrinks.
+    if (event->modifiers().testFlag(Qt::ControlModifier)) {
+        // A wheel reports eighths of a degree, a hundred and twenty to a
+        // notch; a trackpad reports the pixels its fingers covered. Different
+        // units, so each has a step of its own, chosen so that one notch and
+        // one short drag change the zoom by about the same amount.
+        const auto pixels = event->pixelDelta().y();
+        const auto notches = event->angleDelta().y();
+        if (pixels != 0 || notches != 0)
+            impl_->zoom(zoom_factor() * (pixels != 0 ? std::pow(1.0060, static_cast<qreal>(pixels))
+                                                     : std::pow(1.0015, static_cast<qreal>(notches))));
         event->accept();
         return;
     }
-    const auto delta = event->angleDelta().y();
-    if (delta != 0) impl_->zoom(zoom_factor() * std::pow(1.0015, static_cast<qreal>(delta)));
+    // Everything else moves the diagram. Two fingers travelling together are a
+    // palm laid on it, and a wheel turned on its own is the same gesture with
+    // different hardware: both move the work under the eye rather than
+    // changing how close it is being looked at.
+    //
+    // A wheel used to zoom here, but only on a device that reported no scroll
+    // phase -- so the very same turn of the very same kind of wheel zoomed on
+    // one machine and scrolled on another, depending on what the driver chose
+    // to say. With a key of its own for zooming there is no longer any reason
+    // to guess: turning moves, holding and turning zooms, everywhere.
+    //
+    // A trackpad reports the pixels its fingers covered; a wheel reports
+    // eighths of a degree, which is the conventional pixel when there are no
+    // pixels to be had.
+    const auto moved = event->pixelDelta().isNull() ? event->angleDelta() / 8 : event->pixelDelta();
+    horizontalScrollBar()->setValue(horizontalScrollBar()->value() - moved.x());
+    verticalScrollBar()->setValue(verticalScrollBar()->value() - moved.y());
     event->accept();
 }
 void DiagramView::keyPressEvent(QKeyEvent* event) {

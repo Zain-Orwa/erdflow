@@ -2938,6 +2938,52 @@ void search_tests() {
     for (const char* every : {"Student", "Course", "Professor", "Enrolled", "Gender", "Credit Hours"})
         require(find_node(view, every)->isVisible() && find_node(view, every)->opacity() == 1.0, every);
 }
+// Turning the wheel moves the diagram; holding the platform's zoom key and
+// turning it makes the diagram larger or smaller, about the pointer.
+void wheel_zoom_tests() {
+    SequentialIds ids;
+    application::Editor editor(ids);
+    require(editor.create_entity("Student", {0, 0, 160, 80}), "Wheel fixture");
+    desktop::DiagramView view(editor);
+    view.resize(800, 600);
+    view.show();
+    QApplication::processEvents();
+
+    const auto turn = [&](int notches, Qt::KeyboardModifiers held) {
+        const QPointF at(400, 300);
+        QWheelEvent event(at, view.viewport()->mapToGlobal(at.toPoint()), QPoint(), QPoint(0, notches),
+                          Qt::NoButton, held, Qt::NoScrollPhase, false);
+        QApplication::sendEvent(view.viewport(), &event);
+        QApplication::processEvents();
+    };
+
+    // A bare turn is a scroll: the diagram moves and stays the size it was.
+    const auto resting = view.zoom_factor();
+    const auto down = view.verticalScrollBar()->value();
+    turn(-120, Qt::NoModifier);
+    require(view.zoom_factor() == resting, "A bare turn does not change the size of anything");
+    require(view.verticalScrollBar()->value() != down, "It moves the diagram instead");
+
+    // Held, the same turn zooms. Qt reports Command on a Mac and Control
+    // elsewhere as the same modifier, so one test covers both.
+    turn(120, Qt::ControlModifier);
+    const auto closer = view.zoom_factor();
+    require(closer > resting, "Held and turned forwards, the diagram grows");
+    turn(-120, Qt::ControlModifier);
+    require(view.zoom_factor() < closer, "And turned back, it shrinks again");
+
+    // It stays within the same bounds the buttons keep to, however long the
+    // wheel is turned.
+    for (int i = 0; i < 60; ++i) turn(120, Qt::ControlModifier);
+    const auto nearest = view.zoom_factor();
+    turn(120, Qt::ControlModifier);
+    require(view.zoom_factor() == nearest, "Zooming in stops where zooming in stops");
+    for (int i = 0; i < 120; ++i) turn(-120, Qt::ControlModifier);
+    const auto farthest = view.zoom_factor();
+    turn(-120, Qt::ControlModifier);
+    require(view.zoom_factor() == farthest, "And zooming out stops where zooming out stops");
+    require(farthest < nearest, "The two ends are not the same place");
+}
 } // namespace
 
 int main(int argc, char** argv) {
@@ -3053,12 +3099,18 @@ int main(int argc, char** argv) {
                         && view.horizontalScrollBar()->value() == across + 30,
                     "They move the diagram under them, both ways");
 
-            // A mouse wheel has neither pixels nor a phase, and still zooms.
+            // A mouse wheel has neither pixels nor a phase, and moves the
+            // diagram just as two fingers do. It used to zoom instead, which
+            // meant the same turn of the same wheel did different things on
+            // different machines, depending only on whether the driver chose
+            // to report a phase. Zooming has a key of its own now.
+            const auto settled = view.verticalScrollBar()->value();
             QWheelEvent notch(at, view.viewport()->mapToGlobal(at.toPoint()), QPoint(), QPoint(0, 120),
                               Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
             QApplication::sendEvent(view.viewport(), &notch);
             QApplication::processEvents();
-            require(view.zoom_factor() > before, "A wheel notch still zooms in");
+            require(view.zoom_factor() == before, "A wheel notch alone does not zoom");
+            require(view.verticalScrollBar()->value() != settled, "It moves the diagram, as two fingers do");
         }
 
         // A trackpad pinch zooms as the wheel does, in and out, within the same bounds.
@@ -3115,6 +3167,7 @@ int main(int argc, char** argv) {
         picture_export_tests();
         document_export_tests();
         search_tests();
+        wheel_zoom_tests();
         std::cout << "Canvas tests passed\n";
     } catch (const std::exception& exception) {
         std::cerr << "Canvas test failed: " << exception.what() << '\n';
