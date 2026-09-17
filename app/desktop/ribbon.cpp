@@ -70,14 +70,22 @@ Ribbon::Ribbon(QMainWindow& window) : QObject(&window), window_(window) {
         add_menu_button(design, "Lines", "designLinesButton", connect_button->menu())
             ->setToolTip("How connectors are drawn.");
 
-    // Export is how work leaves ERDFlow. It waited until there was something
-    // to export, which there now is: a diagram that draws can be drawn into a
-    // file. Convert is still waiting, because there is nothing to convert to.
-    auto* export_row = add_row("Export", "tabExport", "exportTools");
-    export_row->setToolButtonStyle(home_->toolButtonStyle());
-    connect(home_, &QToolBar::toolButtonStyleChanged, export_row, &QToolBar::setToolButtonStyle);
-    if (auto* export_menu = window.findChild<QMenu*>("exportMenu"))
-        for (auto* action : export_menu->actions()) export_row->addAction(action);
+    // Download is how work leaves ERDFlow. It waited until there was something
+    // to hand on, which there now is. Convert is still waiting, because there
+    // is nothing to convert to.
+    auto* download = add_row("Download", "tabDownload", "downloadTools");
+    download->setToolButtonStyle(home_->toolButtonStyle());
+    connect(home_, &QToolBar::toolButtonStyleChanged, download, &QToolBar::setToolButtonStyle);
+    if (auto* download_menu = window.findChild<QMenu*>("downloadMenu"))
+        for (auto* action : download_menu->actions()) {
+            download->addAction(action);
+            // An entry carrying a submenu, as the rarer picture formats do, is
+            // a button that drops its list: a click on it asks for the list,
+            // not for the action that merely names it.
+            if (action->menu())
+                if (auto* button = qobject_cast<QToolButton*>(download->widgetForAction(action)))
+                    button->setPopupMode(QToolButton::InstantPopup);
+        }
 
     // View is what the window shows and how much of it: the panels, the
     // framing and the grid, which is the rest of the View menu.

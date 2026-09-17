@@ -29,7 +29,7 @@ int main(int argc, char* argv[]) {
     // Which ribbon row the screenshot should show. Development tooling beside
     // the screenshot option, so a row other than Home can be looked at without
     // a person having to click the tab first.
-    parser.addOption({"tab", "Show a ribbon tab before the screenshot, such as tabExport.", "name"});
+    parser.addOption({"tab", "Show a ribbon tab before the screenshot, such as tabDownload.", "name"});
     parser.addPositionalArgument("project", "An .erdx project to open.", "[project]");
     parser.process(app);
     erdflow::infrastructure::QtIdGenerator ids;

@@ -47,12 +47,12 @@ not been built yet. Their presence in those documents is not a completion claim.
 - A row of tabs above the toolbar, the way an office application arranges its
   commands: **File** drops the File menu from its tab; **Home** is the modeling
   toolbar, with Note after Connect; **Insert** carries Picture and Symbols; **Design** carries Theme,
-  Icons, Notation and Lines; **Export** carries the picture commands; **View**
-  carries the panels, framing, grid and
+  Icons, Notation and Lines; **Download** carries everything that leaves;
+  **View** carries the panels, framing, grid and
   align-to-grid; **Help** carries the guide and About. The rows are built from the same
   actions as the menus and the Home toolbar, so a tool chosen or locked on one
-  row is chosen or locked on the other. The Export entries go quiet while there
-  is nothing drawn to make a picture of, rather than the row coming and going as
+  row is chosen or locked on the other. The Download entries go quiet while
+  there is nothing drawn to hand on, rather than the row coming and going as
   work starts. A Convert tab still waits, because there is nothing to convert to.
 - **Insert → Symbols…** opens a gallery of the characters a conceptual diagram
   wants and a keyboard has not got: relational algebra (select, project,
@@ -279,21 +279,44 @@ not been built yet. Their presence in those documents is not a completion claim.
   can be saved. Invalid/unsupported files leave the open project intact.
 - Safe file replacement, Save/Discard/Cancel protection, focused text committed
   before save, clean-state tracking, and reopening the file saved at the prompt.
-- Work leaves ERDFlow as a picture. An **Export** tab and an Export menu under
-  File write the diagram as **SVG**, **PNG**, **JPEG**, **WebP**, **TIFF** or a
-  **PDF** page, and **Copy as picture** puts the selection, or the whole diagram
-  when nothing is selected, on the clipboard as a raster and a vector at once so
+- Work leaves ERDFlow through **Download**, a tab of its own and a menu under
+  File, the way a document application offers it. One word is used in both
+  places, and one list holds every format ERDFlow writes.
+- As a **picture**: **SVG**, **PNG**, **JPEG**, **WebP**, **TIFF** or a **PDF**
+  page. The three anyone reaches for sit on the menu and the rest are gathered
+  behind **Other picture formats**, so a common choice is never hunted for among
+  rare ones. **Copy as picture** puts the selection, or the whole diagram when
+  nothing is selected, on the clipboard as a raster and a vector at once, so
   whatever it is pasted into takes whichever it prefers. A format this build has
   no writer for is not offered rather than offered and then failed.
-- The options that decide whether an exported picture is usable ship with it
-  rather than after it: the **extent** (whole diagram, selection or current
-  view), the **background** (transparent, the theme's canvas colour, or white),
-  the **scale** for a raster or the **resolution** for a page, and the **margin**
-  left around the diagram. The dialog says what pressing Export will produce, in
-  the units that format is measured in, and turns off what cannot be asked for:
-  an extent with nothing in it, and carrying the project in a format that cannot
-  hold one. A picture larger than ERDFlow will draw is refused with its size
-  rather than attempted.
+- As a **written listing**, for the people who want words rather than a drawing:
+  a **PDF document** — a paginated report with the diagram above a data
+  dictionary — a **Markdown data dictionary** for a repository README, a
+  self-contained **HTML report** carrying the diagram as inline SVG, and a
+  **CSV** of every element as one row. All four read the model that is already
+  there and need no conversion. They name the notation in words rather than
+  encoding it: a key on a weak entity is listed as a **partial key**, a
+  relationship says which sides are mandatory and what role each plays, and a
+  hierarchy says whether it is disjoint and whether it is total. They are
+  listings, not interchange, and each says so in its own footer: nothing
+  re-imports them. Written twice from the same model they come out byte for
+  byte the same, so one kept beside the project in version control shows a
+  change only where one was made. The PDF is the exception, since a PDF records
+  when it was made.
+- The listings are built with Qt's own rich text and PDF writer. ERDFlow still
+  has no runtime dependency beyond C++20 and Qt.
+- **Download with options…** opens one dialog over every format, documents
+  above pictures, because somebody handing work on chooses between a report and
+  a picture before choosing between PNG and SVG. The options that decide whether
+  a picture is usable ship with it rather than after it: the **extent** (whole
+  diagram, selection or current view), the **background** (transparent, the
+  theme's canvas colour, or white), the **scale** for a raster or the
+  **resolution** for a page, and the **margin** left around the diagram. The
+  dialog says what pressing Download will produce, in the units that format is
+  measured in, and turns off what cannot be asked for: an extent with nothing in
+  it, the picture options a document has none of, and carrying the project in a
+  format that cannot hold one. A picture larger than ERDFlow will draw is
+  refused with its size rather than attempted.
 - A picture is of the diagram and not of the editor looking at it: no grid, no
   paper, no selection rings and no handles, and exporting gives the selection
   back exactly as it found it.
@@ -345,7 +368,7 @@ geometry changes use **Apply position and size**.
 | 15 — Project files | Single-page native format foundation delivered early to protect the current editor's work. No historical migration or recovery system. |
 | 16–17 — Pages/editor milestone | Not complete; multiple pages, the remaining conceptual semantics, and the start screen, templates and project folders of ADR-016 are required. |
 | 18 onward | Import, schema generation, provenance, physical design, SQL, data, and later production/ecosystem features remain planned. |
-| 35 — Export | Partial, and pulled forward the way Phase 15 was, because ADR-015 splits it in two and the picture half needs only a canvas that draws. Pictures, their options, and the project carried inside SVG and PNG are implemented. Not implemented: a multi-page PDF of a project, which waits for the multiple pages of Phase 16; the HTML report, Markdown data dictionary and CSV listings; the published JSON Schema for `.erdx`; the outline-text option for a pixel-exact handoff; and the whole schema half — `.sql`, Mermaid ER and DBML — which cannot precede the Phase 24 workspace it would read from. |
+| 35 — Export | Partial, and pulled forward the way Phase 15 was, because ADR-015 splits export into halves with different prerequisites and neither the pictures nor the listings need anything later. Implemented: the pictures, their options, the project carried inside SVG and PNG, and all four documentation listings, offered together under Download. Not implemented: a multi-page PDF of a project, which waits for the multiple pages of Phase 16; the published JSON Schema for `.erdx`; the outline-text option for a pixel-exact handoff; and the whole schema half — `.sql`, Mermaid ER and DBML — which cannot precede the Phase 24 workspace it would read from. |
 
 The Part 1 checklist is a coverage inventory, not a replacement for semantic
 prerequisites. Persistence was deliberately pulled into this usable slice so
@@ -372,7 +395,10 @@ measurements. GUI checks currently use Qt's offscreen platform on macOS; the
 rendered example was visually inspected. This does not prove native dialogs,
 platform accessibility, or interaction performance on Windows/Linux.
 
-Useful regression checks include picture export — that a picture never shows
+Useful regression checks include the listings — that each names what is
+actually on the diagram, calls a weak entity's key a partial key, reads each
+side of a relationship as a person would say it, and comes out the same twice
+for the same model; picture export — that a picture never shows
 the selection rings of the editor that drew it, that its background and size are
 the ones asked for, that SVG and PNG give back exactly the project bytes they
 were given while still parsing and still drawing, and that an exported picture
@@ -386,8 +412,9 @@ group align-to-grid/bounds; stale gesture cancellation; and incident-only live c
 
 Logical metadata and conversion readiness;
 multiple pages; cross-project clipboard; alignment/distribution; drag resize
-handles; freely draggable connector endpoint handles; search; the documentation
-and relational halves of export; autosave and recovery. Connector joins can be pinned at their current positions,
+handles; freely draggable connector endpoint handles; search; the relational
+half of export, which waits for a schema to generate it from; autosave and
+recovery. Connector joins can be pinned at their current positions,
 and attribute/participant links support multi-point routes. Attribute kinds currently
 form one exclusive enum, so composite keys or other combinations require a
 deliberate model/format decision.
