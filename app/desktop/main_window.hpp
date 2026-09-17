@@ -18,6 +18,7 @@ class QLabel;
 class QComboBox;
 class QScrollArea;
 class QToolButton;
+class QVBoxLayout;
 class QStandardItemModel;
 class QTreeView;
 
@@ -59,6 +60,14 @@ public:
     // selected, on the clipboard as both a PNG and an SVG, so whatever it is
     // pasted into can take whichever it prefers.
     bool copy_picture();
+    // Leaves a remark on the given things, asking for the words. With text
+    // supplied it asks nothing, which is how anything that already has the
+    // words drives it. One remark covers everything it is given at once.
+    bool add_comment(std::vector<domain::CommentTarget> targets, const QString& said = {});
+    // Pins a remark into the range of text now selected in the named property
+    // field, which is how a remark comes to be about one word rather than a
+    // whole element. False when nothing is selected there.
+    bool comment_on_selected_text(const QString& field_name, const QString& said = {});
     [[nodiscard]] const DownloadChoice& download_choice() const { return download_choice_; }
     [[nodiscard]] const application::Editor& editor() const { return editor_; }
     [[nodiscard]] DiagramView* canvas() const { return canvas_; }
@@ -156,6 +165,14 @@ private:
     // one, so the two open the same way.
     [[nodiscard]] application::LoadResult read_project(const QString& path);
     void refresh_download_actions();
+    // The remarks on whatever is selected, listed in the properties panel so
+    // each can be read, put away, brought back, reworded or deleted.
+    void build_comment_section(QWidget* panel, QVBoxLayout* layout);
+    // Asks for the words of a remark, starting from whatever it says now.
+    // Empty when the person cancelled or wrote nothing.
+    [[nodiscard]] QString ask_for_comment(const QString& said, const QString& about);
+    // Gives a text field a Comment entry beneath its usual cut-and-paste one.
+    void offer_text_comment(QWidget* field);
     // Keeps the Background menu showing the paper the document actually has.
     void refresh_background_menu();
     void choose_background(domain::BackgroundStyle style);

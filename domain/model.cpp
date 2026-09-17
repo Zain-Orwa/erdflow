@@ -114,6 +114,58 @@ bool connector_exists(const Project& project, const ConnectorRef& ref) {
     });
 }
 
+std::size_t character_count(const std::string& text) {
+    // The continuation bytes of a UTF-8 sequence are the ones that are not
+    // counted; everything else begins a character. The text has already been
+    // checked as UTF-8 by the time a range is measured against it.
+    std::size_t characters = 0;
+    for (const auto byte : text)
+        if ((static_cast<unsigned char>(byte) & 0xc0U) != 0x80U) ++characters;
+    return characters;
+}
+
+bool target_exists(const Project& project, const CommentTarget& target) {
+    if (const auto* element = std::get_if<ElementRef>(&target)) return exists(project, *element);
+    if (const auto* connector = std::get_if<ConnectorRef>(&target)) return connector_exists(project, *connector);
+    const auto& anchor = std::get<TextAnchor>(target);
+    if (!exists(project, anchor.owner)) return false;
+    // A range has to lie inside the text it is pinned into. Text is edited
+    // after a comment is pinned to it, so this is asked every time rather than
+    // trusted once.
+    const auto written = anchor.field == TextField::Name ? name(project, anchor.owner)
+                                                         : description(project, anchor.owner);
+    const auto characters = character_count(written);
+    return anchor.begin <= characters && anchor.length <= characters - anchor.begin;
+}
+
+namespace {
+// The comments pinned to one thing, in the order the project holds them, so a
+// shape draws its remarks the same way twice.
+template<class Match>
+std::vector<CommentId> comments_matching(const Project& project, Match&& match) {
+    std::vector<CommentId> found;
+    for (const auto& [id, comment] : project.comments)
+        if (std::any_of(comment.targets.begin(), comment.targets.end(), match)) found.push_back(id);
+    return found;
+}
+} // namespace
+
+std::vector<CommentId> comments_on(const Project& project, const ElementRef& ref) {
+    return comments_matching(project, [&](const CommentTarget& target) {
+        if (const auto* element = std::get_if<ElementRef>(&target)) return *element == ref;
+        // A remark pinned into an element's own writing is a remark on it.
+        if (const auto* anchor = std::get_if<TextAnchor>(&target)) return anchor->owner == ref;
+        return false;
+    });
+}
+
+std::vector<CommentId> comments_on_connector(const Project& project, const ConnectorRef& ref) {
+    return comments_matching(project, [&](const CommentTarget& target) {
+        const auto* connector = std::get_if<ConnectorRef>(&target);
+        return connector != nullptr && *connector == ref;
+    });
+}
+
 std::string name(const Project& project, const ElementRef& ref) {
     return visit_element(project, ref, [](const auto* element) { return element ? element->name : std::string{}; });
 }
@@ -444,6 +496,38 @@ std::vector<Issue> validate(const Project& project) {
     for (const auto& [ref, percent] : project.transparency) {
         if (!exists(project, ref)) error("transparency.reference.missing", "A transparency refers to a missing element.", ref);
         if (percent > max_transparency) error("transparency.invalid", "Transparency is a percentage from 0 to 100.", ref);
+    }
+    if (project.comments.size() > max_elements) error("comment.limit", "The comments exceed the element limit.");
+    for (const auto& [id, comment] : project.comments) {
+        // A comment has no element reference of its own, so anything wrong with
+        // it is reported against the first thing it is pinned to, which is what
+        // the canvas would highlight.
+        std::optional<ElementRef> where;
+        for (const auto& target : comment.targets) {
+            if (const auto* element = std::get_if<ElementRef>(&target)) { where = *element; break; }
+            if (const auto* anchor = std::get_if<TextAnchor>(&target)) { where = anchor->owner; break; }
+            const auto& connector = std::get<ConnectorRef>(target);
+            if (const auto* attribute = std::get_if<AttributeId>(&connector)) { where = *attribute; break; }
+        }
+        identity(id.value, where);
+        if (comment.id != id) error("identity.key_mismatch", "The comment key and identifier differ.", where);
+        if (comment.text.size() > max_comment_bytes || !valid_text(comment.text, true))
+            error("comment.text.invalid", "A comment must be valid text within 16 KiB.", where);
+        else if (empty_name(comment.text))
+            error("comment.text.empty", "A comment must say something.", where);
+        // A comment pinned to nothing could never be found again, so it is not
+        // a comment that may be saved. Deleting the last thing a comment is
+        // pinned to deletes the comment with it, in the same edit.
+        if (comment.targets.empty()) error("comment.target.missing", "A comment must be pinned to something.", where);
+        if (comment.targets.size() > max_comment_targets)
+            error("comment.target.limit", "A comment exceeds the element limit for what it is pinned to.", where);
+        std::set<CommentTarget> seen;
+        for (const auto& target : comment.targets) {
+            if (!target_exists(project, target))
+                error("comment.target.dangling", "A comment is pinned to something that is no longer there.", where);
+            if (!seen.insert(target).second)
+                error("comment.target.duplicate", "A comment is pinned to the same thing twice.", where);
+        }
     }
     if (project.layout.size() > max_elements) error("layout.limit", "The layout exceeds the element limit.");
     for (const auto& [ref, rect] : project.layout) {

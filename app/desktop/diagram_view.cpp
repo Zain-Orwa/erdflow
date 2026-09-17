@@ -43,6 +43,53 @@ Rect centred(const QPointF& centre, const BodySize& size) {
 constexpr qreal minimum_zoom = 0.15;
 constexpr qreal maximum_zoom = 3.0;
 
+// What the pointer shows when it comes to rest on something carrying remarks:
+// what the thing is, then what was said about it. Rich text, because a remark
+// is prose somebody wrote and may run to several lines.
+QString comment_tooltip(const Project& project, const std::vector<CommentId>& ids, const QString& about,
+                        bool shown) {
+    if (ids.empty() || !shown) return about;
+    QStringList said;
+    for (const auto& id : ids) {
+        const auto found = project.comments.find(id);
+        // A remark put away on its own stays put away while the rest are shown.
+        if (found == project.comments.end() || found->second.hidden) continue;
+        said << QString::fromStdString(found->second.text).toHtmlEscaped().replace('\n', QStringLiteral("<br>"));
+    }
+    if (said.isEmpty()) return about;
+    return QStringLiteral("<p>%1</p><hr><p>%2</p>")
+        .arg(about.toHtmlEscaped(), said.join(QStringLiteral("</p><p>")));
+}
+// The mark that says somebody has left a remark here: a small speech bubble in
+// the theme's warning colour, which is the one hue no shape on the canvas
+// wears, so a mark is never mistaken for part of the diagram.
+//
+// It is drawn whenever a remark is pinned here, whether remarks are being shown
+// or not, because a remark nobody can see is a remark nobody can find: hiding
+// is meant to quiet the diagram, not to lose what a reviewer said. It is solid
+// when pointing at it would say something and hollow when every remark here has
+// been put away or the whole lot switched off.
+constexpr qreal comment_badge_size = 13;
+void draw_comment_badge(QPainter* painter, const QPointF& corner, const QColor& ink, bool solid) {
+    painter->save();
+    painter->setRenderHint(QPainter::Antialiasing);
+    const QRectF bubble(corner.x(), corner.y(), comment_badge_size, comment_badge_size * 0.78);
+    QPainterPath path;
+    path.addRoundedRect(bubble, 3, 3);
+    // The tail, so the mark reads as something said rather than as a sticker.
+    QPainterPath tail(QPointF(bubble.left() + bubble.width() * 0.26, bubble.bottom() - 0.5));
+    tail.lineTo(bubble.left() + bubble.width() * 0.22, bubble.bottom() + bubble.height() * 0.42);
+    tail.lineTo(bubble.left() + bubble.width() * 0.55, bubble.bottom() - 0.5);
+    tail.closeSubpath();
+    path = path.united(tail);
+    QPen pen(ink, 1.1);
+    pen.setCosmetic(true);
+    painter->setPen(pen);
+    painter->setBrush(solid ? QBrush(ink) : Qt::NoBrush);
+    painter->drawPath(path);
+    painter->restore();
+}
+
 
 // The palette offered on the canvas. These are surface colours rather than ink,
 // so each is light enough to write on and distinct from its neighbours at the
@@ -149,6 +196,11 @@ public:
 
     ElementRef ref;
     QString label;
+    // How many remarks are pinned here, and how many of those would be shown
+    // if the pointer came to rest on this. The second is zero when every one of
+    // them has been put away, which is drawn differently from having none.
+    int comments = 0;
+    int comments_to_show = 0;
     // A note's text, drawn beneath its title.
     QString body;
     // A plain note is one character standing on its own, drawn as the
@@ -656,6 +708,17 @@ public:
             painter->drawText(QRectF(at.x() - radius, at.y() - radius, radius * 2, radius * 2), Qt::AlignCenter,
                               disjoint ? QStringLiteral("d") : QStringLiteral("o"));
         }
+        paint_comment_badge(painter);
+    }
+    // In the top-right of the box the shape is drawn in. It stays inside that
+    // box rather than straddling its corner: the bounding rectangle is read as
+    // the shape the element draws, and padding it to make room would move every
+    // join on the diagram. Inside an ellipse or a diamond that corner is empty
+    // anyway, and inside a rectangle it clears the centred name.
+    void paint_comment_badge(QPainter* painter) const {
+        if (comments <= 0 || !colors_) return;
+        draw_comment_badge(painter, QPointF(bounds_.right() - comment_badge_size - 3, bounds_.top() + 3),
+                           colors_->warning, comments_to_show > 0);
     }
 protected:
     QVariant itemChange(GraphicsItemChange change, const QVariant& value) override {
@@ -719,6 +782,12 @@ public:
         refresh();
     }
     EdgeDescription descriptor;
+    // How many remarks are pinned to this line, and how many of them would be
+    // shown if the pointer came to rest on it.
+    int comments = 0;
+    int comments_to_show = 0;
+    // What this link is, without any remark pinned to it.
+    QString plain_tooltip;
     NodeItem* source;
     NodeItem* target;
     Notation notation = Notation::Chen;
@@ -752,10 +821,14 @@ public:
         selection_ = colors.accent;
         canvas_ = colors.canvas;
         text_ = colors.node_text;
+        warning_ = colors.warning;
         update();
     }
 
     QRectF boundingRect() const override { return bounds_; }
+    [[nodiscard]] QRectF comment_rect() const {
+        return comments > 0 ? QRectF(comment_at_, QSizeF(comment_badge_size, comment_badge_size)) : QRectF();
+    }
     QPainterPath shape() const override {
         QPainterPathStroker stroker;
         stroker.setWidth(12);
@@ -1084,6 +1157,11 @@ public:
         // The padlock sits off to one side of the bend grip rather than on it,
         // so the two controls on a selected link never overlap.
         lock_rect_ = lockable() ? QRectF(bend + perpendicular_ * 16 - QPointF(6, 6), QSizeF(12, 12)) : QRectF();
+        // The remark mark takes the other side of the bend, so it never sits
+        // under the padlock on a selected line. Unlike the padlock it is drawn
+        // whether the line is selected or not, since it is how a remark on a
+        // line is found at all.
+        comment_at_ = bend - perpendicular_ * 16 - QPointF(comment_badge_size / 2, comment_badge_size / 2);
         // A grip on each end, where the line meets its shape. Squares, so they
         // are not mistaken for the round grips that bend and route the line.
         owner_end_rect_ = shapeable() ? QRectF(owner_join_ - QPointF(4.5, 4.5), QSizeF(9, 9)) : QRectF();
@@ -1131,16 +1209,21 @@ public:
         if (shapeable()) bounds_ = bounds_.united(owner_end_rect_.adjusted(-2, -2, 2, 2)).united(child_end_rect_.adjusted(-2, -2, 2, 2));
         for (const auto& corner : corner_rects_) bounds_ = bounds_.united(corner.adjusted(-2, -2, 2, 2));
         if (lockable()) bounds_ = bounds_.united(lock_rect_.adjusted(-2, -2, 2, 2));
+        if (comments > 0)
+            bounds_ = bounds_.united(QRectF(comment_at_, QSizeF(comment_badge_size, comment_badge_size)).adjusted(-2, -2, 2, 4));
+        // What this link is, kept as its own sentence so that a remark can be
+        // shown beneath it without the two being rebuilt into one another.
         if (inheritance) {
-            setToolTip(inheritance->subtype ? QStringLiteral("Inheritance — subtype")
-                                            : QStringLiteral("Inheritance — supertype"));
+            plain_tooltip = inheritance->subtype ? QStringLiteral("Inheritance — subtype")
+                                                 : QStringLiteral("Inheritance — supertype");
         } else if (descriptor.relationship) {
-            setToolTip(QStringLiteral("Participant: %1 · %2%3").arg(descriptor.cardinality == Cardinality::One ? "One" : "Many",
+            plain_tooltip = QStringLiteral("Participant: %1 · %2%3").arg(descriptor.cardinality == Cardinality::One ? "One" : "Many",
                 descriptor.participation == Participation::Total ? "total participation" : "partial participation",
-                descriptor.role.isEmpty() ? QString{} : QStringLiteral(" · ") + descriptor.role));
+                descriptor.role.isEmpty() ? QString{} : QStringLiteral(" · ") + descriptor.role);
         } else {
-            setToolTip(QStringLiteral("Attribute ownership — select and delete to detach"));
+            plain_tooltip = QStringLiteral("Attribute ownership — select and delete to detach");
         }
+        setToolTip(plain_tooltip);
         update();
     }
     void paint(QPainter* painter, const QStyleOptionGraphicsItem*, QWidget*) override {
@@ -1193,6 +1276,7 @@ public:
             painter->drawRect(child_end_rect_);
         }
         if (isSelected() && lockable()) paint_lock(painter);
+        if (comments > 0) draw_comment_badge(painter, comment_at_, warning_, comments_to_show > 0);
     }
     // A padlock, filled when the joins are pinned and hollow when they are not,
     // so the control shows its own state rather than needing a legend.
@@ -1219,6 +1303,7 @@ private:
     // The corners this side loops through while nothing has been stored for it.
     std::vector<QPointF> computed_;
     QRectF lock_rect_;
+    QPointF comment_at_;
     QRectF owner_end_rect_;
     QRectF child_end_rect_;
     QPointF owner_join_;
@@ -1227,7 +1312,7 @@ private:
     QPointF perpendicular_;
     QPointF outward_{-1, 0};
     QPointF end_;
-    QColor connector_, selection_, canvas_, text_;
+    QColor connector_, selection_, canvas_, text_, warning_;
 };
 
 } // namespace
@@ -1252,6 +1337,55 @@ struct DiagramView::Impl {
     QPixmap paper;
     bool align_to_grid = false;
     bool synchronizing = false;
+    // Whether remarks are being shown. Not part of the document.
+    bool comments_shown = true;
+
+    // Puts the marks and what the pointer says in step with the remarks the
+    // project holds and with the switch. It runs after an edit and when the
+    // switch is thrown, so those two can never disagree about what is marked.
+    void refresh_comments() {
+        const auto& project = editor.project();
+        const auto awake_count = [&](const std::vector<CommentId>& ids) {
+            return static_cast<int>(std::count_if(ids.begin(), ids.end(), [&](const CommentId& id) {
+                const auto found = project.comments.find(id);
+                return found != project.comments.end() && !found->second.hidden;
+            }));
+        };
+        for (auto& [ref, node] : nodes) {
+            // A remark pinned into an element's own writing counts as a remark
+            // on it, so the mark is on the shape a reader is looking at rather
+            // than buried in a panel.
+            const auto pinned = comments_on(project, ref);
+            const auto count = static_cast<int>(pinned.size());
+            const auto shown = comments_shown ? awake_count(pinned) : 0;
+            if (node->comments != count || node->comments_to_show != shown) {
+                node->comments = count;
+                node->comments_to_show = shown;
+                node->update();
+            }
+            node->setToolTip(comment_tooltip(project, pinned, node->label, comments_shown));
+        }
+        // An inheritance link carries none: it is anchored to its triangle
+        // rather than being a connector, so a remark about one goes on the
+        // triangle instead.
+        for (auto& [key, edge] : edges) {
+            std::vector<CommentId> pinned;
+            if (const auto* attribute = std::get_if<AttributeId>(&key))
+                pinned = comments_on_connector(project, ConnectorRef{*attribute});
+            else if (const auto* participant = std::get_if<ParticipantId>(&key))
+                pinned = comments_on_connector(project, ConnectorRef{*participant});
+            const auto count = static_cast<int>(pinned.size());
+            const auto shown = comments_shown ? awake_count(pinned) : 0;
+            if (edge->comments != count || edge->comments_to_show != shown) {
+                edge->comments = count;
+                edge->comments_to_show = shown;
+                // The mark takes room beside the line, so the shape is measured
+                // again rather than only repainted.
+                edge->refresh();
+            }
+            edge->setToolTip(comment_tooltip(project, pinned, edge->plain_tooltip, comments_shown));
+        }
+    }
     bool panning = false;
     QPoint pan_start;
     // An editor placed over the node being renamed. It is a viewport child
@@ -2186,6 +2320,7 @@ void DiagramView::synchronize() {
         }
     }
     for (auto* edge : dirty_edges) edge->refresh();
+    impl_->refresh_comments();
     // The workspace grows only at command boundaries, never during pointer movement.
     const auto content = impl_->scene->itemsBoundingRect().adjusted(-800, -800, 800, 800);
     impl_->scene->setSceneRect(QRectF(-3000, -2200, 6000, 4400).united(content));
@@ -2425,6 +2560,53 @@ QPixmap DiagramView::notation_preview(Notation notation, QSize size) const {
     }
     return pixmap;
 }
+void DiagramView::set_comments_visible(bool shown) {
+    if (impl_->comments_shown == shown) return;
+    impl_->comments_shown = shown;
+    // Nothing about the document changed, so synchronize would see the same
+    // revision and do nothing. The marks and what the pointer says are put in
+    // step directly instead.
+    impl_->refresh_comments();
+}
+bool DiagramView::comments_visible() const { return impl_->comments_shown; }
+
+std::optional<CommentTarget> DiagramView::target_at(const QPoint& viewport_position) const {
+    if (auto* node = impl_->node_at(viewport_position)) return CommentTarget{node->ref};
+    const auto place = mapToScene(viewport_position);
+    for (auto* item : impl_->scene->items(place)) {
+        auto* edge = dynamic_cast<EdgeItem*>(item);
+        if (!edge) continue;
+        // An inheritance link is not a connector, so nothing can be pinned to
+        // it; the triangle it belongs to is what a remark goes on instead.
+        if (const auto* attribute = std::get_if<AttributeId>(&edge->descriptor.key))
+            return CommentTarget{ConnectorRef{*attribute}};
+        if (const auto* participant = std::get_if<ParticipantId>(&edge->descriptor.key))
+            return CommentTarget{ConnectorRef{*participant}};
+    }
+    return std::nullopt;
+}
+
+std::vector<CommentId> DiagramView::comments_at(const QPoint& viewport_position) const {
+    const auto& project = impl_->editor.project();
+    const auto target = target_at(viewport_position);
+    if (!target) return {};
+    if (const auto* element = std::get_if<ElementRef>(&*target)) return comments_on(project, *element);
+    return comments_on_connector(project, std::get<ConnectorRef>(*target));
+}
+
+std::vector<ConnectorRef> DiagramView::selected_connectors() const {
+    std::vector<ConnectorRef> found;
+    for (auto* item : impl_->scene->selectedItems()) {
+        const auto* edge = dynamic_cast<EdgeItem*>(item);
+        if (!edge) continue;
+        if (const auto* attribute = std::get_if<AttributeId>(&edge->descriptor.key))
+            found.emplace_back(ConnectorRef{*attribute});
+        else if (const auto* participant = std::get_if<ParticipantId>(&edge->descriptor.key))
+            found.emplace_back(ConnectorRef{*participant});
+    }
+    return found;
+}
+
 void DiagramView::set_grid_visible(bool enabled) { impl_->grid = enabled; viewport()->update(); }
 void DiagramView::set_align_to_grid(bool enabled) { impl_->align_to_grid = enabled; }
 void DiagramView::set_theme(ThemeId id) {
@@ -2597,6 +2779,10 @@ void DiagramView::contextMenuEvent(QContextMenuEvent* event) {
     duplicate->setObjectName("contextDuplicate");
     auto* remove = menu.addAction(several ? "Delete selection" : "Delete");
     remove->setObjectName("contextDelete");
+    // A remark on what was right-clicked, or on the whole selection at once,
+    // which is how one remark comes to cover a whole area of a diagram.
+    auto* comment = menu.addAction(several ? "Comment on selection…" : "Comment…");
+    comment->setObjectName("contextComment");
     // Size, for the one kind of element that has a size of its own to choose.
     // Offered only when everything chosen is a symbol: an entry that would act
     // on part of a selection is worse than no entry at all.
@@ -2695,6 +2881,14 @@ void DiagramView::contextMenuEvent(QContextMenuEvent* event) {
     // nothing left to do for them here.
     if (!picked || picked->objectName().startsWith("contextInsert")
         || picked->objectName().endsWith("Connectors")) return;
+    if (picked == comment) {
+        if (on_comment) {
+            std::vector<CommentTarget> targets;
+            for (const auto& ref : chosen) targets.emplace_back(ref);
+            on_comment(std::move(targets));
+        }
+        return;
+    }
     if (picked == duplicate) { impl_->publish(impl_->editor.duplicate(chosen)); return; }
     if (picked == remove) { delete_selection(); return; }
     if (enlarge && picked == enlarge) { resize_symbols(symbol_step); return; }
@@ -2776,6 +2970,11 @@ void DiagramView::participant_menu(QContextMenuEvent* event) {
     shown->setCheckable(true);
     shown->setChecked(side->show_constraints);
     menu.addSeparator();
+    // A remark about a cardinality usually belongs on the line rather than on
+    // either shape it joins, which is why a line can carry one of its own.
+    auto* comment = menu.addAction("Comment…");
+    comment->setObjectName("sideComment");
+    menu.addSeparator();
     auto* reverse = menu.addAction("Reverse sides");
     reverse->setObjectName("sideReverse");
     auto* disconnect = menu.addAction("Disconnect this side");
@@ -2783,6 +2982,10 @@ void DiagramView::participant_menu(QContextMenuEvent* event) {
 
     auto* picked = menu.exec(event->globalPos());
     if (!picked) return;
+    if (picked == comment) {
+        if (on_comment) on_comment({CommentTarget{ConnectorRef{*participant_key}}});
+        return;
+    }
     if (picked == shown) {
         // Hiding a side's constraints changes only what is drawn, so the two
         // submenus above still show what this side holds.

@@ -11,6 +11,8 @@
 #include <QDialog>
 #include <QDockWidget>
 #include <QFontMetrics>
+#include <QGraphicsItem>
+#include <QGraphicsScene>
 #include <QDoubleSpinBox>
 #include <QClipboard>
 #include <QFile>
@@ -1546,6 +1548,99 @@ int main(int argc, char** argv) {
         require(window.editor().project().entities.size() == example_entities, "Create is undoable from shell");
         child<QAction>(window, "checkModel")->trigger();
         require(child<QTreeView>(window, "modelIssues")->isVisible(), "Model checks action opens findings");
+        // Comments: remarks left on the work, which are not the Note element
+        // placed on the canvas and not the description that documents the
+        // model. They are pinned to things, one remark may cover several, they
+        // are shown when the thing is pointed at, and they can be put away.
+        {
+            auto* show_comments = child<QAction>(window, "viewShowComments");
+            require(show_comments->isChecked(), "Remarks are shown to begin with");
+
+            const auto project = window.editor().project();
+            require(project.entities.size() >= 2, "Two things to pin one remark to");
+            auto first = project.entities.begin()->first;
+            auto second = std::next(project.entities.begin())->first;
+            window.canvas()->select_elements({domain::ElementRef{first}, domain::ElementRef{second}});
+            settle();
+            require(window.add_comment({domain::CommentTarget{domain::ElementRef{first}},
+                                        domain::CommentTarget{domain::ElementRef{second}}},
+                                       "Both of these want a second look."),
+                    "One remark is pinned to two things at once");
+            const auto pinned = domain::comments_on(window.editor().project(), domain::ElementRef{first});
+            require(pinned.size() == 1, "And is found on the first");
+            require(domain::comments_on(window.editor().project(), domain::ElementRef{second}) == pinned,
+                    "And is the very same remark on the second");
+            const auto id = pinned.front();
+
+            // Pointing at something carrying a remark shows what was written.
+            // What is asked is the behaviour rather than which item it belongs
+            // to: the remark has to be readable somewhere on the canvas.
+            const auto shown_somewhere = [&](const QString& fragment) {
+                const auto items = window.canvas()->scene()->items();
+                return std::any_of(items.begin(), items.end(),
+                                   [&](const QGraphicsItem* item) { return item->toolTip().contains(fragment); });
+            };
+            window.canvas()->select_elements({domain::ElementRef{first}});
+            settle();
+            require(shown_somewhere("Both of these want a second look."), "Pointing at it shows what was said");
+
+            // Switching remarks off stops them being shown without losing them.
+            show_comments->setChecked(false);
+            settle();
+            require(!window.canvas()->comments_visible(), "The switch turns every remark off at once");
+            require(!shown_somewhere("second look"), "So pointing at anything says nothing about them");
+            require(window.editor().project().comments.size() == 1, "But nothing was deleted");
+            show_comments->setChecked(true);
+            settle();
+            require(window.canvas()->comments_visible() && shown_somewhere("second look"), "And back on again");
+
+            // The panel lists what is pinned to the selection, and offers to
+            // put one away, reword it, or delete it.
+            window.canvas()->select_elements({domain::ElementRef{first}});
+            settle();
+            require(child<QLabel>(window, "commentSaid")->text() == "Both of these want a second look.",
+                    "The panel reads the remark back");
+            child<QPushButton>(window, "commentHide")->click();
+            settle();
+            require(window.editor().project().comments.at(id).hidden, "One remark can be put away on its own");
+            require(!shown_somewhere("second look"), "So it stops being shown while the rest are still shown");
+            child<QPushButton>(window, "commentHide")->click();
+            settle();
+            require(!window.editor().project().comments.at(id).hidden, "And brought back");
+
+            // A remark pinned into part of what somebody wrote.
+            auto* name_field = child<QLineEdit>(window, "elementName");
+            name_field->setSelection(0, 3);
+            require(window.comment_on_selected_text("elementName", "Is this the right word?"),
+                    "A remark is pinned to the words that were chosen");
+            const auto on_text = domain::comments_on(window.editor().project(), domain::ElementRef{first});
+            require(on_text.size() == 2, "And counts as a remark on the element it is written in");
+            const auto& anchored = window.editor().project().comments.at(on_text.back()).targets.front();
+            require(std::holds_alternative<domain::TextAnchor>(anchored), "Pinned into the text rather than to the shape");
+            require(std::get<domain::TextAnchor>(anchored).length == 3, "Over exactly the words that were chosen");
+            // Nothing chosen is nothing to pin a remark to.
+            name_field->deselect();
+            require(!window.comment_on_selected_text("elementName", "Nowhere"), "With nothing chosen, nothing is pinned");
+
+            // Deleting the thing takes the remarks about it, in one edit.
+            const auto before_delete = window.editor().project().comments.size();
+            require(before_delete == 2, "Two remarks before the element goes");
+            window.canvas()->select_elements({domain::ElementRef{first}});
+            window.canvas()->delete_selection();
+            settle();
+            require(window.editor().project().comments.size() == 1,
+                    "The remark pinned only to it went with it; the one covering two did not");
+            child<QAction>(window, "undoCommand")->trigger();
+            settle();
+            require(window.editor().project().comments.size() == 2, "And one undo brings both back");
+
+            // Put the diagram back as it was found, so what follows is not
+            // working against a document this block has changed.
+            while (window.editor().project().comments.size() > 0 && window.editor().can_undo())
+                child<QAction>(window, "undoCommand")->trigger();
+            settle();
+        }
+
         // Download: how the work leaves. A picture any system can open, with
         // the project inside the two formats that can hold one, and a written
         // listing of the model for the people who want words rather than a

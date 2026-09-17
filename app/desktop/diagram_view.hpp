@@ -99,6 +99,24 @@ public:
     // A sample of a line style, drawn the way the canvas draws it.
     [[nodiscard]] QPixmap line_style_preview(LineStyle style, QSize size) const;
     [[nodiscard]] Notation notation() const;
+    // Whether remarks are shown at all. This is how the diagram is being looked
+    // at rather than part of it, like the grid, so it is not saved with the
+    // document and does not pass through the history. The mark on a commented
+    // element stays either way: hiding quiets the diagram, it does not lose
+    // what a reviewer said.
+    void set_comments_visible(bool shown);
+    [[nodiscard]] bool comments_visible() const;
+    // The comments pinned to what is under the pointer, so the window can offer
+    // them where they were found. Empty when nothing there carries one.
+    [[nodiscard]] std::vector<domain::CommentId> comments_at(const QPoint& viewport_position) const;
+    // What is under the pointer that a comment could be pinned to: an element,
+    // or one of the lines. Nothing when the pointer is over empty canvas.
+    [[nodiscard]] std::optional<domain::CommentTarget> target_at(const QPoint& viewport_position) const;
+    // The lines that are selected, as the connector references a comment pins
+    // itself to. Inheritance links are left out: they are anchored to their
+    // triangle and are not connectors, so a remark about one goes on the
+    // triangle instead.
+    [[nodiscard]] std::vector<domain::ConnectorRef> selected_connectors() const;
     void set_grid_visible(bool enabled);
     // Aligning to the grid rounds a dragged or placed element's position to
     // the nearest grid point, so elements put down near each other line up.
@@ -144,6 +162,11 @@ public:
     // Asked when the canvas's own menu offers to insert a picture at a point;
     // the file is the window's business, the place is the canvas's.
     std::function<void(QPointF)> on_insert_picture;
+    // Asked when the canvas's own menu offers to leave a remark on what was
+    // right-clicked: the words are the window's business, what they are pinned
+    // to is the canvas's. Several targets arrive together when several things
+    // were selected, which is how one remark comes to cover a whole area.
+    std::function<void(std::vector<domain::CommentTarget>)> on_comment;
 
 protected:
     void drawBackground(QPainter*, const QRectF&) override;

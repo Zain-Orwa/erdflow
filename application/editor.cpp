@@ -61,6 +61,10 @@ std::size_t payload(std::uint8_t) { return 0; }
 std::size_t payload(double) { return 0; }
 // A connector holds its bend and joins inline; only the route is on the heap.
 std::size_t payload(const Connector& value) { return value.waypoints.capacity() * sizeof(Point); }
+// A comment holds its text and the list of what it is pinned to on the heap.
+std::size_t payload(const Comment& value) {
+    return value.text.capacity() + value.targets.capacity() * sizeof(CommentTarget);
+}
 
 template<class Key, class Value>
 std::size_t cost(const Changes<Key, Value>& changes, const std::map<Key, Value>& live) {
@@ -86,6 +90,7 @@ struct Delta {
     Changes<SpecializationId, Specialization> specializations;
     Changes<PictureId, Picture> pictures;
     Changes<NoteId, Note> notes;
+    Changes<CommentId, Comment> comments;
     Changes<ElementRef, Rect> layout;
     Changes<ConnectorRef, Connector> connectors;
     Changes<ElementRef, Colour> colours;
@@ -97,7 +102,7 @@ struct Delta {
     [[nodiscard]] bool empty() const {
         return !project_name && !background && entities.keys.empty() && attributes.keys.empty()
             && relationships.keys.empty() && specializations.keys.empty()
-            && pictures.keys.empty() && notes.keys.empty()
+            && pictures.keys.empty() && notes.keys.empty() && comments.keys.empty()
             && layout.keys.empty() && connectors.keys.empty() && colours.keys.empty()
             && transparency.keys.empty();
     }
@@ -110,6 +115,7 @@ struct Delta {
         specializations.toggle(project.specializations);
         pictures.toggle(project.pictures);
         notes.toggle(project.notes);
+        comments.toggle(project.comments);
         layout.toggle(project.layout);
         connectors.toggle(project.connectors);
         colours.toggle(project.colours);
@@ -122,6 +128,7 @@ struct Delta {
             + cost(entities, project.entities) + cost(attributes, project.attributes)
             + cost(relationships, project.relationships) + cost(specializations, project.specializations)
             + cost(pictures, project.pictures) + cost(notes, project.notes)
+            + cost(comments, project.comments)
             + cost(layout, project.layout) + cost(connectors, project.connectors)
             + cost(colours, project.colours) + cost(transparency, project.transparency);
     }
@@ -395,6 +402,34 @@ EditResult Editor::set_specialization_rules(SpecializationId specialization,
 }
 
 namespace {
+// Editing text that a comment is pinned into moves the ground under the remark.
+// Refusing the edit would be worse than useless -- a name could not be
+// shortened once anybody had commented on it -- and dropping the remark loses
+// what a reviewer said. So each range is held inside the text the field now
+// has: one that ran past the new end is shortened to reach it, and one that
+// began past the end becomes a caret at the end. The remark stays on the field
+// it was left on, which is what its reader wants, even when the exact words it
+// pointed at have gone.
+void hold_anchors(const Project& project, Delta& delta, const ElementRef& ref, TextField field,
+                  std::size_t characters) {
+    for (const auto& [id, comment] : project.comments) {
+        bool moved = false;
+        auto value = comment;
+        for (auto& target : value.targets) {
+            auto* anchor = std::get_if<TextAnchor>(&target);
+            if (!anchor || anchor->owner != ref || anchor->field != field) continue;
+            const auto limit = static_cast<std::uint32_t>(std::min<std::size_t>(characters, 0xffffffffU));
+            const auto begin = std::min(anchor->begin, limit);
+            const auto length = std::min(anchor->length, limit - begin);
+            if (begin == anchor->begin && length == anchor->length) continue;
+            anchor->begin = begin;
+            anchor->length = length;
+            moved = true;
+        }
+        if (moved) delta.comments.put(id, std::move(value));
+    }
+}
+
 template<class Edit> EditResult edit_element(const Project& project, Delta& delta, ElementRef ref, Edit edit) {
     if (!exists(project, ref)) return failure("The element no longer exists.");
     std::visit([&](const auto& id) {
@@ -431,12 +466,82 @@ template<class Edit> EditResult edit_element(const Project& project, Delta& delt
 
 EditResult Editor::rename(ElementRef ref, std::string name) {
     return impl_->edit("Rename element", [&](Delta& delta) {
-        return edit_element(project(), delta, ref, [&](auto& value) { value.name = std::move(name); });
+        const auto characters = character_count(name);
+        auto result = edit_element(project(), delta, ref, [&](auto& value) { value.name = std::move(name); });
+        if (result) hold_anchors(project(), delta, ref, TextField::Name, characters);
+        return result;
     });
 }
 EditResult Editor::describe(ElementRef ref, std::string description) {
     return impl_->edit("Edit description", [&](Delta& delta) {
-        return edit_element(project(), delta, ref, [&](auto& value) { value.description = std::move(description); });
+        const auto characters = character_count(description);
+        auto result = edit_element(project(), delta, ref,
+                                   [&](auto& value) { value.description = std::move(description); });
+        if (result) hold_anchors(project(), delta, ref, TextField::Description, characters);
+        return result;
+    });
+}
+
+EditResult Editor::create_comment(std::string text, std::vector<CommentTarget> targets) {
+    return impl_->edit("Add comment", [&](Delta& delta) {
+        if (targets.empty()) return failure("A comment must be pinned to something.");
+        for (const auto& target : targets)
+            if (!target_exists(project(), target))
+                return failure("A comment cannot be pinned to something that is not there.");
+        Comment comment;
+        comment.id = CommentId{impl_->next_id()};
+        comment.text = std::move(text);
+        comment.targets = std::move(targets);
+        delta.comments.put(comment.id, std::move(comment));
+        return EditResult{};
+    });
+}
+
+EditResult Editor::set_comment_text(CommentId id, std::string text) {
+    return impl_->edit("Edit comment", [&](Delta& delta) {
+        const auto found = project().comments.find(id);
+        if (found == project().comments.end()) return failure("The comment no longer exists.");
+        if (found->second.text == text) return EditResult{};
+        auto value = found->second;
+        value.text = std::move(text);
+        delta.comments.put(id, std::move(value));
+        return EditResult{};
+    });
+}
+
+EditResult Editor::set_comment_targets(CommentId id, std::vector<CommentTarget> targets) {
+    return impl_->edit("Change what a comment is pinned to", [&](Delta& delta) {
+        const auto found = project().comments.find(id);
+        if (found == project().comments.end()) return failure("The comment no longer exists.");
+        if (targets.empty()) return failure("A comment must stay pinned to something. Delete it instead.");
+        for (const auto& target : targets)
+            if (!target_exists(project(), target))
+                return failure("A comment cannot be pinned to something that is not there.");
+        if (found->second.targets == targets) return EditResult{};
+        auto value = found->second;
+        value.targets = std::move(targets);
+        delta.comments.put(id, std::move(value));
+        return EditResult{};
+    });
+}
+
+EditResult Editor::set_comment_hidden(CommentId id, bool hidden) {
+    return impl_->edit(hidden ? "Hide comment" : "Show comment", [&](Delta& delta) {
+        const auto found = project().comments.find(id);
+        if (found == project().comments.end()) return failure("The comment no longer exists.");
+        if (found->second.hidden == hidden) return EditResult{};
+        auto value = found->second;
+        value.hidden = hidden;
+        delta.comments.put(id, std::move(value));
+        return EditResult{};
+    });
+}
+
+EditResult Editor::erase_comment(CommentId id) {
+    return impl_->edit("Delete comment", [&](Delta& delta) {
+        if (!project().comments.contains(id)) return failure("The comment no longer exists.");
+        delta.comments.remove(id);
+        return EditResult{};
     });
 }
 EditResult Editor::set_attribute_kind(AttributeId id, AttributeKind kind) {
@@ -786,7 +891,12 @@ EditResult Editor::erase(const std::vector<ElementRef>& elements,
         // A connector shape outlives nothing: dropping the attribute link or
         // participant that draws it must drop the stored bend in the same edit,
         // so undo restores both together and validation never sees a dangling one.
+        // The links being cut are remembered as well as unshaped, because a
+        // comment may be pinned to a line that was never given a shape of its
+        // own, and that comment has to go with it just the same.
+        std::set<ConnectorRef> cut_connectors;
         auto drop_connector = [&](const ConnectorRef& ref) {
+            cut_connectors.insert(ref);
             if (project().connectors.contains(ref)) delta.connectors.remove(ref);
         };
         std::map<RelationshipId, std::set<ParticipantId>> disconnected;
@@ -829,9 +939,13 @@ EditResult Editor::erase(const std::vector<ElementRef>& elements,
         }
         // A triangle without its supertype means nothing, so it goes with it;
         // a deleted subtype is simply detached from the ones that survive.
+        // What goes this way is gathered as well, because a remark may be
+        // pinned to a triangle nobody asked to delete, and it has to go with it.
+        std::set<ElementRef> gone = removed;
         for (const auto& [id, specialization] : project().specializations) {
             if (removed.contains(ElementRef{id})) continue;
             if (specialization.supertype && removed.contains(ElementRef{*specialization.supertype})) {
+                gone.insert(ElementRef{id});
                 delta.specializations.remove(id);
                 if (project().layout.contains(ElementRef{id})) delta.layout.remove(ElementRef{id});
                 // Review 2026-09-15, finding 4: the cascade dropped the triangle
@@ -866,6 +980,22 @@ EditResult Editor::erase(const std::vector<ElementRef>& elements,
                 if (should_remove(participant)) drop_connector(participant.id);
             std::erase_if(value.participants, should_remove);
             delta.relationships.put(id, std::move(value));
+        }
+        // A comment outlives nothing it is pinned to. Deleting an element or
+        // cutting a line unpins every comment pinned to it, and a comment left
+        // pinned to nothing goes with them, in this same edit -- so one undo
+        // brings back the element, the line and the remark about them together.
+        auto still_there = [&](const CommentTarget& target) {
+            if (const auto* element = std::get_if<ElementRef>(&target)) return !gone.contains(*element);
+            if (const auto* anchor = std::get_if<TextAnchor>(&target)) return !gone.contains(anchor->owner);
+            return !cut_connectors.contains(std::get<ConnectorRef>(target));
+        };
+        for (const auto& [id, comment] : project().comments) {
+            if (std::all_of(comment.targets.begin(), comment.targets.end(), still_there)) continue;
+            auto value = comment;
+            std::erase_if(value.targets, [&](const CommentTarget& target) { return !still_there(target); });
+            if (value.targets.empty()) delta.comments.remove(id);
+            else delta.comments.put(id, std::move(value));
         }
         return EditResult{};
     });

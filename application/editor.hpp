@@ -70,6 +70,21 @@ public:
     EditResult detach_subtype(domain::SpecializationId specialization, domain::EntityId subtype);
     EditResult set_specialization_rules(domain::SpecializationId specialization,
                                         domain::Disjointness constraint, domain::Completeness completeness);
+    // Review remarks. A comment is pinned to things rather than placed on the
+    // canvas, so it is not an element and has commands of its own. One remark
+    // may be pinned to several things at once, which is how a single note
+    // covers a whole area of a diagram.
+    EditResult create_comment(std::string text, std::vector<domain::CommentTarget> targets);
+    EditResult set_comment_text(domain::CommentId id, std::string text);
+    // What the remark is pinned to, as a whole. Pinning it to nothing is
+    // refused: a comment pinned to nothing could never be found again, so a
+    // caller that wants it gone deletes it instead.
+    EditResult set_comment_targets(domain::CommentId id, std::vector<domain::CommentTarget> targets);
+    // Put one remark away, or bring it back, without deleting it. This travels
+    // with the document, unlike the switch that hides every comment at once,
+    // which is a matter of how the diagram is being looked at.
+    EditResult set_comment_hidden(domain::CommentId id, bool hidden);
+    EditResult erase_comment(domain::CommentId id);
     EditResult rename(domain::ElementRef ref, std::string name);
     EditResult describe(domain::ElementRef ref, std::string description);
     EditResult set_attribute_kind(domain::AttributeId id, domain::AttributeKind kind);
