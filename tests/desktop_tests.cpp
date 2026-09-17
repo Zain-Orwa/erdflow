@@ -94,8 +94,37 @@ int main(int argc, char** argv) {
         window.load_example();
         settle();
         const auto original = window.editor().project();
-        require(original.entities.size() == 2 && original.attributes.size() == 5 && original.relationships.size() == 1,
-                "Example contains complete basic Chen graph");
+        // What follows counts from the example rather than from a number typed
+        // here, so the diagram it ships with can grow without the test having
+        // to be re-tallied line by line.
+        const auto example_entities = original.entities.size();
+        const auto example_attributes = original.attributes.size();
+        require(example_entities == 3 && example_attributes == 16 && original.relationships.size() == 3,
+                "The example is the whole university diagram, not a fragment of it");
+        // It is the example because one of every kind of attribute is on it,
+        // so opening it puts the whole of the notation on the canvas at once.
+        std::map<domain::AttributeKind, int> kinds;
+        std::size_t parts_of_composites = 0;
+        std::size_t on_relationships = 0;
+        for (const auto& [id, attribute] : original.attributes) {
+            ++kinds[attribute.kind];
+            if (!attribute.owner) continue;
+            if (std::holds_alternative<domain::AttributeId>(*attribute.owner)) ++parts_of_composites;
+            if (std::holds_alternative<domain::RelationshipId>(*attribute.owner)) ++on_relationships;
+        }
+        require(kinds[domain::AttributeKind::Key] == 3 && kinds[domain::AttributeKind::Composite] == 1
+                    && kinds[domain::AttributeKind::Derived] == 1 && kinds[domain::AttributeKind::Multivalued] == 1,
+                "Key, composite, derived and multivalued are all drawn on it");
+        require(parts_of_composites == 3, "The composite name has its three parts hanging off it");
+        require(on_relationships == 1, "And the enrollment carries the date that belongs to neither side");
+        bool total = false;
+        bool partial = false;
+        for (const auto& [id, relationship] : original.relationships) {
+            require(relationship.participants.size() == 2, "Every relationship on it is joined at both ends");
+            for (const auto& participant : relationship.participants)
+                (participant.participation == domain::Participation::Total ? total : partial) = true;
+        }
+        require(total && partial, "With both minimums shown, so the pair beside a line is worth reading");
         require(!window.editor().dirty(), "Unmodified bundled example is clean");
         auto student = original.entities.begin()->first;
         for (const auto& [id, entity] : original.entities) if (entity.name == "Student") student = id;
@@ -136,7 +165,7 @@ int main(int argc, char** argv) {
         name->setCursorPosition(static_cast<int>(name->text().size()));
         QKeyEvent backspace(QEvent::KeyPress, Qt::Key_Backspace, Qt::NoModifier);
         QApplication::sendEvent(name, &backspace);
-        require(window.editor().project().entities.size() == 2, "Backspace in property field cannot delete entity");
+        require(window.editor().project().entities.size() == example_entities, "Backspace in property field cannot delete entity");
         window.canvas()->setFocus();
         settle();
 
@@ -327,10 +356,11 @@ int main(int argc, char** argv) {
 
         window.canvas()->select_elements({student});
         child<QAction>(window, "duplicateElements")->trigger();
-        require(window.editor().project().entities.size() == 3 && window.editor().project().attributes.size() == 7,
+        require(window.editor().project().entities.size() == example_entities + 1
+                    && window.editor().project().attributes.size() == example_attributes + 9,
                 "Duplicate copies entity and owned attributes through one command");
         child<QAction>(window, "undoCommand")->trigger();
-        require(window.editor().project().entities.size() == 2, "One undo removes whole duplicate");
+        require(window.editor().project().entities.size() == example_entities, "One undo removes whole duplicate");
 
         QTemporaryDir directory;
         require(directory.isValid(), "Temporary test directory");
@@ -380,7 +410,8 @@ int main(int argc, char** argv) {
         auto* entity_tool = child<QAction>(window, "toolEntity");
         entity_tool->trigger();
         click_canvas(*window.canvas(), QPointF(200, 250));
-        require(window.editor().project().entities.size() == 3 && window.canvas()->tool() == desktop::Tool::Select,
+        require(window.editor().project().entities.size() == example_entities + 1
+                    && window.canvas()->tool() == desktop::Tool::Select,
                 "Toolbar create routes through canvas and returns to Select");
         require(entity_tool->text() == "Entity", "An unlocked tool button carries no mark");
 
@@ -396,7 +427,7 @@ int main(int argc, char** argv) {
                 "A locked tool button is marked");
         click_canvas(*window.canvas(), QPointF(360, 250));
         click_canvas(*window.canvas(), QPointF(520, 250));
-        require(window.editor().project().entities.size() == 5, "A locked tool keeps placing");
+        require(window.editor().project().entities.size() == example_entities + 3, "A locked tool keeps placing");
         require(window.canvas()->tool() == desktop::Tool::Entity,
                 "A locked tool stays selected");
         // ISA is one toolbar entry offering both directions; the dropdown picks
@@ -1505,9 +1536,10 @@ int main(int argc, char** argv) {
         child<QAction>(window, "toolSelect")->trigger();
         require(!window.canvas()->tool_locked(), "Choosing another tool clears the lock");
         require(entity_tool->text() == "Entity", "The mark is removed when the lock ends");
-        while (window.editor().project().entities.size() > 3) child<QAction>(window, "undoCommand")->trigger();
+        while (window.editor().project().entities.size() > example_entities + 1)
+            child<QAction>(window, "undoCommand")->trigger();
         child<QAction>(window, "undoCommand")->trigger();
-        require(window.editor().project().entities.size() == 2, "Create is undoable from shell");
+        require(window.editor().project().entities.size() == example_entities, "Create is undoable from shell");
         child<QAction>(window, "checkModel")->trigger();
         require(child<QTreeView>(window, "modelIssues")->isVisible(), "Model checks action opens findings");
         window.close(); // Undo returned to the saved revision, so no discard dialog.
