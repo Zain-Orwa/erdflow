@@ -1988,6 +1988,18 @@ int main(int argc, char** argv) {
             child<QAction>(window, "tabExport")->trigger();
             settle();
             require(export_row->isVisible() && !import_row->isVisible(), "The two tabs swap rows like the rest");
+
+            // A tab colours itself when it is chosen; the row it brings up is
+            // set heavier than the interface around it, so the row in front of
+            // you reads as the thing you just chose rather than as a strip of
+            // quiet text that looks the same whichever tab is showing.
+            require(export_row->property("ribbonRow").toBool() && import_row->property("ribbonRow").toBool(),
+                    "The rows that belong to a tab are marked as such");
+            require(!child<QToolBar>(window, "modelTools")->property("ribbonRow").toBool(),
+                    "Home is not, being the drawing tools, which their icons already tell apart");
+            for (const char* row : {"insertTools", "designTools", "exportTools", "importTools",
+                                    "viewTools", "helpTools"})
+                require(child<QToolBar>(window, row)->property("ribbonRow").toBool(), row);
             // The menu's group headings are entries that cannot be chosen,
             // which reads well in a menu and would be a button nobody can
             // press on a row. They stay off the row.

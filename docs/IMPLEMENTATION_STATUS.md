@@ -115,7 +115,12 @@ not been built yet. Their presence in those documents is not a completion claim.
   **View** carries the panels, framing, grid and
   align-to-grid; **Help** carries the guide and About. The rows are built from the same
   actions as the menus and the Home toolbar, so a tool chosen or locked on one
-  row is chosen or locked on the other. The Export entries go quiet while
+  row is chosen or locked on the other. A chosen tab wears the theme's accent,
+  and the row it brings up is set in the theme's own ink at a heavier weight
+  than the interface around it, so the row in front of you reads as the thing
+  you just chose rather than as a strip of quiet text that looks the same
+  whichever tab is showing. Home is left alone, being the drawing tools, which
+  their icons already tell apart. The Export entries go quiet while
   there is nothing drawn to hand on, rather than the row coming and going as
   work starts. A Convert tab still waits, because there is nothing to convert to.
 - **Insert → Symbols…** opens a gallery of the characters a conceptual diagram

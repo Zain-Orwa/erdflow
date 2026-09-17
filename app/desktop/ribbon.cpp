@@ -160,6 +160,11 @@ QToolBar* Ribbon::add_row(const QString& label, const char* tab_name, const char
     auto* tab = add_tab(label, tab_name);
     auto* row = new QToolBar(label, &window_);
     row->setObjectName(row_name);
+    // Marked as one of the rows that belong to a tab, so the stylesheet can
+    // set all of them at once and any row added later is set with them. Home
+    // is not marked: it is the drawing tools, which carry icons and are
+    // already told apart by them.
+    row->setProperty("ribbonRow", true);
     row->setMovable(false);
     row->setFloatable(false);
     row->toggleViewAction()->setVisible(false);
