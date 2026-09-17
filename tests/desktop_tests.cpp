@@ -1248,6 +1248,63 @@ int main(int argc, char** argv) {
                 if (attribute.owner && std::holds_alternative<domain::EntityId>(*attribute.owner)) ++owned_by_entities;
             require(nested == owned_by_entities, "Each entity lists exactly the attributes it owns");
             require(nested > 0, "The example has attributes on its entities to show");
+            // A row is drawn as the element itself rather than as a badge for
+            // its kind, so a derived attribute is dashed here as it is on the
+            // canvas and a multivalued one is doubled. The words say the same
+            // thing for anyone pointing at the row instead of reading it.
+            {
+                QStandardItem* derived = nullptr;
+                QStandardItem* multivalued = nullptr;
+                QStandardItem* plain = nullptr;
+                for (int row = 0; row < attributes->rowCount(); ++row) {
+                    auto* item = attributes->child(row);
+                    if (item->text() == "Age") derived = item;
+                    if (item->text() == "Phone") multivalued = item;
+                    if (item->text() == "Gender") plain = item;
+                }
+                require(derived && multivalued && plain, "The example has the kinds to tell apart");
+                require(derived->toolTip().startsWith("Derived attribute"), "A derived attribute says so");
+                require(multivalued->toolTip().startsWith("Multivalued attribute"), "And a multivalued one says so");
+                require(plain->toolTip().startsWith("Attribute ·"), "While an ordinary one is just an attribute");
+                // The drawings differ, which is what makes the shape worth
+                // drawing at all rather than one badge for every attribute.
+                const auto ink = [](QStandardItem* item) {
+                    return item->icon().pixmap(QSize(28, 20)).toImage();
+                };
+                require(!ink(derived).isNull() && ink(derived) != ink(plain),
+                        "A derived attribute is not drawn as an ordinary one");
+                require(ink(multivalued) != ink(plain), "Nor is a multivalued one");
+                require(ink(multivalued) != ink(derived), "And the two are not drawn as each other");
+            }
+
+            // What belongs to a row is counted at the end of it, rather than
+            // written into the name, where a number would read as part of what
+            // the element is called.
+            {
+                constexpr int owned_count_role = Qt::UserRole + 1;
+                // Read off the tree rather than by name, since earlier tests
+                // rename what is on the diagram: what a row counts must be what
+                // is actually listed under it, whatever it is called.
+                int counted_rows = 0;
+                for (int row = 0; row < entities->rowCount(); ++row) {
+                    auto* item = entities->child(row);
+                    require(!item->text().contains(QChar('(')),
+                            "The number is not written into what an element is called");
+                    if (item->rowCount() == 0) {
+                        require(!item->data(owned_count_role).isValid(),
+                                "An entity with nothing under it carries no count at all");
+                        continue;
+                    }
+                    require(item->data(owned_count_role).toInt() == item->rowCount(),
+                            "An entity says how many attributes belong to it");
+                    ++counted_rows;
+                }
+                require(counted_rows > 0, "The example has entities with attributes to count");
+                require(entities->data(owned_count_role).toInt() == entities->rowCount(),
+                        "And a group counts the same way, so the tree counts in one place and one way");
+                require(entities->text() == "Entities", "Rather than in its own text");
+            }
+
             // The fold mark stands against the Explorer's right edge, not in
             // front of the row. The panel is on the left and the diagram fills
             // the middle, so the hand comes back to the panel's near edge: the
@@ -1443,8 +1500,13 @@ int main(int argc, char** argv) {
             auto* tree = child<QTreeView>(window, "explorer");
             auto* model = qobject_cast<QStandardItemModel*>(tree->model());
             bool listed = false;
-            for (int row = 0; row < model->item(0)->rowCount(); ++row)
-                if (model->item(0)->child(row)->text().startsWith("Pictures (1)")) listed = true;
+            for (int row = 0; row < model->item(0)->rowCount(); ++row) {
+                auto* group = model->item(0)->child(row);
+                // The count is carried beside the name rather than inside it,
+                // so a group is found by what it is called and asked how many
+                // it holds separately.
+                if (group->text() == "Pictures" && group->data(Qt::UserRole + 1).toInt() == 1) listed = true;
+            }
             require(listed, "The explorer lists the picture under a group of its own");
 
             note_tool->trigger();

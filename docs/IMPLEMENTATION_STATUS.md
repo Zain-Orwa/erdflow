@@ -55,6 +55,25 @@ not been built yet. Their presence in those documents is not a completion claim.
   the View menu and from Full view.
 - Native Qt window with modeling toolbar, Explorer, Properties, model checks,
   status/zoom display, and a university example.
+- Every Explorer row is drawn as **the element itself** rather than as a badge
+  for its kind, using the canvas's own drawing: a derived attribute is dashed
+  there as it is on the diagram, a multivalued one is doubled, a weak entity
+  wears its second border, a relationship is a diamond and an identifying one a
+  double diamond. The rows are drawn large enough for those differences to be
+  told apart at a glance, which is the whole reason for drawing the element
+  rather than its kind. Pointing at a row says the same thing in words —
+  **Derived attribute**, **Multivalued attribute**, **Weak entity**, **Partial
+  key** — for anyone pointing rather than reading the shape. A key attribute is
+  the one kind the shape cannot show, since in Chen notation a key is the
+  underline beneath its name and a row's drawing carries no name; the words say
+  it instead.
+- **How many attributes belong to a row** is written at the end of it, quietly,
+  in the same column for every row that has one — on an entity, on a
+  relationship that carries attributes, and on a composite attribute whose parts
+  hang off it. It is painted beside the name rather than written into it, since
+  a number inside a name reads as part of what the element is called. The group
+  rows count the same way, so the tree counts in one place and one way, and a
+  row with nothing under it carries no number at all rather than a nought.
 - The Explorer's fold marks stand against its **right-hand edge** rather than
   in front of each row. The panel is on the left of the window and the diagram
   fills the middle, so the hand comes back from the canvas to the panel's near

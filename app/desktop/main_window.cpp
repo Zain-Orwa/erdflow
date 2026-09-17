@@ -78,6 +78,54 @@ QString kind_label(const Project& project, ElementRef ref) {
     }
     return kind_label(ref);
 }
+// What an element actually is, said in full: not "Attribute" but "Derived
+// attribute", not "Entity" but "Weak entity". The Explorer draws each element
+// as the shape the canvas draws it as, and this is the same thing in words, for
+// anyone pointing at the row rather than reading the shape.
+QString kind_description(const Project& project, ElementRef ref) {
+    if (const auto* id = std::get_if<EntityId>(&ref)) {
+        const auto found = project.entities.find(*id);
+        return found != project.entities.end() && found->second.weak ? QStringLiteral("Weak entity")
+                                                                     : QStringLiteral("Entity");
+    }
+    if (const auto* id = std::get_if<AttributeId>(&ref)) {
+        const auto found = project.attributes.find(*id);
+        if (found == project.attributes.end()) return QStringLiteral("Attribute");
+        const auto& attribute = found->second;
+        // A key on a weak entity identifies an instance only once the owner is
+        // known, so it is a partial key and must not be called a key.
+        const bool weak_owner = attribute.owner && std::holds_alternative<EntityId>(*attribute.owner)
+            && [&] {
+                   const auto owner = project.entities.find(std::get<EntityId>(*attribute.owner));
+                   return owner != project.entities.end() && owner->second.weak;
+               }();
+        switch (attribute.kind) {
+            case AttributeKind::Key: return weak_owner ? QStringLiteral("Partial key") : QStringLiteral("Key attribute");
+            case AttributeKind::Composite: return QStringLiteral("Composite attribute");
+            case AttributeKind::Multivalued: return QStringLiteral("Multivalued attribute");
+            case AttributeKind::Derived: return QStringLiteral("Derived attribute");
+            case AttributeKind::Normal: break;
+        }
+        return QStringLiteral("Attribute");
+    }
+    if (const auto* id = std::get_if<RelationshipId>(&ref)) {
+        const auto found = project.relationships.find(*id);
+        if (found == project.relationships.end()) return QStringLiteral("Relationship");
+        switch (relationship_kind(found->second)) {
+            case RelationshipKind::Identifying: return QStringLiteral("Identifying relationship");
+            case RelationshipKind::Associative: return QStringLiteral("Associative relationship");
+            case RelationshipKind::Regular: break;
+        }
+        return QStringLiteral("Relationship");
+    }
+    if (const auto* id = std::get_if<SpecializationId>(&ref)) {
+        const auto found = project.specializations.find(*id);
+        return found != project.specializations.end() && found->second.direction == Inheritance::Generalization
+            ? QStringLiteral("Generalization") : QStringLiteral("Specialization");
+    }
+    return kind_label(project, ref);
+}
+
 QString kind_label(ElementRef ref) {
     if (std::holds_alternative<EntityId>(ref)) return QStringLiteral("Entity");
     if (std::holds_alternative<AttributeId>(ref)) return QStringLiteral("Attribute");
@@ -400,6 +448,17 @@ protected:
     }
 };
 
+// How many attributes belong to a row, when any do. It is painted at the end of
+// the row rather than written into the name, so a name stays a name: a number
+// inside it would read as part of what the element is called.
+constexpr int owned_count_role = Qt::UserRole + 1;
+
+// The size the Explorer draws an element at. Wider than it is tall, because
+// that is the shape most of them are, and large enough that a dashed outline
+// and a doubled one can be told apart at a glance -- which is the whole reason
+// for drawing the element rather than a badge for its kind.
+constexpr QSize explorer_shape{28, 20};
+
 // Draws a dropped-down row's sample in an ink that reads on the surface the row
 // is actually being painted on.
 //
@@ -432,14 +491,41 @@ protected:
 
 // Keeps every row clear of the strip the fold marks stand in, so the two never
 // overlap and a row's highlight ends in the same place whether or not it has
-// anything to fold.
+// anything to fold -- and writes the count of what belongs to a row at the end
+// of it, quietly, in the same column for every row that has one.
 class FoldOnTheRight final : public QStyledItemDelegate {
 public:
     using QStyledItemDelegate::QStyledItemDelegate;
+    // The ink a count is written in: quiet on an ordinary row, and readable on
+    // a row that is lit up, which is a different colour entirely.
+    std::function<QColor(bool lit)> ink;
+
+    [[nodiscard]] static QString counted(const QModelIndex& index) {
+        const auto value = index.data(owned_count_role);
+        return value.isValid() ? QString::number(value.toInt()) : QString();
+    }
+
 protected:
     void initStyleOption(QStyleOptionViewItem* option, const QModelIndex& index) const override {
         QStyledItemDelegate::initStyleOption(option, index);
-        option->rect.adjust(0, 0, -ExplorerTree::fold_strip, 0);
+        auto inset = ExplorerTree::fold_strip;
+        // The name gives up exactly the room the count needs, so a long name is
+        // elided before it reaches the number rather than running under it.
+        if (const auto shown = counted(index); !shown.isEmpty())
+            inset += option->fontMetrics.horizontalAdvance(shown) + 10;
+        option->rect.adjust(0, 0, -inset, 0);
+    }
+
+    void paint(QPainter* painter, const QStyleOptionViewItem& given, const QModelIndex& index) const override {
+        QStyledItemDelegate::paint(painter, given, index);
+        const auto shown = counted(index);
+        if (shown.isEmpty()) return;
+        painter->save();
+        const bool lit = given.state.testFlag(QStyle::State_Selected);
+        painter->setPen(ink ? ink(lit) : given.palette.color(QPalette::Disabled, QPalette::Text));
+        painter->drawText(given.rect.adjusted(0, 0, -ExplorerTree::fold_strip - 2, 0),
+                          Qt::AlignRight | Qt::AlignVCenter, shown);
+        painter->restore();
     }
 };
 
@@ -599,7 +685,16 @@ void MainWindow::build_shell() {
     explorer_dock->setObjectName("explorerDock");
     explorer_ = new ExplorerTree(explorer_dock);
     explorer_->setObjectName("explorer");
-    explorer_->setItemDelegate(new FoldOnTheRight(explorer_));
+    auto* rows = new FoldOnTheRight(explorer_);
+    rows->ink = [this](bool lit) {
+        const auto& colors = theme(theme_);
+        return lit ? readable_on(colors.accent) : colors.muted;
+    };
+    explorer_->setItemDelegate(rows);
+    // Room for the element shapes, which say more than a badge for the kind
+    // can: a dashed outline is a derived attribute and a doubled one is
+    // multivalued, and neither reads at the size a plain list icon is drawn at.
+    explorer_->setIconSize(explorer_shape);
     explorer_->setAccessibleName("Project elements");
     explorer_->setHeaderHidden(true);
     explorer_->setSelectionMode(QAbstractItemView::ExtendedSelection);
@@ -1396,8 +1491,16 @@ void MainWindow::refresh_explorer() {
     // are built from the active theme and icon set, which is why the tree is
     // rebuilt when either changes.
     const auto& colors = theme(theme_);
-    const auto attribute_badge = glyph_icon(Glyph::Attribute, colors, 22, icon_mode_);
     const auto& attributes = editor_.project().attributes;
+    // Every row is drawn as the element itself rather than as a badge for its
+    // kind, using the canvas's own drawing, so a derived attribute is dashed
+    // here as it is there and a weak entity wears its second border. The badge
+    // stands in only if the canvas has not projected the element yet, which
+    // would otherwise leave the row blank.
+    const auto shaped = [&](const ElementRef& ref, Glyph fallback) {
+        const auto drawn = canvas_->element_preview(ref, explorer_shape);
+        return drawn.isNull() ? glyph_icon(fallback, colors, explorer_shape.height(), icon_mode_) : QIcon(drawn);
+    };
     const auto owned_by = [&](const ElementRef& owner) {
         std::vector<AttributeId> owned;
         for (const auto& [id, attribute] : attributes)
@@ -1409,19 +1512,28 @@ void MainWindow::refresh_explorer() {
     // lists its parts the same way. These are the same attributes the group
     // below counts; here they are shown by what they belong to.
     const auto nest = [&](auto&& self, QStandardItem* under, const ElementRef& owner) -> void {
-        for (const auto id : owned_by(owner)) {
+        const auto owned = owned_by(owner);
+        // What belongs to this row, counted at the end of it. A composite
+        // attribute carries one as much as an entity does: the parts hanging
+        // off it are what belongs to it.
+        if (!owned.empty()) under->setData(static_cast<int>(owned.size()), owned_count_role);
+        for (const auto id : owned) {
             const ElementRef ref{id};
-            auto* row = new QStandardItem(attribute_badge, display_name(editor_.project(), ref));
+            auto* row = new QStandardItem(shaped(ref, Glyph::Attribute), display_name(editor_.project(), ref));
             row->setData(key(ref), Qt::UserRole);
-            row->setToolTip(kind_label(ref) + " · " + key(ref));
+            row->setToolTip(kind_description(editor_.project(), ref) + " · " + key(ref));
             under->appendRow(row);
             references_.emplace(key(ref), ref);
             self(self, row, ref);
         }
     };
     const auto append = [&](const QString& label, Glyph glyph, const auto& collection, bool with_owned) {
-        const auto badge = glyph_icon(glyph, colors, 22, icon_mode_);
-        auto* group = new QStandardItem(badge, label + QString(" (%1)").arg(collection.size()));
+        const auto badge = glyph_icon(glyph, colors, explorer_shape.height(), icon_mode_);
+        // A group keeps its badge, being a kind rather than an element, and its
+        // count goes at the end of the row like every other count, so the tree
+        // says how many in one place and one way.
+        auto* group = new QStandardItem(badge, label);
+        group->setData(static_cast<int>(collection.size()), owned_count_role);
         group->setSelectable(false);
         // The group is known by a key of its own rather than by its text, whose
         // count changes with every element added: an open group that changed
@@ -1431,9 +1543,9 @@ void MainWindow::refresh_explorer() {
         for (const auto& [id, item] : collection) {
             (void)item;
             const ElementRef ref{id};
-            auto* row = new QStandardItem(badge, display_name(editor_.project(), ref));
+            auto* row = new QStandardItem(shaped(ref, glyph), display_name(editor_.project(), ref));
             row->setData(key(ref), Qt::UserRole);
-            row->setToolTip(kind_label(ref) + " · " + key(ref));
+            row->setToolTip(kind_description(editor_.project(), ref) + " · " + key(ref));
             group->appendRow(row);
             references_.emplace(key(ref), ref);
             if (with_owned) nest(nest, row, ref);
