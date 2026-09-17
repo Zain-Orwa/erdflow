@@ -343,6 +343,33 @@ not been built yet. Their presence in those documents is not a completion claim.
 - An inheritance link cannot carry a comment. It is anchored to its triangle
   rather than being a connector and has no identity of its own to pin to, so a
   remark about one goes on the triangle.
+- **Search** narrows the diagram to what is being looked for, rather than only
+  walking from one match to the next, per
+  [ADR-018](adr/ADR-018-SEARCH-NARROWS-THE-DIAGRAM.md). **Edit → Search…**
+  (Ctrl+F) drops a bar in above the canvas, holding the box, the kind and the
+  options, and closing on Escape or its own ✕.
+- Names are matched without regard to case, among **entities**, **attributes**,
+  **relationships**, **hierarchies**, or all of them. A kind chosen with nothing
+  typed asks for every element of that kind, which is how "show me only the
+  entities" is asked for. Typing settles before the diagram is filtered on it,
+  so writing a word is one change rather than six.
+- What was found keeps its full strength and wears a ring; everything else
+  **fades** by default, which keeps the diagram's shape and leaves no line
+  hanging from a shape that has gone. **Hide everything else** takes the rest
+  away instead, for when a clean view is wanted more than the context; a line
+  goes with whichever of its ends goes.
+- **Show what it touches** keeps a match's relatives: what belongs to it, the
+  relationships and hierarchies it takes part in, and the far side of those.
+  One step out — following the joins to their end would fetch most of a
+  well-joined diagram and leave the setting doing nothing.
+- What was found is brought to the middle of the view, and no closer than it
+  already was: the diagram zooms out only when what was found would not
+  otherwise fit, and never zooms in, since being found should move the diagram
+  rather than take the reader somewhere they did not ask to go.
+- A search is a way of looking, not an edit. It changes nothing in the model, is
+  not saved, does not enter the history and does not dirty the project, the same
+  rule the grid and the comment switch follow. Closing it puts the whole diagram
+  back, so a filter is never left on behind a bar nobody can see.
 - Work leaves ERDFlow through **Download**, a tab of its own and a menu under
   File, the way a document application offers it. One word is used in both
   places, and one list holds every format ERDFlow writes.
@@ -417,7 +444,7 @@ geometry changes use **Apply position and size**.
 
 | Phase | Evidence and remaining work |
 | --- | --- |
-| 0 — Architecture | Completed review; ADR-001–013 accepted. ADR-014 records implementation choices. ADR-015 records export and interchange formats, whose picture half is now implemented and whose relational half is not; ADR-016 records project organisation and the start experience, which is not implemented; ADR-017 records review comments, which are implemented and are deliberately kept apart from an element's description and from the Note element. |
+| 0 — Architecture | Completed review; ADR-001–013 accepted. ADR-014 records implementation choices. ADR-015 records export and interchange formats, whose picture half is now implemented and whose relational half is not; ADR-016 records project organisation and the start experience, which is not implemented; ADR-017 records review comments, which are implemented and are deliberately kept apart from an element's description and from the Note element; ADR-018 records that search narrows the diagram rather than walking hit to hit, which is implemented. |
 | 1 — Build foundation | Exit criteria met: layered CMake targets, warning flags, Debug/Release, passing suites, macOS launch, and committed repository state. Windows/Linux instructions exist but those platforms are unverified. |
 | 2 — Shell | Functional desktop shell delivered. Future Schema/Table/SQL/Data navigation waits for usable destinations. |
 | 3 — Commands | Implemented Qt-free semantic operations, atomic deltas, dirty state, bounded undo/redo. |
@@ -481,7 +508,7 @@ group align-to-grid/bounds; stale gesture cancellation; and incident-only live c
 
 Logical metadata and conversion readiness;
 multiple pages; cross-project clipboard; alignment/distribution; drag resize
-handles; freely draggable connector endpoint handles; search; the relational
+handles; freely draggable connector endpoint handles; the relational
 half of export, which waits for a schema to generate it from; autosave and
 recovery. Connector joins can be pinned at their current positions,
 and attribute/participant links support multi-point routes. Attribute kinds currently

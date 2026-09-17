@@ -2858,6 +2858,86 @@ void document_export_tests() {
     const auto refused = desktop::draw_document(view, editor.project(), desktop::DocumentFormat::Markdown, empty);
     require(!refused.ok && !refused.error.isEmpty(), "An empty project is refused, with a reason");
 }
+// A search narrows what the diagram shows rather than changing what is on it.
+// It is how the diagram is being looked at, like the grid, so nothing it does
+// reaches the model or the history.
+void search_tests() {
+    SequentialIds ids;
+    application::Editor editor(ids);
+    const auto made_student = editor.create_entity("Student", {0, 0, 160, 80});
+    const auto made_course = editor.create_entity("Course", {400, 0, 160, 80});
+    const auto made_staff = editor.create_entity("Professor", {800, 0, 160, 80});
+    require(made_student && made_course && made_staff, "Search fixture");
+    const auto student = std::get<domain::EntityId>(*made_student.created);
+    const auto course = std::get<domain::EntityId>(*made_course.created);
+    const auto enrolled = std::get<domain::RelationshipId>(
+        *editor.create_relationship("Enrolled", {200, 200, 190, 110}).created);
+    require(editor.connect(enrolled, student) && editor.connect(enrolled, course), "Joined");
+    require(editor.create_attribute("Gender", {0, -160, 150, 60}, domain::ElementRef{student}), "An attribute");
+    require(editor.create_attribute("Credit Hours", {400, -160, 150, 60}, domain::ElementRef{course}), "And another");
+
+    desktop::DiagramView view(editor);
+    view.resize(900, 700);
+    view.show();
+    QApplication::processEvents();
+
+    const auto revision = editor.revision();
+    const auto before = editor.project();
+
+    // A name narrows the diagram to what carries it, without regard to case.
+    desktop::DiagramSearch asked;
+    asked.text = "stud";
+    view.set_search(asked);
+    require(view.found_elements() == std::vector<domain::ElementRef>{domain::ElementRef{student}},
+            "A name finds what carries it, whatever the case");
+    require(find_node(view, "Student")->opacity() == 1.0, "What was found keeps its full strength");
+    require(find_node(view, "Course")->opacity() < 0.5, "And the rest recede");
+    require(find_node(view, "Course")->isVisible(), "But are still there, so the diagram keeps its shape");
+    // Nothing about the document moved: a search is a way of looking, not an edit.
+    require(editor.revision() == revision && editor.project() == before,
+            "Searching changes nothing on the diagram itself");
+
+    // A kind with nothing typed asks for every element of that kind, which is
+    // how "show me only the entities" is asked for.
+    asked = {};
+    asked.kind = desktop::SearchKind::Entities;
+    view.set_search(asked);
+    require(view.found_elements().size() == 3, "A kind alone finds every element of it");
+    require(find_node(view, "Enrolled")->opacity() < 0.5, "And nothing of any other kind");
+    asked.kind = desktop::SearchKind::Relationships;
+    view.set_search(asked);
+    require(view.found_elements() == std::vector<domain::ElementRef>{domain::ElementRef{enrolled}},
+            "Asking for relationships finds the relationship");
+
+    // One step out: what belongs to a match, what it is joined to, and the far
+    // side of that -- but not the far side's own belongings.
+    asked = {};
+    asked.text = "Student";
+    asked.with_relatives = true;
+    view.set_search(asked);
+    require(view.found_elements().size() == 1, "What was found is still just the match");
+    for (const char* near : {"Student", "Gender", "Enrolled", "Course"})
+        require(find_node(view, near)->opacity() == 1.0, near);
+    require(find_node(view, "Credit Hours")->opacity() < 0.5,
+            "Two steps out is not one step out: the far side's own attributes stay back");
+    require(find_node(view, "Professor")->opacity() < 0.5, "And nothing it does not touch comes along");
+
+    // Hiding takes the rest away rather than fading it, and a line goes with
+    // whichever of its ends goes, so nothing is left hanging.
+    asked.hide_the_rest = true;
+    view.set_search(asked);
+    require(find_node(view, "Professor")->isVisible() == false, "Hiding takes the rest away");
+    require(find_node(view, "Student")->isVisible(), "And leaves what was asked for");
+    for (auto* item : view.scene()->items())
+        if (item->isVisible())
+            require(item->opacity() > 0.5, "Nothing is left both shown and faded");
+
+    // An idle search puts the whole diagram back.
+    view.set_search({});
+    require(view.found_elements().empty(), "An idle search has found nothing");
+    for (const char* every : {"Student", "Course", "Professor", "Enrolled", "Gender", "Credit Hours"})
+        require(find_node(view, every)->isVisible() && find_node(view, every)->opacity() == 1.0, every);
+}
 } // namespace
 
 int main(int argc, char** argv) {
@@ -3034,6 +3114,7 @@ int main(int argc, char** argv) {
         inheritance_orientation_tests();
         picture_export_tests();
         document_export_tests();
+        search_tests();
         std::cout << "Canvas tests passed\n";
     } catch (const std::exception& exception) {
         std::cerr << "Canvas test failed: " << exception.what() << '\n';

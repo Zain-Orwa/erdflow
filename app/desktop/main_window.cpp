@@ -1,6 +1,7 @@
 #include "main_window.hpp"
 #include "download_dialog.hpp"
 #include "ribbon.hpp"
+#include "search_bar.hpp"
 #include "symbol_picker.hpp"
 #include "symbols.hpp"
 
@@ -560,10 +561,17 @@ void MainWindow::build_shell() {
     connect(example, &QPushButton::clicked, this, &MainWindow::load_example);
     header_layout->addWidget(example);
     layout->addWidget(header);
+    // The search sits directly above the thing it filters, and takes no room
+    // at all until it is asked for.
+    search_bar_ = new SearchBar(workspace);
+    search_bar_->hide();
+    layout->addWidget(search_bar_);
     canvas_ = new DiagramView(editor_, workspace);
     canvas_->setObjectName("diagramCanvas");
     canvas_->setAccessibleName("Conceptual ERD canvas");
     layout->addWidget(canvas_, 1);
+    search_bar_->on_changed = [this] { search_diagram(search_bar_->search()); };
+    search_bar_->on_closed = [this] { close_search(); };
     auto* instructions = hint("Choose a shape, then click the canvas. Connect links an attribute to its owner, or a relationship to an entity.", workspace);
     instructions->setContentsMargins(18, 10, 18, 10);
     layout->addWidget(instructions);
@@ -787,6 +795,15 @@ void MainWindow::build_actions() {
     duplicate_->setObjectName("duplicateElements");
     action_glyphs_[duplicate_] = Glyph::Duplicate;
     action_glyphs_[edit->addAction("Delete selection", this, [this] { finish_field_edit(); canvas_->delete_selection(); })] = Glyph::Delete;
+    edit->addSeparator();
+    // Find, where a document application keeps it, and on the key it keeps it
+    // on. It narrows the diagram to what is asked for rather than only walking
+    // from one match to the next, which is what makes it worth having on a
+    // drawing rather than in a list.
+    auto* find = edit->addAction("Search…", QKeySequence::Find, this, &MainWindow::open_search);
+    find->setObjectName("searchDiagram");
+    find->setToolTip("Narrow the diagram to what you are looking for.");
+    action_glyphs_[find] = Glyph::Search;
     edit->addSeparator();
     // A symbol is drawn as its character filling its box, so making the box
     // bigger is what makes the character bigger. The view's own zoom already
@@ -2933,6 +2950,35 @@ bool MainWindow::comment_on_selected_text(const QString& field_name, const QStri
     if (end <= anchor.begin) return false;
     anchor.length = end - anchor.begin;
     return add_comment({domain::CommentTarget{anchor}}, said);
+}
+
+void MainWindow::search_diagram(const DiagramSearch& search) {
+    finish_field_edit();
+    canvas_->set_search(search);
+    const auto found = canvas_->found_elements();
+    if (search_bar_) search_bar_->report(static_cast<int>(found.size()));
+    // What was asked for is brought to the reader rather than left for them to
+    // go looking for, which is the whole point of having asked.
+    if (!found.empty()) canvas_->frame_found();
+    statusBar()->showMessage(!search.looking() ? QString()
+                             : found.empty() ? QString("Nothing on the diagram matches.")
+                             : QString("%1 of the diagram shown.").arg(found.size() == 1
+                                   ? QString("1 element") : QString("%1 elements").arg(found.size())), 6000);
+}
+
+void MainWindow::open_search() {
+    if (!search_bar_) return;
+    search_bar_->open();
+    search_diagram(search_bar_->search());
+}
+
+void MainWindow::close_search() {
+    if (!search_bar_) return;
+    search_bar_->hide();
+    // Closing puts the whole diagram back: a filter left on behind a closed bar
+    // would be a diagram missing pieces for no visible reason.
+    canvas_->set_search({});
+    canvas_->setFocus();
 }
 
 void MainWindow::refresh_download_actions() {

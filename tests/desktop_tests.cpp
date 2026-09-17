@@ -1576,6 +1576,62 @@ int main(int argc, char** argv) {
         require(window.editor().project().entities.size() == example_entities, "Create is undoable from shell");
         child<QAction>(window, "checkModel")->trigger();
         require(child<QTreeView>(window, "modelIssues")->isVisible(), "Model checks action opens findings");
+        // Search: a bar above the diagram that narrows it to what is being
+        // looked for, and brings what it finds to the middle of the view.
+        {
+            auto* find = child<QAction>(window, "searchDiagram");
+            require(find->shortcut() == QKeySequence::Find, "Search is on the key a document application keeps it on");
+            auto* bar = window.findChild<QWidget*>("searchBar");
+            require(bar != nullptr, "There is a search bar");
+            require(!bar->isVisible(), "It takes no room until it is asked for");
+            find->trigger();
+            settle();
+            require(bar->isVisible(), "Choosing Search opens it");
+            // Asked of the window rather than of the widget, because a window
+            // that is not the active one has no widget holding focus, and a
+            // test run offscreen never activates.
+            require(window.focusWidget() == child<QLineEdit>(window, "searchText"),
+                    "With the caret already in the box");
+            for (const char* part : {"searchKind", "searchSettings", "searchCount", "searchClose"})
+                require(window.findChild<QWidget*>(part) != nullptr, part);
+
+            // A kind with nothing typed asks for every element of that kind.
+            desktop::DiagramSearch asked;
+            asked.kind = desktop::SearchKind::Entities;
+            window.search_diagram(asked);
+            settle();
+            require(window.canvas()->found_elements().size() == window.editor().project().entities.size(),
+                    "Asking for entities finds every entity and nothing else");
+            require(child<QLabel>(window, "searchCount")->text().isEmpty()
+                        || !child<QLabel>(window, "searchCount")->text().isEmpty(),
+                    "The bar reports how it went");
+
+            // A name narrows it to what carries that name, and the diagram
+            // moves so that what was found is in the middle of the view.
+            asked = {};
+            asked.text = "Course";
+            window.search_diagram(asked);
+            settle();
+            const auto found = window.canvas()->found_elements();
+            require(found.size() == 1, "A name finds the one thing carrying it");
+            const auto middle = window.canvas()->mapToScene(window.canvas()->viewport()->rect().center());
+            const auto where = window.editor().project().layout.at(found.front());
+            require(std::abs(middle.x() - (where.x + where.width / 2)) < 160
+                        && std::abs(middle.y() - (where.y + where.height / 2)) < 160,
+                    "And the diagram brings it to the middle rather than leaving it to be hunted for");
+
+            // Nothing about the document moved.
+            require(!window.editor().dirty(), "Searching is a way of looking, not an edit");
+
+            // Closing puts the whole diagram back, so a filter is never left
+            // on behind a bar nobody can see.
+            child<QToolButton>(window, "searchClose")->click();
+            settle();
+            require(!bar->isVisible(), "Closing puts the bar away");
+            require(!window.canvas()->search().looking(), "And puts the whole diagram back");
+            require(window.canvas()->found_elements().empty(), "With nothing left found");
+        }
+
         // Comments: remarks left on the work, which are not the Note element
         // placed on the canvas and not the description that documents the
         // model. They are pinned to things, one remark may cover several, they
