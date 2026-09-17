@@ -28,6 +28,24 @@ Search **narrows what the diagram shows**. It is a filter, not a cursor.
 - **What was found is brought to the middle of the view**, because being found
   should bring the answer to the reader rather than leave them to hunt for it.
 
+## The options are two questions, not two switches
+
+How much to keep and what becomes of the rest are different questions, and the
+reader answers them separately. Each is offered as a set of alternatives, so
+choosing one answer cancels the other answer to that question — which is what a
+reader expects — while leaving the other question alone.
+
+They are deliberately not rivals. Keeping a match's neighbours **and** taking
+the rest away is the clearest view of all: a sub-diagram of the match and what
+it touches, with nothing else on the page. Making either choice rule the other
+out would lose exactly that.
+
+Written as two loose switches they read as rivals, and were mistaken for them.
+The headings say which question each pair answers, as entries that cannot be
+chosen rather than as style sections, since some styles draw a section as a bare
+line with the words dropped — and a heading nobody can read is what made the two
+look like rival switches in the first place.
+
 ## Fading is the default, hiding is offered
 
 Fading keeps the diagram's shape, so a match can be seen in its place rather

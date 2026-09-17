@@ -1595,6 +1595,30 @@ int main(int argc, char** argv) {
             for (const char* part : {"searchKind", "searchSettings", "searchCount", "searchClose"})
                 require(window.findChild<QWidget*>(part) != nullptr, part);
 
+            // The options answer two separate questions -- how much to keep,
+            // and what becomes of the rest -- so neither may rule the other
+            // out. Within each question the choices are alternatives, and
+            // choosing one does cancel the other.
+            auto* only_matches = child<QAction>(window, "searchKeepMatches");
+            auto* touching = child<QAction>(window, "searchRelatives");
+            auto* fade = child<QAction>(window, "searchFadeRest");
+            auto* hide = child<QAction>(window, "searchHideRest");
+            require(only_matches->isChecked() && fade->isChecked(),
+                    "Keeping only the matches and fading the rest is where it starts");
+            touching->setChecked(true);
+            require(!only_matches->isChecked(), "Choosing one answer to a question cancels the other");
+            hide->setChecked(true);
+            require(!fade->isChecked(), "And likewise for the second question");
+            require(touching->isChecked(),
+                    "But answering the second question leaves the first answered as it was");
+            settle();
+            require(window.canvas()->search().with_relatives && window.canvas()->search().hide_the_rest,
+                    "So a match's neighbours can be kept and the rest taken away at once,"
+                    " which is the clearest view of the two questions together");
+            only_matches->setChecked(true);
+            fade->setChecked(true);
+            settle();
+
             // Typing a word must be possible. Filtering the diagram used to
             // end the edit in progress, which took the caret out of the box
             // after the first letter and left the second with nowhere to go.

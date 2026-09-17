@@ -360,15 +360,23 @@ not been built yet. Their presence in those documents is not a completion claim.
   typed asks for every element of that kind, which is how "show me only the
   entities" is asked for. Typing settles before the diagram is filtered on it,
   so writing a word is one change rather than six.
-- What was found keeps its full strength and wears a ring; everything else
-  **fades** by default, which keeps the diagram's shape and leaves no line
-  hanging from a shape that has gone. **Hide everything else** takes the rest
-  away instead, for when a clean view is wanted more than the context; a line
-  goes with whichever of its ends goes.
-- **Show what it touches** keeps a match's relatives: what belongs to it, the
-  relationships and hierarchies it takes part in, and the far side of those.
-  One step out — following the joins to their end would fetch most of a
-  well-joined diagram and leave the setting doing nothing.
+- The options answer **two separate questions**, each as a set of alternatives,
+  so choosing one answer cancels the other answer to *that* question and leaves
+  the other question alone.
+  - **What to keep** — *Only what matches*, or *What matches, and what it
+    touches*. What it touches means one step out: what belongs to a match, the
+    relationships and hierarchies it takes part in, and the far side of those.
+    Following the joins to their end would fetch most of a well-joined diagram
+    and leave the choice doing nothing.
+  - **What to do with the rest** — *Fade it*, which keeps the diagram's shape so
+    a match is seen where it sits and leaves no line hanging from a shape that
+    has gone; or *Hide it*, for when a clean view is wanted more than the
+    context, where a line goes with whichever of its ends goes.
+- The two are deliberately not rivals. Keeping a match's neighbours **and**
+  taking the rest away is the clearest view of all — a sub-diagram of the match
+  and what it touches, with nothing else on the page — and making either choice
+  rule the other out would lose it.
+- What was found keeps its full strength and wears a ring.
 - What was found is brought to the middle of the view, and no closer than it
   already was: the diagram zooms out only when what was found would not
   otherwise fit, and never zooms in, since being found should move the diagram

@@ -1,6 +1,7 @@
 #include "search_bar.hpp"
 
 #include <QAction>
+#include <QActionGroup>
 #include <QComboBox>
 #include <QHBoxLayout>
 #include <QKeyEvent>
@@ -58,18 +59,53 @@ SearchBar::SearchBar(QWidget* parent) : QWidget(parent) {
     settings_->setText("Options");
     settings_->setToolButtonStyle(Qt::ToolButtonTextOnly);
     settings_->setPopupMode(QToolButton::InstantPopup);
+    // Two questions, not two switches. How much to keep is one, and what to do
+    // with the rest is the other, and they are answered separately: keeping a
+    // match's neighbours and taking the rest away is the clearest view of all,
+    // so neither answer may rule the other out. Written as two sets of
+    // alternatives, because within each question the choices really are
+    // alternatives -- choosing one does cancel the other.
     auto* menu = new QMenu(settings_);
     menu->setObjectName("searchSettingsMenu");
-    relatives_ = menu->addAction("Show what it touches");
+    // Written as entries that cannot be chosen rather than as sections, which
+    // some styles draw as a bare line with the words dropped -- and a heading
+    // nobody can read is what made these two look like rival switches.
+    auto* keeping_heading = menu->addAction("What to keep");
+    keeping_heading->setObjectName("searchKeepHeading");
+    keeping_heading->setEnabled(false);
+    auto* keeping = new QActionGroup(menu);
+    keeping->setExclusive(true);
+    auto* only_matches = menu->addAction("Only what matches");
+    only_matches->setObjectName("searchKeepMatches");
+    only_matches->setCheckable(true);
+    only_matches->setChecked(true);
+    only_matches->setActionGroup(keeping);
+    only_matches->setToolTip("Keep the elements the search found, and nothing else.");
+    relatives_ = menu->addAction("What matches, and what it touches");
     relatives_->setObjectName("searchRelatives");
     relatives_->setCheckable(true);
-    relatives_->setToolTip("Keep what a match belongs to and what it is joined to: its attributes, the "
+    relatives_->setActionGroup(keeping);
+    relatives_->setToolTip("Also keep what a match belongs to and what it is joined to: its attributes, the "
                            "relationships and hierarchies it takes part in, and the far side of those.");
-    hide_rest_ = menu->addAction("Hide everything else");
+
+    menu->addSeparator();
+    auto* rest_heading = menu->addAction("What to do with the rest");
+    rest_heading->setObjectName("searchRestHeading");
+    rest_heading->setEnabled(false);
+    auto* becoming = new QActionGroup(menu);
+    becoming->setExclusive(true);
+    auto* fade_rest = menu->addAction("Fade it");
+    fade_rest->setObjectName("searchFadeRest");
+    fade_rest->setCheckable(true);
+    fade_rest->setChecked(true);
+    fade_rest->setActionGroup(becoming);
+    fade_rest->setToolTip("Leave the rest of the diagram faintly in place, so a match is seen where it sits.");
+    hide_rest_ = menu->addAction("Hide it");
     hide_rest_->setObjectName("searchHideRest");
     hide_rest_->setCheckable(true);
-    hide_rest_->setToolTip("Take the rest of the diagram away rather than fading it. A line goes with "
-                           "whichever of its ends goes, so nothing is left hanging.");
+    hide_rest_->setActionGroup(becoming);
+    hide_rest_->setToolTip("Take the rest of the diagram away instead. A line goes with whichever of its "
+                           "ends goes, so nothing is left hanging.");
     settings_->setMenu(menu);
     layout->addWidget(settings_);
 
