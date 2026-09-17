@@ -926,6 +926,99 @@ void join_where_clicked_tests() {
 // Pictures and notes are on the canvas without being in the model: a note is
 // put down by its tool and opens for its title, a picture draws its own
 // pixels, and nothing connects to either.
+// A symbol is drawn as its character grown to fill its box, so the box is how
+// big the character is. That makes it the one element on the diagram with a
+// size of its own to choose: by its corners, or by the two commands that do
+// the same thing without the hand.
+void symbol_resize_tests() {
+    SequentialIds ids;
+    application::Editor editor(ids);
+    const auto symbol = *editor.create_symbol("\U0001F393", {0, 0, 56, 56}).created;
+    const auto entity = *editor.create_entity("Student", {300, 0, 160, 80}).created;
+    desktop::DiagramView view(editor);
+    view.resize(900, 600);
+    view.show();
+    view.actual_size();
+    view.centerOn(100, 40);
+    QApplication::processEvents();
+    const auto box_of = [&](const domain::ElementRef& ref) { return editor.project().layout.at(ref); };
+
+    // An entity's box is sized by the name it has to hold, so it has no size
+    // to choose and the commands leave it alone rather than reshaping it.
+    view.select_elements({entity});
+    QApplication::processEvents();
+    require(view.selected_symbols().empty(), "An entity is not a symbol");
+    const auto entity_box = box_of(entity);
+    const auto before_entity = editor.revision();
+    view.resize_symbols(2.0);
+    require(box_of(entity) == entity_box, "So enlarging does nothing to it");
+    require(editor.revision() == before_entity, "And writes no edit at all");
+
+    view.select_elements({symbol});
+    QApplication::processEvents();
+    require(view.selected_symbols() == std::vector<domain::ElementRef>{symbol}, "A symbol is one");
+
+    // Hauling the bottom right corner. The corner opposite it stays where it
+    // is, which is what makes the symbol grow away from the hand.
+    const auto start = box_of(symbol);
+    const QPointF corner(start.x + start.width, start.y + start.height);
+    mouse(view, QEvent::MouseButtonPress, view.mapFromScene(corner), Qt::LeftButton, Qt::LeftButton);
+    mouse(view, QEvent::MouseMove, view.mapFromScene(corner + QPointF(60, 60)), Qt::NoButton, Qt::LeftButton);
+    require(box_of(symbol) == start, "A drag in progress has written nothing yet");
+    require(find_node(view, "\U0001F393")->boundingRect().width() > start.width + 50,
+            "Though the symbol is already drawn at the size being asked for");
+    mouse(view, QEvent::MouseButtonRelease, view.mapFromScene(corner + QPointF(60, 60)), Qt::LeftButton, Qt::NoButton);
+    const auto hauled = box_of(symbol);
+    require(std::abs(hauled.width - 116) < 2 && std::abs(hauled.height - 116) < 2, "Letting go writes the size");
+    require(std::abs(hauled.x - start.x) < 0.01 && std::abs(hauled.y - start.y) < 0.01,
+            "And the opposite corner has not moved");
+    require(editor.undo_label() == "Resize symbol", "The history says what was done");
+    require(editor.undo() && box_of(symbol) == start, "And it undoes like any other edit");
+    view.synchronize();
+    QApplication::processEvents();
+
+    // A grip pressed and let go without travelling asks for nothing, so the
+    // history is not filled with steps that changed nothing.
+    const auto before_click = editor.revision();
+    mouse(view, QEvent::MouseButtonPress, view.mapFromScene(corner), Qt::LeftButton, Qt::LeftButton);
+    mouse(view, QEvent::MouseButtonRelease, view.mapFromScene(corner), Qt::LeftButton, Qt::NoButton);
+    require(editor.revision() == before_click, "A grip clicked and let go writes nothing");
+
+    // Escape during the drag puts the symbol back at the size it was.
+    mouse(view, QEvent::MouseButtonPress, view.mapFromScene(corner), Qt::LeftButton, Qt::LeftButton);
+    mouse(view, QEvent::MouseMove, view.mapFromScene(corner + QPointF(120, 120)), Qt::NoButton, Qt::LeftButton);
+    view.cancel_interaction();
+    QApplication::processEvents();
+    require(box_of(symbol) == start, "Escape abandons the size");
+    require(std::abs(find_node(view, "\U0001F393")->boundingRect().width() - start.width) < 20,
+            "And the symbol is drawn at the stored size again");
+
+    // The two commands grow and shrink about the symbol's own centre, so it
+    // stays where it was put instead of walking across the diagram.
+    const QPointF centre(start.x + start.width / 2, start.y + start.height / 2);
+    view.resize_symbols(1.25);
+    const auto grown = box_of(symbol);
+    require(std::abs(grown.width - start.width * 1.25) < 0.01, "Enlarge grows it by a quarter");
+    require(std::abs(grown.x + grown.width / 2 - centre.x()) < 0.01
+            && std::abs(grown.y + grown.height / 2 - centre.y()) < 0.01, "About its own centre");
+    view.resize_symbols(1 / 1.25);
+    require(std::abs(box_of(symbol).width - start.width) < 0.01, "And shrink puts it back");
+
+    // Neither runs away: a symbol cannot be shrunk to nothing or enlarged
+    // until it is the paper rather than a mark on it.
+    for (int step = 0; step < 40; ++step) view.resize_symbols(1 / 1.25);
+    require(box_of(symbol).width == domain::min_symbol_size, "Shrinking stops at the smallest");
+    for (int step = 0; step < 80; ++step) view.resize_symbols(1.25);
+    require(box_of(symbol).width == domain::max_symbol_size, "And enlarging at the largest");
+
+    // A mixed selection is not a selection of symbols, so the commands that
+    // act on symbols do not act on half of it.
+    view.select_elements({symbol, entity});
+    QApplication::processEvents();
+    require(view.selected_symbols().size() == 1, "A mixed selection holds one symbol");
+    require(view.selected_symbols() != view.selected_elements(), "But is not all symbols");
+}
+
 void figure_tests() {
     SequentialIds ids;
     application::Editor editor(ids);
@@ -955,6 +1048,7 @@ void figure_tests() {
     view.synchronize();
     QApplication::processEvents();
     require(find_node(view, "Assumptions") != nullptr, "The note is a node like any other");
+
 
     // A picture draws its own pixels: a solid red image comes out red.
     QImage red(40, 30, QImage::Format_RGB32);
@@ -1032,6 +1126,53 @@ void figure_tests() {
     require(editor.undo(), "Undo the deletion");
     view.synchronize();
     require(editor.project().notes.size() == 1 && editor.project().pictures.size() == 1, "One undo brings both back");
+
+    // A symbol is a note that is one character standing on its own. It is
+    // drawn as the character and nothing else: no card, no border, no title.
+    // The card is what has to be gone, so the test looks for the card rather
+    // than for the character.
+    {
+        const auto shot = [&] {
+            view.synchronize();
+            QApplication::processEvents();
+            return view.viewport()->grab().toImage();
+        };
+        const auto surface = desktop::note_surface(desktop::theme(view.theme_id()));
+        // Compared as plain pixel values: two QColors of the same colour are
+        // unequal when they were built in different colour spaces.
+        const auto wanted = surface.rgb();
+        const auto carded = [wanted](const QImage& image) {
+            int found = 0;
+            for (int y = 0; y < image.height(); ++y)
+                for (int x = 0; x < image.width(); ++x)
+                    if ((image.pixel(x, y) | 0xff000000u) == wanted) ++found;
+            return found;
+        };
+        require(carded(shot()) > 0, "An ordinary note is drawn on a card");
+        const domain::Rect where{120, -220, 56, 56};
+        const auto symbol = editor.create_symbol("⋈", where);
+        require(symbol && symbol.created, "A symbol is placed");
+        require(editor.project().notes.at(std::get<domain::NoteId>(*symbol.created)).plain,
+                "And it is a note that knows it is drawn bare");
+        // Only the symbol's own patch of canvas is read, so the written note
+        // elsewhere on the diagram cannot answer for it.
+        const auto image = shot();
+        require(find_node(view, "⋈") != nullptr, "The symbol is a node like any other");
+        const auto ratio = image.devicePixelRatio();
+        const auto room = view.mapFromScene(QRectF(where.x, where.y, where.width, where.height)).boundingRect();
+        const QRect patch(QPoint(static_cast<int>(room.left() * ratio) - 4, static_cast<int>(room.top() * ratio) - 4),
+                          QPoint(static_cast<int>(room.right() * ratio) + 4, static_cast<int>(room.bottom() * ratio) + 4));
+        const auto paper = desktop::theme(view.theme_id()).canvas.rgb();
+        int card = 0, marked = 0;
+        for (int y = std::max(0, patch.top()); y <= std::min(image.height() - 1, patch.bottom()); ++y)
+            for (int x = std::max(0, patch.left()); x <= std::min(image.width() - 1, patch.right()); ++x) {
+                const auto pixel = image.pixel(x, y) | 0xff000000u;
+                if (pixel == wanted) ++card;
+                if (pixel != paper) ++marked;
+            }
+        require(card == 0, "A symbol has no card behind it, no border and no title");
+        require(marked > 0, "The character itself is drawn");
+    }
 }
 
 // The notation for the weak side of a model: a weak entity wears a double
@@ -1285,6 +1426,175 @@ void element_shape_preview_tests() {
     view.synchronize();
     QApplication::processEvents();
     require(near_enough(middle(drawn(entity)), QColor(0x9E, 0xE8, 0xC4)), "And then the one it was given");
+}
+
+// A selection's lines can be locked or released together from the right-click
+// menu, in one edit, and the whole diagram's from the menu on empty canvas.
+void lock_selection_tests() {
+    SequentialIds ids;
+    application::Editor editor(ids);
+    const auto student = std::get<domain::EntityId>(*editor.create_entity("Student", {-360, 0, 160, 80}).created);
+    const auto course = std::get<domain::EntityId>(*editor.create_entity("Course", {320, 0, 160, 80}).created);
+    const auto enrolled = std::get<domain::RelationshipId>(*editor.create_relationship("Enrolled", {-40, -20, 180, 100}).created);
+    const auto first = editor.connect(enrolled, student);
+    const auto second = editor.connect(enrolled, course);
+    require(first && second, "Both sides connected");
+    const auto owner = domain::AttributeOwner{domain::ElementRef{student}};
+    const auto born = std::get<domain::AttributeId>(*editor.create_attribute("Born", {-380, -230, 140, 60}, owner).created);
+
+    desktop::DiagramView view(editor);
+    view.resize(1100, 800);
+    view.show();
+    view.actual_size();
+    view.centerOn(0, 0);
+    QApplication::processEvents();
+
+    const auto pinned = [&](const domain::ConnectorRef& ref) {
+        const auto found = editor.project().connectors.find(ref);
+        return found != editor.project().connectors.end() && found->second.pinned();
+    };
+    const auto right_click = [&](const QPointF& scene_point, const char* entry, bool expect_enabled) {
+        QTimer::singleShot(0, [&, entry, expect_enabled] {
+            auto* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+            require(menu != nullptr, "A right-click opens a menu");
+            auto* action = menu->findChild<QAction*>(QString::fromLatin1(entry));
+            require(action != nullptr, "It offers locking and releasing");
+            require(action->isEnabled() == expect_enabled, "Each is offered only while it has something to do");
+            // A click closes the menu before the entry acts, and so does this.
+            menu->close();
+            if (expect_enabled) action->trigger();
+        });
+        const auto position = view.mapFromScene(scene_point);
+        QContextMenuEvent event(QContextMenuEvent::Mouse, position, view.viewport()->mapToGlobal(position));
+        QApplication::sendEvent(view.viewport(), &event);
+        QApplication::processEvents();
+        view.activateWindow();
+    };
+
+    // The lines one entity touches: its side of the relationship and the link
+    // to its attribute, but not the other entity's side.
+    view.select_elements({domain::ElementRef{student}});
+    QApplication::processEvents();
+    const auto revision = editor.revision();
+    right_click(find_node(view, "Student")->sceneBoundingRect().center(), "contextLockConnectors", true);
+    require(editor.revision() == revision + 1, "Locking a selection's lines is one edit");
+    require(editor.undo_label() == "Lock connectors", "Named for what it did");
+    require(pinned(domain::ConnectorRef{*first.participant}), "The side it takes part in is pinned");
+    require(pinned(domain::ConnectorRef{born}), "And the link to its attribute");
+    require(!pinned(domain::ConnectorRef{*second.participant}), "The line it does not touch is left alone");
+    require(editor.undo(), "Which undoes in one step");
+    require(editor.project().connectors.empty(), "Putting every one of them back");
+    require(editor.redo(), "And redoes");
+
+    // Offered only while it has something to do: these are locked already.
+    right_click(find_node(view, "Student")->sceneBoundingRect().center(), "contextLockConnectors", false);
+    right_click(find_node(view, "Student")->sceneBoundingRect().center(), "contextUnlockConnectors", true);
+    require(!pinned(domain::ConnectorRef{*first.participant}) && !pinned(domain::ConnectorRef{born}),
+            "Releasing hands the joins back");
+
+    // With nothing chosen, the menu on empty canvas covers the whole diagram.
+    view.select_elements({});
+    QApplication::processEvents();
+    const auto before = editor.revision();
+    right_click(QPointF(0, 420), "contextLockConnectors", true);
+    require(editor.revision() == before + 1, "The whole diagram is one edit too");
+    require(pinned(domain::ConnectorRef{*first.participant}) && pinned(domain::ConnectorRef{*second.participant})
+                && pinned(domain::ConnectorRef{born}),
+            "Every line is pinned, whichever elements it touches");
+    right_click(QPointF(0, 420), "contextUnlockConnectors", true);
+    require(editor.project().connectors.empty(), "And every one of them released again");
+}
+
+// The paper a diagram is drawn on: each ruling draws something the plain
+// canvas does not, a picture of one's own tiles behind everything, and the
+// strength decides how much of any of it shows.
+void background_tests() {
+    SequentialIds ids;
+    application::Editor editor(ids);
+    desktop::DiagramView view(editor);
+    view.resize(600, 420);
+    view.show();
+    view.set_grid_visible(false);
+    view.actual_size();
+    view.centerOn(0, 0);
+    QApplication::processEvents();
+
+    const auto drawn = [&] {
+        view.synchronize();
+        QApplication::processEvents();
+        return view.viewport()->grab().toImage();
+    };
+    const auto canvas_colour = desktop::theme(view.theme_id()).canvas;
+    const auto ink = [canvas_colour](const QImage& image) {
+        // How much of the view is not the plain canvas colour. The colour is
+        // taken from the theme rather than from a corner, since a corner may
+        // itself be sitting on a rule.
+        const auto plain = canvas_colour;
+        int marked = 0;
+        for (int y = 0; y < image.height(); ++y)
+            for (int x = 0; x < image.width(); ++x)
+                if (image.pixelColor(x, y) != plain) ++marked;
+        return marked;
+    };
+    const auto plain = drawn();
+    require(ink(plain) == 0, "The plain canvas is plain");
+
+    for (const auto style : {domain::BackgroundStyle::Squares, domain::BackgroundStyle::Lines,
+                             domain::BackgroundStyle::Dots}) {
+        require(editor.set_background(domain::Background{style, 100, {}}), "Lay a ruling on the canvas");
+        const auto ruled = drawn();
+        require(ruled != plain && ink(ruled) > 0, "Which draws something the plain canvas does not");
+        // A ruling is drawn as the ruling it is: asking for less of it is not
+        // offered, and asking anyway leaves it at full strength.
+        require(editor.set_background(domain::Background{style, 20, {}}), "Ask for a fainter ruling");
+        require(editor.project().background.strength == 100, "A ruling stays at full strength");
+    }
+    // Squares and lines are not the same ruling.
+    require(editor.set_background(domain::Background{domain::BackgroundStyle::Squares, 100, {}}), "Squares");
+    const auto squares = drawn();
+    require(editor.set_background(domain::Background{domain::BackgroundStyle::Lines, 100, {}}), "Lines");
+    require(drawn() != squares, "Each ruling is its own");
+
+    // A picture of one's own, tiled behind the diagram.
+    QImage own(16, 16, QImage::Format_RGB32);
+    own.fill(QColor(0x20, 0x80, 0x40));
+    QByteArray encoded;
+    QBuffer buffer(&encoded);
+    buffer.open(QIODevice::WriteOnly);
+    require(own.save(&buffer, "PNG"), "Encode a background picture");
+    require(editor.set_background(domain::Background{domain::BackgroundStyle::Image, 100,
+                                                     std::vector<std::uint8_t>(encoded.begin(), encoded.end())}),
+            "Lay it on the canvas");
+    const auto papered = drawn();
+    const auto middle = papered.pixelColor(papered.width() / 2, papered.height() / 2);
+    require(middle.green() > 100 && middle.red() < 80, "The picture is what the canvas now shows");
+    require(papered.pixelColor(4, 4) == middle && papered.pixelColor(papered.width() - 4, 4) == middle,
+            "One picture covering the view, corner to corner, rather than repeated across it");
+
+    // It is fixed to the view rather than to the canvas, so zooming in does
+    // not magnify it: it stays the picture at its own resolution.
+    view.zoom_in();
+    view.zoom_in();
+    require(drawn() == papered, "Zooming in does not magnify the picture");
+    view.actual_size();
+
+    // A picture is the one paper that fades, so it sits behind the diagram
+    // rather than in front of it.
+    auto faded = editor.project().background;
+    faded.strength = 30;
+    require(editor.set_background(faded), "Ask for less of the picture");
+    require(editor.project().background.strength == 30, "Which a picture allows");
+    const auto softened = drawn();
+    require(softened != papered, "And shows through less");
+    faded.strength = 0;
+    require(editor.set_background(faded), "Down to nothing");
+    require(ink(drawn()) == 0, "At no strength the picture is not drawn at all");
+
+    // Back to the theme, and the dots that mark the grid return with it.
+    require(editor.set_background(domain::Background{}), "Back to the plain canvas");
+    require(ink(drawn()) == 0, "Which is plain again");
+    view.set_grid_visible(true);
+    require(ink(drawn()) > 0, "And the grid's own dots are drawn once more");
 }
 
 // An element can be given a surface colour of its own, one colour can be given
@@ -2402,8 +2712,11 @@ int main(int argc, char** argv) {
         lock_participant_tests();
         join_where_clicked_tests();
         figure_tests();
+        symbol_resize_tests();
         recursive_loop_tests();
         alignment_tests();
+        lock_selection_tests();
+        background_tests();
         element_shape_preview_tests();
         weak_and_identifying_drawing_tests();
         element_colour_tests();

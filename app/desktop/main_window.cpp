@@ -1,18 +1,24 @@
 #include "main_window.hpp"
 #include "ribbon.hpp"
+#include "symbol_picker.hpp"
+#include "symbols.hpp"
 
 #include <QAction>
 #include <QActionGroup>
+#include <QAbstractScrollArea>
 #include <QApplication>
 #include <QBuffer>
 #include <QCloseEvent>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDockWidget>
+#include <QAbstractSpinBox>
 #include <QDoubleSpinBox>
+#include <QSpinBox>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFocusEvent>
+#include <QFontMetricsF>
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
@@ -31,6 +37,7 @@
 #include <QScrollArea>
 #include <QSettings>
 #include <QSignalBlocker>
+#include <QSlider>
 #include <QStandardItemModel>
 #include <QStatusBar>
 #include <QResizeEvent>
@@ -38,8 +45,10 @@
 #include <QToolButton>
 #include <QTreeView>
 #include <QVBoxLayout>
+#include <QWidgetAction>
 
 #include <algorithm>
+#include <cmath>
 #include <array>
 
 namespace erdflow::desktop {
@@ -50,6 +59,17 @@ std::string bytes(const QString& value) { return value.toUtf8().toStdString(); }
 QString key(ElementRef ref) {
     const auto id = uuid(ref);
     return QString::fromLatin1(QByteArray(reinterpret_cast<const char*>(id.bytes.data()), 16).toHex());
+}
+QString kind_label(ElementRef ref);
+// A plain note is a symbol rather than a note, and the panel has to call it
+// what it is: a card and a character drawn bare are not the same thing to
+// anyone looking at them, whatever they share underneath.
+QString kind_label(const Project& project, ElementRef ref) {
+    if (const auto* note_id = std::get_if<NoteId>(&ref)) {
+        const auto found = project.notes.find(*note_id);
+        if (found != project.notes.end() && found->second.plain) return QStringLiteral("Symbol");
+    }
+    return kind_label(ref);
 }
 QString kind_label(ElementRef ref) {
     if (std::holds_alternative<EntityId>(ref)) return QStringLiteral("Entity");
@@ -95,6 +115,18 @@ std::vector<ElementRef> recursions_of(const Project& project, EntityId id) {
         if (touches > 1) found.emplace_back(relationship_id);
     }
     return found;
+}
+
+// The name a background style goes by, for the actions that choose it.
+QString background_key(domain::BackgroundStyle style) {
+    switch (style) {
+    case domain::BackgroundStyle::Theme: return QStringLiteral("Theme");
+    case domain::BackgroundStyle::Squares: return QStringLiteral("Squares");
+    case domain::BackgroundStyle::Lines: return QStringLiteral("Lines");
+    case domain::BackgroundStyle::Dots: return QStringLiteral("Dots");
+    case domain::BackgroundStyle::Image: return QStringLiteral("Image");
+    }
+    return QStringLiteral("Theme");
 }
 
 QString display_name(const Project& project, ElementRef ref) {
@@ -250,6 +282,49 @@ QLabel* field_label(const QString& text, const QColor& ink, QWidget* parent) {
     label->setStyleSheet(QStringLiteral("QLabel#fieldLabel { color: %1; font-weight: 700; }").arg(ink.name()));
     return label;
 }
+// The bytes of an image file, ready to be kept in a project. They are the
+// file's own when it is already a PNG or JPEG of modest size, so nothing is
+// lost; anything else is re-encoded, and scaled down first when it is large,
+// since a project file has room for only so much picture.
+std::optional<std::vector<std::uint8_t>> encoded_image(const QString& path, QString& why_not,
+                                                      int longest = 1024, qint64 keep_below = 1024 * 1024) {
+    QImageReader reader(path);
+    reader.setAutoTransform(true);
+    const auto format = reader.format().toLower();
+    const auto image = reader.read();
+    if (image.isNull()) {
+        why_not = reader.errorString().isEmpty() ? QStringLiteral("The file is not an image ERDFlow can read.")
+                                                 : reader.errorString();
+        return std::nullopt;
+    }
+    QByteArray encoded;
+    QFile file(path);
+    if ((format == "png" || format == "jpeg" || format == "jpg") && file.size() <= keep_below
+        && file.open(QIODevice::ReadOnly)) {
+        encoded = file.readAll();
+    } else {
+        // The best of the sizes that fits, rather than one size and a refusal:
+        // a picture is worth keeping as large as the file has room for.
+        for (auto side = longest; side >= 512; side = side * 3 / 4) {
+            auto fitted = image;
+            if (fitted.width() > side || fitted.height() > side)
+                fitted = fitted.scaled(side, side, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+            encoded.clear();
+            QBuffer buffer(&encoded);
+            buffer.open(QIODevice::WriteOnly);
+            // A photograph is far smaller as a JPEG; anything transparent has to stay a PNG.
+            if (fitted.hasAlphaChannel()) fitted.save(&buffer, "PNG");
+            else fitted.save(&buffer, "JPEG", 90);
+            if (static_cast<std::size_t>(encoded.size()) <= domain::max_image_bytes) break;
+        }
+    }
+    if (encoded.isEmpty() || static_cast<std::size_t>(encoded.size()) > domain::max_image_bytes) {
+        why_not = QStringLiteral("The picture is too large to keep in a project file.");
+        return std::nullopt;
+    }
+    return std::vector<std::uint8_t>(encoded.begin(), encoded.end());
+}
+
 QLabel* hint(const QString& value, QWidget* parent) {
     auto* label = new QLabel(value, parent);
     label->setWordWrap(true);
@@ -267,6 +342,29 @@ protected:
         if (commit) commit();
     }
 };
+// A choice or a number must not change because a finger brushed the trackpad
+// while the pointer was over it: a value is changed by pressing the control
+// and choosing, or by typing, and not by passing across it. The wheel is
+// handed to whatever scrolls behind instead, so the panel moves under the
+// pointer as it was meant to, and a control with nothing behind it simply
+// lets the turn go by.
+class WheelGuard final : public QObject {
+public:
+    using QObject::QObject;
+protected:
+    bool eventFilter(QObject* watched, QEvent* event) override {
+        if (event->type() != QEvent::Wheel) return QObject::eventFilter(watched, event);
+        auto* widget = qobject_cast<QWidget*>(watched);
+        if (!widget) return QObject::eventFilter(watched, event);
+        for (auto* ancestor = widget->parentWidget(); ancestor; ancestor = ancestor->parentWidget())
+            if (auto* area = qobject_cast<QAbstractScrollArea*>(ancestor)) {
+                QApplication::sendEvent(area->viewport(), event);
+                break;
+            }
+        return true;
+    }
+};
+
 void finish_field_edit() {
     if (auto* widget = QApplication::focusWidget();
         qobject_cast<QLineEdit*>(widget) || qobject_cast<QPlainTextEdit*>(widget))
@@ -278,6 +376,7 @@ MainWindow::MainWindow(application::Editor& editor, application::ProjectStore& s
                        application::IdGenerator& ids, QWidget* parent)
     : QMainWindow(parent), ids_(ids), editor_(editor), store_(store) {
     setObjectName("mainWindow");
+    wheel_guard_ = new WheelGuard(this);
     resize(1440, 920);
     // Small enough to be useful on a narrow screen. What the window cannot do
     // is stay this size and keep everything at full width, so the toolbar gives
@@ -287,6 +386,12 @@ MainWindow::MainWindow(application::Editor& editor, application::ProjectStore& s
     build_actions();
     // The tabs go on once every action and menu they are built from exists.
     ribbon_ = new Ribbon(*this);
+    // Which field a picked character goes into is decided by where the caret
+    // was, so the last text field written in is remembered as focus moves.
+    connect(qApp, &QApplication::focusChanged, this, [this](QWidget* was, QWidget* now) {
+        remember_caret(was);
+        remember_text_target(now);
+    });
     canvas_->on_edit = [this](const auto& result) { show_result(result); };
     canvas_->on_selection = [this](const auto& selected) { selection_changed(selected); };
     canvas_->on_tool = [this](Tool tool) {
@@ -453,6 +558,8 @@ void MainWindow::build_actions() {
     file->addSeparator();
     file->addAction("&Quit", QKeySequence::Quit, this, &QWidget::close);
     auto* edit = new QMenu("&Edit", this);
+    // Named like the window's other menus, so it can be found by name.
+    edit->setObjectName("editMenu");
     menuBar()->insertMenu(findChild<QMenu*>("viewMenu")->menuAction(), edit);
     undo_ = edit->addAction("Undo", QKeySequence::Undo, this, [this] {
         finish_field_edit(); canvas_->cancel_interaction(); show_result(editor_.undo());
@@ -478,6 +585,20 @@ void MainWindow::build_actions() {
     duplicate_->setObjectName("duplicateElements");
     action_glyphs_[duplicate_] = Glyph::Duplicate;
     action_glyphs_[edit->addAction("Delete selection", this, [this] { finish_field_edit(); canvas_->delete_selection(); })] = Glyph::Delete;
+    edit->addSeparator();
+    // A symbol is drawn as its character filling its box, so making the box
+    // bigger is what makes the character bigger. The view's own zoom already
+    // owns Ctrl+= and Ctrl+-, and it means something else -- how close the
+    // whole diagram is looked at, not how big one thing on it is -- so these
+    // take the same keys with Shift, the way a document editor's font size does.
+    enlarge_ = edit->addAction("Enlarge symbol", QKeySequence("Ctrl+Shift+="), this,
+                               [this] { finish_field_edit(); canvas_->resize_symbols(symbol_step); });
+    enlarge_->setObjectName("enlargeSymbol");
+    enlarge_->setToolTip("Make the selected symbol bigger. Its corners do the same thing by hand.");
+    shrink_ = edit->addAction("Shrink symbol", QKeySequence("Ctrl+Shift+-"), this,
+                              [this] { finish_field_edit(); canvas_->resize_symbols(1 / symbol_step); });
+    shrink_->setObjectName("shrinkSymbol");
+    shrink_->setToolTip("Make the selected symbol smaller.");
     // Delete/Backspace and the letter tool shortcuts belong to the canvas, so
     // typing inside property fields never deletes model elements.
     auto* toolbar = addToolBar("Model tools");
@@ -636,6 +757,23 @@ void MainWindow::build_actions() {
     insert_menu->setObjectName("insertMenu");
     menuBar()->insertMenu(findChild<QMenu*>("viewMenu")->menuAction(), insert_menu);
     insert_menu->addAction(picture);
+    // Characters that cannot be typed but are wanted constantly in this of all
+    // editors: the relational algebra signs, the set and logic signs, arrows,
+    // Greek, and the marks and emoji a note is annotated with. They go into a
+    // name, a role or a description, so this is one gallery reached two ways
+    // rather than two galleries. The ribbon's Insert row is built from this
+    // menu, so the submenu appears there as a button of its own.
+    // One entry rather than a submenu: a submenu's button carries a dropdown
+    // arrow, and on the ribbon's Insert row the style puts that arrow beneath
+    // the label, which makes the row taller than Home and breaks the tabs'
+    // one promise, that every row is the same height. The gallery lists its
+    // groups down its own side, so emoji are one click in rather than one
+    // click out.
+    auto* symbols = insert_menu->addAction("Symbols…");
+    symbols->setObjectName("insertSymbols");
+    symbols->setToolTip("Relational algebra, logic, arrows, Greek, marks, emoji and people, for names and notes.");
+    action_glyphs_[symbols] = Glyph::Symbols;
+    connect(symbols, &QAction::triggered, this, [this] { show_symbols(QStringLiteral("Relational algebra")); });
     canvas_->on_insert_picture = [this](QPointF at) { insert_picture_dialog(at); };
 
     // Notation follows Connect: it decides how the lines Connect draws are read.
@@ -658,6 +796,7 @@ void MainWindow::build_actions() {
     notation_box_->setMaximumWidth(notation_sample.width() + 62);
     notation_box_->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
     notation_box_->setMinimumContentsLength(4);
+    notation_box_->installEventFilter(wheel_guard_);
     for (const auto& [style, label] : notation_styles())
         notation_box_->addItem(QIcon(canvas_->notation_preview(style, notation_sample)), label,
                                QVariant::fromValue(static_cast<int>(style)));
@@ -704,11 +843,23 @@ void MainWindow::build_actions() {
     stretch->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
     toolbar->addWidget(stretch);
     toolbar->addSeparator();
-    auto* check = toolbar->addAction("Check model", this, [this] {
-        finish_field_edit(); refresh_validation(); validation_dock_->show();
+    // One button for both halves of looking at the findings: it opens them,
+    // and once they are open it puts them away again. The button says which
+    // it will do by the mark it wears, and follows the panel however the panel
+    // was opened or closed.
+    check_ = toolbar->addAction("Check model", this, [this] {
+        finish_field_edit();
+        if (validation_dock_->isVisible()) {
+            validation_dock_->hide();
+            return;
+        }
+        refresh_validation();
+        validation_dock_->show();
     });
-    check->setObjectName("checkModel");
-    action_glyphs_[check] = Glyph::Check;
+    check_->setObjectName("checkModel");
+    check_->setCheckable(true);
+    action_glyphs_[check_] = Glyph::Check;
+    connect(validation_dock_, &QDockWidget::visibilityChanged, this, [this] { refresh_check_action(); });
 
 
     // A small raft of view controls over the bottom-right of the canvas, where
@@ -778,6 +929,61 @@ void MainWindow::build_actions() {
     }
     canvas_->set_align_to_grid(false);
     canvas_->set_grid_visible(true);
+    // The paper the diagram is drawn on. It sits with the other choices about
+    // how the diagram looks, and unlike them it travels with the document: a
+    // diagram drawn on graph paper should open on graph paper.
+    auto* backgrounds = view->addMenu("Background");
+    backgrounds->setObjectName("backgroundMenu");
+    auto* background_group = new QActionGroup(this);
+    const std::array<std::pair<domain::BackgroundStyle, const char*>, 4> papers{{
+        {domain::BackgroundStyle::Theme, "None"}, {domain::BackgroundStyle::Squares, "Squares"},
+        {domain::BackgroundStyle::Lines, "Lines"}, {domain::BackgroundStyle::Dots, "Dots"}}};
+    for (const auto& [style, label] : papers) {
+        auto* action = backgrounds->addAction(QString::fromLatin1(label));
+        action->setCheckable(true);
+        action->setActionGroup(background_group);
+        action->setObjectName(QString("background") + background_key(style));
+        background_actions_[style] = action;
+        connect(action, &QAction::triggered, this, [this, style] { choose_background(style); });
+    }
+    auto* own_picture = backgrounds->addAction("Picture…");
+    own_picture->setCheckable(true);
+    own_picture->setActionGroup(background_group);
+    own_picture->setObjectName("backgroundImage");
+    background_actions_[domain::BackgroundStyle::Image] = own_picture;
+    connect(own_picture, &QAction::triggered, this, &MainWindow::choose_background_image);
+    // How strongly a picture shows through, which is what keeps it behind the
+    // diagram rather than in front of it. A ruling needs no such thing: it is
+    // drawn as the ruling it is, so the bar is offered only for a picture.
+    backgrounds->addSeparator();
+    auto* strength_row = new QWidget(backgrounds);
+    auto* strength_layout = new QHBoxLayout(strength_row);
+    strength_layout->setContentsMargins(22, 4, 12, 4);
+    strength_layout->setSpacing(8);
+    strength_layout->addWidget(new QLabel("Strength", strength_row));
+    auto* strength = new QSlider(Qt::Horizontal, strength_row);
+    strength->setObjectName("backgroundStrength");
+    strength->setRange(0, 100);
+    strength->setMinimumWidth(120);
+    strength->installEventFilter(wheel_guard_);
+    auto* reading = new QLabel(strength_row);
+    reading->setMinimumWidth(36);
+    strength_layout->addWidget(strength, 1);
+    strength_layout->addWidget(reading);
+    auto* strength_action = new QWidgetAction(backgrounds);
+    strength_action->setObjectName("backgroundStrengthRow");
+    strength_action->setDefaultWidget(strength_row);
+    backgrounds->addAction(strength_action);
+    connect(strength, &QSlider::valueChanged, this, [this, reading](int value) {
+        reading->setText(QString("%1%").arg(value));
+        if (refreshing_) return;
+        auto paper = editor_.project().background;
+        if (paper.strength == value) return;
+        paper.strength = static_cast<std::uint8_t>(value);
+        show_result(editor_.set_background(std::move(paper)));
+    });
+    connect(backgrounds, &QMenu::aboutToShow, this, [this] { refresh_background_menu(); });
+
     // The same participants can be read in several notations. This is a display
     // choice, so it lives with the other view settings rather than in the file.
     auto* themes = view->addMenu("Theme");
@@ -815,9 +1021,9 @@ void MainWindow::build_actions() {
     // in the same menu rather than somewhere of its own.
     auto* icon_menu = view->addMenu("Icons");
     auto* icon_group = new QActionGroup(this);
-    for (const auto mode : {IconMode::Normal, IconMode::Modern}) {
-        auto* action = icon_menu->addAction(mode == IconMode::Modern ? "Modern — 3D artwork"
-                                                                     : "Normal — drawn from the theme");
+    for (const auto mode : {IconMode::Outline, IconMode::Normal, IconMode::Modern}) {
+        auto* action = icon_menu->addAction(mode == IconMode::Modern ? "Modern"
+                                          : mode == IconMode::Outline ? "Outline" : "Painted");
         action->setCheckable(true);
         action->setChecked(mode == icon_mode_);
         action->setObjectName("icons" + icon_mode_key(mode));
@@ -880,8 +1086,7 @@ void MainWindow::refresh() {
     // fixed wording and only the tooltip follows the named edit.
     undo_->setToolTip(undo_->text() + "\t" + undo_->shortcut().toString(QKeySequence::NativeText));
     redo_->setToolTip(redo_->text() + "\t" + redo_->shortcut().toString(QKeySequence::NativeText));
-    duplicate_->setEnabled(!selection_.empty());
-    rename_->setEnabled(selection_.size() == 1);
+    refresh_selection_commands();
     auto title = text(editor_.project().name);
     document_label_->setText(title + (editor_.dirty() ? " · Unsaved" : ""));
     setWindowTitle(title + "[*] — ERDFlow");
@@ -1029,9 +1234,10 @@ void MainWindow::refresh_properties() {
     // A choice whose words are long must not force the panel wider than the
     // window can spare: the closed box shortens to what it is given and the
     // list still reads in full when it is opened.
-    const auto narrowable = [](QComboBox* box) {
+    const auto narrowable = [this](QComboBox* box) {
         box->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
         box->setMinimumContentsLength(8);
+        box->installEventFilter(wheel_guard_);
         return box;
     };
     // One element written inside its own shape, for a card.
@@ -1049,7 +1255,7 @@ void MainWindow::refresh_properties() {
             display_name(project, element), readable_on(surface_of(project, colors, element)),
             aspect_of(element), pointed, named, parent));
     };
-    auto* heading = new QLabel(kind_label(ref), panel);
+    auto* heading = new QLabel(kind_label(project, ref), panel);
     heading->setObjectName("propertyHeading");
     // The heading says what kind of thing this is, so it stays a title in the
     // theme's own accent. The element's colour is carried by the name field
@@ -1160,8 +1366,44 @@ void MainWindow::refresh_properties() {
         layout->addWidget(hint("A picture is a visual aid: it is not part of the model and nothing connects to it. "
                                "Set its size below; it keeps its proportions.", panel));
     }
-    if (std::holds_alternative<NoteId>(ref))
-        layout->addWidget(hint("The name is the note's title, drawn bold; the text below is drawn beneath it.", panel));
+    if (const auto* note_id = std::get_if<NoteId>(&ref)) {
+        const bool symbol = project.notes.at(*note_id).plain;
+        layout->addWidget(hint(symbol
+                                   ? "The name is the character that is drawn. It is drawn on its own, with nothing "
+                                     "behind it, and fills whatever size it is given."
+                                   : "The name is the note's title, drawn bold; the text below is drawn beneath it.",
+                               panel));
+        if (symbol) {
+            // One number rather than the width and height below, because a
+            // symbol is drawn to the smaller of the two and so is square in
+            // practice. The two fields are still there for anyone who wants a
+            // box that is not; this row keeps the common case to one figure.
+            const auto box = project.layout.at(ref);
+            auto* size_form = new QFormLayout;
+            size_form->setRowWrapPolicy(QFormLayout::WrapAllRows);
+            auto* size = new QSpinBox(panel);
+            size->setObjectName("symbolSize");
+            size->setRange(static_cast<int>(min_symbol_size), static_cast<int>(max_symbol_size));
+            size->setValue(static_cast<int>(std::round(std::min(box.width, box.height))));
+            size->setSingleStep(8);
+            size->setSuffix(" units");
+            size->setKeyboardTracking(false);
+            size->setToolTip("How big the character is drawn. Its corners on the diagram do the same thing by hand.");
+            size->installEventFilter(wheel_guard_);
+            connect(size, &QSpinBox::valueChanged, this, [this, ref](int value) {
+                if (refreshing_ || !exists(editor_.project(), ref)) return;
+                const auto current = editor_.project().layout.at(ref);
+                const double side = value;
+                // Grown about its centre, so a symbol stays where it was put
+                // instead of walking down and to the right as it is enlarged.
+                show_result(editor_.resize_symbols({{ref, {current.x + (current.width - side) / 2,
+                                                           current.y + (current.height - side) / 2, side, side}}}),
+                            false);
+            });
+            size_form->addRow(field_label("Size", label_tone, panel), size);
+            layout->addLayout(size_form);
+        }
+    }
     if (const auto* id = std::get_if<AttributeId>(&ref)) {
         const auto attribute_id = *id;
         const auto attribute = project.attributes.at(attribute_id);
@@ -1389,7 +1631,10 @@ void MainWindow::refresh_properties() {
             layout->addWidget(card);
         }
     }
-    const bool note = std::holds_alternative<NoteId>(ref);
+    // A card note draws its text beneath its title; a symbol draws neither, so
+    // for a symbol the field is a description like any other element's.
+    bool note = false;
+    if (const auto* note_id = std::get_if<NoteId>(&ref)) note = !project.notes.at(*note_id).plain;
     layout->addWidget(field_label(note ? "Text" : "Description", label_tone, panel));
     auto* description_edit = new DescriptionEdit(panel);
     description_edit->setObjectName("elementDescription");
@@ -1415,6 +1660,7 @@ void MainWindow::refresh_properties() {
         fields[i]->setValue(values[i]);
         fields[i]->setKeyboardTracking(false);
         fields[i]->setObjectName("geometry" + names[i]);
+        fields[i]->installEventFilter(wheel_guard_);
         geometry->addRow(field_label(names[i], label_tone, panel), fields[i]);
     }
     layout->addLayout(geometry);
@@ -1448,23 +1694,33 @@ void MainWindow::refresh_validation() {
     readiness_label_->setText(findings.empty() ? "No model issues   " : QString("%1 model checks   ").arg(findings.size()));
 }
 
+void MainWindow::refresh_selection_commands() {
+    duplicate_->setEnabled(!selection_.empty());
+    rename_->setEnabled(selection_.size() == 1);
+    // Every one of them, not merely one: a command that acted on the
+    // symbols in a mixed selection and silently left the rest alone would
+    // be doing something other than what its name says.
+    const auto sizeable = !selection_.empty() && canvas_->selected_symbols().size() == selection_.size();
+    enlarge_->setEnabled(sizeable);
+    shrink_->setEnabled(sizeable);
+}
+
 void MainWindow::selection_changed(const std::vector<ElementRef>& selection) {
     if (refreshing_ || selection_ == selection) return;
     refreshing_ = true;
     selection_ = selection;
     highlight_explorer();
     refresh_properties();
-    duplicate_->setEnabled(!selection_.empty());
-    rename_->setEnabled(selection_.size() == 1);
+    refresh_selection_commands();
     refreshing_ = false;
 }
 
-void MainWindow::show_result(const application::EditResult& result) {
+void MainWindow::show_result(const application::EditResult& result, bool choose_what_was_made) {
     refresh();
     if (!result) {
         statusBar()->showMessage(text(result.error), 12000);
         QMessageBox::warning(this, "Change could not be applied", text(result.error));
-    } else if (result.created) canvas_->select_elements({*result.created});
+    } else if (result.created && choose_what_was_made) canvas_->select_elements({*result.created});
 }
 
 // One entry point, so the menu and the toolbar picker cannot disagree about
@@ -1634,6 +1890,8 @@ void MainWindow::refresh_icons() {
     // The raft's hand carries a lock mark the action's own icon does not, so
     // redrawing the icons has to redraw that too.
     refresh_tool_labels();
+    // And Check model wears whichever of its two marks the panel calls for.
+    refresh_check_action();
 }
 
 // A small padlock in the corner of an icon, for a button that has no name to
@@ -1781,6 +2039,160 @@ void MainWindow::new_project() {
     canvas_->centerOn(0, 0);
 }
 
+namespace {
+// A spin box is a number field with a line edit inside it, and that line edit
+// answers to everything a name field answers to. A picked character must never
+// land in one: the panel's size, position and transparency fields take numbers,
+// and a symbol typed into one would be silently thrown away. They are refused
+// here rather than each of them being named, so a field added later is covered
+// by being the kind of field it is.
+[[nodiscard]] bool number_field(const QWidget* widget) {
+    return qobject_cast<const QAbstractSpinBox*>(widget) != nullptr
+        || qobject_cast<const QAbstractSpinBox*>(widget->parentWidget()) != nullptr;
+}
+} // namespace
+
+void MainWindow::remember_text_target(QWidget* widget) {
+    // Only somewhere a character could actually go, and never the picker's own
+    // search box: searching for a symbol must not make the search box the
+    // place the symbol lands.
+    if (!widget) return;
+    if (symbols_ && symbols_->isAncestorOf(widget)) return;
+    if (!qobject_cast<QLineEdit*>(widget) && !qobject_cast<QPlainTextEdit*>(widget)) return;
+    if (number_field(widget)) return;
+    if (!isAncestorOf(widget)) return;
+    text_target_ = widget;
+    text_target_name_ = widget->objectName();
+    refresh_symbol_destination();
+}
+
+void MainWindow::remember_caret(QWidget* widget) {
+    if (!widget || widget != text_target_) return;
+    if (auto* line = qobject_cast<QLineEdit*>(widget)) text_target_caret_ = line->cursorPosition();
+    else if (auto* text = qobject_cast<QPlainTextEdit*>(widget)) text_target_caret_ = text->textCursor().position();
+    // Which field that caret belongs to, so a rebuilt one can be told from the
+    // one the writing actually stopped in.
+    caret_owner_ = widget;
+}
+
+QWidget* MainWindow::text_target() {
+    // Where the keyboard is, asked of this window rather than of the desktop,
+    // so it is still the answer while the gallery is the window the desktop
+    // calls active. A character belongs wherever the next typed letter would
+    // go; if that is nowhere, it belongs on the diagram.
+    auto* focused = focusWidget();
+    if (!focused || !focused->isVisible()) return nullptr;
+    if (symbols_ && symbols_->isAncestorOf(focused)) return nullptr;
+    if (!qobject_cast<QLineEdit*>(focused) && !qobject_cast<QPlainTextEdit*>(focused)) return nullptr;
+    if (number_field(focused)) return nullptr;
+    // Committing a name rebuilds the properties panel and hands the keyboard
+    // to the field that replaced the one being written in. The replacement
+    // reads from its beginning, so the caret goes back to where the writing
+    // stopped; otherwise a character would land in front of the name.
+    // The field the caret was remembered in, not merely the last field focused:
+    // committing an edit rebuilds the panel and destroys that field, and the
+    // keyboard can reach its replacement before the character does. Asking
+    // whether this is the same widget the caret came from answers that in both
+    // orders, because a destroyed field leaves nothing to be the same as.
+    if (focused != caret_owner_ && focused->objectName() == text_target_name_ && text_target_caret_ >= 0) {
+        if (auto* line = qobject_cast<QLineEdit*>(focused))
+            line->setCursorPosition(std::min(text_target_caret_, static_cast<int>(line->text().size())));
+        else if (auto* text = qobject_cast<QPlainTextEdit*>(focused)) {
+            auto cursor = text->textCursor();
+            cursor.setPosition(std::min(text_target_caret_, static_cast<int>(text->toPlainText().size())));
+            text->setTextCursor(cursor);
+        }
+    }
+    text_target_ = focused;
+    return focused;
+}
+
+bool MainWindow::place_symbol(const QString& character) {
+    // Nothing is being written in, so the character goes on the diagram
+    // itself, drawn bare: no card, no border, no title, the way an emoji sits
+    // in a line of chat. It is a note underneath, so it is moved, coloured,
+    // copied, deleted and undone like anything else on the diagram.
+    // Square, because the character is drawn to fill the room it is given and
+    // the characters worth placing are about as wide as they are tall. It is a
+    // starting size rather than the size: a placed symbol is enlarged and
+    // shrunk by its corners, by Edit's two commands, or in the panel.
+    constexpr double width = symbol_body.width, height = symbol_body.height;
+    // Put down where the user was working, which is where the pointer last
+    // was over the diagram. The pointer is over the gallery at the moment a
+    // character is picked, so its place on the canvas is the one remembered
+    // from before that. With the pointer never yet over the canvas, the middle
+    // of the view is the only sensible answer.
+    auto centre = canvas_->pointer_place().value_or(canvas_->mapToScene(canvas_->viewport()->rect().center()));
+    // Several characters picked one after another would otherwise land on the
+    // same spot and hide one another, so each takes a step down and across
+    // until it finds room, the way a duplicated element does.
+    const auto& layout = editor_.project().layout;
+    const auto taken = [&](const QPointF& at) {
+        return std::any_of(layout.begin(), layout.end(), [&](const auto& entry) {
+            return std::abs(entry.second.x - (at.x() - width / 2)) < 2
+                && std::abs(entry.second.y - (at.y() - height / 2)) < 2;
+        });
+    };
+    for (int step = 0; step < 64 && taken(centre); ++step) centre += QPointF(24, 24);
+    const domain::Rect rect{centre.x() - width / 2, centre.y() - height / 2, width, height};
+    // Left unchosen on purpose. Picking a character is putting one down, not
+    // choosing something to work on, and choosing it would swap the properties
+    // panel over to it every time one was placed.
+    const auto result = editor_.create_symbol(bytes(character), rect);
+    show_result(result, false);
+    return bool(result);
+}
+
+void MainWindow::refresh_symbol_destination() {
+    if (!symbols_) return;
+    auto* target = text_target();
+    if (!target) { symbols_->set_destination({}); return; }
+    // The field's own label is what the user sees next to it, so that is what
+    // the picker calls the destination rather than an internal name.
+    QString field = target->accessibleName();
+    if (field.isEmpty()) {
+        if (target->objectName() == QStringLiteral("elementName")) field = QStringLiteral("Name");
+        else if (target->objectName() == QStringLiteral("elementDescription")) field = QStringLiteral("Description");
+        else if (target->objectName() == QStringLiteral("projectName")) field = QStringLiteral("Project name");
+        else field = QStringLiteral("the field being written in");
+    }
+    symbols_->set_destination(field);
+}
+
+void MainWindow::show_symbols(const QString& group) {
+    if (!symbols_) {
+        symbols_ = new SymbolPicker(this);
+        symbols_->on_chosen = [this](const QString& character) { insert_symbol(character); };
+    }
+    symbols_->set_theme(theme(theme_));
+    if (!group.isEmpty()) symbols_->show_group(group);
+    refresh_symbol_destination();
+    symbols_->show();
+    symbols_->raise();
+}
+
+bool MainWindow::insert_symbol(const QString& character) {
+    auto* target = text_target();
+    if (auto* line = qobject_cast<QLineEdit*>(target)) {
+        line->insert(character);
+        // The caret goes back where the character landed, so the next one is
+        // typed or picked in the same place rather than at the start again.
+        line->setFocus(Qt::OtherFocusReason);
+        return true;
+    }
+    if (auto* text = qobject_cast<QPlainTextEdit*>(target)) {
+        text->insertPlainText(character);
+        text->setFocus(Qt::OtherFocusReason);
+        return true;
+    }
+    const auto placed = place_symbol(character);
+    if (placed)
+        statusBar()->showMessage("Put on the diagram where the pointer last was. To put one in a name instead, "
+                                 "click into the name first, then pick the character.", 7000);
+    refresh_symbol_destination();
+    return placed;
+}
+
 void MainWindow::insert_picture_dialog(std::optional<QPointF> at) {
     const auto location = QFileDialog::getOpenFileName(this, "Insert picture", {},
         "Images (*.png *.jpg *.jpeg *.bmp *.gif *.webp *.tif *.tiff);;All files (*)");
@@ -1789,39 +2201,15 @@ void MainWindow::insert_picture_dialog(std::optional<QPointF> at) {
 
 bool MainWindow::insert_picture(const QString& path, std::optional<QPointF> at) {
     finish_field_edit();
+    QString why_not;
+    const auto bytes_of_image = encoded_image(path, why_not);
+    if (!bytes_of_image) {
+        QMessageBox::warning(this, "Picture could not be inserted", why_not);
+        return false;
+    }
     QImageReader reader(path);
     reader.setAutoTransform(true);
-    const auto format = reader.format().toLower();
     const auto image = reader.read();
-    if (image.isNull()) {
-        QMessageBox::warning(this, "Picture could not be inserted",
-            reader.errorString().isEmpty() ? QStringLiteral("The file is not an image ERDFlow can read.")
-                                           : reader.errorString());
-        return false;
-    }
-    // The file's own bytes are kept when they are already a PNG or JPEG of
-    // modest size, so nothing is lost. Anything else is re-encoded, and scaled
-    // down first when it is large: a picture on a diagram is a visual aid,
-    // and a project file has room for only so much of one.
-    QByteArray encoded;
-    QFile file(path);
-    if ((format == "png" || format == "jpeg" || format == "jpg") && file.size() <= 1024 * 1024
-        && file.open(QIODevice::ReadOnly)) {
-        encoded = file.readAll();
-    } else {
-        auto fitted = image;
-        if (fitted.width() > 1024 || fitted.height() > 1024)
-            fitted = fitted.scaled(1024, 1024, Qt::KeepAspectRatio, Qt::SmoothTransformation);
-        QBuffer buffer(&encoded);
-        buffer.open(QIODevice::WriteOnly);
-        // A photograph is far smaller as a JPEG; anything transparent has to stay a PNG.
-        if (fitted.hasAlphaChannel()) fitted.save(&buffer, "PNG");
-        else fitted.save(&buffer, "JPEG", 88);
-    }
-    if (encoded.isEmpty() || static_cast<std::size_t>(encoded.size()) > domain::max_image_bytes) {
-        QMessageBox::warning(this, "Picture could not be inserted", "The picture is too large to keep in a project file.");
-        return false;
-    }
     // Placed where it was asked for, or else in the middle of what is on
     // screen, at a size that shows it without filling the view; a small image
     // keeps its own size.
@@ -1830,11 +2218,60 @@ bool MainWindow::insert_picture(const QString& path, std::optional<QPointF> at) 
     if (size.width() > 320 || size.height() > 320) size = size.scaled(QSizeF(320, 320), Qt::KeepAspectRatio);
     size = size.expandedTo(QSizeF(24, 24));
     const domain::Rect rect{centre.x() - size.width() / 2, centre.y() - size.height() / 2, size.width(), size.height()};
-    const auto result = editor_.create_picture(bytes(QFileInfo(path).completeBaseName()), rect,
-                                               std::vector<std::uint8_t>(encoded.begin(), encoded.end()));
+    const auto result = editor_.create_picture(bytes(QFileInfo(path).completeBaseName()), rect, *bytes_of_image);
     show_result(result);
     if (result && result.created) canvas_->select_elements({*result.created}, true);
     return bool(result);
+}
+
+void MainWindow::refresh_check_action() {
+    if (!check_ || !validation_dock_) return;
+    const bool open = validation_dock_->isVisible();
+    check_->setChecked(open);
+    action_glyphs_[check_] = open ? Glyph::Dismiss : Glyph::Check;
+    check_->setIcon(glyph_icon(action_glyphs_[check_], theme(theme_), icon_pixels(), icon_mode_));
+    check_->setToolTip(open ? "Put the model checks away."
+                            : "Look the model over and list what is missing.");
+}
+
+void MainWindow::refresh_background_menu() {
+    const auto& paper = editor_.project().background;
+    for (const auto& [style, action] : background_actions_) action->setChecked(style == paper.style);
+    if (auto* strength = findChild<QSlider*>("backgroundStrength")) {
+        const auto was = refreshing_;
+        refreshing_ = true;
+        strength->setValue(paper.strength);
+        refreshing_ = was;
+    }
+    if (auto* row = findChild<QWidgetAction*>("backgroundStrengthRow"))
+        row->setVisible(paper.style == domain::BackgroundStyle::Image);
+}
+
+void MainWindow::choose_background(domain::BackgroundStyle style) {
+    auto paper = editor_.project().background;
+    paper.style = style;
+    show_result(editor_.set_background(std::move(paper)));
+    refresh_background_menu();
+}
+
+void MainWindow::choose_background_image() {
+    const auto location = QFileDialog::getOpenFileName(this, "Background picture", {},
+        "Images (*.png *.jpg *.jpeg *.bmp *.gif *.webp *.tif *.tiff);;All files (*)");
+    if (location.isEmpty()) { refresh_background_menu(); return; }
+    QString why_not;
+    // A background is looked at rather than glanced at, so it is kept as large
+    // as a project file will carry.
+    const auto picture = encoded_image(location, why_not, 2560, domain::max_image_bytes);
+    if (!picture) {
+        QMessageBox::warning(this, "Background could not be set", why_not);
+        refresh_background_menu();
+        return;
+    }
+    auto paper = editor_.project().background;
+    paper.style = domain::BackgroundStyle::Image;
+    paper.image = *picture;
+    show_result(editor_.set_background(std::move(paper)));
+    refresh_background_menu();
 }
 
 void MainWindow::set_full_view(bool on) {

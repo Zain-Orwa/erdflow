@@ -151,6 +151,9 @@ public:
     QString label;
     // A note's text, drawn beneath its title.
     QString body;
+    // A plain note is one character standing on its own, drawn as the
+    // character alone: no card, no border, no title.
+    bool plain = false;
     AttributeKind attribute_kind = AttributeKind::Normal;
     // An associative relationship is drawn as its diamond inside a rectangle,
     // because it takes part in further relationships as an entity would.
@@ -251,7 +254,14 @@ public:
         update();
     }
 
-    QRectF boundingRect() const override { return bounds_.adjusted(-4, -4, 4, 4); }
+    // A symbol's corner grips straddle its corners and so reach further out
+    // than the box itself. Only a symbol carries them, and the margin stays
+    // where it was for everything else: a body's bounding rect is read as the
+    // shape it draws, and padding it would move every join on the diagram.
+    QRectF boundingRect() const override {
+        const auto margin = plain ? grip : 4;
+        return bounds_.adjusted(-margin, -margin, margin, margin);
+    }
     QRectF body_rect() const { return bounds_; }
     // The element's own Chen outline, without the rectangle that surrounds an
     // associative one. This is what carries the fill.
@@ -298,8 +308,41 @@ public:
             path.setFillRule(Qt::WindingFill);
             path.addRect(bounds_);
         }
+        // A grip hangs half outside the box, so the half that does would miss
+        // the item entirely and the pointer would fall through to the canvas.
+        if (sizeable()) {
+            path.setFillRule(Qt::WindingFill);
+            for (const auto& corner : grips()) path.addRect(corner);
+        }
         return path;
     }
+    // A symbol is drawn as its character grown to fill its box, so the box is
+    // how big the character is, and hauling a corner is how it is made bigger.
+    // Nothing else on the diagram is sized by hand: an entity's box is sized
+    // by the name it has to hold, so only a symbol carries grips.
+    static constexpr qreal grip = 9;
+    [[nodiscard]] bool sizeable() const { return plain && isSelected(); }
+    // Clockwise from the top left, which is the order the corners are named in
+    // everywhere below, so a corner's number says which one it is.
+    [[nodiscard]] std::array<QRectF, 4> grips() const {
+        const std::array<QPointF, 4> corners{bounds_.topLeft(), bounds_.topRight(),
+                                             bounds_.bottomRight(), bounds_.bottomLeft()};
+        std::array<QRectF, 4> rects{};
+        for (std::size_t i = 0; i < corners.size(); ++i)
+            rects[i] = QRectF(corners[i] - QPointF(grip / 2, grip / 2), QSizeF(grip, grip));
+        return rects;
+    }
+    // Which grip is under a point given in this item's own coordinates, or -1.
+    [[nodiscard]] int grip_at(const QPointF& point) const {
+        if (!sizeable()) return -1;
+        const auto corners = grips();
+        for (std::size_t i = 0; i < corners.size(); ++i)
+            if (corners[i].contains(point)) return static_cast<int>(i);
+        return -1;
+    }
+    // prepareGeometryChange is the scene's business and is protected, so the
+    // projection that changes what an item is asks for it by name.
+    void about_to_change_geometry() { prepareGeometryChange(); }
     void set_size(qreal width, qreal height) {
         const QRectF next{0, 0, width, height};
         if (bounds_ == next) return;
@@ -401,7 +444,54 @@ public:
         painter->drawPixmap(target, image_, QRectF(QPointF(0, 0), QSizeF(image_.size())));
     }
     // A note: its title in bold across the top, and its text wrapped beneath.
+    // A plain note: the character and nothing else, sized to the room it has,
+    // the way an emoji sits in a line of chat. Only a selection draws anything
+    // around it, and only so that it can be seen to be selected.
+    void paint_plain_note(QPainter* painter) {
+        if (isSelected()) {
+            painter->setPen(QPen(selection_, 1.2, Qt::DashLine));
+            painter->setBrush(Qt::NoBrush);
+            painter->drawRoundedRect(bounds_.adjusted(-2, -2, 2, 2), 4, 4);
+            // The corners are drawn as grips so that a symbol says it can be
+            // made bigger. Filled with the paper rather than the selection
+            // colour: a solid square on each corner would read as part of the
+            // character when the character is small.
+            painter->setPen(QPen(selection_, 1.0));
+            painter->setBrush(colors_->canvas);
+            for (const auto& corner : grips()) painter->drawRect(corner);
+        }
+        if (label.isEmpty()) return;
+        auto font = painter->font();
+        // Grown until it fills the box rather than set to a fixed size, so the
+        // character follows the box when the box is resized, as a picture does.
+        // Emoji are square, so the height is what binds in practice; the width
+        // is checked too, for a character that is wider than it is tall.
+        font.setPointSizeF(10);
+        font.setWeight(QFont::Normal);
+        const QFontMetricsF small(font);
+        const auto tall = small.tightBoundingRect(label).height();
+        const auto wide = small.horizontalAdvance(label);
+        if (tall > 0.1 && wide > 0.1) {
+            const auto room = std::min(bounds_.height() * 0.86 / tall, bounds_.width() * 0.86 / wide);
+            font.setPointSizeF(std::clamp(10 * room, 6.0, 260.0));
+        }
+        painter->setFont(font);
+        // The character is drawn in whatever colour was chosen for it, and
+        // otherwise in the ink the diagram writes with, so it reads on the
+        // paper rather than on a card that is no longer there.
+        painter->setPen(chosen_ ? *chosen_ : colors_->node_text);
+        // Centred on the ink rather than on the line the character sits in.
+        // A line is mostly space above and below the letter, and different
+        // characters use different parts of it, so centring the line would
+        // leave one character high and the next one low.
+        const QFontMetricsF grown(font);
+        const auto ink = grown.tightBoundingRect(label);
+        painter->drawText(QPointF(bounds_.center().x() - ink.center().x(),
+                                  bounds_.center().y() - ink.center().y()),
+                          label);
+    }
     void paint_note(QPainter* painter) {
+        if (plain) { paint_plain_note(painter); return; }
         painter->setPen(QPen(isSelected() ? selection_ : border_, isSelected() ? 2.4 : 1.6));
         painter->setBrush(fill_);
         painter->drawPath(body_path());
@@ -449,6 +539,29 @@ public:
             painter->setRenderHint(QPainter::SmoothPixmapTransform);
             painter->drawPixmap(QRectF(room.center() - QPointF(fitted.width() / 2, fitted.height() / 2), fitted),
                                 image_, QRectF(QPointF(0, 0), QSizeF(image_.size())));
+            painter->restore();
+            return;
+        }
+        if (plain) {
+            // A plain note has no shape of its own; it is the character. Any
+            // panel that shows what this element is shows exactly that, or it
+            // would draw a card the diagram no longer has.
+            const auto room = into_place.mapRect(bounds_);
+            auto lettering = painter->font();
+            lettering.setPointSizeF(10);
+            const QFontMetricsF small(lettering);
+            const auto tall = small.tightBoundingRect(label).height();
+            const auto wide = small.horizontalAdvance(label);
+            if (!label.isEmpty() && tall > 0.1 && wide > 0.1) {
+                lettering.setPointSizeF(std::clamp(
+                    10 * std::min(room.height() * 0.86 / tall, room.width() * 0.86 / wide), 4.0, 260.0));
+                painter->setFont(lettering);
+                painter->setPen(chosen_ ? *chosen_ : colors_->node_text);
+                const QFontMetricsF grown(lettering);
+                const auto ink = grown.tightBoundingRect(label);
+                painter->drawText(QPointF(room.center().x() - ink.center().x(),
+                                          room.center().y() - ink.center().y()), label);
+            }
             painter->restore();
             return;
         }
@@ -1133,6 +1246,10 @@ struct DiagramView::Impl {
     JoinMode join_mode = JoinMode::WhereClicked;
     bool tool_locked = false;
     bool grid = true;
+    // The paper as the projection has it, and the picture decoded from it once
+    // rather than on every repaint.
+    domain::Background background;
+    QPixmap paper;
     bool align_to_grid = false;
     bool synchronizing = false;
     bool panning = false;
@@ -1141,6 +1258,8 @@ struct DiagramView::Impl {
     // rather than a scene item so it keeps ordinary text-field behaviour, and
     // it is repositioned whenever the view scrolls or zooms.
     QLineEdit* inline_editor = nullptr;
+    // Where the pointer last was over the canvas, in scene coordinates.
+    std::optional<QPointF> pointer_place;
     std::optional<ElementRef> renaming;
     std::optional<ElementRef> connect_start;
     // Where on its shape the source was clicked, as the direction the new
@@ -1180,6 +1299,42 @@ struct DiagramView::Impl {
         bool placed = false;
     };
     std::optional<EndDrag> rejoining;
+    // A symbol's corner being hauled to make its character bigger or smaller.
+    // The box it started at is kept so that the size follows the pointer from
+    // where the grip was grabbed, and so that Escape can put it back.
+    struct SizeDrag {
+        ElementRef ref;
+        Rect start;
+        int corner = 0;
+    };
+    std::optional<SizeDrag> sizing;
+    // The box a hauled grip asks for: the corner opposite the one being
+    // dragged stays where it is, and the box keeps the proportions it had.
+    // A symbol's character is grown to the smaller of the box's two sides, so
+    // a box let out of proportion would only pad the character with air; the
+    // panel's own width and height fields are there for anyone who wants that.
+    [[nodiscard]] static Rect sized_box(const SizeDrag& drag, const QPointF& pointer) {
+        const QRectF start(drag.start.x, drag.start.y, drag.start.width, drag.start.height);
+        const std::array<QPointF, 4> corners{start.topLeft(), start.topRight(),
+                                             start.bottomRight(), start.bottomLeft()};
+        const auto anchor = corners[static_cast<std::size_t>((drag.corner + 2) % 4)];
+        // Which way the dragged corner lies from the anchor. It is fixed for
+        // the whole drag, so hauling a corner past the anchor shrinks the
+        // symbol to its smallest rather than turning it inside out.
+        const auto horizontal = drag.corner == 1 || drag.corner == 2 ? 1.0 : -1.0;
+        const auto vertical = drag.corner == 2 || drag.corner == 3 ? 1.0 : -1.0;
+        const auto aspect = start.height() > 0.1 ? start.width() / start.height() : 1.0;
+        const auto across = std::abs(pointer.x() - anchor.x());
+        const auto down = std::abs(pointer.y() - anchor.y());
+        // The larger of the two sizes the pointer implies, so the box follows
+        // the hand rather than lagging behind whichever way it moved less.
+        auto width = std::max(across, down * aspect);
+        width = std::clamp(width, min_symbol_size, max_symbol_size);
+        auto height = std::clamp(width / aspect, min_symbol_size, max_symbol_size);
+        width = std::clamp(height * aspect, min_symbol_size, max_symbol_size);
+        return Rect{horizontal > 0 ? anchor.x() : anchor.x() - width,
+                    vertical > 0 ? anchor.y() : anchor.y() - height, width, height};
+    }
     QPointF minimum_drag;
     QPointF maximum_drag;
     std::optional<std::uint64_t> displayed_revision;
@@ -1188,6 +1343,76 @@ struct DiagramView::Impl {
         : view(owner), editor(controller), scene(new QGraphicsScene(&owner)) {}
 
     void status(const QString& text) const { if (view.on_status) view.on_status(text); }
+    // The ruling or the picture the diagram is drawn on, laid over the colour
+    // the theme gives the canvas and as strong as the background says. A
+    // ruling is drawn in the theme's own grid colour, so it belongs to
+    // whatever palette is on rather than to one of them.
+    void paint_paper(QPainter* painter, const QRectF& rect, const Theme& colors) const {
+        if (background.style == domain::BackgroundStyle::Theme || background.strength == 0) return;
+        painter->save();
+        painter->setOpacity(background.strength / 100.0);
+        if (background.style == domain::BackgroundStyle::Image) {
+            // One picture behind everything, covering the view and cropped to
+            // it rather than repeated across it. It is drawn in the view's own
+            // coordinates rather than the diagram's, so it is never magnified
+            // by zooming in: at any zoom it is the picture at its own
+            // resolution, which is what keeps it sharp. The canvas has no
+            // edges to fit a picture to, so the view is what it fills.
+            if (!paper.isNull()) {
+                painter->resetTransform();
+                painter->setRenderHint(QPainter::SmoothPixmapTransform);
+                const auto room = view.viewport()->rect();
+                const auto covered = paper.size().scaled(room.size(), Qt::KeepAspectRatioByExpanding);
+                painter->drawPixmap(QRect(QPoint((room.width() - covered.width()) / 2,
+                                                 (room.height() - covered.height()) / 2), covered),
+                                    paper);
+            }
+            painter->restore();
+            return;
+        }
+        QPen pen(colors.grid);
+        pen.setCosmetic(true);
+        painter->setPen(pen);
+        if (background.style == domain::BackgroundStyle::Dots) {
+            // Rounder, darker and wider apart than the editing grid's own
+            // marks, which are meant to be barely there: this is paper, and
+            // has to read as paper rather than as the faint aid it replaces.
+            // The grid colour is carried towards the ink for the same reason a
+            // ruling is drawn at full strength -- it was chosen to disappear.
+            constexpr qreal step = grid_spacing * 1.5;
+            QPen marks(over(colors.grid, QColor(colors.text.red(), colors.text.green(), colors.text.blue(), 110)), 4.0);
+            marks.setCapStyle(Qt::RoundCap);
+            marks.setCosmetic(true);
+            painter->setPen(marks);
+            for (qreal x = std::floor(rect.left() / step) * step; x <= rect.right(); x += step)
+                for (qreal y = std::floor(rect.top() / step) * step; y <= rect.bottom(); y += step)
+                    painter->drawPoint(QPointF(x, y));
+            painter->restore();
+            return;
+        }
+        if (background.style == domain::BackgroundStyle::Lines) {
+            // Ruled like a notebook: across only, at a line's height apart.
+            constexpr qreal ruling = 26;
+            for (qreal y = std::floor(rect.top() / ruling) * ruling; y <= rect.bottom(); y += ruling)
+                painter->drawLine(QPointF(rect.left(), y), QPointF(rect.right(), y));
+            painter->restore();
+            return;
+        }
+        // Squares, as on graph paper: a fine mesh with every fifth line heavier,
+        // which is what makes a square countable at a glance.
+        const auto mesh = [&](qreal step, qreal weight) {
+            QPen ruled(colors.grid, weight);
+            ruled.setCosmetic(true);
+            painter->setPen(ruled);
+            for (qreal x = std::floor(rect.left() / step) * step; x <= rect.right(); x += step)
+                painter->drawLine(QPointF(x, rect.top()), QPointF(x, rect.bottom()));
+            for (qreal y = std::floor(rect.top() / step) * step; y <= rect.bottom(); y += step)
+                painter->drawLine(QPointF(rect.left(), y), QPointF(rect.right(), y));
+        };
+        if (view.zoom_factor() >= 0.4) mesh(grid_spacing, 1.0);
+        mesh(grid_spacing * 5, 1.6);
+        painter->restore();
+    }
     // A note put down centred on a point, selected and opened for its title,
     // since a note is for writing on. Used by the tool and by the menus.
     void place_note(QPointF centre) {
@@ -1379,14 +1604,29 @@ struct DiagramView::Impl {
         const auto element = *renaming;
         const auto value = inline_editor->text().toStdString();
         renaming.reset();
+        // Hiding the box while it holds the keyboard makes Qt hand the keyboard
+        // to whatever comes next in the tab order, which is a field in the
+        // properties panel. The diagram is what the user is looking at, so the
+        // keyboard goes back to it. When the box is closing because the user
+        // clicked somewhere else, they have already said where they want it.
+        // Asked of the window rather than through hasFocus, which is false
+        // whenever the window is not the desktop's active one even though the
+        // keyboard would come straight back to this box.
+        const auto* keyboard = view.window() ? view.window()->focusWidget() : nullptr;
+        const bool holding = keyboard == inline_editor;
         inline_editor->hide();
+        if (holding) view.setFocus(Qt::OtherFocusReason);
         if (!exists(editor.project(), element) || value == name(editor.project(), element)) return;
         publish(editor.rename(element, value));
     }
     void cancel_inline_edit() {
         if (!renaming) return;
         renaming.reset();
-        if (inline_editor) inline_editor->hide();
+        if (!inline_editor) return;
+        const auto* keyboard = view.window() ? view.window()->focusWidget() : nullptr;
+        const bool holding = keyboard == inline_editor;
+        inline_editor->hide();
+        if (holding) view.setFocus(Qt::OtherFocusReason);
     }
     EdgeItem* edge_at(const QPoint& viewport_position) const {
         for (auto* item : view.items(viewport_position)) {
@@ -1522,6 +1762,75 @@ struct DiagramView::Impl {
         if (result && tool_locked)
             status(QStringLiteral("Connected. Locked: select the first object of the next connection."));
     }
+    // The connectors a selection owns: every line touching one of the chosen
+    // elements, and any line chosen outright. An inheritance link is left out,
+    // since it is anchored to its triangle and has no joins to pin.
+    [[nodiscard]] std::vector<EdgeItem*> connectors_of(const std::vector<ElementRef>& chosen) const {
+        std::set<EdgeItem*> touching;
+        for (const auto& ref : chosen) {
+            const auto found = incident.find(ref);
+            if (found != incident.end()) touching.insert(found->second.begin(), found->second.end());
+        }
+        for (auto* item : scene->selectedItems())
+            if (auto* edge = dynamic_cast<EdgeItem*>(item)) touching.insert(edge);
+        std::vector<EdgeItem*> lines;
+        for (auto* edge : touching)
+            if (edge->lockable()) lines.push_back(edge);
+        return lines;
+    }
+    [[nodiscard]] std::vector<EdgeItem*> every_connector() const {
+        std::vector<EdgeItem*> lines;
+        for (const auto& [key, edge] : edges) {
+            (void)key;
+            if (edge->lockable()) lines.push_back(edge);
+        }
+        return lines;
+    }
+    // Locking pins each line where it is drawn now, so it stops sliding as the
+    // shapes around it are moved; releasing hands the joins back. Whatever
+    // else a line carries -- its bend, its corners -- is left as it is, and
+    // the whole set is one edit however many lines it covers.
+    void set_connectors_locked(const std::vector<EdgeItem*>& lines, bool locked) {
+        std::map<ConnectorRef, domain::Connector> shapes;
+        for (auto* edge : lines) {
+            const auto& key = edge->descriptor.key;
+            const auto ref = std::holds_alternative<AttributeId>(key)
+                ? ConnectorRef{std::get<AttributeId>(key)} : ConnectorRef{std::get<ParticipantId>(key)};
+            domain::Connector shape;
+            shape.offset = edge->descriptor.offset;
+            for (const auto& corner : edge->descriptor.waypoints)
+                shape.waypoints.push_back(domain::Point{corner.x(), corner.y()});
+            if (locked) {
+                shape.owner_anchor = edge->owner_direction();
+                shape.child_anchor = edge->child_direction();
+            }
+            shapes.emplace(ref, std::move(shape));
+        }
+        if (!shapes.empty())
+            publish(editor.shape_connectors(shapes, locked ? "Lock connectors" : "Release connectors"));
+    }
+    // The entries that lock and release a set of lines. Each is offered only
+    // while it has something to do, and each acts as it is triggered, so the
+    // keyboard reaches it as surely as the pointer does.
+    void add_lock_entries(QMenu& menu, const std::vector<EdgeItem*>& lines, const QString& what) {
+        if (lines.empty()) return;
+        menu.addSeparator();
+        const auto entry = [&](const QString& text, const char* named, bool locking, bool enabled) {
+            auto* action = menu.addAction(text);
+            action->setObjectName(QString::fromLatin1(named));
+            action->setEnabled(enabled);
+            action->setToolTip(locking
+                ? QStringLiteral("Pin each line where it meets its shapes, so it stops sliding as they are moved.")
+                : QStringLiteral("Let each line find its own way to its shapes again."));
+            QObject::connect(action, &QAction::triggered, &view,
+                             [this, lines, locking] { set_connectors_locked(lines, locking); });
+        };
+        entry("Lock " + what, "contextLockConnectors", true,
+              std::any_of(lines.begin(), lines.end(), [](EdgeItem* edge) { return !edge->locked(); }));
+        entry("Release " + what, "contextUnlockConnectors", false,
+              std::any_of(lines.begin(), lines.end(), [](EdgeItem* edge) { return edge->locked(); }));
+    }
+
     // Where a new relationship between two entities belongs. It goes midway
     // between them, and steps aside, along the perpendicular to the line
     // joining them, once for each relationship already reading that same pair,
@@ -1814,16 +2123,26 @@ void DiagramView::synchronize() {
             disjoint = project.specializations.at(*specialization_id).constraint == Disjointness::Disjoint;
         }
         QString body;
-        if (const auto* note_id = std::get_if<NoteId>(&ref)) body = QString::fromStdString(project.notes.at(*note_id).description);
+        bool plain = false;
+        if (const auto* note_id = std::get_if<NoteId>(&ref)) {
+            body = QString::fromStdString(project.notes.at(*note_id).description);
+            plain = project.notes.at(*note_id).plain;
+        }
         // A picture's bytes never change once it is placed, so they are decoded
         // once, when its node is first built.
         if (const auto* picture_id = std::get_if<PictureId>(&ref); picture_id && !node->has_image())
             node->set_image(project.pictures.at(*picture_id).image);
-        if (node->label != label || node->body != body || node->attribute_kind != kind || node->associative != associative
+        if (node->label != label || node->body != body || node->plain != plain || node->attribute_kind != kind
+            || node->associative != associative
             || node->generalising != generalising || node->weak != weak || node->identifying != identifying
             || node->partial_key != partial_key || node->disjoint != disjoint) {
+            // The margin around a symbol is wider than around anything else,
+            // for the grips, so becoming one changes the bounding rect and the
+            // scene has to be told before it does.
+            if (node->plain != plain) node->about_to_change_geometry();
             node->label = label;
             node->body = body;
+            node->plain = plain;
             node->attribute_kind = kind;
             node->generalising = generalising;
             node->weak = weak;
@@ -1879,6 +2198,14 @@ void DiagramView::synchronize() {
             owner->second->attribute_children.push_back(child->second);
     }
     for (auto& [key, edge] : impl_->edges) { (void)key; edge->refresh(); }
+    if (impl_->background != project.background) {
+        impl_->background = project.background;
+        impl_->paper = QPixmap();
+        if (impl_->background.style == domain::BackgroundStyle::Image)
+            impl_->paper.loadFromData(impl_->background.image.data(),
+                                      static_cast<uint>(impl_->background.image.size()));
+        viewport()->update();
+    }
     impl_->displayed_revision = impl_->editor.revision();
     impl_->synchronizing = false;
     if (impl_->connect_start && !exists(project, *impl_->connect_start)) {
@@ -2112,6 +2439,40 @@ void DiagramView::preview_transparency(const std::vector<ElementRef>& elements, 
     for (const auto& ref : elements)
         if (const auto found = impl_->nodes.find(ref); found != impl_->nodes.end()) found->second->set_transparency(percent);
 }
+std::vector<ElementRef> DiagramView::selected_symbols() const {
+    const auto& notes = impl_->editor.project().notes;
+    std::vector<ElementRef> symbols;
+    for (const auto& ref : selected_elements()) {
+        const auto* note_id = std::get_if<NoteId>(&ref);
+        if (!note_id) continue;
+        if (const auto found = notes.find(*note_id); found != notes.end() && found->second.plain)
+            symbols.push_back(ref);
+    }
+    return symbols;
+}
+
+void DiagramView::resize_symbols(double factor) {
+    const auto symbols = selected_symbols();
+    if (symbols.empty() || factor <= 0) return;
+    const auto& layout = impl_->editor.project().layout;
+    std::map<ElementRef, Rect> boxes;
+    for (const auto& ref : symbols) {
+        const auto found = layout.find(ref);
+        if (found == layout.end()) continue;
+        const auto& box = found->second;
+        const auto width = std::clamp(box.width * factor, min_symbol_size, max_symbol_size);
+        const auto height = std::clamp(box.height * factor, min_symbol_size, max_symbol_size);
+        // About its own centre, so a symbol grows in place instead of walking
+        // down and to the right as it is enlarged.
+        boxes.emplace(ref, Rect{box.x + (box.width - width) / 2, box.y + (box.height - height) / 2,
+                                width, height});
+    }
+    if (boxes.empty()) return;
+    const auto result = impl_->editor.resize_symbols(boxes);
+    if (!result) impl_->displayed_revision.reset();
+    impl_->publish(result);
+}
+
 void DiagramView::set_transparency(const std::vector<ElementRef>& elements, int percent) {
     const auto result = impl_->editor.set_transparency(elements, static_cast<std::uint8_t>(std::clamp(percent, 0, 100)));
     if (!result) impl_->displayed_revision.reset(); // Put back the stored value after a refused edit.
@@ -2135,6 +2496,17 @@ void DiagramView::cancel_interaction() {
         impl_->drag_start.clear();
         if (auto* grabber = impl_->scene->mouseGrabberItem()) grabber->ungrabMouse();
     }
+    if (impl_->sizing) {
+        // The size was only ever previewed on the item, so putting it back is
+        // a matter of drawing the stored box again.
+        if (const auto found = impl_->nodes.find(impl_->sizing->ref); found != impl_->nodes.end()) {
+            impl_->synchronizing = true;
+            found->second->setPos(impl_->sizing->start.x, impl_->sizing->start.y);
+            found->second->set_size(impl_->sizing->start.width, impl_->sizing->start.height);
+            impl_->synchronizing = false;
+        }
+        impl_->sizing.reset();
+    }
     impl_->clear_guides();
     if (impl_->bending || impl_->rejoining) {
         // Discard the previewed bend or join; the next projection restores the stored one.
@@ -2155,7 +2527,10 @@ void DiagramView::cancel_interaction() {
 void DiagramView::drawBackground(QPainter* painter, const QRectF& rect) {
     const auto& colors = theme(impl_->theme_id);
     painter->fillRect(rect, colors.canvas);
-    if (!impl_->grid) return;
+    impl_->paint_paper(painter, rect, colors);
+    // The dots are an editing aid rather than decoration, so they give way to
+    // a paper that rules the canvas itself.
+    if (!impl_->grid || impl_->background.style != domain::BackgroundStyle::Theme) return;
     // Keep the grid sparse when zoomed out; its iteration cost stays viewport-bound.
     const qreal step = zoom_factor() < 0.4 ? 100 : grid_spacing;
     const auto left = std::floor(rect.left() / step) * step;
@@ -2190,6 +2565,19 @@ void DiagramView::contextMenuEvent(QContextMenuEvent* event) {
     duplicate->setObjectName("contextDuplicate");
     auto* remove = menu.addAction(several ? "Delete selection" : "Delete");
     remove->setObjectName("contextDelete");
+    // Size, for the one kind of element that has a size of its own to choose.
+    // Offered only when everything chosen is a symbol: an entry that would act
+    // on part of a selection is worse than no entry at all.
+    const auto symbols = selected_symbols();
+    QAction* enlarge = nullptr;
+    QAction* shrink = nullptr;
+    if (!symbols.empty() && symbols.size() == chosen.size()) {
+        menu.addSeparator();
+        enlarge = menu.addAction(several ? "Enlarge symbols" : "Enlarge");
+        enlarge->setObjectName("contextEnlarge");
+        shrink = menu.addAction(several ? "Shrink symbols" : "Shrink");
+        shrink->setObjectName("contextShrink");
+    }
     menu.addSeparator();
     auto* colours = menu.addMenu(several ? "Colour selection" : "Colour");
     colours->setObjectName("contextColour");
@@ -2263,15 +2651,22 @@ void DiagramView::contextMenuEvent(QContextMenuEvent* event) {
             alignments.push_back({entry, along_x, which});
         }
     }
+    // Locking the lines a selection touches, which is how a diagram is tidied:
+    // a region at a time rather than one line at a time.
+    const auto lines = impl_->connectors_of(chosen);
+    impl_->add_lock_entries(menu, lines, lines.size() == 1 ? "this connector" : "these connectors");
     menu.addSeparator();
     impl_->add_insert_menu(menu, mapToScene(event->pos()));
 
     auto* picked = menu.exec(event->globalPos());
-    // The Insert entries act as they are triggered, so there is nothing left
-    // to do for them here.
-    if (!picked || picked->objectName().startsWith("contextInsert")) return;
+    // The Insert and connector entries act as they are triggered, so there is
+    // nothing left to do for them here.
+    if (!picked || picked->objectName().startsWith("contextInsert")
+        || picked->objectName().endsWith("Connectors")) return;
     if (picked == duplicate) { impl_->publish(impl_->editor.duplicate(chosen)); return; }
     if (picked == remove) { delete_selection(); return; }
+    if (enlarge && picked == enlarge) { resize_symbols(symbol_step); return; }
+    if (shrink && picked == shrink) { resize_symbols(1 / symbol_step); return; }
     for (const auto& alignment : alignments)
         if (picked == alignment.action) {
             impl_->align_selection(chosen, alignment.along_x, alignment.which);
@@ -2305,6 +2700,8 @@ void DiagramView::contextMenuEvent(QContextMenuEvent* event) {
 void DiagramView::canvas_menu(QContextMenuEvent* event) {
     QMenu menu(this);
     impl_->add_insert_menu(menu, mapToScene(event->pos()));
+    // With nothing chosen, the offer covers the whole diagram.
+    impl_->add_lock_entries(menu, impl_->every_connector(), QStringLiteral("every connector"));
     menu.exec(event->globalPos());
 }
 
@@ -2377,6 +2774,8 @@ void DiagramView::participant_menu(QContextMenuEvent* event) {
     impl_->publish(impl_->editor.update_participant(relationship_id, *participant_key,
                                                     chosen_maximum, chosen_participation, side->role));
 }
+
+std::optional<QPointF> DiagramView::pointer_place() const { return impl_->pointer_place; }
 
 void DiagramView::mousePressEvent(QMouseEvent* event) {
     setFocus();
@@ -2452,6 +2851,21 @@ void DiagramView::mousePressEvent(QMouseEvent* event) {
     // Grabbing a selected connector's handle reshapes it instead of starting a
     // rubber band. The bend is previewed on the item and committed on release.
     if (impl_->active_tool == Tool::Select) {
+        // A grip on a selected symbol's corner resizes it rather than moving
+        // it. Tested before anything else here: the grips are drawn on top of
+        // everything the symbol sits over, so that is what they are clicked on.
+        if (event->button() == Qt::LeftButton) {
+            if (auto* node = impl_->node_at(event->position().toPoint()); node && node->sizeable()) {
+                const auto scene_press = mapToScene(event->position().toPoint());
+                const auto corner = node->grip_at(node->mapFromScene(scene_press));
+                const auto& layout = impl_->editor.project().layout;
+                if (const auto found = layout.find(node->ref); corner >= 0 && found != layout.end()) {
+                    impl_->sizing = Impl::SizeDrag{node->ref, found->second, corner};
+                    event->accept();
+                    return;
+                }
+            }
+        }
         // The padlock is tested before the bend grip: it sits beside it, and a
         // click meant for the lock must not start reshaping the line instead.
         if (auto* edge = impl_->lock_at(event->position().toPoint())) {
@@ -2582,6 +2996,10 @@ void DiagramView::commit_rename() { impl_->commit_inline_edit(); }
 void DiagramView::scrollContentsBy(int dx, int dy) {
     QGraphicsView::scrollContentsBy(dx, dy);
     impl_->place_inline_editor();
+    // A picture behind the diagram is fixed to the view rather than to the
+    // canvas, so scrolling has to repaint all of it rather than the strip the
+    // scroll uncovered.
+    if (impl_->background.style == domain::BackgroundStyle::Image) viewport()->update();
 }
 
 bool DiagramView::eventFilter(QObject* watched, QEvent* event) {
@@ -2636,6 +3054,10 @@ void DiagramView::mouseDoubleClickEvent(QMouseEvent* event) {
     QGraphicsView::mouseDoubleClickEvent(event);
 }
 void DiagramView::mouseMoveEvent(QMouseEvent* event) {
+    // Kept for anything that puts something down where the user was working
+    // rather than in the middle of the view. A graphics view tracks the mouse
+    // already, so this follows the pointer and not only its clicks.
+    impl_->pointer_place = mapToScene(event->position().toPoint());
     if (impl_->panning) {
         const auto delta = event->position().toPoint() - impl_->pan_start;
         horizontalScrollBar()->setValue(horizontalScrollBar()->value() - delta.x());
@@ -2649,6 +3071,19 @@ void DiagramView::mouseMoveEvent(QMouseEvent* event) {
         const auto* hovered = impl_->node_at(event->position().toPoint());
         impl_->connect_hover = hovered ? std::optional<ElementRef>{hovered->ref} : std::nullopt;
         viewport()->update();
+        event->accept();
+        return;
+    }
+    if (impl_->sizing) {
+        // Previewed on the item as the grip is hauled, and written once when
+        // it is let go, the way a bend and a move are.
+        const auto box = Impl::sized_box(*impl_->sizing, mapToScene(event->position().toPoint()));
+        if (const auto found = impl_->nodes.find(impl_->sizing->ref); found != impl_->nodes.end()) {
+            impl_->synchronizing = true;
+            found->second->setPos(box.x, box.y);
+            found->second->set_size(box.width, box.height);
+            impl_->synchronizing = false;
+        }
         event->accept();
         return;
     }
@@ -2734,9 +3169,38 @@ void DiagramView::mouseMoveEvent(QMouseEvent* event) {
         event->accept();
         return;
     }
+    // Nothing is being dragged, so the pointer's job is to say what the thing
+    // under it would do. A corner grip resizes along its own diagonal, and the
+    // arrow comes back only from one of those two shapes, so this never argues
+    // with the hand that pans or the cross that draws.
+    if (impl_->active_tool == Tool::Select && event->buttons() == Qt::NoButton) {
+        auto* node = impl_->node_at(event->position().toPoint());
+        const auto corner = node && node->sizeable()
+            ? node->grip_at(node->mapFromScene(mapToScene(event->position().toPoint()))) : -1;
+        if (corner >= 0) setCursor(corner == 0 || corner == 2 ? Qt::SizeFDiagCursor : Qt::SizeBDiagCursor);
+        else if (cursor().shape() == Qt::SizeFDiagCursor || cursor().shape() == Qt::SizeBDiagCursor)
+            setCursor(Qt::ArrowCursor);
+    }
     QGraphicsView::mouseMoveEvent(event);
 }
 void DiagramView::mouseReleaseEvent(QMouseEvent* event) {
+    if (impl_->sizing && event->button() == Qt::LeftButton) {
+        const auto drag = *impl_->sizing;
+        impl_->sizing.reset();
+        const auto found = impl_->nodes.find(drag.ref);
+        if (found == impl_->nodes.end()) { event->accept(); return; }
+        const Rect box{found->second->pos().x(), found->second->pos().y(),
+                       found->second->body_rect().width(), found->second->body_rect().height()};
+        // A grip clicked and let go without travelling asks for nothing, so
+        // nothing is written and the history stays clear of empty steps.
+        if (box != drag.start) {
+            const auto result = impl_->editor.resize_symbols({{drag.ref, box}});
+            if (!result) impl_->displayed_revision.reset(); // Put the stored size back after a refusal.
+            impl_->publish(result);
+        }
+        event->accept();
+        return;
+    }
     if (impl_->panning && (event->button() == Qt::MiddleButton || event->button() == Qt::LeftButton)) {
         impl_->panning = false;
         if (impl_->active_tool == Tool::Pan && !impl_->tool_locked && event->button() == Qt::LeftButton) {

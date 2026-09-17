@@ -25,6 +25,13 @@ public:
     // Brings the named tab's row to the front. The tabs are named tabHome,
     // tabInsert, tabDesign, tabView and tabHelp.
     void show_tab(const QString& name);
+
+protected:
+    // Watches Home, so every other row follows its height as the window is
+    // resized and the icons with it.
+    bool eventFilter(QObject* watched, QEvent* event) override;
+
+public:
     [[nodiscard]] QToolBar* tabs() const { return tabs_; }
 
 private:
@@ -41,6 +48,10 @@ private:
                                  QAction* default_action = nullptr);
     void show_row(QAction* tab);
     void match_home_height();
+    // Home's height as last measured while it was showing. A row that is not
+    // showing keeps whatever height it last had, so Home has to be measured
+    // when it can be, and remembered for when it cannot.
+    int home_height_ = 0;
 };
 
 } // namespace erdflow::desktop

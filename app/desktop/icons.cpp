@@ -1,10 +1,13 @@
 #include "icons.hpp"
 
+#include <QFile>
 #include <QLinearGradient>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPixmap>
 #include <QPolygonF>
+#include <QSvgRenderer>
+#include <cmath>
 
 namespace erdflow::desktop {
 namespace {
@@ -209,6 +212,48 @@ void draw(QPainter& painter, Glyph glyph, const Theme& colors, qreal side) {
         painter.drawPath(tick);
         break;
     }
+    case Glyph::Dismiss: {
+        // The answer to the tick: the same disc, in the colour of a fault,
+        // with a cross on it. It is what the button offers once the findings
+        // are open, which is to put them away again.
+        painter.setBrush(depth(box, QColor(0xc8, 0x45, 0x45)));
+        painter.setPen(outline(QColor(0x8f, 0x2b, 0x2b), weight * 0.9));
+        painter.drawEllipse(box);
+        const auto arm = box.width() * 0.22;
+        painter.setPen(outline(Qt::white, weight * 1.15));
+        painter.setBrush(Qt::NoBrush);
+        painter.drawLine(centre - QPointF(arm, arm), centre + QPointF(arm, arm));
+        painter.drawLine(centre - QPointF(arm, -arm), centre + QPointF(arm, -arm));
+        break;
+    }
+    case Glyph::Symbols: {
+        // Omega: what a document editor has meant by "symbols" for thirty
+        // years. It is a letter, so it is one stroked path rather than a
+        // filled shape -- a foot, up into a bowl left open at the bottom, and
+        // down to the other foot.
+        const QRectF ring(box.left() + box.width() * 0.16, box.top() + box.height() * 0.05,
+                          box.width() * 0.68, box.height() * 0.66);
+        // Qt measures arc angles anticlockwise from three o'clock, so six
+        // o'clock is 270 and the bowl is left open either side of it.
+        constexpr double left_end = 250.0, right_end = 290.0;
+        const auto at = [&](double degrees) {
+            const auto radians = degrees * std::acos(-1.0) / 180.0;
+            return QPointF(ring.center().x() + ring.width() / 2 * std::cos(radians),
+                           ring.center().y() - ring.height() / 2 * std::sin(radians));
+        };
+        const auto base = box.bottom() - weight * 0.55;
+        const auto foot = box.width() * 0.15;
+        QPainterPath omega(QPointF(at(left_end).x() - foot, base));
+        omega.lineTo(at(left_end).x() - foot * 0.16, base);
+        // A negative sweep runs clockwise, which is the way round the top.
+        omega.arcTo(ring, left_end, -(360.0 - (right_end - left_end)));
+        omega.lineTo(at(right_end).x() + foot * 0.16, base);
+        omega.lineTo(at(right_end).x() + foot, base);
+        painter.setBrush(Qt::NoBrush);
+        painter.setPen(outline(colors.accent, weight * 0.95));
+        painter.drawPath(omega);
+        break;
+    }
     case Glyph::Duplicate:
         painter.setBrush(depth(box, colors.base));
         painter.setPen(outline(colors.muted, weight * 0.9));
@@ -334,10 +379,17 @@ void draw(QPainter& painter, Glyph glyph, const Theme& colors, qreal side) {
 } // namespace
 
 QString icon_mode_key(IconMode mode) {
-    return mode == IconMode::Modern ? QStringLiteral("modern") : QStringLiteral("normal");
+    switch (mode) {
+    case IconMode::Modern: return QStringLiteral("modern");
+    case IconMode::Outline: return QStringLiteral("outline");
+    case IconMode::Normal: break;
+    }
+    return QStringLiteral("normal");
 }
 IconMode icon_mode_from_key(const QString& key) {
-    return key == QStringLiteral("modern") ? IconMode::Modern : IconMode::Normal;
+    if (key == QStringLiteral("modern")) return IconMode::Modern;
+    if (key == QStringLiteral("outline")) return IconMode::Outline;
+    return IconMode::Normal;
 }
 
 QString icon_name(Glyph glyph) {
@@ -365,11 +417,56 @@ QString icon_name(Glyph glyph) {
     case Glyph::Picture: return QStringLiteral("picture");
     case Glyph::Note: return QStringLiteral("note");
     case Glyph::FullView: return QStringLiteral("full-view");
+    case Glyph::Dismiss: return QStringLiteral("close");
+    case Glyph::Symbols: return QStringLiteral("symbols");
     }
     return QStringLiteral("select");
 }
 
 QIcon glyph_icon(Glyph glyph, const Theme& colors, int size, IconMode mode) {
+    if (mode == IconMode::Outline) {
+        // The line art is drawn in one colour, named in the file as the colour
+        // of the surrounding text. Qt's renderer does not resolve that itself,
+        // so the ink asked for is put in its place before the file is drawn --
+        // which is what makes one set of files serve every palette.
+        QFile file(QStringLiteral(":/erdflow/icons-outline/%1.svg").arg(icon_name(glyph)));
+        if (file.open(QIODevice::ReadOnly)) {
+            const auto source = file.readAll();
+            const auto inked = [&](const QColor& ink) {
+                auto drawing = source;
+                drawing.replace("currentColor", ink.name().toLatin1());
+                QSvgRenderer renderer(drawing);
+                if (!renderer.isValid()) return QPixmap();
+                QPixmap pixmap(QSize(size, size) * 3);
+                pixmap.setDevicePixelRatio(3);
+                pixmap.fill(Qt::transparent);
+                QPainter painter(&pixmap);
+                painter.setRenderHint(QPainter::Antialiasing);
+                // A little air around the drawing, so a button's edge never
+                // crowds the line the way a full-bleed glyph would.
+                const qreal inset = size * 0.08;
+                renderer.render(&painter, QRectF(inset, inset, size - inset * 2, size - inset * 2));
+                return pixmap;
+            };
+            const auto resting = inked(colors.text);
+            if (!resting.isNull()) {
+                QIcon icon(resting);
+                // A tool that is on sits on a chip of the theme's accent, and a
+                // line inked for the panel can all but vanish against it. The
+                // set is a single colour, so the same file is drawn again in
+                // the ink that reads on the accent and kept as the icon's "on"
+                // state, which is what Qt asks for when a button is checked.
+                const auto lit = inked(readable_on(colors.accent));
+                if (!lit.isNull()) {
+                    icon.addPixmap(lit, QIcon::Normal, QIcon::On);
+                    icon.addPixmap(lit, QIcon::Active, QIcon::On);
+                    icon.addPixmap(lit, QIcon::Selected, QIcon::On);
+                }
+                return icon;
+            }
+        }
+        // A missing file must not leave a button blank; the drawn glyph stands in.
+    }
     if (mode == IconMode::Modern) {
         // The artwork is square and carries its own plate, so it is rendered at
         // the pixel size it will be shown at rather than scaled from a pixmap.

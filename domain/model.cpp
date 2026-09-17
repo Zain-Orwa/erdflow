@@ -425,6 +425,21 @@ std::vector<Issue> validate(const Project& project) {
         (void)colour; // Every channel is already a byte, so only the reference can be wrong.
         if (!exists(project, ref)) error("colour.reference.missing", "A colour refers to a missing element.", ref);
     }
+    switch (project.background.style) {
+    case BackgroundStyle::Theme: case BackgroundStyle::Squares: case BackgroundStyle::Lines:
+    case BackgroundStyle::Dots: case BackgroundStyle::Image: break;
+    default: error("background.style.invalid", "The background style is invalid.");
+    }
+    if (project.background.strength > max_strength)
+        error("background.strength.invalid", "A background's strength is a percentage from 0 to 100.");
+    if (project.background.style == BackgroundStyle::Image) {
+        if (project.background.image.empty() || !looks_like_image(project.background.image))
+            error("background.image.invalid", "A background picture must be a PNG or JPEG image.");
+        else if (project.background.image.size() > max_image_bytes)
+            error("background.image.limit", "A background picture must fit in 2 MiB.");
+    } else if (!project.background.image.empty()) {
+        error("background.image.unused", "Only a picture background carries a picture.");
+    }
     if (project.transparency.size() > max_elements) error("transparency.limit", "The transparency entries exceed the element limit.");
     for (const auto& [ref, percent] : project.transparency) {
         if (!exists(project, ref)) error("transparency.reference.missing", "A transparency refers to a missing element.", ref);

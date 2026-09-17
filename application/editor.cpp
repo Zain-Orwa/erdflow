@@ -79,6 +79,7 @@ std::size_t cost(const Changes<Key, Value>& changes, const std::map<Key, Value>&
 struct Delta {
     std::string label;
     std::optional<std::string> project_name;
+    std::optional<Background> background;
     Changes<EntityId, Entity> entities;
     Changes<AttributeId, Attribute> attributes;
     Changes<RelationshipId, Relationship> relationships;
@@ -94,7 +95,7 @@ struct Delta {
     std::uint64_t after_state = 0;
 
     [[nodiscard]] bool empty() const {
-        return !project_name && entities.keys.empty() && attributes.keys.empty()
+        return !project_name && !background && entities.keys.empty() && attributes.keys.empty()
             && relationships.keys.empty() && specializations.keys.empty()
             && pictures.keys.empty() && notes.keys.empty()
             && layout.keys.empty() && connectors.keys.empty() && colours.keys.empty()
@@ -102,6 +103,7 @@ struct Delta {
     }
     void toggle(Project& project) {
         if (project_name) project.name.swap(*project_name);
+        if (background) std::swap(project.background, *background);
         entities.toggle(project.entities);
         attributes.toggle(project.attributes);
         relationships.toggle(project.relationships);
@@ -116,6 +118,7 @@ struct Delta {
     [[nodiscard]] std::size_t estimate(const Project& project) const {
         return sizeof(Delta) + sizeof(std::unique_ptr<Delta>) + label.capacity()
             + (project_name ? project_name->capacity() + project.name.capacity() : 0)
+            + (background ? background->image.capacity() + project.background.image.capacity() : 0)
             + cost(entities, project.entities) + cost(attributes, project.attributes)
             + cost(relationships, project.relationships) + cost(specializations, project.specializations)
             + cost(pictures, project.pictures) + cost(notes, project.notes)
@@ -318,7 +321,15 @@ EditResult Editor::create_picture(std::string name, Rect rect, std::vector<std::
 EditResult Editor::create_note(std::string name, Rect rect, std::string text) {
     return impl_->edit("Insert note", [&](Delta& delta) {
         const NoteId id{impl_->next_id()};
-        delta.notes.put(id, Note{id, std::move(name), std::move(text)});
+        delta.notes.put(id, Note{id, std::move(name), std::move(text), false});
+        delta.layout.put(ElementRef{id}, rect);
+        return EditResult{true, {}, ElementRef{id}, {}};
+    });
+}
+EditResult Editor::create_symbol(std::string character, Rect rect) {
+    return impl_->edit("Insert symbol", [&](Delta& delta) {
+        const NoteId id{impl_->next_id()};
+        delta.notes.put(id, Note{id, std::move(character), {}, true});
         delta.layout.put(ElementRef{id}, rect);
         return EditResult{true, {}, ElementRef{id}, {}};
     });
@@ -606,6 +617,28 @@ EditResult Editor::move(const std::map<ElementRef, Rect>& positions) {
         return EditResult{};
     });
 }
+EditResult Editor::resize_symbols(const std::map<ElementRef, Rect>& boxes) {
+    return impl_->edit("Resize symbol", [&](Delta& delta) {
+        for (const auto& [ref, box] : boxes) {
+            const auto* note_id = std::get_if<NoteId>(&ref);
+            if (!note_id) return failure("Only a symbol can be resized.");
+            const auto note = project().notes.find(*note_id);
+            if (note == project().notes.end()) return failure("The symbol no longer exists.");
+            if (!note->second.plain) return failure("Only a symbol can be resized.");
+            // Clamped rather than refused: a size comes from a grip being
+            // dragged, and a drag that runs past the end is asking for the
+            // end, not for nothing to happen.
+            auto sized = box;
+            sized.width = std::clamp(sized.width, min_symbol_size, max_symbol_size);
+            sized.height = std::clamp(sized.height, min_symbol_size, max_symbol_size);
+            sized.x = std::clamp(sized.x, -max_coordinate, max_coordinate - sized.width);
+            sized.y = std::clamp(sized.y, -max_coordinate, max_coordinate - sized.height);
+            const auto found = project().layout.find(ref);
+            if (found == project().layout.end() || found->second != sized) delta.layout.put(ref, sized);
+        }
+        return EditResult{};
+    });
+}
 // Writes a reshaped connector back, dropping the record entirely once nothing
 // on it differs from automatic routing. Both of the shaping commands end this
 // way, so neither can leave an entry behind that says nothing.
@@ -654,6 +687,23 @@ EditResult Editor::recolour(const std::vector<ElementRef>& elements, std::option
     });
 }
 
+EditResult Editor::set_background(Background background) {
+    return impl_->edit("Change background", [&](Delta& delta) {
+        if (background.strength > max_strength)
+            return failure("A background's strength is a percentage from 0 to 100.");
+        // Only a picture background carries a picture, so switching away from
+        // one lets its bytes go rather than keeping them out of sight. A
+        // ruling is drawn as the ruling it is: fading it is what a picture
+        // needs, so that it sits behind the diagram rather than in front.
+        if (background.style != BackgroundStyle::Image) {
+            background.image.clear();
+            background.strength = max_strength;
+        }
+        if (background != project().background) delta.background = std::move(background);
+        return EditResult{};
+    });
+}
+
 EditResult Editor::set_transparency(const std::vector<ElementRef>& elements, std::uint8_t percent) {
     return impl_->edit("Set transparency", [&](Delta& delta) {
         if (percent > max_transparency) return failure("Transparency is a percentage from 0 to 100.");
@@ -687,6 +737,20 @@ EditResult Editor::shape_connector(ConnectorRef ref, Connector shape) {
     return impl_->edit("Shape connector", [&](Delta& delta) {
         if (!connector_exists(project(), ref)) return failure("That connector no longer exists.");
         return store_connector(project(), delta, ref, shape);
+    });
+}
+
+EditResult Editor::shape_connectors(const std::map<ConnectorRef, Connector>& shapes, std::string label) {
+    return impl_->edit(std::move(label), [&](Delta& delta) {
+        for (const auto& [ref, shape] : shapes) {
+            (void)shape;
+            if (!connector_exists(project(), ref)) return failure("One of those connectors no longer exists.");
+        }
+        for (const auto& [ref, shape] : shapes) {
+            const auto stored = store_connector(project(), delta, ref, shape);
+            if (!stored) return stored;
+        }
+        return EditResult{};
     });
 }
 

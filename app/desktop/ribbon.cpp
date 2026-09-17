@@ -2,6 +2,7 @@
 
 #include <QAction>
 #include <QActionGroup>
+#include <QEvent>
 #include <QMainWindow>
 #include <QMenu>
 #include <QToolBar>
@@ -42,7 +43,15 @@ Ribbon::Ribbon(QMainWindow& window) : QObject(&window), window_(window) {
     insert->setToolButtonStyle(home_->toolButtonStyle());
     connect(home_, &QToolBar::toolButtonStyleChanged, insert, &QToolBar::setToolButtonStyle);
     if (auto* insert_menu = window.findChild<QMenu*>("insertMenu"))
-        for (auto* action : insert_menu->actions()) insert->addAction(action);
+        for (auto* action : insert_menu->actions()) {
+            insert->addAction(action);
+            // An entry that carries a submenu, as Symbols does, is a button
+            // that drops its list: a click on it is a request for the list,
+            // not for the action that merely names it.
+            if (action->menu())
+                if (auto* button = qobject_cast<QToolButton*>(insert->widgetForAction(action)))
+                    button->setPopupMode(QToolButton::InstantPopup);
+        }
 
     // Design is how the diagram looks: the choices the View menu keeps in its
     // submenus, and the line style Connect keeps on its arrow.
@@ -74,6 +83,7 @@ Ribbon::Ribbon(QMainWindow& window) : QObject(&window), window_(window) {
 
     // Fitting the window changes the size of Home's buttons, and every row
     // has to change with it.
+    home_->installEventFilter(this);
     connect(home_, &QToolBar::iconSizeChanged, this, [this] { match_home_height(); });
     connect(home_, &QToolBar::toolButtonStyleChanged, this, [this] { match_home_height(); });
     match_home_height();
@@ -167,9 +177,28 @@ void Ribbon::match_home_height() {
     for (auto* action : home_->actions())
         if (!action->isSeparator() && !qobject_cast<QWidgetAction*>(action))
             if (auto* button = home_->widgetForAction(action)) tallest = std::max(tallest, button->sizeHint().height());
+    // Home is taller than its own buttons whenever a widget it carries is
+    // taller than they are, as the notation picker is; and it is shorter than
+    // it asks to be whenever the window gives it less. A row measured from
+    // either would sit at the wrong height, and everything beneath the ribbon
+    // would jump as the tabs were changed. So Home is measured as it actually
+    // stands, while it is showing, and that measurement is what the other rows
+    // are held to until Home is measured again.
+    if (home_->isVisible() && home_->height() > 0) home_height_ = home_->height();
+    const int together = std::max(tallest, home_height_);
     for (const auto& [tab, row] : rows_)
-        if (row != home_)
+        if (row != home_) {
             for (auto* button : row->findChildren<QToolButton*>()) button->setMinimumHeight(tallest);
+            row->setFixedHeight(together);
+        }
+}
+
+bool Ribbon::eventFilter(QObject* watched, QEvent* event) {
+    // Home changes height when the window is resized and its icons with it,
+    // and there is no signal for that, so it is watched.
+    if (watched == home_ && (event->type() == QEvent::Resize || event->type() == QEvent::Show))
+        match_home_height();
+    return QObject::eventFilter(watched, event);
 }
 
 void Ribbon::show_tab(const QString& name) {

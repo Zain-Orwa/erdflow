@@ -75,7 +75,9 @@ ctest --test-dir build -C Debug --output-on-failure
 Replace the example Qt path with the actual 6.9+ installation. Qt DLLs must be
 available on PATH for development. Windows/Linux builds, installers, signing,
 notarization, and release dependency/license review have not been performed.
-The project itself is MIT licensed; see [LICENSE](../LICENSE).
+The project itself is MIT licensed; see [LICENSE](../LICENSE). The bundled
+Lucide outline icons are ISC licensed; see
+[LICENSE-lucide.txt](../assets/icons-outline/LICENSE-lucide.txt).
 
 ## Structure and ownership
 
@@ -87,12 +89,79 @@ main.cpp (composition root)
 ```
 
 Themes carry the application palette and the diagram colours together, so the
-chrome and the canvas cannot disagree. `icons.cpp` supports two icon modes:
-glyphs painted from the active theme, and SVG artwork embedded as Qt resources
-from `assets/icons` and `assets/icons-on-dark`. The SVG mode picks a light/dark
-variant using the panel colour and falls back to a painted glyph if artwork is
-unavailable. `tools/generate-icons.py` generates both SVG sets; CMake embeds them
-and links Qt Svg. The user chooses the mode under **View → Icons**.
+chrome and the canvas cannot disagree. `icons.cpp` supports three icon modes,
+all reached through `glyph_icon`, so nothing in the window names an image file
+of its own:
+
+- **Outline**, the default. Single-weight line art held in `assets/icons-outline`
+  and embedded under `:/erdflow/icons-outline`. Each file paints in
+  `currentColor`, which Qt's SVG renderer does not resolve, so `glyph_icon`
+  substitutes the theme's ink before handing the bytes to `QSvgRenderer`. One
+  set of files therefore serves all nineteen palettes. A tool that is checked
+  sits on a chip of the theme's accent, so the same file is rendered a second
+  time in `readable_on(accent)` and kept as the icon's `QIcon::On` state.
+- **Modern**, the coloured artwork in `assets/icons` and `assets/icons-on-dark`,
+  embedded under `:/erdflow/icons` and `:/erdflow/icons-on-dark`. It carries its
+  own colour, so the set comes in two inks and the panel colour picks which.
+  `tools/generate-icons.py` generates both.
+- **Painted**, glyphs drawn from the active theme by `draw()` with no files at
+  all. It is also the fallback whenever an artwork file cannot be read, so a
+  missing asset never leaves a button blank.
+
+The user chooses the mode under **View → Icons**, and the choice is remembered.
+CMake embeds all three sets with `qt_add_resources` and links Qt Svg.
+
+Nineteen of the outline files come from [Lucide](https://lucide.dev) v1.46.0,
+which is ISC licensed; the licence text travels with them in
+`assets/icons-outline/LICENSE-lucide.txt`. Lucide has no icons for the Chen
+shapes, so `entity`, `attribute`, `relationship`, `isa` and `connect` are
+ERDFlow's own, drawn on the same 24-unit grid at the same 2-unit stroke weight
+so the set reads as one family.
+
+`symbols.cpp` holds the character table the Insert tab's gallery offers, as
+eight named groups of named characters; `symbol_picker.cpp` is the gallery
+itself. Some of the people are joined sequences rather than single characters,
+so a new one is worth measuring against the picker's cell before it is added:
+a font that does not join them draws two glyphs, and the grid elides what does
+not fit. `desktop_tests.cpp` measures the whole table for exactly that. Nothing
+about the gallery reaches the model: a character is text, and it lands in a
+field through the same commands as anything else typed there.
+
+A placed symbol is resized through `Editor::resize_symbols`, which refuses
+anything that is not a symbol and clamps the box to `domain::min_symbol_size`
+and `max_symbol_size`. The canvas draws the grips in `NodeItem::paint_plain_note`
+and works out the hauled box in `Impl::sized_box`; the drag is previewed on the
+item and committed once on release, the way a move and a bend are. Number
+fields are not places a character can land: `text_target()` refuses a spin box's
+inner line edit, so a symbol picked while the Size field has the keyboard goes
+on the diagram rather than being typed into a figure.
+
+Where a character lands is decided by `MainWindow::text_target()`, which asks
+this window for its focus widget rather than asking the application for the
+global one, so the answer survives the gallery being the window the desktop
+calls active. Only a visible `QLineEdit` or `QPlainTextEdit` counts. Anything
+else, including no focus at all, sends the character to the canvas through
+`place_symbol()`, which creates a note marked `plain`. A plain note is drawn
+as its character alone, grown to fill the box it is given; `paint_plain_note`
+and the plain branch of `paint_shape` are the two places that draw it, and
+both centre it on the character's ink rather than on the line it sits in,
+because a line is mostly space and different characters use different parts
+of it. The remembered caret exists because committing
+a name rebuilds the properties panel: the replacement field reads from its
+beginning, so the caret is restored before the character is inserted. The
+picker refuses focus on every character button and does not take activation,
+so choosing a character never moves the caret.
+
+Two things follow from that rule and are easy to break. The canvas keeps its
+inline rename box and hides it rather than destroying it, so `text_target()`
+must reject an invisible widget or characters vanish into a box nobody can
+see. And hiding a widget that holds the keyboard makes Qt hand the keyboard to
+the next widget in the tab order, which is a field in the properties panel, so
+`commit_inline_edit` gives it back to the view; without that, a character
+picked after renaming on the canvas silently edits a name instead.
+
+A character added to the table must be one the interface font can draw; the
+desktop tests measure every one of them rather than trusting it.
 
 `erdflow_domain` and `erdflow_application` have no Qt dependency. The desktop
 receives Application interfaces; only the composition root assembles concrete
