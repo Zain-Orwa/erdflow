@@ -110,11 +110,11 @@ not been built yet. Their presence in those documents is not a completion claim.
 - A row of tabs above the toolbar, the way an office application arranges its
   commands: **File** drops the File menu from its tab; **Home** is the modeling
   toolbar, with Note after Connect; **Insert** carries Picture and Symbols; **Design** carries Theme,
-  Icons, Notation and Lines; **Download** carries everything that leaves;
+  Icons, Notation and Lines; **Export** carries everything that leaves;
   **View** carries the panels, framing, grid and
   align-to-grid; **Help** carries the guide and About. The rows are built from the same
   actions as the menus and the Home toolbar, so a tool chosen or locked on one
-  row is chosen or locked on the other. The Download entries go quiet while
+  row is chosen or locked on the other. The Export entries go quiet while
   there is nothing drawn to hand on, rather than the row coming and going as
   work starts. A Convert tab still waits, because there is nothing to convert to.
 - **Insert → Symbols…** opens a gallery of the characters a conceptual diagram
@@ -428,7 +428,7 @@ not been built yet. Their presence in those documents is not a completion claim.
   not saved, does not enter the history and does not dirty the project, the same
   rule the grid and the comment switch follow. Closing it puts the whole diagram
   back, so a filter is never left on behind a bar nobody can see.
-- Work leaves ERDFlow through **Download**, a tab of its own and a menu under
+- Work leaves ERDFlow through **Export**, a tab of its own and a menu under
   File, the way a document application offers it. One word is used in both
   places, and one list holds every format ERDFlow writes.
 - As a **picture**: **SVG**, **PNG**, **JPEG**, **WebP**, **TIFF** or a **PDF**
@@ -454,14 +454,14 @@ not been built yet. Their presence in those documents is not a completion claim.
   when it was made.
 - The listings are built with Qt's own rich text and PDF writer. ERDFlow still
   has no runtime dependency beyond C++20 and Qt.
-- **Download with options…** opens one dialog over every format, documents
+- **Export with options…** opens one dialog over every format, documents
   above pictures, because somebody handing work on chooses between a report and
   a picture before choosing between PNG and SVG. The options that decide whether
   a picture is usable ship with it rather than after it: the **extent** (whole
   diagram, selection or current view), the **background** (transparent, the
   theme's canvas colour, or white), the **scale** for a raster or the
   **resolution** for a page, and the **margin** left around the diagram. The
-  dialog says what pressing Download will produce, in the units that format is
+  dialog says what pressing Export will produce, in the units that format is
   measured in, and turns off what cannot be asked for: an extent with nothing in
   it, the picture options a document has none of, and carrying the project in a
   format that cannot hold one. A picture larger than ERDFlow will draw is
@@ -517,7 +517,7 @@ geometry changes use **Apply position and size**.
 | 15 — Project files | Single-page native format foundation delivered early to protect the current editor's work. No historical migration or recovery system. |
 | 16–17 — Pages/editor milestone | Not complete; multiple pages, the remaining conceptual semantics, and the start screen, templates and project folders of ADR-016 are required. |
 | 18 onward | Import, schema generation, provenance, physical design, SQL, data, and later production/ecosystem features remain planned. |
-| 35 — Export | Partial, and pulled forward the way Phase 15 was, because ADR-015 splits export into halves with different prerequisites and neither the pictures nor the listings need anything later. Implemented: the pictures, their options, the project carried inside SVG and PNG, and all four documentation listings, offered together under Download. Not implemented: a multi-page PDF of a project, which waits for the multiple pages of Phase 16; the published JSON Schema for `.erdx`; the outline-text option for a pixel-exact handoff; and the whole schema half — `.sql`, Mermaid ER and DBML — which cannot precede the Phase 24 workspace it would read from. |
+| 35 — Export | Partial, and pulled forward the way Phase 15 was, because ADR-015 splits export into halves with different prerequisites and neither the pictures nor the listings need anything later. Implemented: the pictures, their options, the project carried inside SVG and PNG, and all four documentation listings, offered together under Export. Not implemented: a multi-page PDF of a project, which waits for the multiple pages of Phase 16; the published JSON Schema for `.erdx`; the outline-text option for a pixel-exact handoff; and the whole schema half — `.sql`, Mermaid ER and DBML — which cannot precede the Phase 24 workspace it would read from. |
 
 The Part 1 checklist is a coverage inventory, not a replacement for semantic
 prerequisites. Persistence was deliberately pulled into this usable slice so

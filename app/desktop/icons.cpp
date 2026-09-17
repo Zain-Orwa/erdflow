@@ -326,7 +326,7 @@ void draw(QPainter& painter, Glyph glyph, const Theme& colors, qreal side) {
                          QPointF(box.right() - box.width() * 0.06, box.bottom() - box.height() * 0.06));
         break;
     }
-    case Glyph::Download: {
+    case Glyph::Export: {
         // Work leaving: an arrow rising out of a tray. It is the same motif the
         // coloured set draws, so the two sets say the same thing about it.
         painter.setBrush(Qt::NoBrush);
@@ -451,8 +451,8 @@ QString icon_name(Glyph glyph) {
     case Glyph::Dismiss: return QStringLiteral("close");
     case Glyph::Symbols: return QStringLiteral("symbols");
     // The artwork is the arrow leaving a tray, filed under the older word
-    // for it; the command it draws is Download.
-    case Glyph::Download: return QStringLiteral("export");
+    // for it; the command it draws is Export.
+    case Glyph::Export: return QStringLiteral("export");
     case Glyph::Search: return QStringLiteral("search");
     }
     return QStringLiteral("select");

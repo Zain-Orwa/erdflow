@@ -1,5 +1,5 @@
 #include "main_window.hpp"
-#include "download_dialog.hpp"
+#include "export_dialog.hpp"
 #include "ribbon.hpp"
 #include "search_bar.hpp"
 #include "symbol_picker.hpp"
@@ -861,39 +861,39 @@ void MainWindow::build_actions() {
     file->addAction("Save &as…", QKeySequence::SaveAs, this, [this] { save(true); });
     file->addSeparator();
 
-    // Download is how work leaves ERDFlow. Its own menu, so the ribbon can put
+    // Export is how work leaves ERDFlow. Its own menu, so the ribbon can put
     // a row over it the way Insert and Design are put over theirs, and a copy
     // of it under File, which is where a document application keeps it.
     //
     // Documents come first. Someone handing this work on is choosing between a
     // report and a picture before they are choosing between PNG and SVG.
-    auto* download_menu = new QMenu("Download", this);
-    download_menu->setObjectName("downloadMenu");
-    download_menu->addSection("Documents");
+    auto* export_menu = new QMenu("Export", this);
+    export_menu->setObjectName("exportMenu");
+    export_menu->addSection("Documents");
     struct DocumentEntry { DocumentFormat format; const char* name; };
-    for (const auto& entry : {DocumentEntry{DocumentFormat::Pdf, "downloadPdfDocument"},
-                              DocumentEntry{DocumentFormat::Markdown, "downloadMarkdown"},
-                              DocumentEntry{DocumentFormat::Html, "downloadHtml"},
-                              DocumentEntry{DocumentFormat::Csv, "downloadCsv"}}) {
+    for (const auto& entry : {DocumentEntry{DocumentFormat::Pdf, "exportPdfDocument"},
+                              DocumentEntry{DocumentFormat::Markdown, "exportMarkdown"},
+                              DocumentEntry{DocumentFormat::Html, "exportHtml"},
+                              DocumentEntry{DocumentFormat::Csv, "exportCsv"}}) {
         const auto& info = document_format(entry.format);
-        auto* item = download_menu->addAction(QString::fromUtf8(info.label) + "…", this,
-                                              [this, format = entry.format] { download_document(format); });
+        auto* item = export_menu->addAction(QString::fromUtf8(info.label) + "…", this,
+                                              [this, format = entry.format] { export_document(format); });
         item->setObjectName(QString::fromLatin1(entry.name));
         item->setToolTip(QString::fromUtf8(info.caution));
     }
 
     // Then the pictures a person reaches for without thinking about options.
-    // SVG leads because it is the default download: it reads at any size and it
+    // SVG leads because it is the default picture to hand out: it reads at any size and it
     // is one of the two that carry the project home again.
-    download_menu->addSection("Pictures");
+    export_menu->addSection("Pictures");
     struct PictureEntry { PictureFormat format; const char* name; bool common; };
     QMenu* more_pictures = nullptr;
-    for (const auto& entry : {PictureEntry{PictureFormat::Svg, "downloadSvg", true},
-                              PictureEntry{PictureFormat::Png, "downloadPng", true},
-                              PictureEntry{PictureFormat::Pdf, "downloadPdfPage", true},
-                              PictureEntry{PictureFormat::Jpeg, "downloadJpeg", false},
-                              PictureEntry{PictureFormat::WebP, "downloadWebp", false},
-                              PictureEntry{PictureFormat::Tiff, "downloadTiff", false}}) {
+    for (const auto& entry : {PictureEntry{PictureFormat::Svg, "exportSvg", true},
+                              PictureEntry{PictureFormat::Png, "exportPng", true},
+                              PictureEntry{PictureFormat::Pdf, "exportPdfPage", true},
+                              PictureEntry{PictureFormat::Jpeg, "exportJpeg", false},
+                              PictureEntry{PictureFormat::WebP, "exportWebp", false},
+                              PictureEntry{PictureFormat::Tiff, "exportTiff", false}}) {
         // A format this build has no writer for is left out rather than offered
         // and then failed.
         if (!picture_format_available(entry.format)) continue;
@@ -901,42 +901,42 @@ void MainWindow::build_actions() {
         // The three anyone wants sit on the menu; the rest are gathered behind
         // one entry, so a common choice is never hunted for among rare ones.
         if (!entry.common && !more_pictures) {
-            more_pictures = download_menu->addMenu("Other picture formats");
-            more_pictures->setObjectName("downloadMorePictures");
+            more_pictures = export_menu->addMenu("Other picture formats");
+            more_pictures->setObjectName("exportMorePictures");
         }
-        auto* into = entry.common ? download_menu : more_pictures;
+        auto* into = entry.common ? export_menu : more_pictures;
         auto* item = into->addAction(QString::fromUtf8(info.label) + "…", this, [this, format = entry.format] {
-            auto options = download_choice_.as_picture;
+            auto options = export_choice_.as_picture;
             options.format = format;
-            download_picture(options);
+            export_picture(options);
         });
         item->setObjectName(QString::fromLatin1(entry.name));
         if (*info.caution) item->setToolTip(QString::fromUtf8(info.caution));
     }
 
-    download_menu->addSeparator();
-    auto* download_options = download_menu->addAction("Download with options…", QKeySequence("Ctrl+Shift+E"),
-                                                      this, &MainWindow::download_dialog);
-    download_options->setObjectName("downloadWithOptions");
-    download_options->setToolTip("Choose the format, and for a picture its size, extent and background.");
-    action_glyphs_[download_options] = Glyph::Download;
-    auto* copy_action = download_menu->addAction("Copy as picture", QKeySequence("Ctrl+Shift+C"),
+    export_menu->addSeparator();
+    auto* export_options = export_menu->addAction("Export with options…", QKeySequence("Ctrl+Shift+E"),
+                                                      this, &MainWindow::export_dialog);
+    export_options->setObjectName("exportWithOptions");
+    export_options->setToolTip("Choose the format, and for a picture its size, extent and background.");
+    action_glyphs_[export_options] = Glyph::Export;
+    auto* copy_action = export_menu->addAction("Copy as picture", QKeySequence("Ctrl+Shift+C"),
                                                  this, [this] { copy_picture(); });
     copy_action->setObjectName("copyAsPicture");
     copy_action->setToolTip("Put a picture of the selection, or of the whole diagram, on the clipboard.");
     // Gathered so they can be turned off together while there is nothing drawn.
     // A submenu's own entries are collected too, since the submenu itself only
     // names them.
-    for (auto* action : download_menu->actions()) {
+    for (auto* action : export_menu->actions()) {
         if (action->isSeparator()) continue;
         if (auto* submenu = action->menu()) {
-            for (auto* nested : submenu->actions()) download_actions_.push_back(nested);
-            download_actions_.push_back(action);
+            for (auto* nested : submenu->actions()) export_actions_.push_back(nested);
+            export_actions_.push_back(action);
             continue;
         }
-        download_actions_.push_back(action);
+        export_actions_.push_back(action);
     }
-    file->addMenu(download_menu);
+    file->addMenu(export_menu);
     file->addSeparator();
     file->addAction("Open example", this, &MainWindow::load_example);
     file->addSeparator();
@@ -1539,7 +1539,7 @@ void MainWindow::refresh() {
     undo_->setToolTip(undo_->text() + "\t" + undo_->shortcut().toString(QKeySequence::NativeText));
     redo_->setToolTip(redo_->text() + "\t" + redo_->shortcut().toString(QKeySequence::NativeText));
     refresh_selection_commands();
-    refresh_download_actions();
+    refresh_export_actions();
     auto title = text(editor_.project().name);
     document_label_->setText(title + (editor_.dirty() ? " · Unsaved" : ""));
     setWindowTitle(title + "[*] — ERDFlow");
@@ -2974,24 +2974,24 @@ bool MainWindow::open_path(const QString& path) {
     return true;
 }
 
-void MainWindow::download_dialog() {
+void MainWindow::export_dialog() {
     finish_field_edit();
     canvas_->cancel_interaction();
-    DownloadDialog dialog(*canvas_, editor_.project(), this);
-    dialog.set_choice(download_choice_);
+    ExportDialog dialog(*canvas_, editor_.project(), this);
+    dialog.set_choice(export_choice_);
     if (dialog.exec() != QDialog::Accepted) return;
-    download_choice_ = dialog.choice();
-    if (download_choice_.document) download_document(download_choice_.as_document);
-    else download_picture(download_choice_.as_picture);
+    export_choice_ = dialog.choice();
+    if (export_choice_.document) export_document(export_choice_.as_document);
+    else export_picture(export_choice_.as_picture);
 }
 
-// Where a downloaded file is suggested to go: named after the project, beside
+// Where an exported file is suggested to go: named after the project, beside
 // it when it has a file of its own, so what leaves lands where the work lives.
-QString MainWindow::download_location(const QString& suffix, const QString& label) {
+QString MainWindow::export_location(const QString& suffix, const QString& label) {
     const auto stem = path_.isEmpty() ? QString("Untitled") : QFileInfo(path_).completeBaseName();
     const auto suggested = path_.isEmpty() ? stem + "." + suffix
                                            : QFileInfo(path_).dir().filePath(stem + "." + suffix);
-    auto location = QFileDialog::getSaveFileName(this, "Download", suggested,
+    auto location = QFileDialog::getSaveFileName(this, "Export", suggested,
                                                  QString("%1 (*.%2)").arg(label, suffix));
     if (location.isEmpty()) return {};
     if (!location.endsWith("." + suffix, Qt::CaseInsensitive)) {
@@ -3003,33 +3003,33 @@ QString MainWindow::download_location(const QString& suffix, const QString& labe
     return location;
 }
 
-bool MainWindow::download_document(DocumentFormat format, const QString& location_given) {
+bool MainWindow::export_document(DocumentFormat format, const QString& location_given) {
     finish_field_edit();
     canvas_->cancel_interaction();
     const auto& info = document_format(format);
     auto location = location_given;
     if (location.isEmpty())
-        location = download_location(QString::fromLatin1(info.suffix), QString::fromUtf8(info.label));
+        location = export_location(QString::fromLatin1(info.suffix), QString::fromUtf8(info.label));
     if (location.isEmpty()) return false;
     const auto result = write_document(*canvas_, editor_.project(), format, location);
     if (!result) {
         QMessageBox::warning(this, "Document could not be written", result.error);
         return false;
     }
-    // A listing is not the project, and someone who downloads one and expects
+    // A listing is not the project, and someone who exports one and expects
     // to reopen it should be told so once rather than discover it later.
-    statusBar()->showMessage("Downloaded " + QFileInfo(location).fileName()
+    statusBar()->showMessage("Exported " + QFileInfo(location).fileName()
                              + ". It is a listing of the model, not the project itself.", 9000);
     return true;
 }
 
-bool MainWindow::download_picture(const PictureOptions& options, const QString& location_given) {
+bool MainWindow::export_picture(const PictureOptions& options, const QString& location_given) {
     finish_field_edit();
     canvas_->cancel_interaction();
     const auto& info = picture_format(options.format);
     const auto suffix = QString::fromLatin1(info.suffix);
     auto location = location_given;
-    if (location.isEmpty()) location = download_location(suffix, QString::fromUtf8(info.label));
+    if (location.isEmpty()) location = export_location(suffix, QString::fromUtf8(info.label));
     if (location.isEmpty()) return false;
     QString note;
     const auto payload = options.carry_project && info.carries_project ? project_payload(note) : QByteArray();
@@ -3040,7 +3040,7 @@ bool MainWindow::download_picture(const PictureOptions& options, const QString& 
     }
     // What was written, and where the project ended up, since a recipient who
     // expects to reopen the picture needs to know whether it can be.
-    auto said = "Downloaded " + QFileInfo(location).fileName();
+    auto said = "Exported " + QFileInfo(location).fileName();
     if (result.carried_project) said += ", with the project inside it";
     said += ".";
     if (!note.isEmpty()) said += " " + note;
@@ -3055,7 +3055,7 @@ bool MainWindow::copy_picture() {
     canvas_->cancel_interaction();
     // A copy is of what is selected, and of the whole diagram when nothing is,
     // which is what every drawing application does with the same command.
-    auto options = download_choice_.as_picture;
+    auto options = export_choice_.as_picture;
     options.extent = canvas_->selection_bounds().isEmpty() ? PictureExtent::WholeDiagram : PictureExtent::Selection;
     QString note;
     const auto payload = options.carry_project ? project_payload(note) : QByteArray();
@@ -3245,11 +3245,11 @@ void MainWindow::close_search() {
     canvas_->setFocus();
 }
 
-void MainWindow::refresh_download_actions() {
+void MainWindow::refresh_export_actions() {
     // Nothing drawn is nothing to hand on. The entries stay where they are and
     // go quiet, rather than the row appearing and disappearing as work starts.
     const auto anything = !canvas_->diagram_bounds().isEmpty();
-    for (auto* action : download_actions_) action->setEnabled(anything);
+    for (auto* action : export_actions_) action->setEnabled(anything);
 }
 
 void MainWindow::load_example() {

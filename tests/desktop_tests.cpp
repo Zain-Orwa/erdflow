@@ -1,6 +1,6 @@
 #include "app/desktop/icons.hpp"
 #include "app/desktop/symbols.hpp"
-#include "app/desktop/download_dialog.hpp"
+#include "app/desktop/export_dialog.hpp"
 #include "app/desktop/main_window.hpp"
 #include "infrastructure/project_store.hpp"
 
@@ -1945,42 +1945,42 @@ int main(int argc, char** argv) {
             settle();
         }
 
-        // Download: how the work leaves. A picture any system can open, with
+        // Export: how the work leaves. A picture any system can open, with
         // the project inside the two formats that can hold one, and a written
         // listing of the model for the people who want words rather than a
         // drawing.
         {
             QTemporaryDir pictures;
-            require(pictures.isValid(), "Temporary download directory");
+            require(pictures.isValid(), "Temporary export directory");
 
-            // The Download tab waited until there was something to hand on.
+            // The Export tab waited until there was something to hand on.
             // There now is, so it is a tab like the others, built from the
             // same menu, and one word is used for it in both places.
-            child<QAction>(window, "tabDownload")->trigger();
+            child<QAction>(window, "tabExport")->trigger();
             settle();
-            auto* download_row = child<QToolBar>(window, "downloadTools");
-            require(download_row->isVisible(), "Download has a row of its own");
-            for (const char* name : {"downloadPdfDocument", "downloadMarkdown", "downloadHtml", "downloadCsv",
-                                     "downloadSvg", "downloadPng", "downloadPdfPage",
-                                     "downloadWithOptions", "copyAsPicture"})
-                require(child<QMenu>(window, "downloadMenu")->findChildren<QAction*>().contains(
+            auto* export_row = child<QToolBar>(window, "exportTools");
+            require(export_row->isVisible(), "Export has a row of its own");
+            for (const char* name : {"exportPdfDocument", "exportMarkdown", "exportHtml", "exportCsv",
+                                     "exportSvg", "exportPng", "exportPdfPage",
+                                     "exportWithOptions", "copyAsPicture"})
+                require(child<QMenu>(window, "exportMenu")->findChildren<QAction*>().contains(
                             child<QAction>(window, name))
-                            || download_row->actions().contains(child<QAction>(window, name)), name);
+                            || export_row->actions().contains(child<QAction>(window, name)), name);
             require(child<QMenu>(window, "fileMenu")->actions().contains(
-                        child<QMenu>(window, "downloadMenu")->menuAction()),
+                        child<QMenu>(window, "exportMenu")->menuAction()),
                     "And the same menu hangs under File");
-            require(child<QMenu>(window, "downloadMorePictures") != nullptr,
+            require(child<QMenu>(window, "exportMorePictures") != nullptr,
                     "With the rarer picture formats gathered behind one entry");
-            require(child<QAction>(window, "downloadPng")->isEnabled(), "A drawn diagram can be downloaded");
-            require(child<QAction>(window, "downloadSvg")->text() == QString::fromUtf8("SVG picture…"),
+            require(child<QAction>(window, "exportPng")->isEnabled(), "A drawn diagram can be exported");
+            require(child<QAction>(window, "exportSvg")->text() == QString::fromUtf8("SVG picture…"),
                     "Named in the characters the name was written with, not in mangled bytes");
-            require(!child<QAction>(window, "downloadWithOptions")->icon().isNull(),
-                    "Download carries a glyph of its own");
+            require(!child<QAction>(window, "exportWithOptions")->icon().isNull(),
+                    "Export carries a glyph of its own");
 
-            auto options = window.download_choice().as_picture;
+            auto options = window.export_choice().as_picture;
             options.format = desktop::PictureFormat::Png;
             const auto png = pictures.filePath("diagram.png");
-            require(window.download_picture(options, png), "A PNG is written where it was told to write one");
+            require(window.export_picture(options, png), "A PNG is written where it was told to write one");
             require(QFileInfo::exists(png), "And the file is there afterwards");
 
             // The picture is also the project. Opening it gives back exactly
@@ -1991,10 +1991,10 @@ int main(int argc, char** argv) {
             require(window.editor().project() == drawn, "Giving back exactly the diagram that was exported");
             require(!window.editor().dirty(), "And it opens clean, like any other project");
 
-            // SVG carries it too, and is the default download for that reason.
+            // SVG carries it too, and is the picture to prefer for that reason.
             options.format = desktop::PictureFormat::Svg;
             const auto svg = pictures.filePath("diagram.svg");
-            require(window.download_picture(options, svg), "An SVG is written");
+            require(window.export_picture(options, svg), "An SVG is written");
             if (window.editor().dirty()) dismiss(QMessageBox::Discard);
             require(window.open_path(svg), "And opens as the project it carries");
             require(window.editor().project() == drawn, "Also exactly as it was drawn");
@@ -2003,7 +2003,7 @@ int main(int argc, char** argv) {
             // so rather than reporting a damaged project.
             options.carry_project = false;
             const auto bare = pictures.filePath("bare.png");
-            require(window.download_picture(options, bare), "A PNG written without the project");
+            require(window.export_picture(options, bare), "A PNG written without the project");
             dismiss(QMessageBox::Ok);
             require(!window.open_path(bare), "Does not open as a project");
             require(window.editor().project() == drawn, "And leaves the open work alone");
@@ -2012,7 +2012,7 @@ int main(int argc, char** argv) {
             // A page is written as a page, and carries nothing, as a page cannot.
             options.format = desktop::PictureFormat::Pdf;
             const auto pdf = pictures.filePath("diagram.pdf");
-            require(window.download_picture(options, pdf), "A PDF page is written");
+            require(window.export_picture(options, pdf), "A PDF page is written");
             QFile page(pdf);
             require(page.open(QIODevice::ReadOnly) && page.read(4) == "%PDF", "Which is a PDF");
 
@@ -2040,7 +2040,7 @@ int main(int argc, char** argv) {
                                         Listing{desktop::DocumentFormat::Html, "report.html", "<!DOCTYPE html>"},
                                         Listing{desktop::DocumentFormat::Pdf, "report.pdf", "%PDF"}}) {
                 const auto where = pictures.filePath(QString::fromLatin1(listing.file));
-                require(window.download_document(listing.format, where),
+                require(window.export_document(listing.format, where),
                         "A listing is written where it was told to write one");
                 QFile written(where);
                 require(written.open(QIODevice::ReadOnly), listing.file);
@@ -2056,15 +2056,15 @@ int main(int argc, char** argv) {
             // pictures, and turns off what cannot be asked for: an extent with
             // nothing in it, the picture options a document has none of, and
             // carrying the project in a format with nowhere to put it.
-            desktop::DownloadDialog dialog(*window.canvas(), window.editor().project());
-            desktop::DownloadChoice choice;
+            desktop::ExportDialog dialog(*window.canvas(), window.editor().project());
+            desktop::ExportChoice choice;
             choice.as_picture = options;
             dialog.set_choice(choice);
             settle();
-            auto* extent = dialog.findChild<QComboBox*>("downloadExtent");
-            auto* format = dialog.findChild<QComboBox*>("downloadFormat");
-            auto* carry = dialog.findChild<QCheckBox*>("downloadCarryProject");
-            auto* size = dialog.findChild<QLabel*>("downloadSize");
+            auto* extent = dialog.findChild<QComboBox*>("exportExtent");
+            auto* format = dialog.findChild<QComboBox*>("exportFormat");
+            auto* carry = dialog.findChild<QCheckBox*>("exportCarryProject");
+            auto* size = dialog.findChild<QLabel*>("exportSize");
             require(extent && format && carry && size, "The dialog has its controls");
             const auto* extents = qobject_cast<QStandardItemModel*>(extent->model());
             require(extents != nullptr, "Whose extents can be turned off one at a time");
@@ -2095,10 +2095,10 @@ int main(int argc, char** argv) {
             // rather than failing when they are pressed.
             child<QAction>(window, "newProject")->trigger();
             settle();
-            require(!child<QAction>(window, "downloadPng")->isEnabled(), "An empty project has nothing to hand on");
+            require(!child<QAction>(window, "exportPng")->isEnabled(), "An empty project has nothing to hand on");
             window.load_example();
             settle();
-            require(child<QAction>(window, "downloadPng")->isEnabled(), "And a drawn one has something again");
+            require(child<QAction>(window, "exportPng")->isEnabled(), "And a drawn one has something again");
         }
 
         window.close(); // The example was reloaded clean, so no discard dialog.

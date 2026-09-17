@@ -139,7 +139,7 @@ bool put_payload_in_svg(QByteArray& svg, const QByteArray& payload) {
 } // namespace
 
 const std::vector<PictureFormatInfo>& picture_formats() {
-    // SVG leads because it is the default download: it is the only raster-free
+    // SVG leads because it is the default picture to hand out: it is the only raster-free
     // picture that also carries the project, and it reads at any size.
     static const std::vector<PictureFormatInfo> formats{
         {PictureFormat::Svg, "SVG picture", "svg", false, true, true, ""},

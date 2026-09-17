@@ -24,7 +24,7 @@ ERDFlow exists to draw.
 
 Export is tiered, and interchange begins at the relational level.
 
-- **Pictures.** SVG is the default download and PNG the default raster,
+- **Pictures.** SVG is the picture to prefer and PNG the default raster,
   with JPEG, WebP, TIFF and PDF beside them, plus a multi-page PDF of a whole
   project and copy-as-picture to the clipboard. JPEG carries a warning where
   it is offered, because it smears the edges of text and lines.
@@ -83,6 +83,14 @@ Phase 15 project format already was. The schema half cannot precede Phase 24,
 because there is no schema to export until then.
 
 ERDFlow does not claim to re-import what it did not write.
+
+## What it is called
+
+Export, and later Import. Not Download and Upload: those belong to a program
+whose files live somewhere else, and ERDFlow's live on the reader's own disk.
+Every tool this one sits beside — ERwin, ER/Studio, Workbench, DataGrip — says
+Import and Export, and so does every document in this repository, so the
+interface says it too.
 
 ## Final principle
 

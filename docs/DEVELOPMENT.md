@@ -45,7 +45,7 @@ rendered example without starting a lasting window:
 
 ```sh
 QT_QPA_PLATFORM=offscreen ./build/erdflow --example --screenshot /tmp/erdflow.png --smoke-test
-QT_QPA_PLATFORM=offscreen ./build/erdflow --example --tab tabDownload --screenshot /tmp/erdflow.png --smoke-test
+QT_QPA_PLATFORM=offscreen ./build/erdflow --example --tab tabExport --screenshot /tmp/erdflow.png --smoke-test
 QT_QPA_PLATFORM=offscreen ./build/release/editor_benchmark
 ```
 
@@ -62,11 +62,11 @@ the window no room until it is wanted.
 
 `--tab` brings a ribbon row to the front before the screenshot is taken, so a
 row other than Home can be looked at without a person clicking the tab first.
-The tabs are named `tabHome`, `tabInsert`, `tabDesign`, `tabDownload`,
+The tabs are named `tabHome`, `tabInsert`, `tabDesign`, `tabExport`,
 `tabView` and `tabHelp`.
 
 The screenshot option is development tooling: it grabs the window, chrome and
-all. **Download** is the real thing: it writes the diagram as a picture, or the
+all. **Export** is the real thing: it writes the diagram as a picture, or the
 project as a report, a data dictionary or a spreadsheet, by itself. Relational
 interchange — `.sql`, Mermaid ER, DBML — is still planned and cannot precede the
 Relational Schema workspace. A missing optional Vulkan

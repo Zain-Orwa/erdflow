@@ -1,7 +1,7 @@
 #pragma once
 
 #include "diagram_view.hpp"
-#include "download_dialog.hpp"
+#include "export_dialog.hpp"
 #include "icons.hpp"
 #include "application/project_store.hpp"
 
@@ -53,12 +53,12 @@ public:
     // Writes a picture of the diagram. With no location it asks where the
     // picture should go; with one it writes there and asks nothing, which is
     // how anything that already knows the destination drives it. The options
-    // are whatever the download dialog last settled on, so the quick entries
+    // are whatever the export dialog last settled on, so the quick entries
     // and the dialog cannot produce differently sized pictures of one diagram.
-    bool download_picture(const PictureOptions& options, const QString& location = {});
+    bool export_picture(const PictureOptions& options, const QString& location = {});
     // Writes the project as a listing rather than as a picture: a report, a
     // data dictionary or a spreadsheet of what the diagram says.
-    bool download_document(DocumentFormat format, const QString& location = {});
+    bool export_document(DocumentFormat format, const QString& location = {});
     // Puts a picture of the selection, or of the whole diagram when nothing is
     // selected, on the clipboard as both a PNG and an SVG, so whatever it is
     // pasted into can take whichever it prefers.
@@ -78,7 +78,7 @@ public:
     // field, which is how a remark comes to be about one word rather than a
     // whole element. False when nothing is selected there.
     bool comment_on_selected_text(const QString& field_name, const QString& said = {});
-    [[nodiscard]] const DownloadChoice& download_choice() const { return download_choice_; }
+    [[nodiscard]] const ExportChoice& export_choice() const { return export_choice_; }
     [[nodiscard]] const application::Editor& editor() const { return editor_; }
     [[nodiscard]] DiagramView* canvas() const { return canvas_; }
     // The row of tabs above the tool row: File, Home, Insert, Design, Export,
@@ -171,16 +171,16 @@ private:
     // Keeps a wheel from changing whatever the pointer happens to be over.
     QObject* wheel_guard_ = nullptr;
     std::map<domain::BackgroundStyle, QAction*> background_actions_;
-    // What the download dialog last settled on, kept for the session so a
-    // second download of the same work takes one press rather than four.
-    DownloadChoice download_choice_;
-    // Everything under Download, kept so they can be turned off together while
+    // What the export dialog last settled on, kept for the session so a
+    // second export of the same work takes one press rather than four.
+    ExportChoice export_choice_;
+    // Everything under Export, kept so they can be turned off together while
     // there is nothing drawn to make anything of.
-    std::vector<QAction*> download_actions_;
-    void download_dialog();
-    // Asks where a download should go, suggesting a name beside the project.
+    std::vector<QAction*> export_actions_;
+    void export_dialog();
+    // Asks where an export should go, suggesting a name beside the project.
     // Empty when the person cancelled or declined to replace a file.
-    [[nodiscard]] QString download_location(const QString& suffix, const QString& label);
+    [[nodiscard]] QString export_location(const QString& suffix, const QString& label);
     // The project's own bytes, for a picture asked to carry them. Empty with a
     // reason when the project is too large to travel inside a picture, which is
     // said plainly rather than failing the export.
@@ -188,7 +188,7 @@ private:
     // Reads a project from a file that may be a project or a picture carrying
     // one, so the two open the same way.
     [[nodiscard]] application::LoadResult read_project(const QString& path);
-    void refresh_download_actions();
+    void refresh_export_actions();
     // The remarks on whatever is selected, listed in the properties panel so
     // each can be read, put away, brought back, reworded or deleted.
     void build_comment_section(QWidget* panel, QVBoxLayout* layout);
