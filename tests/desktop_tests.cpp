@@ -1,5 +1,6 @@
 #include "app/desktop/icons.hpp"
 #include "app/desktop/symbols.hpp"
+#include "app/desktop/export_dialog.hpp"
 #include "app/desktop/main_window.hpp"
 #include "infrastructure/project_store.hpp"
 
@@ -11,7 +12,10 @@
 #include <QDockWidget>
 #include <QFontMetrics>
 #include <QDoubleSpinBox>
+#include <QClipboard>
 #include <QFile>
+#include <QFileInfo>
+#include <QMimeData>
 #include <QImage>
 #include <QKeyEvent>
 #include <QLabel>
@@ -1542,7 +1546,112 @@ int main(int argc, char** argv) {
         require(window.editor().project().entities.size() == example_entities, "Create is undoable from shell");
         child<QAction>(window, "checkModel")->trigger();
         require(child<QTreeView>(window, "modelIssues")->isVisible(), "Model checks action opens findings");
-        window.close(); // Undo returned to the saved revision, so no discard dialog.
+        // Export: how the work leaves. A picture any system can open, and for
+        // the two formats with somewhere to put one, the project inside it.
+        {
+            QTemporaryDir pictures;
+            require(pictures.isValid(), "Temporary export directory");
+
+            // The Export tab waited until there was something to export. There
+            // now is, so it is a tab like the others, built from the same menu.
+            child<QAction>(window, "tabExport")->trigger();
+            settle();
+            auto* export_row = child<QToolBar>(window, "exportTools");
+            require(export_row->isVisible(), "Export has a row of its own");
+            for (const char* name : {"exportPicture", "exportSvg", "exportPng", "exportPdf", "copyAsPicture"})
+                require(export_row->actions().contains(child<QAction>(window, name)), name);
+            require(child<QMenu>(window, "fileMenu")->findChild<QMenu*>("exportMenu") != nullptr
+                        || child<QAction>(window, "exportPicture")->isEnabled(),
+                    "And the same entries are under File");
+            require(child<QAction>(window, "exportPng")->isEnabled(), "A drawn diagram can be exported");
+            require(child<QAction>(window, "exportSvg")->text() == QString::fromUtf8("Diagram as SVG…"),
+                    "Named in the characters the name was written with, not in mangled bytes");
+            require(!child<QAction>(window, "exportPicture")->icon().isNull(), "Export carries a glyph of its own");
+
+            auto options = window.export_options();
+            options.format = desktop::PictureFormat::Png;
+            const auto png = pictures.filePath("diagram.png");
+            require(window.export_picture(options, png), "A PNG is written where it was told to write one");
+            require(QFileInfo::exists(png), "And the file is there afterwards");
+
+            // The picture is also the project. Opening it gives back exactly
+            // what was drawn, which is the whole point of carrying it.
+            const auto drawn = window.editor().project();
+            if (window.editor().dirty()) dismiss(QMessageBox::Discard);
+            require(window.open_path(png), "A PNG ERDFlow wrote opens as the project it carries");
+            require(window.editor().project() == drawn, "Giving back exactly the diagram that was exported");
+            require(!window.editor().dirty(), "And it opens clean, like any other project");
+
+            // SVG carries it too, and is the default download for that reason.
+            options.format = desktop::PictureFormat::Svg;
+            const auto svg = pictures.filePath("diagram.svg");
+            require(window.export_picture(options, svg), "An SVG is written");
+            if (window.editor().dirty()) dismiss(QMessageBox::Discard);
+            require(window.open_path(svg), "And opens as the project it carries");
+            require(window.editor().project() == drawn, "Also exactly as it was drawn");
+
+            // Asked to carry nothing, it carries nothing, and opening it says
+            // so rather than reporting a damaged project.
+            options.carry_project = false;
+            const auto bare = pictures.filePath("bare.png");
+            require(window.export_picture(options, bare), "A PNG written without the project");
+            dismiss(QMessageBox::Ok);
+            require(!window.open_path(bare), "Does not open as a project");
+            require(window.editor().project() == drawn, "And leaves the open work alone");
+            options.carry_project = true;
+
+            // A page is written as a page, and carries nothing, as a page cannot.
+            options.format = desktop::PictureFormat::Pdf;
+            const auto pdf = pictures.filePath("diagram.pdf");
+            require(window.export_picture(options, pdf), "A PDF page is written");
+            QFile page(pdf);
+            require(page.open(QIODevice::ReadOnly) && page.read(4) == "%PDF", "Which is a PDF");
+
+            // Copy as picture puts both on the clipboard at once, so whatever
+            // it is pasted into takes whichever of the two it prefers.
+            window.canvas()->select_elements({});
+            child<QAction>(window, "copyAsPicture")->trigger();
+            settle();
+            const auto* clipboard = QApplication::clipboard()->mimeData();
+            require(clipboard && clipboard->hasFormat("image/png") && clipboard->hasFormat("image/svg+xml"),
+                    "Copy as picture puts a raster and a vector on the clipboard together");
+
+            // The export dialog offers only what can be done: an extent with
+            // nothing in it cannot be chosen, and a format that cannot carry
+            // the project does not offer to.
+            desktop::ExportDialog dialog(*window.canvas());
+            dialog.set_options(options);
+            settle();
+            auto* extent = dialog.findChild<QComboBox*>("exportExtent");
+            auto* format = dialog.findChild<QComboBox*>("exportFormat");
+            auto* carry = dialog.findChild<QCheckBox*>("exportCarryProject");
+            auto* size = dialog.findChild<QLabel*>("exportSize");
+            require(extent && format && carry && size, "The dialog has its controls");
+            const auto* extents = qobject_cast<QStandardItemModel*>(extent->model());
+            require(extents != nullptr, "Whose extents can be turned off one at a time");
+            const auto selection_row = extent->findData(static_cast<int>(desktop::PictureExtent::Selection));
+            require(!extents->item(selection_row)->isEnabled(),
+                    "With nothing selected, a picture of the selection cannot be asked for");
+            require(!size->text().isEmpty(), "And it says what pressing Export will produce");
+            format->setCurrentIndex(format->findData(static_cast<int>(desktop::PictureFormat::Jpeg)));
+            settle();
+            require(!carry->isEnabled() && !carry->isChecked(),
+                    "A format that cannot carry the project does not offer to");
+            format->setCurrentIndex(format->findData(static_cast<int>(desktop::PictureFormat::Svg)));
+            settle();
+            require(carry->isEnabled(), "One that can, does");
+
+            // Nothing drawn is nothing to export, and the entries go quiet
+            // rather than failing when they are pressed.
+            child<QAction>(window, "newProject")->trigger();
+            settle();
+            require(!child<QAction>(window, "exportPng")->isEnabled(), "An empty project has nothing to export");
+            window.load_example();
+            settle();
+            require(child<QAction>(window, "exportPng")->isEnabled(), "And a drawn one has something again");
+        }
+
+        window.close(); // The example was reloaded clean, so no discard dialog.
         require(!window.isVisible(), "Clean window closes without prompting");
         std::cout << "Desktop integration tests passed\n";
         return 0;

@@ -70,6 +70,15 @@ Ribbon::Ribbon(QMainWindow& window) : QObject(&window), window_(window) {
         add_menu_button(design, "Lines", "designLinesButton", connect_button->menu())
             ->setToolTip("How connectors are drawn.");
 
+    // Export is how work leaves ERDFlow. It waited until there was something
+    // to export, which there now is: a diagram that draws can be drawn into a
+    // file. Convert is still waiting, because there is nothing to convert to.
+    auto* export_row = add_row("Export", "tabExport", "exportTools");
+    export_row->setToolButtonStyle(home_->toolButtonStyle());
+    connect(home_, &QToolBar::toolButtonStyleChanged, export_row, &QToolBar::setToolButtonStyle);
+    if (auto* export_menu = window.findChild<QMenu*>("exportMenu"))
+        for (auto* action : export_menu->actions()) export_row->addAction(action);
+
     // View is what the window shows and how much of it: the panels, the
     // framing and the grid, which is the rest of the View menu.
     auto* view = add_row("View", "tabView", "viewTools");

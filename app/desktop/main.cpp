@@ -1,4 +1,5 @@
 #include "main_window.hpp"
+#include "ribbon.hpp"
 #include "theme.hpp"
 #include "infrastructure/project_store.hpp"
 
@@ -25,6 +26,10 @@ int main(int argc, char* argv[]) {
     parser.addOption({"example", "Open the bundled university example."});
     parser.addOption({"smoke-test", "Exit after initializing the window (for build verification)."});
     parser.addOption({"screenshot", "Save a window screenshot after initialization.", "path"});
+    // Which ribbon row the screenshot should show. Development tooling beside
+    // the screenshot option, so a row other than Home can be looked at without
+    // a person having to click the tab first.
+    parser.addOption({"tab", "Show a ribbon tab before the screenshot, such as tabExport.", "name"});
     parser.addPositionalArgument("project", "An .erdx project to open.", "[project]");
     parser.process(app);
     erdflow::infrastructure::QtIdGenerator ids;
@@ -38,6 +43,7 @@ int main(int argc, char* argv[]) {
     QTimer::singleShot(0, &window, [&] {
         if (!parser.positionalArguments().isEmpty()) window.open_path(parser.positionalArguments().front());
         else if (parser.isSet("example")) window.load_example();
+        if (parser.isSet("tab") && window.ribbon()) window.ribbon()->show_tab(parser.value("tab"));
         QTimer::singleShot(500, &window, [&] {
             if (parser.isSet("screenshot") && !window.grab().save(parser.value("screenshot"))) {
                 app.exit(1);

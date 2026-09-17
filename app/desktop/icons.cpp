@@ -314,6 +314,25 @@ void draw(QPainter& painter, Glyph glyph, const Theme& colors, qreal side) {
         painter.drawPath(body);
         break;
     }
+    case Glyph::Export: {
+        // Work leaving: an arrow rising out of a tray. It is the same motif the
+        // coloured set draws, so the two sets say the same thing about it.
+        painter.setBrush(Qt::NoBrush);
+        painter.setPen(outline(colors.muted, weight * 0.85));
+        QPainterPath tray(QPointF(box.left(), box.top() + box.height() * 0.62));
+        tray.lineTo(box.left(), box.bottom());
+        tray.lineTo(box.right(), box.bottom());
+        tray.lineTo(box.right(), box.top() + box.height() * 0.62);
+        painter.drawPath(tray);
+        painter.setPen(outline(accent, weight));
+        const auto stem = box.center().x();
+        painter.drawLine(QPointF(stem, box.top() + box.height() * 0.54), QPointF(stem, box.top()));
+        QPainterPath head(QPointF(stem - box.width() * 0.2, box.top() + box.height() * 0.2));
+        head.lineTo(stem, box.top());
+        head.lineTo(stem + box.width() * 0.2, box.top() + box.height() * 0.2);
+        painter.drawPath(head);
+        break;
+    }
     case Glyph::Picture: {
         // A framed landscape, which is the picture everyone draws for a picture.
         painter.setBrush(depth(box, colors.base));
@@ -419,6 +438,7 @@ QString icon_name(Glyph glyph) {
     case Glyph::FullView: return QStringLiteral("full-view");
     case Glyph::Dismiss: return QStringLiteral("close");
     case Glyph::Symbols: return QStringLiteral("symbols");
+    case Glyph::Export: return QStringLiteral("export");
     }
     return QStringLiteral("select");
 }

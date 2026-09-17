@@ -1,4 +1,5 @@
 #include "main_window.hpp"
+#include "export_dialog.hpp"
 #include "ribbon.hpp"
 #include "symbol_picker.hpp"
 #include "symbols.hpp"
@@ -15,6 +16,7 @@
 #include <QAbstractSpinBox>
 #include <QDoubleSpinBox>
 #include <QSpinBox>
+#include <QClipboard>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFocusEvent>
@@ -30,6 +32,7 @@
 #include <QMenuBar>
 #include <QMenu>
 #include <QMessageBox>
+#include <QMimeData>
 #include <QPaintEvent>
 #include <QPlainTextEdit>
 #include <QRegularExpression>
@@ -553,6 +556,47 @@ void MainWindow::build_actions() {
     action_save->setObjectName("saveProject");
     action_glyphs_[action_save] = Glyph::Save;
     file->addAction("Save &as…", QKeySequence::SaveAs, this, [this] { save(true); });
+    file->addSeparator();
+
+    // Export is how work leaves ERDFlow. Its own menu, so the ribbon can put a
+    // row over it the way Insert and Design are put over theirs, and a copy of
+    // it under File, which is where a document application keeps it.
+    auto* export_menu = new QMenu("Export", this);
+    export_menu->setObjectName("exportMenu");
+    auto* export_dialog_action = export_menu->addAction("Export picture…", QKeySequence("Ctrl+Shift+E"),
+                                                        this, &MainWindow::export_dialog);
+    export_dialog_action->setObjectName("exportPicture");
+    export_dialog_action->setToolTip("Write a picture of the diagram, choosing its size, extent and background.");
+    action_glyphs_[export_dialog_action] = Glyph::Export;
+    export_menu->addSeparator();
+    // The three a person reaches for without thinking about options, each
+    // taking whatever the dialog last settled on for everything but the format.
+    // SVG leads because it is the default download: it reads at any size and
+    // it is one of the two that carry the project home again.
+    struct QuickExport { PictureFormat format; const char* label; const char* name; const char* tip; };
+    for (const auto& quick : {
+             QuickExport{PictureFormat::Svg, "Diagram as SVG…", "exportSvg",
+                         "A picture that reads at any size, carrying the project inside it."},
+             QuickExport{PictureFormat::Png, "Diagram as PNG…", "exportPng",
+                         "A picture anything can open, carrying the project inside it."},
+             QuickExport{PictureFormat::Pdf, "Page as PDF…", "exportPdf",
+                         "The diagram as a page, for printing or for sending on."}}) {
+        auto* entry = export_menu->addAction(QString::fromUtf8(quick.label), this, [this, format = quick.format] {
+            auto options = export_options_;
+            options.format = format;
+            export_picture(options);
+        });
+        entry->setObjectName(QString::fromLatin1(quick.name));
+        entry->setToolTip(QString::fromUtf8(quick.tip));
+    }
+    export_menu->addSeparator();
+    auto* copy_action = export_menu->addAction("Copy as picture", QKeySequence("Ctrl+Shift+C"),
+                                               this, [this] { copy_picture(); });
+    copy_action->setObjectName("copyAsPicture");
+    copy_action->setToolTip("Put a picture of the selection, or of the whole diagram, on the clipboard.");
+    for (auto* action : export_menu->actions())
+        if (!action->isSeparator()) export_actions_.push_back(action);
+    file->addMenu(export_menu);
     file->addSeparator();
     file->addAction("Open example", this, &MainWindow::load_example);
     file->addSeparator();
@@ -1087,6 +1131,7 @@ void MainWindow::refresh() {
     undo_->setToolTip(undo_->text() + "\t" + undo_->shortcut().toString(QKeySequence::NativeText));
     redo_->setToolTip(redo_->text() + "\t" + redo_->shortcut().toString(QKeySequence::NativeText));
     refresh_selection_commands();
+    refresh_export_actions();
     auto title = text(editor_.project().name);
     document_label_->setText(title + (editor_.dirty() ? " · Unsaved" : ""));
     setWindowTitle(title + "[*] — ERDFlow");
@@ -2292,14 +2337,39 @@ void MainWindow::set_full_view(bool on) {
     place_canvas_controls();
 }
 
+QByteArray MainWindow::project_payload(QString& note) {
+    const auto encoded = store_.project_bytes(editor_.project());
+    if (encoded) return QByteArray(encoded.bytes.data(), static_cast<qsizetype>(encoded.bytes.size()));
+    // Too large to travel inside a picture. The picture is still worth having,
+    // so it is written without the project and the reason is said plainly,
+    // rather than the export failing over something the picture does not need.
+    note = "The project was too large to travel inside it: " + text(encoded.error);
+    return {};
+}
+
+application::LoadResult MainWindow::read_project(const QString& path) {
+    // A picture ERDFlow wrote is a project as much as a .erdx is, so the two
+    // are opened by the same command and differ only in where the bytes were
+    // found. A picture from anywhere else is an ordinary picture, and saying
+    // so is more useful than reporting it as a damaged project.
+    if (!may_carry_project(path)) return store_.load(bytes(path));
+    const auto payload = payload_of_picture_file(path);
+    if (payload.isEmpty())
+        return {{}, "This picture does not carry an ERDFlow project inside it. "
+                    "Use Insert → Picture to place it on the diagram instead."};
+    return store_.project_from_bytes(std::string(payload.constData(), static_cast<std::size_t>(payload.size())));
+}
+
 void MainWindow::open_dialog() {
-    const auto location = QFileDialog::getOpenFileName(this, "Open ERDFlow project", path_, "ERDFlow project (*.erdx)");
+    const auto location = QFileDialog::getOpenFileName(this, "Open ERDFlow project", path_,
+        "ERDFlow project or picture (*.erdx *.svg *.png);;ERDFlow project (*.erdx);;"
+        "Picture carrying a project (*.svg *.png)");
     if (!location.isEmpty()) open_path(location);
 }
 
 bool MainWindow::open_path(const QString& path) {
     // Validate the complete candidate before asking to replace the open work.
-    auto candidate = store_.load(bytes(path));
+    auto candidate = read_project(path);
     if (!candidate) {
         QMessageBox::warning(this, "Project could not be opened", text(candidate.error));
         return false;
@@ -2307,17 +2377,117 @@ bool MainWindow::open_path(const QString& path) {
     if (!confirm_discard()) return false;
     // Save in the discard prompt may have updated this very file. Re-read it
     // before installing so the pre-prompt candidate cannot restore old data.
-    candidate = store_.load(bytes(path));
+    candidate = read_project(path);
     if (!candidate) {
         QMessageBox::warning(this, "Project could not be opened", text(candidate.error));
         return false;
     }
     const auto result = editor_.replace_project(std::move(*candidate.project));
     if (!result) { show_result(result); return false; }
-    path_ = path;
+    // A project opened out of a picture has no project file of its own yet.
+    // Leaving the picture as the save location would overwrite it with project
+    // bytes and destroy the picture, so the next save asks where it should go.
+    path_ = may_carry_project(path) ? QString() : path;
     refresh();
     canvas_->fit_diagram();
+    if (path_.isEmpty())
+        statusBar()->showMessage("Opened the project carried inside " + QFileInfo(path).fileName()
+                                 + ". Save it to give it a project file of its own.", 9000);
     return true;
+}
+
+void MainWindow::export_dialog() {
+    finish_field_edit();
+    canvas_->cancel_interaction();
+    ExportDialog dialog(*canvas_, this);
+    dialog.set_options(export_options_);
+    if (dialog.exec() != QDialog::Accepted) return;
+    export_options_ = dialog.options();
+    export_picture(export_options_);
+}
+
+bool MainWindow::export_picture(const PictureOptions& options, const QString& location_given) {
+    finish_field_edit();
+    canvas_->cancel_interaction();
+    const auto& info = picture_format(options.format);
+    const auto suffix = QString::fromLatin1(info.suffix);
+    auto location = location_given;
+    if (location.isEmpty()) {
+        // Named after the project, beside it when it has a file of its own, so
+        // the picture lands where the work it came from lives.
+        const auto stem = path_.isEmpty() ? QString("Untitled") : QFileInfo(path_).completeBaseName();
+        const auto suggested = path_.isEmpty() ? stem + "." + suffix
+                                               : QFileInfo(path_).dir().filePath(stem + "." + suffix);
+        location = QFileDialog::getSaveFileName(this, "Export picture", suggested,
+                                                QString("%1 (*.%2)").arg(QString::fromUtf8(info.label), suffix));
+        if (location.isEmpty()) return false;
+        if (!location.endsWith("." + suffix, Qt::CaseInsensitive)) {
+            location += "." + suffix;
+            if (QFileInfo::exists(location) && QMessageBox::question(this, "Replace existing picture?",
+                "A file already exists at " + location + ". Replace it?", QMessageBox::Yes | QMessageBox::No,
+                QMessageBox::No) != QMessageBox::Yes) return false;
+        }
+    }
+    QString note;
+    const auto payload = options.carry_project && info.carries_project ? project_payload(note) : QByteArray();
+    const auto result = write_picture(*canvas_, options, payload, location);
+    if (!result) {
+        QMessageBox::warning(this, "Picture could not be exported", result.error);
+        return false;
+    }
+    // What was written, and where the project ended up, since a recipient who
+    // expects to reopen the picture needs to know whether it can be.
+    auto said = "Exported " + QFileInfo(location).fileName();
+    if (result.carried_project) said += ", with the project inside it";
+    said += ".";
+    if (!note.isEmpty()) said += " " + note;
+    else if (!result.carried_note.isEmpty() && options.carry_project && info.carries_project)
+        said += " " + result.carried_note;
+    statusBar()->showMessage(said, 9000);
+    return true;
+}
+
+bool MainWindow::copy_picture() {
+    finish_field_edit();
+    canvas_->cancel_interaction();
+    // A copy is of what is selected, and of the whole diagram when nothing is,
+    // which is what every drawing application does with the same command.
+    auto options = export_options_;
+    options.extent = canvas_->selection_bounds().isEmpty() ? PictureExtent::WholeDiagram : PictureExtent::Selection;
+    QString note;
+    const auto payload = options.carry_project ? project_payload(note) : QByteArray();
+
+    options.format = PictureFormat::Png;
+    QByteArray png;
+    const auto raster = draw_picture(*canvas_, options, payload, png);
+    if (!raster) {
+        statusBar()->showMessage(raster.error, 9000);
+        return false;
+    }
+    options.format = PictureFormat::Svg;
+    QByteArray svg;
+    const auto vector = draw_picture(*canvas_, options, payload, svg);
+
+    // Both pictures go on at once and the destination takes whichever it
+    // prefers: a word processor usually takes the vector, a chat window the
+    // raster, and neither has to be chosen in advance.
+    auto* data = new QMimeData;
+    QImage image;
+    if (image.loadFromData(png, "png")) data->setImageData(image);
+    data->setData("image/png", png);
+    if (vector) data->setData("image/svg+xml", svg);
+    QApplication::clipboard()->setMimeData(data);
+    statusBar()->showMessage(options.extent == PictureExtent::Selection
+                                 ? "Copied the selection as a picture."
+                                 : "Copied the diagram as a picture.", 7000);
+    return true;
+}
+
+void MainWindow::refresh_export_actions() {
+    // Nothing drawn is nothing to export. The entries stay where they are and
+    // go quiet, rather than the row appearing and disappearing as work starts.
+    const auto anything = !canvas_->diagram_bounds().isEmpty();
+    for (auto* action : export_actions_) action->setEnabled(anything);
 }
 
 void MainWindow::load_example() {

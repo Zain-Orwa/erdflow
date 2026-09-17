@@ -2290,6 +2290,38 @@ void DiagramView::fit_diagram() {
     fitInView(impl_->scene->itemsBoundingRect().adjusted(-70, -70, 70, 70), Qt::KeepAspectRatio);
     impl_->zoom(zoom_factor());
 }
+QRectF DiagramView::diagram_bounds() const { return impl_->scene->itemsBoundingRect(); }
+
+QRectF DiagramView::selection_bounds() const {
+    QRectF bounds;
+    for (const auto* item : impl_->scene->selectedItems()) bounds = bounds.united(item->sceneBoundingRect());
+    return bounds;
+}
+
+QRectF DiagramView::view_bounds() const { return mapToScene(viewport()->rect()).boundingRect(); }
+
+QColor DiagramView::canvas_colour() const { return theme(impl_->theme_id).canvas; }
+
+void DiagramView::render_diagram(QPainter& painter, const QRectF& target, const QRectF& source) {
+    // A picture is of the diagram, not of the editor that happens to be looking
+    // at it. Selection rings, the grips that come with them and a connector's
+    // padlock are all drawn because something is chosen, so what is chosen is
+    // put down for the length of the drawing and picked up again afterwards.
+    // The guard is the one the canvas already uses while it rearranges its own
+    // selection, so nothing downstream hears a selection that never changed.
+    const auto chosen = impl_->scene->selectedItems();
+    impl_->synchronizing = true;
+    impl_->scene->clearSelection();
+    painter.setRenderHint(QPainter::Antialiasing);
+    painter.setRenderHint(QPainter::TextAntialiasing);
+    painter.setRenderHint(QPainter::SmoothPixmapTransform);
+    // The scene draws its items and nothing else: the paper and the editing
+    // grid belong to the view's own background, which is not consulted here.
+    impl_->scene->render(&painter, target, source, Qt::IgnoreAspectRatio);
+    for (auto* item : chosen) item->setSelected(true);
+    impl_->synchronizing = false;
+}
+
 void DiagramView::actual_size() { impl_->zoom(1); }
 void DiagramView::zoom_in() { impl_->zoom(zoom_factor() * 1.2); }
 void DiagramView::zoom_out() { impl_->zoom(zoom_factor() / 1.2); }

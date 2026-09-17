@@ -19,6 +19,8 @@ public:
     static constexpr qsizetype max_file_bytes = 8 * 1024 * 1024;
     application::LoadResult load(const std::string& location) override;
     application::SaveResult save(const std::string& location, const domain::Project& project) override;
+    application::EncodeResult project_bytes(const domain::Project& project) override;
+    application::LoadResult project_from_bytes(const std::string& bytes) override;
     static QByteArray encode(const domain::Project& project);
     static application::LoadResult decode(const QByteArray& bytes);
 };

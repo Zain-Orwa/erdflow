@@ -2,6 +2,7 @@
 
 #include "diagram_view.hpp"
 #include "icons.hpp"
+#include "picture_export.hpp"
 #include "application/project_store.hpp"
 
 #include <QMainWindow>
@@ -45,9 +46,21 @@ public:
     // a PNG or JPEG of modest size; anything else is re-encoded, scaled down if
     // it is large. False if it could not be read.
     bool insert_picture(const QString& path, std::optional<QPointF> at = {});
+    // Writes a picture of the diagram. With no location it asks where the
+    // picture should go; with one it writes there and asks nothing, which is
+    // how anything that already knows the destination drives it. The options
+    // are whatever the export dialog last settled on, so the quick entries and
+    // the dialog cannot produce differently sized pictures of the same diagram.
+    bool export_picture(const PictureOptions& options, const QString& location = {});
+    // Puts a picture of the selection, or of the whole diagram when nothing is
+    // selected, on the clipboard as both a PNG and an SVG, so whatever it is
+    // pasted into can take whichever it prefers.
+    bool copy_picture();
+    [[nodiscard]] const PictureOptions& export_options() const { return export_options_; }
     [[nodiscard]] const application::Editor& editor() const { return editor_; }
     [[nodiscard]] DiagramView* canvas() const { return canvas_; }
-    // The row of tabs above the tool row: File, Home, Insert, Design, View, Help.
+    // The row of tabs above the tool row: File, Home, Insert, Design, Export,
+    // View, Help.
     [[nodiscard]] Ribbon* ribbon() const { return ribbon_; }
     // Opens the symbol gallery, on the named group if one is named. The picker
     // is built the first time it is asked for and kept afterwards, so a search
@@ -122,6 +135,21 @@ private:
     // Keeps a wheel from changing whatever the pointer happens to be over.
     QObject* wheel_guard_ = nullptr;
     std::map<domain::BackgroundStyle, QAction*> background_actions_;
+    // What the export dialog last settled on, kept for the session so a second
+    // picture of the same diagram takes one press rather than four.
+    PictureOptions export_options_;
+    // Everything under Export, kept so they can be turned off together while
+    // there is nothing drawn to make a picture of.
+    std::vector<QAction*> export_actions_;
+    void export_dialog();
+    // The project's own bytes, for a picture asked to carry them. Empty with a
+    // reason when the project is too large to travel inside a picture, which is
+    // said plainly rather than failing the export.
+    [[nodiscard]] QByteArray project_payload(QString& note);
+    // Reads a project from a file that may be a project or a picture carrying
+    // one, so the two open the same way.
+    [[nodiscard]] application::LoadResult read_project(const QString& path);
+    void refresh_export_actions();
     // Keeps the Background menu showing the paper the document actually has.
     void refresh_background_menu();
     void choose_background(domain::BackgroundStyle style);

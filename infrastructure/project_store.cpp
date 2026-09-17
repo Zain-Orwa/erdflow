@@ -631,6 +631,20 @@ application::LoadResult ErdxProjectStore::decode(const QByteArray& input) {
     } catch (const std::exception& error) { return {{}, error.what()}; }
 }
 
+application::EncodeResult ErdxProjectStore::project_bytes(const Project& project) {
+    // Encoding rejects a project past the file limit by throwing, which is the
+    // right answer for a save. Here it is an ordinary outcome: a picture whose
+    // project will not fit is still written, as a picture, and says so.
+    try {
+        const auto data = encode(project);
+        return {std::string(data.constData(), static_cast<std::size_t>(data.size())), {}};
+    } catch (const std::exception& error) { return {{}, error.what()}; }
+}
+
+application::LoadResult ErdxProjectStore::project_from_bytes(const std::string& bytes) {
+    return decode(QByteArray(bytes.data(), static_cast<qsizetype>(bytes.size())));
+}
+
 application::LoadResult ErdxProjectStore::load(const std::string& location) {
     QFile file(text(location));
     if (!file.open(QIODevice::ReadOnly)) return {{}, file.errorString().toStdString()};

@@ -45,12 +45,21 @@ rendered example without starting a lasting window:
 
 ```sh
 QT_QPA_PLATFORM=offscreen ./build/erdflow --example --screenshot /tmp/erdflow.png --smoke-test
+QT_QPA_PLATFORM=offscreen ./build/erdflow --example --tab tabExport --screenshot /tmp/erdflow.png --smoke-test
 QT_QPA_PLATFORM=offscreen ./build/release/editor_benchmark
 ```
 
-The screenshot option is development tooling, not diagram export. Ordinary
-model export is still planned. A missing optional Vulkan headers message does
-not prevent this Widgets/QPainter implementation from configuring and building.
+`--tab` brings a ribbon row to the front before the screenshot is taken, so a
+row other than Home can be looked at without a person clicking the tab first.
+The tabs are named `tabHome`, `tabInsert`, `tabDesign`, `tabExport`, `tabView`
+and `tabHelp`.
+
+The screenshot option is development tooling: it grabs the window, chrome and
+all. Picture export is the real thing, under **Export**, and writes the diagram
+by itself. Relational interchange — `.sql`, Mermaid ER, DBML — is still planned
+and cannot precede the Relational Schema workspace. A missing optional Vulkan
+headers message does not prevent this Widgets/QPainter implementation from
+configuring and building.
 
 ## Platform expectations
 
