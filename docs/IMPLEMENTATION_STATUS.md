@@ -55,6 +55,16 @@ not been built yet. Their presence in those documents is not a completion claim.
   the View menu and from Full view.
 - Native Qt window with modeling toolbar, Explorer, Properties, model checks,
   status/zoom display, and a university example.
+- The small raft of view controls on the diagram — full view, fit, pan and zoom
+  — can be **moved and put away**. It is dragged by a grip at its top, because
+  every button on it does something when pressed and it needs somewhere to be
+  taken hold of that is not one of them. Where it is put is remembered as a
+  fraction of the view, so resizing the window keeps it where it was rather than
+  letting it drift towards a corner, and it is held inside the view however far
+  it is pushed, so it can never end up off the side where nothing could reach
+  it. Right-clicking it offers to put it away; right-clicking the diagram then
+  offers it back, as does **View → View controls on the diagram**, and that
+  offer appears only while it is away. It is shown to begin with.
 - Fitting the diagram into the view and searching it are drawn as different
   things. In the coloured set they were the same file: a magnifying glass for
   both, saying "look" for one and "look" for the other. Fitting is now a frame

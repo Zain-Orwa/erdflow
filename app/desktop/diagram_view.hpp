@@ -9,6 +9,8 @@
 #include <memory>
 #include <optional>
 
+class QMenu;
+
 namespace erdflow::desktop {
 
 // Generalization and specialization produce the same ISA structure; they differ
@@ -213,6 +215,10 @@ public:
     // to is the canvas's. Several targets arrive together when several things
     // were selected, which is how one remark comes to cover a whole area.
     std::function<void(std::vector<domain::CommentTarget>)> on_comment;
+    // Asked while the menu for empty canvas is being built, so the window can
+    // offer what belongs to it rather than to the diagram -- putting back the
+    // raft of view controls, for one, which the canvas knows nothing about.
+    std::function<void(QMenu&)> on_canvas_menu;
 
 protected:
     void drawBackground(QPainter*, const QRectF&) override;

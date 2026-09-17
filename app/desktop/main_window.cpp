@@ -459,6 +459,54 @@ constexpr int owned_count_role = Qt::UserRole + 1;
 // for drawing the element rather than a badge for its kind.
 constexpr QSize explorer_shape{28, 20};
 
+// The strip the raft of view controls is taken hold of by. Every button on the
+// raft does something when it is pressed, so the raft needs somewhere to be
+// picked up that is not one of them.
+class RaftGrip final : public QWidget {
+public:
+    explicit RaftGrip(QWidget* parent) : QWidget(parent) {
+        setFixedHeight(12);
+        setCursor(Qt::OpenHandCursor);
+        setToolTip("Drag to move these controls. Right-click them to put them away.");
+    }
+    std::function<void(QPoint)> dragged;
+    std::function<QColor()> ink;
+
+protected:
+    void paintEvent(QPaintEvent*) override {
+        // Two rows of dots, which is what a thing that can be dragged looks
+        // like everywhere else, so nobody has to be told.
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing);
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(ink ? ink() : palette().color(QPalette::Mid));
+        const auto middle = width() / 2.0;
+        for (const auto row : {-2.0, 2.0})
+            for (const auto column : {-5.0, 0.0, 5.0})
+                painter.drawEllipse(QPointF(middle + column, height() / 2.0 + row), 1.1, 1.1);
+    }
+    void mousePressEvent(QMouseEvent* event) override {
+        holding_ = event->globalPosition().toPoint();
+        setCursor(Qt::ClosedHandCursor);
+        event->accept();
+    }
+    void mouseMoveEvent(QMouseEvent* event) override {
+        if (holding_.isNull()) return;
+        const auto now = event->globalPosition().toPoint();
+        if (dragged) dragged(now - holding_);
+        holding_ = now;
+        event->accept();
+    }
+    void mouseReleaseEvent(QMouseEvent* event) override {
+        holding_ = {};
+        setCursor(Qt::OpenHandCursor);
+        event->accept();
+    }
+
+private:
+    QPoint holding_;
+};
+
 // Draws a dropped-down row's sample in an ink that reads on the surface the row
 // is actually being painted on.
 //
@@ -1117,6 +1165,15 @@ void MainWindow::build_actions() {
     connect(symbols, &QAction::triggered, this, [this] { show_symbols(QStringLiteral("Relational algebra")); });
     canvas_->on_insert_picture = [this](QPointF at) { insert_picture_dialog(at); };
     canvas_->on_comment = [this](std::vector<domain::CommentTarget> targets) { add_comment(std::move(targets)); };
+    // The way back. Offered only while the raft is away, because an entry that
+    // puts back something already there says nothing worth reading.
+    canvas_->on_canvas_menu = [this](QMenu& menu) {
+        if (!canvas_controls_ || canvas_controls_->isVisible()) return;
+        menu.addSeparator();
+        auto* back = menu.addAction("Show the view controls");
+        back->setObjectName("showCanvasControls");
+        connect(back, &QAction::triggered, this, [this] { show_canvas_controls(true); });
+    };
 
     // Notation follows Connect: it decides how the lines Connect draws are read.
     // The picker draws each option, so the cardinality symbols can be recognised
@@ -1216,9 +1273,25 @@ void MainWindow::build_actions() {
     // a diagram is framed and zoomed rather than across the window from it.
     canvas_controls_ = new QWidget(canvas_);
     canvas_controls_->setObjectName("canvasControls");
+    // Right-clicking the raft offers to put it away. The buttons do not answer
+    // a right-click themselves, so the press reaches the raft beneath them and
+    // the offer is the same wherever on it the pointer was.
+    canvas_controls_->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(canvas_controls_, &QWidget::customContextMenuRequested, this, [this](const QPoint& at) {
+        QMenu menu(canvas_controls_);
+        auto* away = menu.addAction("Hide these controls");
+        away->setObjectName("hideCanvasControls");
+        away->setToolTip("Put the raft away. Right-click the diagram to bring it back.");
+        if (menu.exec(canvas_controls_->mapToGlobal(at)) == away) show_canvas_controls(false);
+    });
     auto* stack = new QVBoxLayout(canvas_controls_);
     stack->setContentsMargins(4, 4, 4, 4);
     stack->setSpacing(2);
+    auto* grip = new RaftGrip(canvas_controls_);
+    grip->setObjectName("canvasControlsGrip");
+    grip->ink = [this] { return theme(theme_).muted; };
+    grip->dragged = [this](QPoint by) { move_canvas_controls(by); };
+    stack->addWidget(grip);
     // Every button on the raft is the same size and sits on the same centre
     // line, so the column reads as one control rather than as icons that
     // happen to be near some signs.
@@ -1282,6 +1355,15 @@ void MainWindow::build_actions() {
     // saved with the document: it quiets every remark at once, for reading the
     // model or taking a picture of it. The mark on a commented element stays
     // either way, because a remark nobody can see is a remark nobody can find.
+    // The raft of view controls, so there is a way back to it that does not
+    // depend on knowing to right-click the diagram.
+    auto* raft_entry = view->addAction("View controls on the diagram");
+    raft_entry->setCheckable(true);
+    raft_entry->setChecked(true);
+    raft_entry->setObjectName("viewCanvasControls");
+    raft_entry->setToolTip("The small raft on the diagram: full view, fit, pan and zoom. "
+                           "Drag it by its grip, and right-click it to put it away.");
+    connect(raft_entry, &QAction::toggled, this, [this](bool checked) { show_canvas_controls(checked); });
     auto* show_comments = view->addAction("Show comments");
     show_comments->setCheckable(true);
     show_comments->setChecked(true);
@@ -2222,13 +2304,48 @@ void MainWindow::choose_tool(Tool tool, bool locked) {
 void MainWindow::place_canvas_controls() {
     if (!canvas_controls_) return;
     canvas_controls_->adjustSize();
-    // Measured from the view's own edge and inset by a scrollbar's thickness
-    // whether or not one is showing, so fitting the diagram — which brings
-    // scrollbars in or takes them out — never moves the raft.
-    const auto bar = canvas_->style()->pixelMetric(QStyle::PM_ScrollBarExtent, nullptr, canvas_);
-    canvas_controls_->move(canvas_->width() - canvas_controls_->width() - bar - 12,
-                           canvas_->height() - canvas_controls_->height() - bar - 12);
+    const auto size = canvas_controls_->size();
+    QPoint at;
+    if (canvas_controls_place_) {
+        // Kept where it was put as a fraction of the view, so a raft dragged
+        // to the middle stays in the middle when the window is resized rather
+        // than drifting towards a corner.
+        at = QPoint(qRound(canvas_controls_place_->x() * canvas_->width()),
+                    qRound(canvas_controls_place_->y() * canvas_->height()));
+    } else {
+        // Measured from the view's own edge and inset by a scrollbar's thickness
+        // whether or not one is showing, so fitting the diagram — which brings
+        // scrollbars in or takes them out — never moves the raft.
+        const auto bar = canvas_->style()->pixelMetric(QStyle::PM_ScrollBarExtent, nullptr, canvas_);
+        at = QPoint(canvas_->width() - size.width() - bar - 12,
+                    canvas_->height() - size.height() - bar - 12);
+    }
+    // Held inside the view: a raft dragged to an edge and then met with a
+    // smaller window must not end up off the side where it cannot be reached.
+    at.setX(std::clamp(at.x(), 4, std::max(4, canvas_->width() - size.width() - 4)));
+    at.setY(std::clamp(at.y(), 4, std::max(4, canvas_->height() - size.height() - 4)));
+    canvas_controls_->move(at);
     canvas_controls_->raise();
+}
+
+void MainWindow::move_canvas_controls(QPoint by) {
+    if (!canvas_controls_ || canvas_->width() <= 0 || canvas_->height() <= 0) return;
+    const auto at = canvas_controls_->pos() + by;
+    canvas_controls_place_ = QPointF(static_cast<double>(at.x()) / canvas_->width(),
+                                     static_cast<double>(at.y()) / canvas_->height());
+    place_canvas_controls();
+}
+
+void MainWindow::show_canvas_controls(bool shown) {
+    if (!canvas_controls_) return;
+    canvas_controls_->setVisible(shown);
+    if (shown) place_canvas_controls();
+    if (auto* entry = findChild<QAction*>("viewCanvasControls"); entry && entry->isChecked() != shown) {
+        const QSignalBlocker quiet(entry);
+        entry->setChecked(shown);
+    }
+    statusBar()->showMessage(shown ? "The view controls are back."
+                                   : "View controls put away. Right-click the diagram to bring them back.", 7000);
 }
 
 int MainWindow::icon_pixels() const {

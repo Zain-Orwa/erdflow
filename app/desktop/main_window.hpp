@@ -138,6 +138,16 @@ private:
     [[nodiscard]] int icon_pixels() const;
     // Keeps the canvas's own controls in the corner of the view as it resizes.
     void place_canvas_controls();
+public:
+    // Moves the raft by the given amount and remembers where it was put, as a
+    // fraction of the view, so resizing the window keeps it where it was.
+    void move_canvas_controls(QPoint by);
+    // Puts the raft away, or brings it back. It is shown to begin with.
+    void show_canvas_controls(bool shown);
+private:
+    // Where the raft has been dragged to, if anywhere. Nothing means the
+    // corner it starts in.
+    std::optional<QPointF> canvas_controls_place_;
     IconMode icon_mode_ = IconMode::Outline;
     std::map<IconMode, QAction*> icon_mode_actions_;
     // Generalization and specialization share one toolbar entry; this is the

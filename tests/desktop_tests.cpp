@@ -1638,6 +1638,66 @@ int main(int argc, char** argv) {
         require(window.editor().project().entities.size() == example_entities, "Create is undoable from shell");
         child<QAction>(window, "checkModel")->trigger();
         require(child<QTreeView>(window, "modelIssues")->isVisible(), "Model checks action opens findings");
+        // The raft of view controls: it can be moved, it can be put away, and
+        // there is a way back to it once it has been.
+        {
+            auto* raft = child<QWidget>(window, "canvasControls");
+            require(raft->isVisible(), "The raft is there to begin with");
+            require(window.findChild<QWidget*>("canvasControlsGrip") != nullptr,
+                    "With a grip to take hold of, since every button on it does something when pressed");
+
+            // Moving it puts it where it was dragged, and remembers that
+            // through a resize rather than letting it drift back to a corner.
+            const auto started = raft->pos();
+            window.move_canvas_controls(QPoint(-260, -180));
+            settle();
+            require(raft->pos() != started, "Dragging the grip moves it");
+            const auto moved = raft->pos();
+            const auto was = window.size();
+            window.resize(was.width() - 120, was.height() - 90);
+            settle();
+            require(raft->pos() != started, "And it stays where it was put rather than returning to the corner");
+            window.resize(was);
+            settle();
+
+            // A window too small for where it was put must not leave it off
+            // the side, where nothing could reach it.
+            window.move_canvas_controls(QPoint(4000, 4000));
+            settle();
+            require(raft->x() + raft->width() <= window.canvas()->width()
+                        && raft->y() + raft->height() <= window.canvas()->height(),
+                    "It is held inside the view however far it is pushed");
+            require(raft->x() >= 0 && raft->y() >= 0, "On every side");
+
+            // Put away, and offered back by the diagram's own menu -- an offer
+            // made only while it is away, since putting back what is already
+            // there says nothing worth reading.
+            const auto offers_the_way_back = [&] {
+                QMenu probe;
+                require(window.canvas()->on_canvas_menu != nullptr, "The canvas asks the window what else to offer");
+                window.canvas()->on_canvas_menu(probe);
+                const auto actions = probe.actions();
+                return std::any_of(actions.begin(), actions.end(), [](const QAction* entry) {
+                    return entry->objectName() == "showCanvasControls";
+                });
+            };
+            require(!offers_the_way_back(), "While it is there, nothing offers to put it back");
+            window.show_canvas_controls(false);
+            settle();
+            require(!raft->isVisible(), "It can be put away");
+            require(offers_the_way_back(), "And the diagram's own menu then offers it back");
+            require(!child<QAction>(window, "viewCanvasControls")->isChecked(),
+                    "With the View menu saying the same thing, so the two cannot disagree");
+
+            // And the View menu brings it back as well, for anyone who does
+            // not think to right-click the diagram.
+            child<QAction>(window, "viewCanvasControls")->setChecked(true);
+            settle();
+            require(raft->isVisible(), "The View menu brings it back too");
+            require(!offers_the_way_back(), "And the offer goes away again");
+            (void)moved;
+        }
+
         // Search: a bar above the diagram that narrows it to what is being
         // looked for, and brings what it finds to the middle of the view.
         {

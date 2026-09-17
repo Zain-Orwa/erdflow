@@ -3097,6 +3097,7 @@ void DiagramView::canvas_menu(QContextMenuEvent* event) {
     impl_->add_insert_menu(menu, mapToScene(event->pos()));
     // With nothing chosen, the offer covers the whole diagram.
     impl_->add_lock_entries(menu, impl_->every_connector(), QStringLiteral("every connector"));
+    if (on_canvas_menu) on_canvas_menu(menu);
     menu.exec(event->globalPos());
 }
 
