@@ -78,6 +78,14 @@ Ribbon::Ribbon(QMainWindow& window) : QObject(&window), window_(window) {
     connect(home_, &QToolBar::toolButtonStyleChanged, exporting, &QToolBar::setToolButtonStyle);
     if (auto* export_menu = window.findChild<QMenu*>("exportMenu"))
         for (auto* action : export_menu->actions()) {
+            // A menu's headings are entries that cannot be chosen, which is
+            // what makes them readable in a menu and useless on a row: the row
+            // already separates its groups with a line, and a heading here
+            // would be a button nobody can press.
+            if (action->objectName().endsWith(QLatin1String("Heading"))) {
+                exporting->addSeparator();
+                continue;
+            }
             exporting->addAction(action);
             // An entry carrying a submenu, as the rarer picture formats do, is
             // a button that drops its list: a click on it asks for the list,

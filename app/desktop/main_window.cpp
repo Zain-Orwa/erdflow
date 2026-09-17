@@ -834,6 +834,20 @@ const std::array<std::pair<Notation, QString>, 4>& notation_styles() {
 }
 } // namespace
 
+namespace {
+// A heading inside a menu. Written as an entry that cannot be chosen rather
+// than as a style section, because some styles draw a section as a bare line
+// with the words thrown away -- which leaves the groups beneath it looking like
+// one undivided list, or worse, like alternatives.
+QAction* menu_heading(QMenu* menu, const QString& words, const char* named) {
+    if (!menu->isEmpty()) menu->addSeparator();
+    auto* heading = menu->addAction(words);
+    heading->setObjectName(QString::fromLatin1(named));
+    heading->setEnabled(false);
+    return heading;
+}
+} // namespace
+
 void MainWindow::build_actions() {
     // Find, where a document application keeps it, and on the key it keeps it
     // on. It narrows the diagram to what is asked for rather than only walking
@@ -872,12 +886,12 @@ void MainWindow::build_actions() {
     // The project itself leads, because it is the only one of these that loses
     // nothing. Saving writes the project you are working on; this writes a copy
     // of it somewhere else and leaves the one you are working on alone.
-    export_menu->addSection("Project");
+    menu_heading(export_menu, "Project", "exportProjectHeading");
     auto* export_project = export_menu->addAction("ERDFlow project…", this, [this] { export_project_file(); });
     export_project->setObjectName("exportProject");
     export_project->setToolTip("Write a copy of the project, losing nothing. Saving keeps working on this one; "
                                "this leaves it where it is.");
-    export_menu->addSection("Documents");
+    menu_heading(export_menu, "Documents", "exportDocumentsHeading");
     struct DocumentEntry { DocumentFormat format; const char* name; };
     for (const auto& entry : {DocumentEntry{DocumentFormat::Pdf, "exportPdfDocument"},
                               DocumentEntry{DocumentFormat::Markdown, "exportMarkdown"},
@@ -893,7 +907,7 @@ void MainWindow::build_actions() {
     // Then the pictures a person reaches for without thinking about options.
     // SVG leads because it is the default picture to hand out: it reads at any size and it
     // is one of the two that carry the project home again.
-    export_menu->addSection("Pictures");
+    menu_heading(export_menu, "Pictures", "exportPicturesHeading");
     struct PictureEntry { PictureFormat format; const char* name; bool common; };
     QMenu* more_pictures = nullptr;
     for (const auto& entry : {PictureEntry{PictureFormat::Svg, "exportSvg", true},
@@ -937,6 +951,10 @@ void MainWindow::build_actions() {
     // names them.
     for (auto* action : export_menu->actions()) {
         if (action->isSeparator()) continue;
+        // A heading is not a command, so it is not one of the things turned on
+        // when there is something to export: turning it on would make it look
+        // like something that could be pressed.
+        if (action->objectName().endsWith(QLatin1String("Heading"))) continue;
         if (auto* submenu = action->menu()) {
             for (auto* nested : submenu->actions()) export_actions_.push_back(nested);
             export_actions_.push_back(action);

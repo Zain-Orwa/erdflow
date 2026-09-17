@@ -69,7 +69,8 @@ SearchBar::SearchBar(QWidget* parent) : QWidget(parent) {
     menu->setObjectName("searchSettingsMenu");
     // Written as entries that cannot be chosen rather than as sections, which
     // some styles draw as a bare line with the words dropped -- and a heading
-    // nobody can read is what made these two look like rival switches.
+    // nobody can read is what made these two look like rival switches. The
+    // Export menu's headings are written the same way, for the same reason.
     auto* keeping_heading = menu->addAction("What to keep");
     keeping_heading->setObjectName("searchKeepHeading");
     keeping_heading->setEnabled(false);

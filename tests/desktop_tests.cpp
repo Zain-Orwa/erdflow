@@ -1969,6 +1969,19 @@ int main(int argc, char** argv) {
             require(child<QMenu>(window, "fileMenu")->actions().contains(
                         child<QMenu>(window, "exportMenu")->menuAction()),
                     "And the same menu hangs under File");
+            require(child<QMenu>(window, "fileMenu")->actions().contains(
+                        child<QMenu>(window, "importMenu")->menuAction()),
+                    "With Import beside it, which is its pair");
+            // The menu's group headings are entries that cannot be chosen,
+            // which reads well in a menu and would be a button nobody can
+            // press on a row. They stay off the row.
+            for (auto* action : export_row->actions())
+                require(!action->objectName().endsWith("Heading"),
+                        "No heading is put on the row as a dead button");
+            require(!child<QAction>(window, "exportDocumentsHeading")->isEnabled(),
+                    "A heading cannot be chosen, which is what makes it read as a heading");
+            require(child<QAction>(window, "exportProject")->isEnabled(),
+                    "While the project itself is a format work leaves in");
             require(child<QMenu>(window, "exportMorePictures") != nullptr,
                     "With the rarer picture formats gathered behind one entry");
             require(child<QAction>(window, "exportPng")->isEnabled(), "A drawn diagram can be exported");
