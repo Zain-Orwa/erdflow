@@ -88,7 +88,12 @@ public:
     void set_notation(Notation notation);
     // A sample of how a notation draws one participant end, for the picker.
     // It uses the same drawing code as the canvas, so it cannot misrepresent it.
-    [[nodiscard]] QPixmap notation_preview(Notation notation, QSize size) const;
+    //
+    // A sample is drawn in the theme's accent unless an ink is named. One has
+    // to be named for a sample that will sit on a highlighted row, because the
+    // highlight is that same accent and the sample would vanish into it.
+    [[nodiscard]] QPixmap notation_preview(Notation notation, QSize size,
+                                           std::optional<QColor> ink = {}) const;
     // One element's own shape, drawn small and in its own colour, so anything
     // that names an element can show what it is rather than a coloured box.
     // It is the drawing the canvas uses, so the two cannot disagree.
@@ -96,8 +101,11 @@ public:
     // fitting it inside; a name is written in a shape that spans the panel.
     [[nodiscard]] QPixmap element_preview(const domain::ElementRef& ref, QSize size,
                                           bool fill_the_room = false) const;
-    // A sample of a line style, drawn the way the canvas draws it.
-    [[nodiscard]] QPixmap line_style_preview(LineStyle style, QSize size) const;
+    // A sample of a line style, drawn the way the canvas draws it, in the
+    // theme's accent unless an ink is named. The same rule applies: a sample
+    // shown on a highlighted menu entry must not be drawn in the highlight.
+    [[nodiscard]] QPixmap line_style_preview(LineStyle style, QSize size,
+                                             std::optional<QColor> ink = {}) const;
     [[nodiscard]] Notation notation() const;
     // Whether remarks are shown at all. This is how the diagram is being looked
     // at rather than part of it, like the grid, so it is not saved with the

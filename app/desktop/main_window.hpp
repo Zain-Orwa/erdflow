@@ -7,7 +7,9 @@
 
 #include <QMainWindow>
 #include <QPointF>
+#include <QIcon>
 #include <QPointer>
+#include <functional>
 #include <map>
 #include <optional>
 #include <vector>
@@ -217,6 +219,11 @@ private:
     void choose_line_style(LineStyle style);
     void refresh_tool_labels();
     void refresh_icons();
+    // A sample drawn for an ordinary row and again for a highlighted one, so it
+    // is never drawn in the colour it is standing on. See the definition.
+    [[nodiscard]] QIcon two_tone(const std::function<QPixmap(std::optional<QColor>)>& draw) const;
+    [[nodiscard]] QIcon notation_icon(Notation notation) const;
+    [[nodiscard]] QIcon line_style_icon(LineStyle style) const;
     [[nodiscard]] QWidget* toolbar_widget(QAction* action) const;
     void choose_notation(Notation notation);
     void refresh();

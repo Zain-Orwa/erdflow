@@ -6,6 +6,7 @@
 
 #include <QAction>
 #include <QActionGroup>
+#include <QAbstractItemView>
 #include <QAbstractScrollArea>
 #include <QApplication>
 #include <QBuffer>
@@ -395,6 +396,36 @@ protected:
             return;
         }
         QTreeView::mousePressEvent(event);
+    }
+};
+
+// Draws a dropped-down row's sample in an ink that reads on the surface the row
+// is actually being painted on.
+//
+// Asking QIcon for a second pixmap and letting it choose between them is not
+// enough here. A list decides an icon's mode from its own idea of what is
+// selected, which under a stylesheet is not always the row that is drawn
+// highlighted, so the two disagree and the sample comes out white on white.
+// The state handed to paint is the one the row is really being drawn in, so
+// the ink is chosen from that and cannot disagree with anything.
+class SampleRows final : public QStyledItemDelegate {
+public:
+    using QStyledItemDelegate::QStyledItemDelegate;
+    std::function<QPixmap(int row, bool lit)> sample;
+protected:
+    void paint(QPainter* painter, const QStyleOptionViewItem& given, const QModelIndex& index) const override {
+        QStyleOptionViewItem option = given;
+        initStyleOption(&option, index);
+        if (sample) {
+            const bool lit = option.state.testFlag(QStyle::State_Selected)
+                          || option.state.testFlag(QStyle::State_MouseOver);
+            option.icon = QIcon(sample(index.row(), lit));
+        }
+        // Drawn by the style itself, so the row keeps the padding, the
+        // highlight and the lettering the stylesheet gives every other row.
+        const auto* widget = option.widget;
+        auto* style = widget ? widget->style() : QApplication::style();
+        style->drawControl(QStyle::CE_ItemViewItem, &option, painter, widget);
     }
 };
 
@@ -861,7 +892,7 @@ void MainWindow::build_actions() {
     for (const auto style : {LineStyle::Elbow, LineStyle::Curved, LineStyle::Straight}) {
         const QString label = style == LineStyle::Straight ? "Straight lines"
             : style == LineStyle::Elbow ? "Right-angle lines" : "Curved lines";
-        auto* entry = line_menu->addAction(QIcon(canvas_->line_style_preview(style, line_style_sample)), label);
+        auto* entry = line_menu->addAction(line_style_icon(style), label);
         entry->setCheckable(true);
         entry->setChecked(style == canvas_->line_style());
         entry->setObjectName(style == LineStyle::Straight ? "lineStraight"
@@ -970,8 +1001,16 @@ void MainWindow::build_actions() {
     notation_box_->setMinimumContentsLength(4);
     notation_box_->installEventFilter(wheel_guard_);
     for (const auto& [style, label] : notation_styles())
-        notation_box_->addItem(QIcon(canvas_->notation_preview(style, notation_sample)), label,
-                               QVariant::fromValue(static_cast<int>(style)));
+        notation_box_->addItem(notation_icon(style), label, QVariant::fromValue(static_cast<int>(style)));
+    // The rows of the dropped-down list ink their samples from the surface each
+    // is painted on, so a sample is never drawn in the colour it stands on.
+    auto* notation_rows = new SampleRows(notation_box_);
+    notation_rows->sample = [this](int row, bool lit) {
+        return canvas_->notation_preview(static_cast<Notation>(row), notation_sample,
+                                         lit ? std::optional<QColor>(readable_on(theme(theme_).accent))
+                                             : std::optional<QColor>{});
+    };
+    notation_box_->view()->setItemDelegate(notation_rows);
     notation_box_->setCurrentIndex(static_cast<int>(canvas_->notation()));
     connect(notation_box_, &QComboBox::currentIndexChanged, this, [this](int index) {
         if (refreshing_ || index < 0) return;
@@ -2149,6 +2188,37 @@ void MainWindow::set_theme(ThemeId id) {
     for (const auto& [candidate, action] : theme_actions_) action->setChecked(candidate == id);
 }
 
+// A sample drawn twice: once for an ordinary row and once for a highlighted
+// one. A highlighted row is painted in the theme's accent, and a sample drawn
+// in that same accent would vanish into it, so the second is inked in whatever
+// reads on the accent. Qt asks for the second by itself, as QIcon::Selected,
+// whenever the row carrying it is highlighted or the entry is under the
+// pointer, so nothing downstream has to know which state it is in.
+QIcon MainWindow::two_tone(const std::function<QPixmap(std::optional<QColor>)>& draw) const {
+    // A menu highlights the entry under the pointer and asks for its icon in
+    // Active; a list asks for Selected. Both are the theme's accent, and a
+    // sample drawn in that accent would vanish into it, so both get the
+    // version inked in whatever reads on the accent instead.
+    const auto lit = readable_on(theme(theme_).accent);
+    QIcon icon(draw({}));
+    icon.addPixmap(draw(lit), QIcon::Active);
+    icon.addPixmap(draw(lit), QIcon::Selected);
+    return icon;
+}
+
+// The closed picker shows this one, on the toolbar, where nothing is
+// highlighted; the rows of the dropped-down list are drawn by SampleRows,
+// which knows what each row is standing on.
+QIcon MainWindow::notation_icon(Notation notation) const {
+    return QIcon(canvas_->notation_preview(notation, notation_sample));
+}
+
+QIcon MainWindow::line_style_icon(LineStyle style) const {
+    return two_tone([this, style](std::optional<QColor> ink) {
+        return canvas_->line_style_preview(style, line_style_sample, ink);
+    });
+}
+
 // Icons are drawn from the theme, so they are rebuilt whenever it changes.
 void MainWindow::refresh_icons() {
     const auto& colors = theme(theme_);
@@ -2157,11 +2227,10 @@ void MainWindow::refresh_icons() {
     if (theme_button_) theme_button_->setIcon(glyph_icon(Glyph::Theme, colors, icon_pixels(), icon_mode_));
     if (notation_box_) {
         for (int index = 0; index < notation_box_->count(); ++index)
-            notation_box_->setItemIcon(index, QIcon(canvas_->notation_preview(
-                static_cast<Notation>(index), notation_sample)));
+            notation_box_->setItemIcon(index, notation_icon(static_cast<Notation>(index)));
     }
     for (const auto& [style, action] : line_actions_)
-        action->setIcon(QIcon(canvas_->line_style_preview(style, line_style_sample)));
+        action->setIcon(line_style_icon(style));
     // The raft's hand carries a lock mark the action's own icon does not, so
     // redrawing the icons has to redraw that too.
     refresh_tool_labels();

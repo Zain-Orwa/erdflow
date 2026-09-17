@@ -2494,14 +2494,14 @@ namespace {
 constexpr qreal preview_weight = 2.8;
 }
 
-QPixmap DiagramView::line_style_preview(LineStyle style, QSize size) const {
+QPixmap DiagramView::line_style_preview(LineStyle style, QSize size, std::optional<QColor> ink) const {
     const auto& colors = theme(impl_->theme_id);
     QPixmap pixmap(size * devicePixelRatioF());
     pixmap.setDevicePixelRatio(devicePixelRatioF());
     pixmap.fill(Qt::transparent);
     QPainter painter(&pixmap);
     painter.setRenderHint(QPainter::Antialiasing);
-    QPen pen(colors.accent, preview_weight);
+    QPen pen(ink.value_or(colors.accent), preview_weight);
     pen.setCapStyle(Qt::RoundCap);
     painter.setPen(pen);
     painter.setBrush(Qt::NoBrush);
@@ -2535,28 +2535,43 @@ QPixmap DiagramView::element_preview(const ElementRef& ref, QSize size, bool fil
     return pixmap;
 }
 
-QPixmap DiagramView::notation_preview(Notation notation, QSize size) const {
+QPixmap DiagramView::notation_preview(Notation notation, QSize size, std::optional<QColor> ink) const {
     const auto& colors = theme(impl_->theme_id);
+    const auto drawn = ink.value_or(colors.accent);
     QPixmap pixmap(size * devicePixelRatioF());
     pixmap.setDevicePixelRatio(devicePixelRatioF());
     pixmap.fill(Qt::transparent);
     QPainter painter(&pixmap);
     painter.setRenderHint(QPainter::Antialiasing);
     const qreal middle = size.height() / 2.0;
+    auto font = painter.font();
+    font.setPointSizeF(9);
+    painter.setFont(font);
+    // Chen and min-max say the pair in writing, and that writing is the sample:
+    // it is the end of the line rather than a caption over it. Room is taken
+    // for it at the right and the line stops short, so the line never runs
+    // through the very characters the reader is being shown.
+    const auto reading = notation == Notation::Chen ? QStringLiteral("M")
+                       : notation == Notation::MinMax ? QStringLiteral("(1,M)") : QString();
+    const qreal written = reading.isEmpty()
+        ? 0.0 : QFontMetricsF(font).horizontalAdvance(reading) + 5;
     // A mandatory "many" end exercises both symbols in every notation.
-    const QPointF end(size.width() - 6.0, middle);
-    QPen line(colors.accent, preview_weight);
+    const QPointF end(size.width() - 6.0 - written, middle);
+    QPen line(drawn, preview_weight);
     line.setCapStyle(Qt::RoundCap);
     painter.setPen(line);
     painter.drawLine(QPointF(4, middle), end);
-    draw_participant_end(&painter, notation, true, true, end, QPointF(-1, 0), colors.accent, colors.canvas);
-    if (notation == Notation::Chen || notation == Notation::MinMax) {
-        auto font = painter.font();
-        font.setPointSizeF(9);
-        painter.setFont(font);
-        painter.setPen(colors.node_text);
-        painter.drawText(QRectF(0, 0, size.width() - 8, size.height()), Qt::AlignRight | Qt::AlignVCenter,
-                         notation == Notation::Chen ? QStringLiteral("M") : QStringLiteral("(1,M)"));
+    // The fill behind a solid end is the canvas the diagram is drawn on, unless
+    // the sample has been given an ink of its own -- on a highlighted row the
+    // canvas colour is not what lies behind it.
+    draw_participant_end(&painter, notation, true, true, end, QPointF(-1, 0), drawn,
+                         ink ? Qt::transparent : QColor(colors.canvas));
+    if (!reading.isEmpty()) {
+        // Written in the same ink as the line it belongs to, since the two say
+        // one thing together.
+        painter.setPen(ink.value_or(colors.node_text));
+        painter.drawText(QRectF(size.width() - written - 2, 0, written, size.height()),
+                         Qt::AlignRight | Qt::AlignVCenter, reading);
     }
     return pixmap;
 }
