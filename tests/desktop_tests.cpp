@@ -1248,6 +1248,34 @@ int main(int argc, char** argv) {
                 if (attribute.owner && std::holds_alternative<domain::EntityId>(*attribute.owner)) ++owned_by_entities;
             require(nested == owned_by_entities, "Each entity lists exactly the attributes it owns");
             require(nested > 0, "The example has attributes on its entities to show");
+            // The fold mark stands against the Explorer's right edge, not in
+            // front of the row. The panel is on the left and the diagram fills
+            // the middle, so the hand comes back to the panel's near edge: the
+            // mark is the first thing reached there rather than the last.
+            {
+                const auto group = model->indexFromItem(entities);
+                require(tree->visualRect(group).height() > 0, "The group has a row to press");
+                const auto was_open = tree->isExpanded(group);
+                const auto selected_before = tree->selectionModel()->selectedRows().size();
+                // Worked out afresh each time: folding a group changes how many
+                // rows there are, which can take the scrollbar away and widen
+                // the viewport under the mark.
+                const auto press_the_mark = [&] {
+                    const QPoint at(tree->viewport()->width() - 10, tree->visualRect(group).center().y());
+                    QMouseEvent press(QEvent::MouseButtonPress, at, tree->viewport()->mapToGlobal(at),
+                                      Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+                    QApplication::sendEvent(tree->viewport(), &press);
+                    settle();
+                };
+                press_the_mark();
+                require(tree->isExpanded(group) != was_open, "Pressing the right-hand mark folds the group");
+                // And it does nothing else: reaching for a fold must not throw
+                // away the selection somebody was working with.
+                require(tree->selectionModel()->selectedRows().size() == selected_before,
+                        "And leaves the selection alone");
+                press_the_mark();
+                require(tree->isExpanded(group) == was_open, "Pressing it again folds it back");
+            }
             // Entities start folded, so the tree is not the diagram spilt twice.
             require(!tree->isExpanded(model->indexFromItem(entities->child(0))), "An entity starts folded");
             require(tree->isExpanded(model->indexFromItem(entities)), "But its group starts open");
