@@ -343,8 +343,37 @@ not been built yet. Their presence in those documents is not a completion claim.
   the surface from solid to outline-only over whatever colour it has, the
   theme's own included, for one element or the whole selection. Colour
   changes are undoable and saved with the project.
-- Versioned `.erdx` JSON save/load, currently format version 16. Versions 1 to
-  15 still open and upgrade on save. Incomplete but structurally valid diagrams
+- **Basic and Convertible modes** — one model asked for two different amounts.
+  Basic is the diagram as it is drawn and taught. Convertible is the same model
+  asked what it will become, and the switch is beside the **CONCEPTUAL** badge
+  that says which workspace this is.
+- Switching changes what is shown and what is asked for, and **nothing else**:
+  nothing is created, destroyed or re-identified, which is Phase 13's exit
+  criterion. It is an edit like any other, so changing your mind costs one undo,
+  and it travels with the document because what a model was told is part of the
+  model.
+- In Convertible mode an attribute carries a **logical type** — Text, Integer,
+  Decimal, Boolean, Date, DateTime, Binary, UUID — with a **length** where the
+  type is measured. Choosing a type that is not measured drops the number rather
+  than carrying one that would mean nothing later. No database is named: the
+  choice between `VARCHAR(100)` and `NVARCHAR(100)` belongs to the physical
+  stage.
+- It also carries the **rules a table will enforce** — identifier, required,
+  unique — kept deliberately apart from its Chen kind. A key oval says how the
+  diagram draws it; these say what the database will insist on, and the two are
+  set at different stages by different people.
+- Entities, attributes and relationships carry a **comment for the schema**,
+  which is what a generated table or column says about itself. It is not the
+  description, which says what the thing means to a reader, and it is not a
+  review comment, which is a remark about the work. Anything that becomes
+  nothing — a triangle, a picture, a note — is refused one.
+- An attribute with no type yet is a **warning** while the model is being asked
+  and nothing at all while it is not, because a half-answered model is still a
+  model. Making that a gate is Phase 14's job.
+- What Convertible mode was told is **kept in Basic**, so a model drawn in one
+  mode and finished in the other loses nothing in between.
+- Versioned `.erdx` JSON save/load, currently format version 17. Versions 1 to
+  16 still open and upgrade on save. Incomplete but structurally valid diagrams
   can be saved. Invalid/unsupported files leave the open project intact.
 - Safe file replacement, Save/Discard/Cancel protection, focused text committed
   before save, clean-state tracking, and reopening the file saved at the prompt.
@@ -535,7 +564,8 @@ geometry changes use **Apply position and size**.
 | 8 — Participation | Implemented partial/total and one/many combinations on the same participant, including a min–max notation option. |
 | 9 — Advanced attributes | Partial: composite, multivalued, derived and partial keys (on weak entities) implemented. Combined kind semantics remain open. |
 | 10–12 — Weak/ISA/associative | Implemented: weak entities with identifying relationships, associative entities, and ISA generalization/specialization including nesting and the disjoint/total rules, drawn on the triangle. |
-| 13–14 — Modes/readiness | Basic properties and structural checks exist. Convertible mode, logical types, key groups, and conversion-readiness policy are not implemented. |
+| 13 — Modes | Implemented: Basic and Convertible modes over one model, logical types with a length, the identifier/required/unique rules, and the schema comment. Switching changes what is asked for and nothing else. |
+| 14 — Readiness | Not implemented. Structural checks exist and Convertible mode warns about an attribute with no type, but the structured readiness policy of ADR-009 — Blocking, Warning, Information, Unresolved Decision — is what conversion will gate on, and key groups are part of it. |
 | 15 — Project files | Single-page native format foundation delivered early to protect the current editor's work. No historical migration or recovery system. |
 | 16–17 — Pages/editor milestone | Not complete; multiple pages, the remaining conceptual semantics, and the start screen, templates and project folders of ADR-016 are required. |
 | 18 onward | Import, schema generation, provenance, physical design, SQL, data, and later production/ecosystem features remain planned. |

@@ -1945,6 +1945,64 @@ int main(int argc, char** argv) {
             settle();
         }
 
+        // Convertible mode: the same model asked what it will become. The
+        // extra fields are shown only while it is being asked, and what it was
+        // told is kept when it is not.
+        {
+            auto* mode = child<QToolButton>(window, "conceptualMode");
+            require(mode->text() == "Basic", "A project starts in Basic, which is the diagram as it is drawn");
+            window.canvas()->select_elements({});
+            settle();
+            const auto& project = window.editor().project();
+            domain::AttributeId any_attribute{};
+            for (const auto& [id, attribute] : project.attributes) { (void)attribute; any_attribute = id; break; }
+            window.canvas()->select_elements({domain::ElementRef{any_attribute}});
+            settle();
+            require(window.findChild<QComboBox*>("attributeLogicalType") == nullptr,
+                    "In Basic these questions are not asked, so the panel does not ask them");
+            require(window.findChild<QWidget*>("elementSchemaComment") == nullptr,
+                    "Nor the comment written for a schema that does not exist yet");
+
+            child<QAction>(window, "modeConvertible")->trigger();
+            settle();
+            require(window.editor().project().mode == domain::ConceptualMode::Convertible, "The mode changes");
+            require(mode->text() == "Convertible", "And the button says which mode it is in");
+            window.canvas()->select_elements({domain::ElementRef{any_attribute}});
+            settle();
+            auto* type = child<QComboBox>(window, "attributeLogicalType");
+            auto* length = child<QSpinBox>(window, "attributeLength");
+            require(!length->isEnabled(), "A type that has not been chosen is not measured");
+            type->setCurrentIndex(static_cast<int>(domain::LogicalType::Text));
+            emit type->activated(static_cast<int>(domain::LogicalType::Text));
+            settle();
+            require(window.editor().project().attributes.at(any_attribute).logical_type == domain::LogicalType::Text,
+                    "Choosing a type records it");
+            child<QCheckBox>(window, "attributeRequired")->setChecked(true);
+            settle();
+            require(window.editor().project().attributes.at(any_attribute).required,
+                    "And the rules a table will enforce are recorded too");
+            require(window.findChild<QWidget*>("elementSchemaComment") != nullptr,
+                    "With somewhere to write what the schema should say");
+
+            // Back to Basic: the questions stop being asked and the answers are
+            // kept, so a model drawn in one mode and finished in the other
+            // loses nothing in between.
+            child<QAction>(window, "modeBasic")->trigger();
+            settle();
+            window.canvas()->select_elements({domain::ElementRef{any_attribute}});
+            settle();
+            require(window.findChild<QComboBox*>("attributeLogicalType") == nullptr,
+                    "Basic stops asking");
+            require(window.editor().project().attributes.at(any_attribute).logical_type == domain::LogicalType::Text,
+                    "But keeps what it was told");
+            child<QAction>(window, "undoCommand")->trigger();
+            settle();
+            require(window.editor().project().mode == domain::ConceptualMode::Convertible,
+                    "And switching modes undoes like any other edit");
+            child<QAction>(window, "modeBasic")->trigger();
+            settle();
+        }
+
         // Export: how the work leaves. A picture any system can open, with
         // the project inside the two formats that can hold one, and a written
         // listing of the model for the people who want words rather than a

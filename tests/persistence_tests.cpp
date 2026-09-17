@@ -201,7 +201,7 @@ void malformed_json_and_text() {
 
 void strict_version_and_field_contract() {
     Fixture fixture;
-    for (const auto& version : {QJsonValue(0), QJsonValue(17), QJsonValue(1.5), QJsonValue("1"), QJsonValue(true)}) {
+    for (const auto& version : {QJsonValue(0), QJsonValue(18), QJsonValue(1.5), QJsonValue("1"), QJsonValue(true)}) {
         auto root = fixture.document();
         root["format_version"] = version;
         reject(bytes(root));
@@ -300,7 +300,7 @@ void connector_shapes_persist_and_older_versions_still_open() {
 
     const auto encoded = ErdxProjectStore::encode(fixture.editor.project());
     const auto root = QJsonDocument::fromJson(encoded).object();
-    CHECK(root["format_version"].toInt() == 16);
+    CHECK(root["format_version"].toInt() == 17);
     CHECK(root["project"].toObject()["connectors"].toArray().size() == 2);
 
     // A pinned join survives the same round trip.
@@ -413,6 +413,20 @@ void connector_shapes_persist_and_older_versions_still_open() {
             }
             project["layout"] = layout;
         }
+        // Before version 17 a model was never asked what it would become.
+        if (version < 17) {
+            project.remove("mode");
+            for (const char* group : {"entities", "attributes", "relationships"}) {
+                QJsonArray kept;
+                for (const auto& value : project[group].toArray()) {
+                    auto entry = value.toObject();
+                    for (const char* field : {"comment", "type", "length", "identifier", "required", "unique"})
+                        entry.remove(field);
+                    kept.append(entry);
+                }
+                project[group] = kept;
+            }
+        }
         // Before version 16 nobody could leave a remark on the diagram.
         if (version < 16) project.remove("comments");
         // Before version 14 a diagram had no paper of its own.
@@ -504,7 +518,7 @@ void connector_shapes_persist_and_older_versions_still_open() {
             // and reads as specialization, which is how those files were drawn.
             CHECK(specialization.direction == (version >= 5 ? Inheritance::Generalization : Inheritance::Specialization));
         }
-        CHECK(QJsonDocument::fromJson(ErdxProjectStore::encode(*opened.project)).object()["format_version"].toInt() == 16);
+        CHECK(QJsonDocument::fromJson(ErdxProjectStore::encode(*opened.project)).object()["format_version"].toInt() == 17);
     }
 
     // A document whose shape contradicts its declared version is refused rather
@@ -544,7 +558,7 @@ void pictures_and_notes_persist() {
 
     const auto encoded = ErdxProjectStore::encode(fixture.editor.project());
     const auto root = QJsonDocument::fromJson(encoded).object();
-    CHECK(root["format_version"].toInt() == 16);
+    CHECK(root["format_version"].toInt() == 17);
     const auto project = root["project"].toObject();
     CHECK(project["pictures"].toArray().size() == 1);
     CHECK(project["notes"].toArray().size() == 1);
@@ -583,6 +597,17 @@ void pictures_and_notes_persist() {
     // Version 14 knew nothing of comments either, so the field goes with the
     // flag: a document claiming to be older must look older throughout.
     older_project.remove("comments");
+    older_project.remove("mode");
+    for (const char* group : {"entities", "attributes", "relationships"}) {
+        QJsonArray kept;
+        for (const auto& value : older_project[group].toArray()) {
+            auto entry = value.toObject();
+            for (const char* field : {"comment", "type", "length", "identifier", "required", "unique"})
+                entry.remove(field);
+            kept.append(entry);
+        }
+        older_project[group] = kept;
+    }
     auto stripped = QJsonArray();
     for (const auto& value : older_project["notes"].toArray()) {
         auto entry = value.toObject();
@@ -917,7 +942,7 @@ void failed_saves_preserve_existing_destination() {
     auto oversized = fixture.editor.project();
     for (std::size_t i = 0; i < 520; ++i) {
         const EntityId id{fixture.ids.next()};
-        oversized.entities.emplace(id, Entity{id, "Entity", std::string(max_description_bytes, 'x')});
+        oversized.entities.emplace(id, Entity{.id = id, .name = "Entity", .description = std::string(max_description_bytes, 'x')});
         oversized.layout.emplace(ElementRef{id}, Rect{});
     }
     CHECK(!store.save(path.toStdString(), oversized));
@@ -998,6 +1023,65 @@ void failed_load_and_save_preserve_session() {
 
 // Comments travel with the project, including the three different things one
 // can be pinned to, and a file written before they existed carries none.
+// What Convertible mode asks a model to say about itself travels with it.
+void convertible_metadata_persists() {
+    Fixture fixture;
+    auto& editor = fixture.editor;
+    CHECK(editor.set_conceptual_mode(ConceptualMode::Convertible));
+    CHECK(editor.set_logical_type(fixture.address, LogicalType::Text, 240));
+    CHECK(editor.set_attribute_rules(fixture.address, true, true, false));
+    CHECK(editor.set_schema_comment(ElementRef{fixture.address}, "Where they live."));
+    CHECK(editor.set_schema_comment(ElementRef{fixture.employee}, "A person on the payroll."));
+    CHECK(editor.set_schema_comment(ElementRef{fixture.supervises}, "Who reports to whom."));
+
+    const auto encoded = ErdxProjectStore::encode(editor.project());
+    const auto root = QJsonDocument::fromJson(encoded).object();
+    CHECK(root["format_version"].toInt() == 17);
+    CHECK(root["project"].toObject()["mode"].toString() == "convertible");
+
+    const auto reread = ErdxProjectStore::decode(encoded);
+    CHECK(reread);
+    CHECK(*reread.project == editor.project());
+    CHECK(reread.project->mode == ConceptualMode::Convertible);
+    CHECK(reread.project->attributes.at(fixture.address).logical_type == LogicalType::Text);
+    CHECK(reread.project->attributes.at(fixture.address).length == 240);
+    CHECK(reread.project->attributes.at(fixture.address).identifier);
+    CHECK(!reread.project->attributes.at(fixture.address).unique);
+    CHECK(reread.project->entities.at(fixture.employee).comment == "A person on the payroll.");
+    CHECK(ErdxProjectStore::encode(*reread.project) == encoded);
+
+    // Hostile values are refused rather than half-read.
+    for (const char* field : {"type", "length", "identifier"}) {
+        auto broken = root;
+        auto project = broken["project"].toObject();
+        auto attributes = project["attributes"].toArray();
+        auto first = attributes[0].toObject();
+        first[field] = QString(field) == "type" ? QJsonValue("nonsense")
+                     : QString(field) == "length" ? QJsonValue(-3) : QJsonValue("yes");
+        attributes[0] = first;
+        project["attributes"] = attributes;
+        broken["project"] = project;
+        reject(bytes(broken));
+    }
+    auto wrong_mode = root;
+    auto project = wrong_mode["project"].toObject();
+    project["mode"] = "engineering";
+    wrong_mode["project"] = project;
+    reject(bytes(wrong_mode));
+
+    // Only the measured types carry a number, whatever a file says.
+    auto stray = root;
+    project = stray["project"].toObject();
+    auto attributes = project["attributes"].toArray();
+    auto first = attributes[0].toObject();
+    first["type"] = "boolean";
+    first["length"] = 9;
+    attributes[0] = first;
+    project["attributes"] = attributes;
+    stray["project"] = project;
+    reject(bytes(stray));
+}
+
 void comments_persist() {
     Fixture fixture;
     auto& editor = fixture.editor;
@@ -1011,7 +1095,7 @@ void comments_persist() {
 
     const auto encoded = ErdxProjectStore::encode(editor.project());
     const auto root = QJsonDocument::fromJson(encoded).object();
-    CHECK(root["format_version"].toInt() == 16);
+    CHECK(root["format_version"].toInt() == 17);
     const auto written = root["project"].toObject()["comments"].toArray();
     CHECK(written.size() == 2);
 
@@ -1072,10 +1156,24 @@ void comments_persist() {
     older["format_version"] = 15;
     auto older_project = older["project"].toObject();
     older_project.remove("comments");
+    // A document claiming to be version 15 must look like one throughout: it
+    // knew nothing of comments and nothing of what a model becomes.
+    older_project.remove("mode");
+    for (const char* group : {"entities", "attributes", "relationships"}) {
+        QJsonArray kept;
+        for (const auto& value : older_project[group].toArray()) {
+            auto entry = value.toObject();
+            for (const char* field : {"comment", "type", "length", "identifier", "required", "unique"})
+                entry.remove(field);
+            kept.append(entry);
+        }
+        older_project[group] = kept;
+    }
     older["project"] = older_project;
     const auto from_older = ErdxProjectStore::decode(bytes(older));
     CHECK(from_older);
     CHECK(from_older.project->comments.empty());
+    CHECK(from_older.project->mode == ConceptualMode::Basic);
 }
 
 int main() {
@@ -1088,6 +1186,7 @@ int main() {
         {"connector shapes persist across versions", connector_shapes_persist_and_older_versions_still_open},
         {"pictures and notes persist", pictures_and_notes_persist},
         {"comments persist", comments_persist},
+        {"convertible metadata persists", convertible_metadata_persists},
         {"transparency persists", transparency_persists},
         {"weak entities and identifying relationships persist", weak_entities_and_identifying_relationships_persist},
         {"backgrounds persist", backgrounds_persist},

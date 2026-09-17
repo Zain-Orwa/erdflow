@@ -175,6 +175,9 @@ private:
     // made once and shown in both.
     QAction* find_action_ = nullptr;
     QToolButton* search_button_ = nullptr;
+    QToolButton* mode_button_ = nullptr;
+    // Keeps the mode button saying which mode the document is in.
+    void refresh_mode_button();
     // Keeps a wheel from changing whatever the pointer happens to be over.
     QObject* wheel_guard_ = nullptr;
     std::map<domain::BackgroundStyle, QAction*> background_actions_;

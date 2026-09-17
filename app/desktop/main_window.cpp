@@ -138,6 +138,23 @@ QString kind_label(ElementRef ref) {
 // given if it has one, and otherwise whatever the theme gives its kind. The
 // panel reads this so that it shows the element's own colour rather than only
 // the colours a user happened to choose by hand.
+// The comment written for the database, for the three things that carry one.
+std::string schema_comment_of(const Project& project, const ElementRef& ref) {
+    if (const auto* id = std::get_if<EntityId>(&ref)) {
+        const auto found = project.entities.find(*id);
+        return found == project.entities.end() ? std::string{} : found->second.comment;
+    }
+    if (const auto* id = std::get_if<AttributeId>(&ref)) {
+        const auto found = project.attributes.find(*id);
+        return found == project.attributes.end() ? std::string{} : found->second.comment;
+    }
+    if (const auto* id = std::get_if<RelationshipId>(&ref)) {
+        const auto found = project.relationships.find(*id);
+        return found == project.relationships.end() ? std::string{} : found->second.comment;
+    }
+    return {};
+}
+
 QColor surface_of(const Project& project, const Theme& colors, ElementRef ref) {
     // A see-through surface shows the canvas through it, so what the panel
     // has to match is the blend the eye sees rather than the paint on its own.
@@ -704,6 +721,15 @@ void MainWindow::build_shell() {
     // tools, because it is about looking at the document rather than adding to
     // it, and because that row is already tight enough to start dropping the
     // names its tools are known by.
+    // What the model is being asked to say about itself, beside the badge that
+    // says what workspace it is. It belongs here because it is a fact about the
+    // document rather than a way of looking at it, and this is where the
+    // document announces itself.
+    mode_button_ = new QToolButton(header);
+    mode_button_->setObjectName("conceptualMode");
+    mode_button_->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    mode_button_->setPopupMode(QToolButton::InstantPopup);
+    header_layout->addWidget(mode_button_);
     search_button_ = new QToolButton(header);
     search_button_->setObjectName("searchButton");
     search_button_->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
@@ -881,6 +907,30 @@ void MainWindow::build_actions() {
     //
     // Documents come first. Someone handing this work on is choosing between a
     // report and a picture before they are choosing between PNG and SVG.
+    // One model, two modes. The switch is an edit like any other -- it goes
+    // through the history, so changing your mind about it costs one undo.
+    auto* modes = new QMenu("Mode", this);
+    modes->setObjectName("modeMenu");
+    auto* mode_group = new QActionGroup(modes);
+    mode_group->setExclusive(true);
+    struct ModeEntry { domain::ConceptualMode mode; const char* label; const char* name; const char* tip; };
+    for (const auto& entry : {
+             ModeEntry{domain::ConceptualMode::Basic, "Basic", "modeBasic",
+                       "The diagram as it is drawn and taught: shapes, names and the notation."},
+             ModeEntry{domain::ConceptualMode::Convertible, "Convertible", "modeConvertible",
+                       "The same model, asked what it will become: logical types, the rules a table will "
+                       "enforce, and the comment the schema will read."}}) {
+        auto* item = modes->addAction(QString::fromLatin1(entry.label));
+        item->setObjectName(QString::fromLatin1(entry.name));
+        item->setCheckable(true);
+        item->setActionGroup(mode_group);
+        item->setToolTip(QString::fromUtf8(entry.tip));
+        connect(item, &QAction::triggered, this, [this, mode = entry.mode] {
+            show_result(editor_.set_conceptual_mode(mode), false);
+        });
+    }
+    if (mode_button_) mode_button_->setMenu(modes);
+
     auto* export_menu = new QMenu("Export", this);
     export_menu->setObjectName("exportMenu");
     // The project itself leads, because it is the only one of these that loses
@@ -1591,6 +1641,7 @@ void MainWindow::refresh() {
     redo_->setToolTip(redo_->text() + "\t" + redo_->shortcut().toString(QKeySequence::NativeText));
     refresh_selection_commands();
     refresh_export_actions();
+    refresh_mode_button();
     auto title = text(editor_.project().name);
     document_label_->setText(title + (editor_.dirty() ? " · Unsaved" : ""));
     setWindowTitle(title + "[*] — ERDFlow");
@@ -1942,6 +1993,77 @@ void MainWindow::refresh_properties() {
         connect(kind, &QComboBox::activated, this, [this, attribute_id](int index) {
             show_result(editor_.set_attribute_kind(attribute_id, static_cast<AttributeKind>(index)));
         });
+        // What Convertible mode asks of an attribute. Shown only in that mode:
+        // in Basic these questions are not being asked, and the answers already
+        // given are kept rather than cleared, so a model can be drawn in one
+        // mode and finished in the other without losing what it was told.
+        if (project.mode == domain::ConceptualMode::Convertible) {
+            auto* type = narrowable(new QComboBox(panel));
+            type->setObjectName("attributeLogicalType");
+            for (const char* named : {"Not chosen yet", "Text", "Integer", "Decimal", "Boolean",
+                                      "Date", "DateTime", "Binary", "UUID"})
+                type->addItem(QString::fromLatin1(named));
+            type->setCurrentIndex(static_cast<int>(attribute.logical_type));
+            type->setToolTip("A portable type, chosen without naming a database. Text(100) becomes VARCHAR(100) "
+                             "on one engine and NVARCHAR(100) on another, and that is decided later.");
+            attr_form->addRow(field_label("Logical type", label_tone, panel), type);
+
+            // Only the two types that are measured offer a number, so nobody is
+            // asked how long a Boolean is.
+            auto* length = new QSpinBox(panel);
+            length->setObjectName("attributeLength");
+            length->setRange(0, static_cast<int>(domain::max_logical_length));
+            length->setSpecialValueText("Unspecified");
+            length->setValue(static_cast<int>(attribute.length));
+            length->installEventFilter(wheel_guard_);
+            const auto measured = [](domain::LogicalType kind) {
+                return kind == domain::LogicalType::Text || kind == domain::LogicalType::Decimal;
+            };
+            length->setEnabled(measured(attribute.logical_type));
+            attr_form->addRow(field_label("Length", label_tone, panel), length);
+            connect(type, &QComboBox::activated, this, [this, attribute_id, length](int index) {
+                show_result(editor_.set_logical_type(attribute_id, static_cast<domain::LogicalType>(index),
+                                                     static_cast<std::uint32_t>(length->value())));
+            });
+            connect(length, &QSpinBox::editingFinished, this, [this, attribute_id, type, length] {
+                if (refreshing_) return;
+                show_result(editor_.set_logical_type(attribute_id,
+                                                     static_cast<domain::LogicalType>(type->currentIndex()),
+                                                     static_cast<std::uint32_t>(length->value())));
+            });
+
+            // What the table will enforce, kept apart from the Chen kind above:
+            // the oval says how the diagram draws it, these say what the
+            // database will insist on.
+            auto* rules = new QWidget(panel);
+            auto* rules_row = new QHBoxLayout(rules);
+            rules_row->setContentsMargins(0, 0, 0, 0);
+            rules_row->setSpacing(10);
+            struct Rule { const char* label; const char* name; bool set; const char* tip; };
+            std::vector<QCheckBox*> boxes;
+            for (const auto& rule : {
+                     Rule{"Identifier", "attributeIdentifier", attribute.identifier,
+                          "Part of what identifies a row."},
+                     Rule{"Required", "attributeRequired", attribute.required,
+                          "Must be filled in: NOT NULL."},
+                     Rule{"Unique", "attributeUnique", attribute.unique,
+                          "No two rows may share it."}}) {
+                auto* box = new QCheckBox(QString::fromLatin1(rule.label), rules);
+                box->setObjectName(QString::fromLatin1(rule.name));
+                box->setChecked(rule.set);
+                box->setToolTip(QString::fromUtf8(rule.tip));
+                rules_row->addWidget(box);
+                boxes.push_back(box);
+            }
+            rules_row->addStretch();
+            attr_form->addRow(field_label("Rules", label_tone, panel), rules);
+            for (auto* box : boxes)
+                connect(box, &QCheckBox::toggled, this, [this, attribute_id, boxes] {
+                    if (refreshing_) return;
+                    show_result(editor_.set_attribute_rules(attribute_id, boxes[0]->isChecked(),
+                                                            boxes[1]->isChecked(), boxes[2]->isChecked()));
+                });
+        }
         auto* owner = narrowable(new QComboBox(panel));
         owner->setObjectName("attributeOwner");
         owner->addItem("Unassigned");
@@ -2173,6 +2295,29 @@ void MainWindow::refresh_properties() {
         if (value != description(editor_.project(), ref)) show_result(editor_.describe(ref, value));
     };
     layout->addWidget(description_edit);
+    // The comment the schema will read, for the three things that become tables
+    // and columns, and only while the model is being asked what it becomes. It
+    // sits beneath the description because the two are easily confused and the
+    // difference is worth stating where both are written: a description says
+    // what this means to a reader, a comment is written for the database.
+    const bool schema_bound = std::holds_alternative<EntityId>(ref)
+        || std::holds_alternative<AttributeId>(ref) || std::holds_alternative<RelationshipId>(ref);
+    if (schema_bound && project.mode == domain::ConceptualMode::Convertible) {
+        layout->addWidget(field_label("Comment for the schema", label_tone, panel));
+        auto* schema_edit = new DescriptionEdit(panel);
+        schema_edit->setObjectName("elementSchemaComment");
+        schema_edit->setPlainText(text(schema_comment_of(project, ref)));
+        schema_edit->setPlaceholderText("What the generated table or column should say about itself…");
+        schema_edit->setFixedHeight(64);
+        offer_text_comment(schema_edit);
+        schema_edit->commit = [this, ref, schema_edit] {
+            if (refreshing_ || !exists(editor_.project(), ref)) return;
+            const auto value = bytes(schema_edit->toPlainText());
+            if (value != schema_comment_of(editor_.project(), ref))
+                show_result(editor_.set_schema_comment(ref, value));
+        };
+        layout->addWidget(schema_edit);
+    }
     layout->addWidget(hint("Text changes apply when you leave the field. Every applied change can be undone.", panel));
     auto* geometry = new QFormLayout;
     const auto rect = project.layout.at(ref);
@@ -3360,6 +3505,21 @@ bool MainWindow::import_project(const QString& path) {
                                                           : QString("%1 elements").arg(arrived.size()),
                                       QFileInfo(path).fileName()), 9000);
     return true;
+}
+
+void MainWindow::refresh_mode_button() {
+    if (!mode_button_) return;
+    const bool convertible = editor_.project().mode == domain::ConceptualMode::Convertible;
+    mode_button_->setText(convertible ? "Convertible" : "Basic");
+    mode_button_->setToolTip(convertible
+        ? "Convertible mode. The model is being asked what it will become: attributes carry a logical type, "
+          "the rules a table will enforce, and the comment the schema will read."
+        : "Basic mode. The diagram as it is drawn and taught. Switch to Convertible to say what it becomes.");
+    if (auto* entry = findChild<QAction*>(convertible ? "modeConvertible" : "modeBasic"))
+        if (!entry->isChecked()) {
+            const QSignalBlocker quiet(entry);
+            entry->setChecked(true);
+        }
 }
 
 void MainWindow::refresh_export_actions() {
