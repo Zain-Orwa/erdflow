@@ -2323,20 +2323,84 @@ bool MainWindow::open_path(const QString& path) {
 void MainWindow::load_example() {
     if (!confirm_discard()) return;
     application::Editor example(ids_);
-    example.rename_project("University · Student enrollment");
-    const auto student = std::get<EntityId>(*example.create_entity("Student", {-330, -60, 170, 84}).created);
-    const auto course = std::get<EntityId>(*example.create_entity("Course", {330, -60, 170, 84}).created);
-    const auto enrolled = std::get<RelationshipId>(*example.create_relationship("Enrolled", {0, -70, 180, 104}).created);
-    const auto connection = example.connect(enrolled, student);
-    example.update_participant(enrolled, *connection.participant, Cardinality::Many, Participation::Total, "student");
-    example.connect(enrolled, course);
-    const auto student_id = std::get<AttributeId>(*example.create_attribute("StudentID", {-390, -230, 150, 70}, student).created);
-    example.set_attribute_kind(student_id, AttributeKind::Key);
-    example.create_attribute("Name", {-190, -230, 140, 70}, student);
-    const auto course_id = std::get<AttributeId>(*example.create_attribute("CourseID", {270, -230, 150, 70}, course).created);
-    example.set_attribute_kind(course_id, AttributeKind::Key);
-    example.create_attribute("Title", {470, -230, 140, 70}, course);
-    example.create_attribute("Grade", {15, 135, 150, 70}, enrolled);
+    example.rename_project("University · Students, courses and professors");
+    // The diagram an introductory course draws: three entities, the three ways
+    // they relate, and one of every kind of attribute -- a key, a composite
+    // with parts of its own, one that is worked out rather than stored, and one
+    // that may be held more than once. Between them those cover everything the
+    // conceptual editor has to draw, which is why this is the example.
+    //
+    // The coordinates are the diagram's own, laid out as it is drawn on paper:
+    // the view is fitted to them at the end rather than the other way round.
+    auto add_entity = [&](const char* name, Rect body) {
+        return std::get<EntityId>(*example.create_entity(name, body).created);
+    };
+    auto add_relationship = [&](const char* name, Rect body) {
+        return std::get<RelationshipId>(*example.create_relationship(name, body).created);
+    };
+    auto add_attribute = [&](const char* name, Rect body, AttributeOwner owner,
+                             AttributeKind kind = AttributeKind::Normal) {
+        const auto id = std::get<AttributeId>(*example.create_attribute(name, body, owner).created);
+        if (kind != AttributeKind::Normal) example.set_attribute_kind(id, kind);
+        return id;
+    };
+    // One side of a relationship, carrying the pair the diagram labels it with:
+    // total participation is the 1 of (1,1) and partial the 0, while the
+    // maximum is the M or the 1 that follows it.
+    auto join = [&](RelationshipId relationship, ParticipantTarget target,
+                    Cardinality maximum, Participation participation) {
+        const auto joined = example.connect(relationship, target);
+        example.update_participant(relationship, *joined.participant, maximum, participation, "");
+    };
+
+    const auto student = add_entity("Student", {-441, -195, 160, 80});
+    const auto course = add_entity("Course", {-441, 319, 160, 80});
+    const auto professor = add_entity("Professor", {433, 319, 160, 80});
+
+    // A student may enroll in any number of courses and a course may hold any
+    // number of students, so the pair that resolves into its own table later.
+    const auto enrolled = add_relationship("Enrolled", {-456, 33, 190, 110});
+    join(enrolled, student, Cardinality::Many, Participation::Partial);
+    join(enrolled, course, Cardinality::Many, Participation::Partial);
+    // A course is taught by at most one professor, and a professor may be
+    // between courses, so neither side is obliged to take part.
+    const auto teaches = add_relationship("Teaches", {-52, 304, 190, 110});
+    join(teaches, course, Cardinality::One, Participation::Partial);
+    join(teaches, professor, Cardinality::One, Participation::Partial);
+    // Mentoring is the one side that is compulsory: every professor mentors,
+    // while a student need not be mentored at all.
+    const auto mentor = add_relationship("Mentor", {415, -208, 190, 110});
+    join(mentor, student, Cardinality::Many, Participation::Partial);
+    join(mentor, professor, Cardinality::One, Participation::Total);
+
+    // A student is identified by an ID, named by a composite whose three parts
+    // hang off it, has an age nobody stores, and may be reached on more than
+    // one telephone.
+    add_attribute("ID", {-727, -180, 150, 60}, student, AttributeKind::Key);
+    const auto student_name = add_attribute("Name", {-544, -400, 150, 60}, student, AttributeKind::Composite);
+    add_attribute("First", {-805, -515, 150, 60}, student_name);
+    add_attribute("Mid", {-617, -544, 150, 60}, student_name);
+    add_attribute("Last", {-418, -542, 150, 60}, student_name);
+    add_attribute("Gender", {-715, -300, 150, 60}, student);
+    add_attribute("Birth Date", {-367, -356, 150, 60}, student);
+    add_attribute("Age", {-170, -363, 150, 60}, student, AttributeKind::Derived);
+    add_attribute("Phone", {27, -360, 150, 60}, student, AttributeKind::Multivalued);
+
+    add_attribute("ID", {-576, 506, 150, 60}, course, AttributeKind::Key);
+    add_attribute("Name", {-728, 387, 150, 60}, course);
+    add_attribute("Credit Hours", {-707, 263, 150, 60}, course);
+
+    add_attribute("ID", {277, 506, 150, 60}, professor, AttributeKind::Key);
+    add_attribute("Name", {489, 506, 150, 60}, professor);
+    add_attribute("Salary", {661, 414, 150, 60}, professor);
+
+    // The date belongs to the enrollment rather than to the student or to the
+    // course, which is the reason a relationship may carry attributes at all.
+    // Its ellipse is the one that is drawn wider than the rest, because the
+    // name is longer than the others and an example should not open on a
+    // label that has been cut short.
+    add_attribute("Enrollment Date", {-175, 17, 200, 60}, enrolled);
+
     show_result(editor_.replace_project(example.project()));
     path_.clear();
     canvas_->select_elements({enrolled});

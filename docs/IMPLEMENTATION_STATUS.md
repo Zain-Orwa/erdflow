@@ -279,6 +279,11 @@ not been built yet. Their presence in those documents is not a completion claim.
   before save, clean-state tracking, and reopening the file saved at the prompt.
 
 The example is available using **Open example** or `build/erdflow --example`.
+It is the university diagram in full: Student, Course and Professor, the
+Enrolled, Teaches and Mentor relationships between them, and one of every kind
+of attribute — a key on each entity, a composite name with First, Mid and Last
+hanging off it, a derived age, a multivalued phone, and an enrollment date that
+belongs to the relationship rather than to either side of it.
 The normal startup is an empty project. Text properties commit on focus loss;
 geometry changes use **Apply position and size**.
 
