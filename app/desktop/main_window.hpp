@@ -27,6 +27,7 @@ class QTreeView;
 namespace erdflow::desktop {
 
 class Ribbon;
+class SearchBar;
 class SymbolPicker;
 
 class MainWindow final : public QMainWindow {
@@ -62,6 +63,13 @@ public:
     // selected, on the clipboard as both a PNG and an SVG, so whatever it is
     // pasted into can take whichever it prefers.
     bool copy_picture();
+    // Narrows the diagram to what is being looked for, bringing what it finds
+    // into the middle of the view. Also how anything that already knows what to
+    // look for drives the search.
+    void search_diagram(const DiagramSearch& search);
+    // Opens the search bar, or closes it and puts the whole diagram back.
+    void open_search(const QString& looking_for = {});
+    void close_search();
     // Leaves a remark on the given things, asking for the words. With text
     // supplied it asks nothing, which is how anything that already has the
     // words drives it. One remark covers everything it is given at once.
@@ -146,6 +154,10 @@ private:
     QToolButton* theme_button_ = nullptr;
     QAction* full_view_ = nullptr;
     QAction* check_ = nullptr;
+    // Opens the search. It is on the tool row and in the Edit menu, so it is
+    // made once and shown in both.
+    QAction* find_action_ = nullptr;
+    QToolButton* search_button_ = nullptr;
     // Keeps a wheel from changing whatever the pointer happens to be over.
     QObject* wheel_guard_ = nullptr;
     std::map<domain::BackgroundStyle, QAction*> background_actions_;
@@ -186,6 +198,7 @@ private:
     // checks is often closed already, and full view must not open it.
     std::vector<QDockWidget*> hidden_panels_;
     Ribbon* ribbon_ = nullptr;
+    SearchBar* search_bar_ = nullptr;
     SymbolPicker* symbols_ = nullptr;
     // The text field a picked character goes into: the last one that was being
     // written in. Committing an edit rebuilds the properties panel and takes

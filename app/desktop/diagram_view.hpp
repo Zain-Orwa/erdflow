@@ -51,6 +51,34 @@ inline constexpr BodySize note_body{200, 120};
 inline constexpr BodySize symbol_body{56, 56};
 inline constexpr double symbol_step = 1.25;
 
+// What a search is looking for. Everything is the ordinary state, and the rest
+// narrow it to one kind, so "only the entities" is asked for by choosing a kind
+// and typing nothing at all.
+enum class SearchKind { Everything, Entities, Attributes, Relationships, Hierarchies };
+
+// A search over the diagram. It filters what is shown rather than changing what
+// is there, so it is how the diagram is being looked at, like the grid and like
+// the switch that quiets the comments: nothing here is saved with the document
+// or passes through the history.
+struct DiagramSearch {
+    // Matched against names, without regard to case. Empty matches every
+    // element of the chosen kind, which is what asks for "only the entities".
+    QString text;
+    SearchKind kind = SearchKind::Everything;
+    // Also show what a match touches: what belongs to it, the relationships and
+    // hierarchies it takes part in, and the far side of those. One step out,
+    // because a relationship with its participants missing says nothing, while
+    // following the joins to their end would fetch most of a well-joined
+    // diagram and leave the setting doing nothing.
+    bool with_relatives = false;
+    // What becomes of everything else. Faded by default, because the diagram
+    // keeps its shape that way and no line is left hanging from a shape that
+    // has gone; hidden when a clean view is wanted more than the context.
+    bool hide_the_rest = false;
+    [[nodiscard]] bool looking() const { return !text.isEmpty() || kind != SearchKind::Everything; }
+    bool operator==(const DiagramSearch&) const = default;
+};
+
 class DiagramView : public QGraphicsView {
 public:
     explicit DiagramView(application::Editor& editor, QWidget* parent = nullptr);
@@ -125,6 +153,16 @@ public:
     // triangle and are not connectors, so a remark about one goes on the
     // triangle instead.
     [[nodiscard]] std::vector<domain::ConnectorRef> selected_connectors() const;
+    // Narrows the diagram to what a search asks for. An idle search puts
+    // everything back. Nothing about the document changes.
+    void set_search(const DiagramSearch& search);
+    [[nodiscard]] const DiagramSearch& search() const;
+    // What the current search found, in the order the project holds it.
+    [[nodiscard]] std::vector<domain::ElementRef> found_elements() const;
+    // Brings what was found into the middle of the view. A single small
+    // element is not magnified to fill the window: being found should move the
+    // diagram, not change how close it is being looked at beyond reason.
+    void frame_found();
     void set_grid_visible(bool enabled);
     // Aligning to the grid rounds a dragged or placed element's position to
     // the nearest grid point, so elements put down near each other line up.

@@ -314,6 +314,18 @@ void draw(QPainter& painter, Glyph glyph, const Theme& colors, qreal side) {
         painter.drawPath(body);
         break;
     }
+    case Glyph::Search: {
+        // A glass: the ring and the handle, which is the drawing everybody
+        // already reads as looking for something.
+        painter.setBrush(Qt::NoBrush);
+        painter.setPen(outline(accent, weight));
+        const auto radius = box.width() * 0.3;
+        const QPointF centre(box.left() + radius + box.width() * 0.06, box.top() + radius + box.height() * 0.06);
+        painter.drawEllipse(centre, radius, radius);
+        painter.drawLine(centre + QPointF(radius * 0.72, radius * 0.72),
+                         QPointF(box.right() - box.width() * 0.06, box.bottom() - box.height() * 0.06));
+        break;
+    }
     case Glyph::Download: {
         // Work leaving: an arrow rising out of a tray. It is the same motif the
         // coloured set draws, so the two sets say the same thing about it.
@@ -441,6 +453,7 @@ QString icon_name(Glyph glyph) {
     // The artwork is the arrow leaving a tray, filed under the older word
     // for it; the command it draws is Download.
     case Glyph::Download: return QStringLiteral("export");
+    case Glyph::Search: return QStringLiteral("search");
     }
     return QStringLiteral("select");
 }

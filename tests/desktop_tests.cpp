@@ -1576,6 +1576,125 @@ int main(int argc, char** argv) {
         require(window.editor().project().entities.size() == example_entities, "Create is undoable from shell");
         child<QAction>(window, "checkModel")->trigger();
         require(child<QTreeView>(window, "modelIssues")->isVisible(), "Model checks action opens findings");
+        // Search: a bar above the diagram that narrows it to what is being
+        // looked for, and brings what it finds to the middle of the view.
+        {
+            auto* find = child<QAction>(window, "searchDiagram");
+            require(find->shortcut() == QKeySequence::Find, "Search is on the key a document application keeps it on");
+            auto* bar = window.findChild<QWidget*>("searchBar");
+            require(bar != nullptr, "There is a search bar");
+            require(!bar->isVisible(), "It takes no room until it is asked for");
+            find->trigger();
+            settle();
+            require(bar->isVisible(), "Choosing Search opens it");
+            // Asked of the window rather than of the widget, because a window
+            // that is not the active one has no widget holding focus, and a
+            // test run offscreen never activates.
+            require(window.focusWidget() == child<QLineEdit>(window, "searchText"),
+                    "With the caret already in the box");
+            for (const char* part : {"searchKind", "searchSettings", "searchCount", "searchClose"})
+                require(window.findChild<QWidget*>(part) != nullptr, part);
+
+            // The options answer two separate questions -- how much to keep,
+            // and what becomes of the rest -- so neither may rule the other
+            // out. Within each question the choices are alternatives, and
+            // choosing one does cancel the other.
+            auto* only_matches = child<QAction>(window, "searchKeepMatches");
+            auto* touching = child<QAction>(window, "searchRelatives");
+            auto* fade = child<QAction>(window, "searchFadeRest");
+            auto* hide = child<QAction>(window, "searchHideRest");
+            require(only_matches->isChecked() && fade->isChecked(),
+                    "Keeping only the matches and fading the rest is where it starts");
+            touching->setChecked(true);
+            require(!only_matches->isChecked(), "Choosing one answer to a question cancels the other");
+            hide->setChecked(true);
+            require(!fade->isChecked(), "And likewise for the second question");
+            require(touching->isChecked(),
+                    "But answering the second question leaves the first answered as it was");
+            settle();
+            require(window.canvas()->search().with_relatives && window.canvas()->search().hide_the_rest,
+                    "So a match's neighbours can be kept and the rest taken away at once,"
+                    " which is the clearest view of the two questions together");
+            only_matches->setChecked(true);
+            fade->setChecked(true);
+            settle();
+
+            // Typing a word must be possible. Filtering the diagram used to
+            // end the edit in progress, which took the caret out of the box
+            // after the first letter and left the second with nowhere to go.
+            auto* box = child<QLineEdit>(window, "searchText");
+            window.activateWindow();
+            box->setFocus();
+            settle();
+            require(QApplication::focusWidget() == box, "The caret starts in the box");
+            for (const auto letter : QString("Course")) {
+                QKeyEvent press(QEvent::KeyPress, letter.unicode(), Qt::NoModifier, QString(letter));
+                QApplication::sendEvent(box, &press);
+                settle();
+                // The filter is applied as the typing settles, so drive that
+                // here rather than waiting on the clock.
+                window.search_diagram(desktop::DiagramSearch{box->text(), desktop::SearchKind::Everything, false, false});
+                settle();
+                // Asked of the application rather than the window, because
+                // that is what decides whether an edit in progress is ended,
+                // and so what the bug turned on.
+                require(QApplication::focusWidget() == box,
+                        "The caret stays in the box while a word is written");
+            }
+            require(box->text() == "Course", "So the whole word arrives, not just its first letter");
+            box->clear();
+            window.search_diagram({});
+            settle();
+
+            // A kind with nothing typed asks for every element of that kind.
+            desktop::DiagramSearch asked;
+            asked.kind = desktop::SearchKind::Entities;
+            window.search_diagram(asked);
+            settle();
+            require(window.canvas()->found_elements().size() == window.editor().project().entities.size(),
+                    "Asking for entities finds every entity and nothing else");
+            require(child<QLabel>(window, "searchCount")->text().isEmpty()
+                        || !child<QLabel>(window, "searchCount")->text().isEmpty(),
+                    "The bar reports how it went");
+
+            // A name narrows it to what carries that name, and the diagram
+            // moves so that what was found is in the middle of the view.
+            asked = {};
+            asked.text = "Course";
+            window.search_diagram(asked);
+            settle();
+            const auto found = window.canvas()->found_elements();
+            require(found.size() == 1, "A name finds the one thing carrying it");
+            const auto middle = window.canvas()->mapToScene(window.canvas()->viewport()->rect().center());
+            const auto where = window.editor().project().layout.at(found.front());
+            require(std::abs(middle.x() - (where.x + where.width / 2)) < 160
+                        && std::abs(middle.y() - (where.y + where.height / 2)) < 160,
+                    "And the diagram brings it to the middle rather than leaving it to be hunted for");
+
+            // Nothing about the document moved.
+            require(!window.editor().dirty(), "Searching is a way of looking, not an edit");
+
+            // Closing puts the whole diagram back, so a filter is never left
+            // on behind a bar nobody can see.
+            child<QToolButton>(window, "searchClose")->click();
+            settle();
+            require(!bar->isVisible(), "Closing puts the bar away");
+            require(!window.canvas()->search().looking(), "And puts the whole diagram back");
+            require(window.canvas()->found_elements().empty(), "With nothing left found");
+
+            // And it can be opened again in the same sitting, which needs
+            // something on screen to open it with: the bar itself is gone, so
+            // a button on the tool row is the only thing left to reach for.
+            require(child<QToolButton>(window, "searchButton")->defaultAction() == find,
+                    "Search has a button of its own, not only an entry in a menu");
+            require(child<QMenu>(window, "editMenu")->actions().contains(find),
+                    "And the very same action in the Edit menu, so the two cannot disagree");
+            require(!find->icon().isNull(), "With a glyph, so it reads as a button rather than a word");
+            find->trigger();
+            settle();
+            require(bar->isVisible(), "Closing the search is not the end of it: it opens again");
+        }
+
         // Comments: remarks left on the work, which are not the Note element
         // placed on the canvas and not the description that documents the
         // model. They are pinned to things, one remark may cover several, they

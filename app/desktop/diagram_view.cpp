@@ -201,6 +201,11 @@ public:
     // them has been put away, which is drawn differently from having none.
     int comments = 0;
     int comments_to_show = 0;
+    // Whether a search found this. A found element keeps its full strength
+    // while the rest recede, which is most of what makes it stand out; the
+    // ring says which of the things still at full strength were asked for and
+    // which are only there because they are next to one.
+    bool found = false;
     // A note's text, drawn beneath its title.
     QString body;
     // A plain note is one character standing on its own, drawn as the
@@ -709,6 +714,22 @@ public:
                               disjoint ? QStringLiteral("d") : QStringLiteral("o"));
         }
         paint_comment_badge(painter);
+        paint_found_ring(painter);
+    }
+    // Drawn outside the shape rather than over it, so nothing a search found is
+    // harder to read for having been found.
+    void paint_found_ring(QPainter* painter) const {
+        if (!found || !colors_) return;
+        painter->save();
+        painter->setRenderHint(QPainter::Antialiasing);
+        painter->setBrush(Qt::NoBrush);
+        QColor halo = colors_->accent;
+        halo.setAlpha(150);
+        QPen ring(halo, 2.4);
+        ring.setCosmetic(true);
+        painter->setPen(ring);
+        painter->drawRoundedRect(bounds_.adjusted(-3, -3, 3, 3), 5, 5);
+        painter->restore();
     }
     // In the top-right of the box the shape is drawn in. It stays inside that
     // box rather than straddling its corner: the bounding rectangle is read as
@@ -1339,6 +1360,104 @@ struct DiagramView::Impl {
     bool synchronizing = false;
     // Whether remarks are being shown. Not part of the document.
     bool comments_shown = true;
+    // What the diagram is being narrowed to. Not part of the document either.
+    DiagramSearch search;
+    std::set<ElementRef> found;
+
+    // Whether one element is the kind a search is asking for.
+    [[nodiscard]] static bool of_kind(const ElementRef& ref, SearchKind kind) {
+        switch (kind) {
+            case SearchKind::Entities: return std::holds_alternative<EntityId>(ref);
+            case SearchKind::Attributes: return std::holds_alternative<AttributeId>(ref);
+            case SearchKind::Relationships: return std::holds_alternative<RelationshipId>(ref);
+            case SearchKind::Hierarchies: return std::holds_alternative<SpecializationId>(ref);
+            case SearchKind::Everything: break;
+        }
+        return true;
+    }
+
+    // Everything the search asks for, before any relatives are added.
+    [[nodiscard]] std::set<ElementRef> matches() const {
+        std::set<ElementRef> hits;
+        if (!search.looking()) return hits;
+        const auto& project = editor.project();
+        for (const auto& [ref, node] : nodes) {
+            (void)node;
+            if (!of_kind(ref, search.kind)) continue;
+            if (!search.text.isEmpty()
+                && !QString::fromStdString(name(project, ref)).contains(search.text, Qt::CaseInsensitive))
+                continue;
+            hits.insert(ref);
+        }
+        return hits;
+    }
+
+    // One step out from what was found: what belongs to it, and what it is
+    // joined to. A relationship or a hierarchy brought in this way brings its
+    // own far side with it, since either of them says nothing on its own.
+    [[nodiscard]] std::set<ElementRef> with_relatives(const std::set<ElementRef>& hits) const {
+        const auto& project = editor.project();
+        auto shown = hits;
+        auto keep = [&](const ElementRef& ref) { if (exists(project, ref)) shown.insert(ref); };
+        for (const auto& ref : hits) {
+            // What belongs to it, following composites down to their parts.
+            std::vector<ElementRef> owners{ref};
+            for (std::size_t i = 0; i < owners.size(); ++i)
+                for (const auto& [id, attribute] : project.attributes)
+                    if (attribute.owner && *attribute.owner == owners[i] && shown.insert(ElementRef{id}).second)
+                        owners.emplace_back(id);
+            // An attribute's own owner, so a found attribute is not left
+            // floating away from the thing it describes.
+            if (const auto* attribute = std::get_if<AttributeId>(&ref)) {
+                const auto found_attribute = project.attributes.find(*attribute);
+                if (found_attribute != project.attributes.end() && found_attribute->second.owner)
+                    keep(*found_attribute->second.owner);
+            }
+            for (const auto& [id, relationship] : project.relationships) {
+                const auto joins = std::any_of(relationship.participants.begin(), relationship.participants.end(),
+                                               [&](const Participant& side) { return target_ref(side.target) == ref; });
+                if (!joins) continue;
+                keep(ElementRef{id});
+                for (const auto& side : relationship.participants) keep(target_ref(side.target));
+            }
+            for (const auto& [id, hierarchy] : project.specializations) {
+                const bool belongs = (hierarchy.supertype && ElementRef{*hierarchy.supertype} == ref)
+                    || std::any_of(hierarchy.subtypes.begin(), hierarchy.subtypes.end(),
+                                   [&](const EntityId& subtype) { return ElementRef{subtype} == ref; });
+                if (!belongs) continue;
+                keep(ElementRef{id});
+                if (hierarchy.supertype) keep(ElementRef{*hierarchy.supertype});
+                for (const auto& subtype : hierarchy.subtypes) keep(ElementRef{subtype});
+            }
+        }
+        return shown;
+    }
+
+    // Puts the diagram in step with the search: what was found stands out, what
+    // was not recedes or goes, and a line goes with whichever of its ends goes.
+    void refresh_search() {
+        found = matches();
+        const auto shown = search.looking() && search.with_relatives ? with_relatives(found) : found;
+        constexpr qreal receded = 0.16;
+        for (auto& [ref, node] : nodes) {
+            const bool idle = !search.looking();
+            const bool keep = idle || shown.contains(ref);
+            node->found = !idle && found.contains(ref);
+            node->setVisible(keep || !search.hide_the_rest);
+            node->setOpacity(keep ? 1.0 : receded);
+            node->update();
+        }
+        for (auto& [key, edge] : edges) {
+            // A line is only as visible as the shapes it joins: it recedes or
+            // goes with whichever end recedes or goes, so no line is ever left
+            // hanging from something that is not there.
+            const bool keep = !search.looking()
+                || (edge->source->isVisible() && edge->target->isVisible()
+                    && edge->source->opacity() > receded && edge->target->opacity() > receded);
+            edge->setVisible(edge->source->isVisible() && edge->target->isVisible());
+            edge->setOpacity(keep ? 1.0 : receded);
+        }
+    }
 
     // Puts the marks and what the pointer says in step with the remarks the
     // project holds and with the switch. It runs after an edit and when the
@@ -2321,6 +2440,7 @@ void DiagramView::synchronize() {
     }
     for (auto* edge : dirty_edges) edge->refresh();
     impl_->refresh_comments();
+    impl_->refresh_search();
     // The workspace grows only at command boundaries, never during pointer movement.
     const auto content = impl_->scene->itemsBoundingRect().adjusted(-800, -800, 800, 800);
     impl_->scene->setSceneRect(QRectF(-3000, -2200, 6000, 4400).united(content));
@@ -2575,6 +2695,40 @@ QPixmap DiagramView::notation_preview(Notation notation, QSize size, std::option
     }
     return pixmap;
 }
+void DiagramView::set_search(const DiagramSearch& search) {
+    if (impl_->search == search) return;
+    impl_->search = search;
+    // Nothing about the document changed, so this goes straight to the
+    // projection rather than through synchronize, which would see the same
+    // revision and do nothing.
+    impl_->refresh_search();
+}
+const DiagramSearch& DiagramView::search() const { return impl_->search; }
+
+std::vector<ElementRef> DiagramView::found_elements() const {
+    return {impl_->found.begin(), impl_->found.end()};
+}
+
+void DiagramView::frame_found() {
+    QRectF bounds;
+    for (const auto& ref : impl_->found) {
+        const auto node = impl_->nodes.find(ref);
+        if (node != impl_->nodes.end()) bounds = bounds.united(node->second->sceneBoundingRect());
+    }
+    if (bounds.isEmpty()) return;
+    bounds = bounds.adjusted(-90, -90, 90, 90);
+    // Brought to the middle, and no closer than it already was. Zooming in on a
+    // match would take the reader somewhere they did not ask to go; zooming out
+    // is done only when what was found will not otherwise fit, because showing
+    // part of an answer is worse than showing it small.
+    const auto in_view = mapToScene(viewport()->rect()).boundingRect();
+    if (bounds.width() > in_view.width() || bounds.height() > in_view.height()) {
+        fitInView(bounds, Qt::KeepAspectRatio);
+        impl_->zoom(zoom_factor());
+    }
+    centerOn(bounds.center());
+}
+
 void DiagramView::set_comments_visible(bool shown) {
     if (impl_->comments_shown == shown) return;
     impl_->comments_shown = shown;

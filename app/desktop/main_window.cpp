@@ -1,6 +1,7 @@
 #include "main_window.hpp"
 #include "download_dialog.hpp"
 #include "ribbon.hpp"
+#include "search_bar.hpp"
 #include "symbol_picker.hpp"
 #include "symbols.hpp"
 
@@ -476,9 +477,15 @@ protected:
 };
 
 void finish_field_edit() {
-    if (auto* widget = QApplication::focusWidget();
-        qobject_cast<QLineEdit*>(widget) || qobject_cast<QPlainTextEdit*>(widget))
-        widget->clearFocus();
+    auto* widget = QApplication::focusWidget();
+    if (!qobject_cast<QLineEdit*>(widget) && !qobject_cast<QPlainTextEdit*>(widget)) return;
+    // The search box is not one of the model's fields. Nothing it holds needs
+    // committing, and taking the caret out of it would end the word somebody is
+    // in the middle of writing -- which is what happened: the first letter
+    // filtered the diagram, the caret left, and the second could not be typed.
+    for (const auto* ancestor = widget; ancestor; ancestor = ancestor->parentWidget())
+        if (ancestor->objectName() == QLatin1String("searchBar")) return;
+    widget->clearFocus();
 }
 }
 
@@ -555,15 +562,34 @@ void MainWindow::build_shell() {
     document_label_ = new QLabel(header);
     document_label_->setObjectName("documentTitle");
     header_layout->addWidget(document_label_, 1);
+    // Search has a button of its own, not only an entry in a menu and a key.
+    // The bar it opens takes no room until it is asked for, which is only worth
+    // doing if there is something on screen to ask with: without a button there
+    // is nothing to say the search is there at all, and nothing to reach for
+    // once the bar has been closed. It sits here rather than among the drawing
+    // tools, because it is about looking at the document rather than adding to
+    // it, and because that row is already tight enough to start dropping the
+    // names its tools are known by.
+    search_button_ = new QToolButton(header);
+    search_button_->setObjectName("searchButton");
+    search_button_->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    header_layout->addWidget(search_button_);
     auto* example = new QPushButton("Open example", header);
     example->setObjectName("openExample");
     connect(example, &QPushButton::clicked, this, &MainWindow::load_example);
     header_layout->addWidget(example);
     layout->addWidget(header);
+    // The search sits directly above the thing it filters, and takes no room
+    // at all until it is asked for.
+    search_bar_ = new SearchBar(workspace);
+    search_bar_->hide();
+    layout->addWidget(search_bar_);
     canvas_ = new DiagramView(editor_, workspace);
     canvas_->setObjectName("diagramCanvas");
     canvas_->setAccessibleName("Conceptual ERD canvas");
     layout->addWidget(canvas_, 1);
+    search_bar_->on_changed = [this] { search_diagram(search_bar_->search()); };
+    search_bar_->on_closed = [this] { close_search(); };
     auto* instructions = hint("Choose a shape, then click the canvas. Connect links an attribute to its owner, or a relationship to an entity.", workspace);
     instructions->setContentsMargins(18, 10, 18, 10);
     layout->addWidget(instructions);
@@ -666,6 +692,19 @@ const std::array<std::pair<Notation, QString>, 4>& notation_styles() {
 } // namespace
 
 void MainWindow::build_actions() {
+    // Find, where a document application keeps it, and on the key it keeps it
+    // on. It narrows the diagram to what is asked for rather than only walking
+    // from one match to the next, which is what makes it worth having on a
+    // drawing rather than in a list. It is made here because it goes in two
+    // places -- the Edit menu and the tool row -- and both must be the same
+    // action, or one of them would go stale.
+    find_action_ = new QAction("Search…", this);
+    find_action_->setObjectName("searchDiagram");
+    find_action_->setShortcut(QKeySequence::Find);
+    find_action_->setToolTip("Narrow the diagram to what you are looking for.");
+    connect(find_action_, &QAction::triggered, this, [this] { open_search(); });
+    action_glyphs_[find_action_] = Glyph::Search;
+
     auto* file = new QMenu("&File", this);
     file->setObjectName("fileMenu");
     menuBar()->insertMenu(menuBar()->actions().front(), file);
@@ -787,6 +826,11 @@ void MainWindow::build_actions() {
     duplicate_->setObjectName("duplicateElements");
     action_glyphs_[duplicate_] = Glyph::Duplicate;
     action_glyphs_[edit->addAction("Delete selection", this, [this] { finish_field_edit(); canvas_->delete_selection(); })] = Glyph::Delete;
+    edit->addSeparator();
+    edit->addAction(find_action_);
+    // The header's button and the menu entry are one action, so they cannot
+    // disagree about what searching is called or whether it can be done.
+    if (search_button_) search_button_->setDefaultAction(find_action_);
     edit->addSeparator();
     // A symbol is drawn as its character filling its box, so making the box
     // bigger is what makes the character bigger. The view's own zoom already
@@ -2933,6 +2977,37 @@ bool MainWindow::comment_on_selected_text(const QString& field_name, const QStri
     if (end <= anchor.begin) return false;
     anchor.length = end - anchor.begin;
     return add_comment({domain::CommentTarget{anchor}}, said);
+}
+
+void MainWindow::search_diagram(const DiagramSearch& search) {
+    // Nothing is committed here on purpose. A search changes nothing in the
+    // model, so it has no reason to end an edit anybody has in progress.
+    canvas_->set_search(search);
+    const auto found = canvas_->found_elements();
+    if (search_bar_) search_bar_->report(static_cast<int>(found.size()));
+    // What was asked for is brought to the reader rather than left for them to
+    // go looking for, which is the whole point of having asked.
+    if (!found.empty()) canvas_->frame_found();
+    statusBar()->showMessage(!search.looking() ? QString()
+                             : found.empty() ? QString("Nothing on the diagram matches.")
+                             : QString("%1 of the diagram shown.").arg(found.size() == 1
+                                   ? QString("1 element") : QString("%1 elements").arg(found.size())), 6000);
+}
+
+void MainWindow::open_search(const QString& looking_for) {
+    if (!search_bar_) return;
+    if (looking_for.isEmpty()) search_bar_->open();
+    else search_bar_->look_for(looking_for);
+    search_diagram(search_bar_->search());
+}
+
+void MainWindow::close_search() {
+    if (!search_bar_) return;
+    search_bar_->hide();
+    // Closing puts the whole diagram back: a filter left on behind a closed bar
+    // would be a diagram missing pieces for no visible reason.
+    canvas_->set_search({});
+    canvas_->setFocus();
 }
 
 void MainWindow::refresh_download_actions() {

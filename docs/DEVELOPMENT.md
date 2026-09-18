@@ -49,6 +49,17 @@ QT_QPA_PLATFORM=offscreen ./build/erdflow --example --tab tabDownload --screensh
 QT_QPA_PLATFORM=offscreen ./build/release/editor_benchmark
 ```
 
+`--search` opens the search bar already looking for something, which is the
+quickest way to see what a search does to a diagram:
+
+```sh
+./build/erdflow --example --search Student
+```
+
+The bar is not shown until it is asked for, so without `--search` — or Ctrl+F,
+or **Edit → Search…** — it is not on screen at all. That is deliberate: it costs
+the window no room until it is wanted.
+
 `--tab` brings a ribbon row to the front before the screenshot is taken, so a
 row other than Home can be looked at without a person clicking the tab first.
 The tabs are named `tabHome`, `tabInsert`, `tabDesign`, `tabDownload`,
