@@ -38,6 +38,17 @@ not been built yet. Their presence in those documents is not a completion claim.
   behind it, so the panel scrolls and the value stays; values change by
   pressing the control and choosing, or by typing. This holds for the
   notation picker on the toolbar as well.
+- A row of a dropped-down list lights up under the pointer, the way a row of the
+  Explorer and an entry of a menu do, so it is plain which one a press would
+  take. The sample drawn beside it is inked from the surface it is actually
+  standing on: a highlighted row is painted in the theme's accent, and a sample
+  drawn in that same accent would vanish into it, so a highlighted row's sample
+  is drawn in whatever reads on the accent instead. This is decided from the
+  state the row is really painted in rather than from a list's own idea of what
+  is selected, because under a stylesheet the two can disagree. The notation
+  samples that write their pair — Chen's **M** and min–max's **(1,M)** — keep
+  room of their own at the end, so the line stops short of the writing rather
+  than running through the characters the reader is being shown.
 - **Check model** is a switch: it opens the findings and puts them away again,
   wearing a green tick while they are closed and a red cross while they are
   open. It follows the panel however that is opened or closed, including from

@@ -1842,6 +1842,47 @@ void picker_sample_tests() {
     const auto curved = view.line_style_preview(desktop::LineStyle::Curved, QSize(48, 24)).toImage();
     const auto straight = view.line_style_preview(desktop::LineStyle::Straight, QSize(48, 24)).toImage();
     require(curved != straight, "The curved and straight samples are told apart");
+
+    // A highlighted row is painted in the theme's accent, so a sample drawn in
+    // that same accent would vanish into it. A sample given an ink is drawn in
+    // that ink instead, and none of the accent is left anywhere in it.
+    for (const auto id : {desktop::ThemeId::OfficeLight, desktop::ThemeId::Dracula, desktop::ThemeId::Forest}) {
+        view.set_theme(id);
+        QApplication::processEvents();
+        const auto accent = desktop::theme(id).accent;
+        const auto lit = desktop::readable_on(accent);
+        for (int notation = 0; notation <= static_cast<int>(desktop::Notation::MinMax); ++notation) {
+            const auto sample = view.notation_preview(static_cast<desktop::Notation>(notation), QSize(72, 24), lit);
+            require(drawn(sample) > 40, "A sample for a highlighted row is still drawn");
+            require(carries(sample, lit), "In the ink that reads on the highlight");
+            require(!carries(sample, accent), "And nowhere in the colour it would be standing on");
+        }
+        for (const auto style : {desktop::LineStyle::Curved, desktop::LineStyle::Straight, desktop::LineStyle::Elbow}) {
+            const auto sample = view.line_style_preview(style, QSize(48, 24), lit);
+            require(carries(sample, lit) && !carries(sample, accent),
+                    "A line style sample for a highlighted entry reads on it too");
+        }
+    }
+
+    // Chen and min-max say the pair in writing, and the line must not run
+    // through the very characters the reader is being shown. The written end is
+    // found by asking where the ink reaches: with the line stopping short of
+    // it, the rightmost ink is the writing rather than the line's own end.
+    view.set_theme(desktop::ThemeId::OfficeLight);
+    QApplication::processEvents();
+    const auto written = view.notation_preview(desktop::Notation::MinMax, QSize(72, 24)).toImage()
+                             .convertToFormat(QImage::Format_ARGB32);
+    int rows_of_ink_at_middle = 0;
+    const auto middle = written.height() / 2;
+    for (int x = 0; x < written.width(); ++x)
+        if (qAlpha(written.pixel(x, middle)) > 200) ++rows_of_ink_at_middle;
+    const auto bare = view.notation_preview(desktop::Notation::CrowsFoot, QSize(72, 24)).toImage()
+                          .convertToFormat(QImage::Format_ARGB32);
+    int bare_ink_at_middle = 0;
+    for (int x = 0; x < bare.width(); ++x)
+        if (qAlpha(bare.pixel(x, middle)) > 200) ++bare_ink_at_middle;
+    require(rows_of_ink_at_middle < bare_ink_at_middle,
+            "A notation that writes its pair draws a shorter line, leaving the writing room of its own");
 }
 
 

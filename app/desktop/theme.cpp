@@ -241,6 +241,13 @@ QLineEdit:focus, QComboBox:focus, QDoubleSpinBox:focus, QSpinBox:focus, QPlainTe
 QLineEdit:disabled, QComboBox:disabled, QDoubleSpinBox:disabled, QSpinBox:disabled, QPlainTextEdit:disabled { background: @panel@; color: @muted@; }
 QComboBox { padding-right: 22px; }
 QComboBox QAbstractItemView { background: @base@; color: @text@; border: 1px solid @border@; selection-background-color: @accent@; selection-color: @selected@; }
+/* A row of a dropped-down list lights up under the pointer, the way a row of
+   the Explorer and an entry of a menu already do. Without a rule of its own the
+   list styles only the chosen row, and the rest give no sign that the pointer
+   is on them. */
+QComboBox QAbstractItemView::item { padding: 4px 6px; border: 1px solid transparent; }
+QComboBox QAbstractItemView::item:hover { background: @hover@; color: @text@; border-color: @hoveredge@; }
+QComboBox QAbstractItemView::item:selected { background: @accent@; color: @selected@; border-color: @accent@; }
 QPushButton { background: @window@; color: @text@; border: 1px solid @border@; border-radius: 2px; padding: 5px 11px; }
 QPushButton:hover, QPushButton:focus { border-color: @accent@; }
 QPushButton:pressed, QPushButton:checked { background: @accent@; color: @selected@; border-color: @accent@; }
