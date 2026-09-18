@@ -958,10 +958,15 @@ void failed_load_and_save_preserve_session() {
     CHECK(fixture.editor.redo_label() == redo);
     CHECK(fixture.editor.dirty() == dirty);
 
+    // A store that hands over a project it should not. Handing over bytes is
+    // not what it is testing, so it refuses to, which is what a store with
+    // nothing to give is expected to say.
     struct InvalidStore final : ProjectStore {
         Project candidate;
         LoadResult load(const std::string&) override { return {candidate, {}}; }
         SaveResult save(const std::string&, const Project&) override { return {false, "Injected save failure"}; }
+        EncodeResult project_bytes(const Project&) override { return {{}, "Injected encode failure"}; }
+        LoadResult project_from_bytes(const std::string&) override { return {candidate, {}}; }
     } invalid_store;
     invalid_store.candidate = current;
     invalid_store.candidate.layout.clear();
@@ -977,6 +982,8 @@ void failed_load_and_save_preserve_session() {
             CHECK(editor.rename_project("Edit during save"));
             return {true, {}};
         }
+        EncodeResult project_bytes(const Project&) override { return {{}, "Injected encode failure"}; }
+        LoadResult project_from_bytes(const std::string&) override { return {{}, "unused"}; }
     } changing_store(fixture.editor);
     CHECK(save_project(fixture.editor, changing_store, "unused"));
     CHECK(fixture.editor.dirty());

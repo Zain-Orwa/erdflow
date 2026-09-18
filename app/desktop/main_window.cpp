@@ -1,4 +1,5 @@
 #include "main_window.hpp"
+#include "download_dialog.hpp"
 #include "ribbon.hpp"
 #include "symbol_picker.hpp"
 #include "symbols.hpp"
@@ -15,6 +16,7 @@
 #include <QAbstractSpinBox>
 #include <QDoubleSpinBox>
 #include <QSpinBox>
+#include <QClipboard>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFocusEvent>
@@ -30,6 +32,7 @@
 #include <QMenuBar>
 #include <QMenu>
 #include <QMessageBox>
+#include <QMimeData>
 #include <QPaintEvent>
 #include <QPlainTextEdit>
 #include <QRegularExpression>
@@ -413,6 +416,19 @@ MainWindow::~MainWindow() {
     canvas_->on_tool = {};
     canvas_->on_status = {};
     canvas_->on_zoom = {};
+    // Some of what the window listens to speaks up while the window is being
+    // torn down: the application says focus has left, a dock that was showing
+    // says it is no longer visible, and a view says its selection has emptied.
+    // All three arrive from QWidget's own destructor, which runs after every
+    // member of this class has already been destroyed, because a base class is
+    // destroyed last. A slot reached then would read a map that no longer
+    // exists, so the window stops listening before any of it can happen.
+    // Signals that only a person can cause are left alone: nobody presses a
+    // button on a window that is going away.
+    qApp->disconnect(this);
+    if (validation_dock_) validation_dock_->disconnect(this);
+    if (explorer_ && explorer_->selectionModel()) explorer_->selectionModel()->disconnect(this);
+    if (issues_) issues_->disconnect(this);
     delete properties_->takeWidget();
     delete takeCentralWidget();
 }
@@ -553,6 +569,84 @@ void MainWindow::build_actions() {
     action_save->setObjectName("saveProject");
     action_glyphs_[action_save] = Glyph::Save;
     file->addAction("Save &as…", QKeySequence::SaveAs, this, [this] { save(true); });
+    file->addSeparator();
+
+    // Download is how work leaves ERDFlow. Its own menu, so the ribbon can put
+    // a row over it the way Insert and Design are put over theirs, and a copy
+    // of it under File, which is where a document application keeps it.
+    //
+    // Documents come first. Someone handing this work on is choosing between a
+    // report and a picture before they are choosing between PNG and SVG.
+    auto* download_menu = new QMenu("Download", this);
+    download_menu->setObjectName("downloadMenu");
+    download_menu->addSection("Documents");
+    struct DocumentEntry { DocumentFormat format; const char* name; };
+    for (const auto& entry : {DocumentEntry{DocumentFormat::Pdf, "downloadPdfDocument"},
+                              DocumentEntry{DocumentFormat::Markdown, "downloadMarkdown"},
+                              DocumentEntry{DocumentFormat::Html, "downloadHtml"},
+                              DocumentEntry{DocumentFormat::Csv, "downloadCsv"}}) {
+        const auto& info = document_format(entry.format);
+        auto* item = download_menu->addAction(QString::fromUtf8(info.label) + "…", this,
+                                              [this, format = entry.format] { download_document(format); });
+        item->setObjectName(QString::fromLatin1(entry.name));
+        item->setToolTip(QString::fromUtf8(info.caution));
+    }
+
+    // Then the pictures a person reaches for without thinking about options.
+    // SVG leads because it is the default download: it reads at any size and it
+    // is one of the two that carry the project home again.
+    download_menu->addSection("Pictures");
+    struct PictureEntry { PictureFormat format; const char* name; bool common; };
+    QMenu* more_pictures = nullptr;
+    for (const auto& entry : {PictureEntry{PictureFormat::Svg, "downloadSvg", true},
+                              PictureEntry{PictureFormat::Png, "downloadPng", true},
+                              PictureEntry{PictureFormat::Pdf, "downloadPdfPage", true},
+                              PictureEntry{PictureFormat::Jpeg, "downloadJpeg", false},
+                              PictureEntry{PictureFormat::WebP, "downloadWebp", false},
+                              PictureEntry{PictureFormat::Tiff, "downloadTiff", false}}) {
+        // A format this build has no writer for is left out rather than offered
+        // and then failed.
+        if (!picture_format_available(entry.format)) continue;
+        const auto& info = picture_format(entry.format);
+        // The three anyone wants sit on the menu; the rest are gathered behind
+        // one entry, so a common choice is never hunted for among rare ones.
+        if (!entry.common && !more_pictures) {
+            more_pictures = download_menu->addMenu("Other picture formats");
+            more_pictures->setObjectName("downloadMorePictures");
+        }
+        auto* into = entry.common ? download_menu : more_pictures;
+        auto* item = into->addAction(QString::fromUtf8(info.label) + "…", this, [this, format = entry.format] {
+            auto options = download_choice_.as_picture;
+            options.format = format;
+            download_picture(options);
+        });
+        item->setObjectName(QString::fromLatin1(entry.name));
+        if (*info.caution) item->setToolTip(QString::fromUtf8(info.caution));
+    }
+
+    download_menu->addSeparator();
+    auto* download_options = download_menu->addAction("Download with options…", QKeySequence("Ctrl+Shift+E"),
+                                                      this, &MainWindow::download_dialog);
+    download_options->setObjectName("downloadWithOptions");
+    download_options->setToolTip("Choose the format, and for a picture its size, extent and background.");
+    action_glyphs_[download_options] = Glyph::Download;
+    auto* copy_action = download_menu->addAction("Copy as picture", QKeySequence("Ctrl+Shift+C"),
+                                                 this, [this] { copy_picture(); });
+    copy_action->setObjectName("copyAsPicture");
+    copy_action->setToolTip("Put a picture of the selection, or of the whole diagram, on the clipboard.");
+    // Gathered so they can be turned off together while there is nothing drawn.
+    // A submenu's own entries are collected too, since the submenu itself only
+    // names them.
+    for (auto* action : download_menu->actions()) {
+        if (action->isSeparator()) continue;
+        if (auto* submenu = action->menu()) {
+            for (auto* nested : submenu->actions()) download_actions_.push_back(nested);
+            download_actions_.push_back(action);
+            continue;
+        }
+        download_actions_.push_back(action);
+    }
+    file->addMenu(download_menu);
     file->addSeparator();
     file->addAction("Open example", this, &MainWindow::load_example);
     file->addSeparator();
@@ -1087,6 +1181,7 @@ void MainWindow::refresh() {
     undo_->setToolTip(undo_->text() + "\t" + undo_->shortcut().toString(QKeySequence::NativeText));
     redo_->setToolTip(redo_->text() + "\t" + redo_->shortcut().toString(QKeySequence::NativeText));
     refresh_selection_commands();
+    refresh_download_actions();
     auto title = text(editor_.project().name);
     document_label_->setText(title + (editor_.dirty() ? " · Unsaved" : ""));
     setWindowTitle(title + "[*] — ERDFlow");
@@ -2292,14 +2387,39 @@ void MainWindow::set_full_view(bool on) {
     place_canvas_controls();
 }
 
+QByteArray MainWindow::project_payload(QString& note) {
+    const auto encoded = store_.project_bytes(editor_.project());
+    if (encoded) return QByteArray(encoded.bytes.data(), static_cast<qsizetype>(encoded.bytes.size()));
+    // Too large to travel inside a picture. The picture is still worth having,
+    // so it is written without the project and the reason is said plainly,
+    // rather than the export failing over something the picture does not need.
+    note = "The project was too large to travel inside it: " + text(encoded.error);
+    return {};
+}
+
+application::LoadResult MainWindow::read_project(const QString& path) {
+    // A picture ERDFlow wrote is a project as much as a .erdx is, so the two
+    // are opened by the same command and differ only in where the bytes were
+    // found. A picture from anywhere else is an ordinary picture, and saying
+    // so is more useful than reporting it as a damaged project.
+    if (!may_carry_project(path)) return store_.load(bytes(path));
+    const auto payload = payload_of_picture_file(path);
+    if (payload.isEmpty())
+        return {{}, "This picture does not carry an ERDFlow project inside it. "
+                    "Use Insert → Picture to place it on the diagram instead."};
+    return store_.project_from_bytes(std::string(payload.constData(), static_cast<std::size_t>(payload.size())));
+}
+
 void MainWindow::open_dialog() {
-    const auto location = QFileDialog::getOpenFileName(this, "Open ERDFlow project", path_, "ERDFlow project (*.erdx)");
+    const auto location = QFileDialog::getOpenFileName(this, "Open ERDFlow project", path_,
+        "ERDFlow project or picture (*.erdx *.svg *.png);;ERDFlow project (*.erdx);;"
+        "Picture carrying a project (*.svg *.png)");
     if (!location.isEmpty()) open_path(location);
 }
 
 bool MainWindow::open_path(const QString& path) {
     // Validate the complete candidate before asking to replace the open work.
-    auto candidate = store_.load(bytes(path));
+    auto candidate = read_project(path);
     if (!candidate) {
         QMessageBox::warning(this, "Project could not be opened", text(candidate.error));
         return false;
@@ -2307,17 +2427,142 @@ bool MainWindow::open_path(const QString& path) {
     if (!confirm_discard()) return false;
     // Save in the discard prompt may have updated this very file. Re-read it
     // before installing so the pre-prompt candidate cannot restore old data.
-    candidate = store_.load(bytes(path));
+    candidate = read_project(path);
     if (!candidate) {
         QMessageBox::warning(this, "Project could not be opened", text(candidate.error));
         return false;
     }
     const auto result = editor_.replace_project(std::move(*candidate.project));
     if (!result) { show_result(result); return false; }
-    path_ = path;
+    // A project opened out of a picture has no project file of its own yet.
+    // Leaving the picture as the save location would overwrite it with project
+    // bytes and destroy the picture, so the next save asks where it should go.
+    path_ = may_carry_project(path) ? QString() : path;
     refresh();
     canvas_->fit_diagram();
+    if (path_.isEmpty())
+        statusBar()->showMessage("Opened the project carried inside " + QFileInfo(path).fileName()
+                                 + ". Save it to give it a project file of its own.", 9000);
     return true;
+}
+
+void MainWindow::download_dialog() {
+    finish_field_edit();
+    canvas_->cancel_interaction();
+    DownloadDialog dialog(*canvas_, editor_.project(), this);
+    dialog.set_choice(download_choice_);
+    if (dialog.exec() != QDialog::Accepted) return;
+    download_choice_ = dialog.choice();
+    if (download_choice_.document) download_document(download_choice_.as_document);
+    else download_picture(download_choice_.as_picture);
+}
+
+// Where a downloaded file is suggested to go: named after the project, beside
+// it when it has a file of its own, so what leaves lands where the work lives.
+QString MainWindow::download_location(const QString& suffix, const QString& label) {
+    const auto stem = path_.isEmpty() ? QString("Untitled") : QFileInfo(path_).completeBaseName();
+    const auto suggested = path_.isEmpty() ? stem + "." + suffix
+                                           : QFileInfo(path_).dir().filePath(stem + "." + suffix);
+    auto location = QFileDialog::getSaveFileName(this, "Download", suggested,
+                                                 QString("%1 (*.%2)").arg(label, suffix));
+    if (location.isEmpty()) return {};
+    if (!location.endsWith("." + suffix, Qt::CaseInsensitive)) {
+        location += "." + suffix;
+        if (QFileInfo::exists(location) && QMessageBox::question(this, "Replace existing file?",
+            "A file already exists at " + location + ". Replace it?", QMessageBox::Yes | QMessageBox::No,
+            QMessageBox::No) != QMessageBox::Yes) return {};
+    }
+    return location;
+}
+
+bool MainWindow::download_document(DocumentFormat format, const QString& location_given) {
+    finish_field_edit();
+    canvas_->cancel_interaction();
+    const auto& info = document_format(format);
+    auto location = location_given;
+    if (location.isEmpty())
+        location = download_location(QString::fromLatin1(info.suffix), QString::fromUtf8(info.label));
+    if (location.isEmpty()) return false;
+    const auto result = write_document(*canvas_, editor_.project(), format, location);
+    if (!result) {
+        QMessageBox::warning(this, "Document could not be written", result.error);
+        return false;
+    }
+    // A listing is not the project, and someone who downloads one and expects
+    // to reopen it should be told so once rather than discover it later.
+    statusBar()->showMessage("Downloaded " + QFileInfo(location).fileName()
+                             + ". It is a listing of the model, not the project itself.", 9000);
+    return true;
+}
+
+bool MainWindow::download_picture(const PictureOptions& options, const QString& location_given) {
+    finish_field_edit();
+    canvas_->cancel_interaction();
+    const auto& info = picture_format(options.format);
+    const auto suffix = QString::fromLatin1(info.suffix);
+    auto location = location_given;
+    if (location.isEmpty()) location = download_location(suffix, QString::fromUtf8(info.label));
+    if (location.isEmpty()) return false;
+    QString note;
+    const auto payload = options.carry_project && info.carries_project ? project_payload(note) : QByteArray();
+    const auto result = write_picture(*canvas_, options, payload, location);
+    if (!result) {
+        QMessageBox::warning(this, "Picture could not be written", result.error);
+        return false;
+    }
+    // What was written, and where the project ended up, since a recipient who
+    // expects to reopen the picture needs to know whether it can be.
+    auto said = "Downloaded " + QFileInfo(location).fileName();
+    if (result.carried_project) said += ", with the project inside it";
+    said += ".";
+    if (!note.isEmpty()) said += " " + note;
+    else if (!result.carried_note.isEmpty() && options.carry_project && info.carries_project)
+        said += " " + result.carried_note;
+    statusBar()->showMessage(said, 9000);
+    return true;
+}
+
+bool MainWindow::copy_picture() {
+    finish_field_edit();
+    canvas_->cancel_interaction();
+    // A copy is of what is selected, and of the whole diagram when nothing is,
+    // which is what every drawing application does with the same command.
+    auto options = download_choice_.as_picture;
+    options.extent = canvas_->selection_bounds().isEmpty() ? PictureExtent::WholeDiagram : PictureExtent::Selection;
+    QString note;
+    const auto payload = options.carry_project ? project_payload(note) : QByteArray();
+
+    options.format = PictureFormat::Png;
+    QByteArray png;
+    const auto raster = draw_picture(*canvas_, options, payload, png);
+    if (!raster) {
+        statusBar()->showMessage(raster.error, 9000);
+        return false;
+    }
+    options.format = PictureFormat::Svg;
+    QByteArray svg;
+    const auto vector = draw_picture(*canvas_, options, payload, svg);
+
+    // Both pictures go on at once and the destination takes whichever it
+    // prefers: a word processor usually takes the vector, a chat window the
+    // raster, and neither has to be chosen in advance.
+    auto* data = new QMimeData;
+    QImage image;
+    if (image.loadFromData(png, "png")) data->setImageData(image);
+    data->setData("image/png", png);
+    if (vector) data->setData("image/svg+xml", svg);
+    QApplication::clipboard()->setMimeData(data);
+    statusBar()->showMessage(options.extent == PictureExtent::Selection
+                                 ? "Copied the selection as a picture."
+                                 : "Copied the diagram as a picture.", 7000);
+    return true;
+}
+
+void MainWindow::refresh_download_actions() {
+    // Nothing drawn is nothing to hand on. The entries stay where they are and
+    // go quiet, rather than the row appearing and disappearing as work starts.
+    const auto anything = !canvas_->diagram_bounds().isEmpty();
+    for (auto* action : download_actions_) action->setEnabled(anything);
 }
 
 void MainWindow::load_example() {

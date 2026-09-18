@@ -1,4 +1,6 @@
 #include "app/desktop/diagram_view.hpp"
+#include "app/desktop/document_export.hpp"
+#include "app/desktop/picture_export.hpp"
 
 #include <QApplication>
 #include <QBuffer>
@@ -17,6 +19,8 @@
 #include <QPainter>
 #include <QPointingDevice>
 #include <QWheelEvent>
+#include <QSvgRenderer>
+#include <QXmlStreamReader>
 
 #include <algorithm>
 #include <array>
@@ -2557,6 +2561,262 @@ void synchronization_lifetime_tests() {
     view.synchronize();
     require(view.scene()->items().empty() && view.selected_elements().empty(), "New project clears scene and selection");
 }
+// A picture of the diagram is of the diagram: it holds what was drawn, at the
+// size and on the background that were asked for, and it carries the project
+// inside it in the two formats that have somewhere to put one.
+void picture_export_tests() {
+    SequentialIds ids;
+    application::Editor editor(ids);
+    const auto first = editor.create_entity("Student", {0, 0, 160, 80});
+    const auto second = editor.create_entity("Course", {400, 300, 160, 80});
+    require(first && second, "Picture fixture");
+    const auto student = std::get<domain::EntityId>(*first.created);
+    desktop::DiagramView view(editor);
+    view.resize(800, 600);
+    view.show();
+    QApplication::processEvents();
+
+    // Each extent covers what it says. The whole diagram holds both entities,
+    // a selection holds only what is chosen, and neither is empty.
+    const auto whole = desktop::picture_extent(view, desktop::PictureExtent::WholeDiagram);
+    view.select_elements({domain::ElementRef{student}});
+    const auto chosen = desktop::picture_extent(view, desktop::PictureExtent::Selection);
+    require(!whole.isEmpty() && !chosen.isEmpty(), "A drawn diagram has something to take a picture of");
+    require(whole.width() > chosen.width() && whole.contains(chosen),
+            "A selection covers less of the diagram than the whole of it does");
+
+    desktop::PictureOptions options;
+    options.format = desktop::PictureFormat::Png;
+    options.background = desktop::PictureBackground::White;
+    options.margin = 10;
+    QByteArray png;
+    auto result = desktop::draw_picture(view, options, {}, png);
+    require(result && !png.isEmpty(), "A PNG of the diagram is written");
+    QImage drawn;
+    require(drawn.loadFromData(png, "png"), "And is a PNG that loads");
+    require(drawn.size() == result.pixels, "Whose size is the size that was reported");
+    require(drawn.size() == QSize(qRound(whole.width() + 20), qRound(whole.height() + 20)),
+            "The margin is added to the extent rather than taken out of it");
+
+    // What is selected belongs to the editor, not to the picture. Exporting
+    // with something chosen must draw exactly what exporting with nothing
+    // chosen draws, and must leave the selection where it found it.
+    QByteArray with_selection;
+    require(desktop::draw_picture(view, options, {}, with_selection).ok, "A picture is drawn while something is selected");
+    require(view.selected_elements() == std::vector<domain::ElementRef>{domain::ElementRef{student}},
+            "Exporting gives the selection back afterwards");
+    view.select_elements({});
+    QByteArray without_selection;
+    require(desktop::draw_picture(view, options, {}, without_selection).ok, "And again with nothing selected");
+    require(with_selection == without_selection, "A picture never shows the selection rings of the editor that drew it");
+
+    // The background is the one that was asked for, read off a corner the
+    // diagram does not reach.
+    options.background = desktop::PictureBackground::Transparent;
+    require(desktop::draw_picture(view, options, {}, png) && drawn.loadFromData(png, "png"), "A transparent PNG");
+    require(qAlpha(drawn.pixel(0, 0)) == 0, "Transparent leaves the corner empty");
+    options.background = desktop::PictureBackground::ThemeColour;
+    require(desktop::draw_picture(view, options, {}, png) && drawn.loadFromData(png, "png"), "A PNG on the canvas colour");
+    require(QColor(drawn.pixel(0, 0)) == view.canvas_colour(), "The theme's own canvas colour is what it stands on");
+
+    // Scale multiplies the picture without changing what is in it, and a size
+    // beyond what ERDFlow will draw is refused rather than attempted.
+    options.scale = 2;
+    require(desktop::draw_picture(view, options, {}, png) && drawn.loadFromData(png, "png"), "A PNG at twice the size");
+    require(drawn.width() == qRound((whole.width() + 20) * 2), "Scale multiplies the picture");
+    options.scale = 40;
+    require(!desktop::draw_picture(view, options, {}, png), "A picture too large to draw is refused");
+    options.scale = 1;
+
+    // The project rides inside the two formats that have somewhere to put it,
+    // and comes back out as exactly the bytes that went in.
+    const QByteArray payload = "{\"format\":\"erdflow\",\"format_version\":15}";
+    result = desktop::draw_picture(view, options, payload, png);
+    require(result && result.carried_project, "A PNG carries the project");
+    require(desktop::payload_of_picture(png) == payload, "And gives back exactly the bytes it was given");
+    require(drawn.loadFromData(png, "png"), "A PNG carrying a project is still a PNG");
+
+    options.format = desktop::PictureFormat::Svg;
+    QByteArray svg;
+    result = desktop::draw_picture(view, options, payload, svg);
+    require(result && result.carried_project, "An SVG carries the project");
+    require(desktop::payload_of_picture(svg) == payload, "And gives back exactly the bytes it was given");
+    require(svg.contains("<metadata>") && svg.contains("</svg>"), "In the metadata element, inside a complete SVG");
+    // An SVG has to name a font the machine reading it can resolve. Qt's own
+    // "Sans Serif" is not a family any CSS engine knows, so it must not survive
+    // into a file meant to be opened somewhere else.
+    require(!svg.contains("font-family=\"Sans Serif\""), "No Qt font alias survives into an exported SVG");
+    require(svg.contains("sans-serif"), "The text names a chain ending in a generic family instead");
+    QXmlStreamReader reader(svg);
+    while (!reader.atEnd()) reader.readNext();
+    require(!reader.hasError(), "An SVG carrying a project is still well-formed XML");
+    // Well-formed is not the same as readable. The project riding inside must
+    // leave a picture that still draws, or the file is no use to the recipient
+    // it was sent to, which is the whole reason for carrying it there.
+    {
+        QSvgRenderer renderer(svg);
+        require(renderer.isValid(), "And still an SVG a renderer will draw");
+        QImage sheet(240, 200, QImage::Format_ARGB32_Premultiplied);
+        sheet.fill(Qt::white);
+        QPainter onto(&sheet);
+        renderer.render(&onto);
+        onto.end();
+        bool inked = false;
+        for (int y = 0; y < sheet.height() && !inked; ++y)
+            for (int x = 0; x < sheet.width() && !inked; ++x)
+                if (QColor(sheet.pixel(x, y)) != QColor(Qt::white)) inked = true;
+        require(inked, "That draws the diagram rather than an empty sheet");
+    }
+
+    // Asked to carry nothing, it carries nothing, and says so rather than
+    // leaving the caller to guess.
+    options.carry_project = false;
+    require(desktop::draw_picture(view, options, payload, svg).ok, "An SVG written without the project");
+    require(desktop::payload_of_picture(svg).isEmpty(), "Carries nothing");
+    require(QSvgRenderer(svg).isValid(), "And is the same valid picture without it");
+    options.carry_project = true;
+    result = desktop::draw_picture(view, options, {}, svg);
+    require(result && !result.carried_project && !result.carried_note.isEmpty(),
+            "A picture written without a project to carry says so plainly");
+
+    // A lossy or niche format carries nothing even when asked, because a file
+    // that looks like it holds the project and does not is worse than one that
+    // never claimed to.
+    if (desktop::picture_format_available(desktop::PictureFormat::Jpeg)) {
+        options.format = desktop::PictureFormat::Jpeg;
+        QByteArray jpeg;
+        result = desktop::draw_picture(view, options, payload, jpeg);
+        require(result && !result.carried_project, "JPEG carries no project");
+        require(desktop::payload_of_picture(jpeg).isEmpty(), "And nothing is found inside one");
+        QImage photograph;
+        require(photograph.loadFromData(jpeg, "jpeg"), "But it is a JPEG");
+        require(qAlpha(photograph.pixel(0, 0)) == 255,
+                "Asked for transparency it cannot keep, it is given paper rather than whatever the encoder leaves");
+    }
+
+    // A page is a page: measured in dots per inch rather than pixels.
+    options.format = desktop::PictureFormat::Pdf;
+    QByteArray pdf;
+    require(desktop::draw_picture(view, options, payload, pdf).ok, "A PDF page of the diagram");
+    require(pdf.startsWith("%PDF"), "Which is a PDF");
+    require(desktop::payload_of_picture(pdf).isEmpty(), "Carrying no project, as a page cannot");
+
+    // An ordinary picture that ERDFlow did not write is an ordinary picture,
+    // not an error.
+    require(desktop::payload_of_picture("not a picture at all").isEmpty(), "Bytes that are no picture carry nothing");
+    require(desktop::payload_of_picture("<svg xmlns=\"http://www.w3.org/2000/svg\"/>").isEmpty(),
+            "An SVG from somewhere else carries nothing");
+
+    // Nothing selected is nothing to export, and it is refused with a reason
+    // rather than written as an empty file.
+    view.select_elements({});
+    options.format = desktop::PictureFormat::Png;
+    options.extent = desktop::PictureExtent::Selection;
+    result = desktop::draw_picture(view, options, {}, png);
+    require(!result && !result.error.isEmpty(), "A picture of nothing is refused, with a reason");
+    editor.new_project();
+    view.synchronize();
+    options.extent = desktop::PictureExtent::WholeDiagram;
+    require(!desktop::draw_picture(view, options, {}, png), "And so is a picture of an empty diagram");
+}
+// A listing says in words what the diagram says in shapes. It is not the
+// project and nothing reopens it, so what matters is that it names what is
+// actually there, names it the way the notation means it, and comes out the
+// same twice for the same model.
+void document_export_tests() {
+    SequentialIds ids;
+    application::Editor editor(ids);
+    const auto owner = editor.create_entity("Building", {0, 0, 160, 80});
+    const auto weak = editor.create_entity("Room", {400, 0, 160, 80});
+    require(owner && weak, "Document fixture");
+    const auto building = std::get<domain::EntityId>(*owner.created);
+    const auto room = std::get<domain::EntityId>(*weak.created);
+    require(editor.set_entity_weak(room, true), "A weak entity to list");
+    const auto contains = editor.create_relationship("Contains", {200, 200, 190, 110});
+    const auto relationship = std::get<domain::RelationshipId>(*contains.created);
+    require(editor.set_relationship_kind(relationship, domain::RelationshipKind::Identifying),
+            "Identified through this one");
+    const auto first = editor.connect(relationship, building);
+    require(first && editor.connect(relationship, room), "Joined at both ends");
+    require(editor.update_participant(relationship, *first.participant, domain::Cardinality::One,
+                                      domain::Participation::Total, "owner"),
+            "One side mandatory, and with a role");
+    const auto number = editor.create_attribute("Number", {400, -150, 150, 60}, room);
+    require(number, "A key on the weak entity");
+    require(editor.set_attribute_kind(std::get<domain::AttributeId>(*number.created), domain::AttributeKind::Key),
+            "Made a key");
+    const auto age = editor.create_attribute("Age", {0, -150, 150, 60}, building);
+    require(age && editor.set_attribute_kind(std::get<domain::AttributeId>(*age.created),
+                                             domain::AttributeKind::Derived),
+            "And a derived one on the owner");
+
+    desktop::DiagramView view(editor);
+    view.resize(800, 600);
+    view.show();
+    QApplication::processEvents();
+
+    QByteArray markdown;
+    require(desktop::draw_document(view, editor.project(), desktop::DocumentFormat::Markdown, markdown).ok,
+            "A Markdown data dictionary is written");
+    require(markdown.startsWith("# "), "Opening with the project's own name as a heading");
+    require(markdown.contains("| Entity | Kind |"), "With a table of entities");
+    require(markdown.contains("Building") && markdown.contains("Room"), "Naming what is on the diagram");
+    // A key on a weak entity identifies an instance only once the owner is
+    // known, so a dictionary that called it a key would be saying something
+    // false about the model.
+    require(markdown.contains("Partial key"), "Calling a weak entity's key what it is");
+    require(markdown.contains("Derived"), "And naming the attribute nobody stores");
+    require(markdown.contains("Weak"), "Saying which entity has no key of its own");
+    require(markdown.contains("Identifying"), "And which relationship it is identified through");
+    require(markdown.contains("as owner"), "A role on a side is part of what the side says");
+    require(markdown.contains("(one, mandatory)") && markdown.contains("(many, optional)"),
+            "Each side read as a person would say it rather than as a pair of numbers");
+
+    // The same model twice is the same file, so a listing kept beside the
+    // project in version control shows a change only where one was made.
+    QByteArray again;
+    require(desktop::draw_document(view, editor.project(), desktop::DocumentFormat::Markdown, again).ok, "Again");
+    require(markdown == again, "The same project lists the same way twice");
+
+    QByteArray csv;
+    require(desktop::draw_document(view, editor.project(), desktop::DocumentFormat::Csv, csv).ok, "A CSV listing");
+    require(csv.startsWith("Element,Name,Belongs to,Kind,Detail,Description\n"), "With a header row");
+    require(csv.contains("\"Entity\",\"Building\""), "And one row per element, quoted");
+    require(csv.count('\n') >= 5, "Covering entities, attributes and relationships alike");
+
+    QByteArray html;
+    require(desktop::draw_document(view, editor.project(), desktop::DocumentFormat::Html, html).ok, "An HTML report");
+    require(html.startsWith("<!DOCTYPE html>"), "Which is a web page");
+    // One self-contained page: the diagram travels inside it, so there is no
+    // sidecar file and no link that can break in transit.
+    require(html.contains("<svg") && html.contains("</svg>"), "Carrying the diagram as inline SVG");
+    require(!html.contains("<img"), "Rather than pointing at a picture beside it");
+    require(html.contains("<table"), "Above the data dictionary");
+    require(html.contains("</html>"), "And a complete one");
+    {
+        // The page is HTML rather than XML, so it is not asked to parse as
+        // XML. The picture inside it is XML, and that is worth asking: a
+        // report whose diagram will not draw is a report with a hole in it.
+        const auto start = html.indexOf("<svg");
+        const auto end = html.lastIndexOf("</svg>");
+        require(start >= 0 && end > start, "The diagram is in one piece");
+        require(QSvgRenderer(html.mid(start, end - start + 6)).isValid(),
+                "And is a picture a renderer will draw");
+    }
+
+    QByteArray pdf;
+    require(desktop::draw_document(view, editor.project(), desktop::DocumentFormat::Pdf, pdf).ok, "A PDF report");
+    require(pdf.startsWith("%PDF"), "Which is a PDF");
+    require(pdf.size() > 1000, "With the diagram and the dictionary in it");
+
+    // Nothing drawn is nothing to list, and it is refused with a reason rather
+    // than written as a file with headings and no rows.
+    editor.new_project();
+    view.synchronize();
+    QByteArray empty;
+    const auto refused = desktop::draw_document(view, editor.project(), desktop::DocumentFormat::Markdown, empty);
+    require(!refused.ok && !refused.error.isEmpty(), "An empty project is refused, with a reason");
+}
 } // namespace
 
 int main(int argc, char** argv) {
@@ -2731,6 +2991,8 @@ int main(int argc, char** argv) {
         inheritance_connection_tests();
         inheritance_deletion_tests();
         inheritance_orientation_tests();
+        picture_export_tests();
+        document_export_tests();
         std::cout << "Canvas tests passed\n";
     } catch (const std::exception& exception) {
         std::cerr << "Canvas test failed: " << exception.what() << '\n';

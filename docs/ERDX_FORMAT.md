@@ -490,6 +490,34 @@ format migrations remain future work. Opening another project starts a new
 editing session. Undo history, current selection, hover state, and other
 transient UI state are not persisted.
 
+## The same bytes inside a picture
+
+An exported SVG or PNG can carry the whole project inside it. The payload is
+exactly the bytes this document describes, at the same version, so one reader
+serves the project file and the picture alike and there is no second format to
+keep correct.
+
+- **SVG** carries it in a `metadata` element, as an `erdflow:project` element in
+  the `https://erdflow.app/erdx` namespace, with the bytes base64-encoded and
+  the encoding named on the element.
+- **PNG** carries the same base64 text in a text chunk under the keyword
+  `erdflow-project`. Qt compresses long text as `zTXt`, which is the compressed
+  form of the same mechanism and is read back the same way.
+
+Both places are skipped by every other reader of those formats, so a picture
+carrying a project is an ordinary picture to everything that is not ERDFlow,
+and removing the payload leaves a picture that still draws.
+
+No other format carries a payload. JPEG, WebP, TIFF and PDF are pictures only,
+which is deliberate: a file that looks as though it holds the project and does
+not is worse than one that never claimed to.
+
+Opening a picture is bounded like opening a project, at 64 MiB for the picture
+around the 8 MiB the project itself may take. A picture ERDFlow did not write is
+reported as a picture that carries no project, not as a damaged one. A project
+opened out of a picture has no project file of its own, so the next save asks
+where it should go rather than overwriting the picture with project bytes.
+
 ## Verification
 
 `tests/persistence_tests.cpp` covers exact graph and Unicode roundtrips, copied
@@ -497,6 +525,13 @@ identities, recursive participant IDs, incomplete drafts, unsupported fields and
 versions, duplicate keys, malformed Unicode, invalid references and enums,
 resource limits, failed-save destination preservation, and failed-open session
 preservation. These tests use temporary directories and the real Qt adapter.
+
+`tests/canvas_tests.cpp` covers the payload inside a picture: that SVG and PNG
+give back exactly the bytes they were given, that the picture still parses and
+still draws with the payload in it, that a picture written without one carries
+nothing, and that a picture from anywhere else carries nothing rather than
+failing. `tests/desktop_tests.cpp` exports from the window and opens the result
+back as the project it was.
 
 `connector shapes persist across versions` covers the version 2 roundtrip, a
 version 1 document opening with automatic routing, the upgrade on save, and the

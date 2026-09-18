@@ -64,6 +64,20 @@ public:
     [[nodiscard]] std::vector<domain::ElementRef> selected_elements() const;
     void select_elements(const std::vector<domain::ElementRef>& elements, bool bring_into_view = false);
     void fit_diagram();
+    // What a picture of the diagram would cover, for each of the three extents
+    // a picture may be taken of. An empty rectangle means there is nothing to
+    // take a picture of, which the caller reports rather than writing a file
+    // with nothing in it.
+    [[nodiscard]] QRectF diagram_bounds() const;
+    [[nodiscard]] QRectF selection_bounds() const;
+    [[nodiscard]] QRectF view_bounds() const;
+    // Draws the diagram, and none of the editor looking at it: no grid, no
+    // selection rings, no handles and no paper. The background an exported
+    // picture stands on is the caller's choice, so it is painted by the
+    // caller before this is called rather than assumed here.
+    void render_diagram(QPainter& painter, const QRectF& target, const QRectF& source);
+    // The canvas colour of the theme in use, for a picture asked to stand on it.
+    [[nodiscard]] QColor canvas_colour() const;
     void actual_size();
     void zoom_in();
     void zoom_out();
