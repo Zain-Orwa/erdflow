@@ -869,6 +869,7 @@ void MainWindow::build_actions() {
     action_glyphs_[symbols] = Glyph::Symbols;
     connect(symbols, &QAction::triggered, this, [this] { show_symbols(QStringLiteral("Relational algebra")); });
     canvas_->on_insert_picture = [this](QPointF at) { insert_picture_dialog(at); };
+    canvas_->on_comment = [this](std::vector<domain::CommentTarget> targets) { add_comment(std::move(targets)); };
 
     // Notation follows Connect: it decides how the lines Connect draws are read.
     // The picker draws each option, so the cardinality symbols can be recognised
@@ -1021,8 +1022,22 @@ void MainWindow::build_actions() {
             if (align) canvas_->set_align_to_grid(checked); else canvas_->set_grid_visible(checked);
         });
     }
+    // Remarks left on the diagram. The switch is how the diagram is being
+    // looked at rather than part of it, so it sits with the grid and is not
+    // saved with the document: it quiets every remark at once, for reading the
+    // model or taking a picture of it. The mark on a commented element stays
+    // either way, because a remark nobody can see is a remark nobody can find.
+    auto* show_comments = view->addAction("Show comments");
+    show_comments->setCheckable(true);
+    show_comments->setChecked(true);
+    show_comments->setObjectName("viewShowComments");
+    show_comments->setShortcut(QKeySequence("Ctrl+Shift+M"));
+    show_comments->setToolTip("Show what has been said about the diagram when you point at it. "
+                              "The mark on a commented element stays either way.");
+    connect(show_comments, &QAction::toggled, this, [this](bool checked) { canvas_->set_comments_visible(checked); });
     canvas_->set_align_to_grid(false);
     canvas_->set_grid_visible(true);
+    canvas_->set_comments_visible(true);
     // The paper the diagram is drawn on. It sits with the other choices about
     // how the diagram looks, and unlike them it travels with the document: a
     // diagram drawn on graph paper should open on graph paper.
@@ -1387,6 +1402,10 @@ void MainWindow::refresh_properties() {
     name_edit->setToolTip(text(name(project, ref)));
     // A name longer than its shape is read from its beginning.
     name_edit->setCursorPosition(0);
+    // Right-clicking a chosen word offers to leave a remark on that word alone,
+    // beneath the cut-and-paste entries the field already has: a comment on a
+    // name is often about one part of it rather than the whole of it.
+    offer_text_comment(name_edit);
     form->addRow(field_label("Name", label_tone, panel), shaped);
     connect(name_edit, &QLineEdit::editingFinished, this, [this, ref, name_edit] {
         if (refreshing_ || !exists(editor_.project(), ref)) return;
@@ -1736,6 +1755,7 @@ void MainWindow::refresh_properties() {
     description_edit->setPlainText(text(description(project, ref)));
     description_edit->setPlaceholderText(note ? "Write the note’s text…" : "Explain this object’s meaning…");
     description_edit->setFixedHeight(100);
+    offer_text_comment(description_edit);
     description_edit->commit = [this, ref, description_edit] {
         if (refreshing_ || !exists(editor_.project(), ref)) return;
         const auto value = bytes(description_edit->toPlainText());
@@ -1765,8 +1785,91 @@ void MainWindow::refresh_properties() {
         show_result(editor_.move({{ref, {fields[0]->value(), fields[1]->value(), fields[2]->value(), fields[3]->value()}}}));
     });
     layout->addWidget(apply_geometry);
+    build_comment_section(panel, layout);
     layout->addStretch();
     properties_->setWidget(panel);
+}
+
+void MainWindow::build_comment_section(QWidget* panel, QVBoxLayout* layout) {
+    if (selection_.size() != 1) return;
+    const auto ref = selection_.front();
+    const auto& project = editor_.project();
+    const auto pinned = comments_on(project, ref);
+    if (pinned.empty()) return;
+    const auto& colors = theme(theme_);
+
+    auto* heading = new QLabel(pinned.size() == 1 ? "Comment" : QString("Comments (%1)").arg(pinned.size()), panel);
+    heading->setObjectName("commentHeading");
+    heading->setStyleSheet(QString("font-weight: 700; color: %1;").arg(colors.text.name()));
+    layout->addWidget(heading);
+
+    for (const auto& id : pinned) {
+        const auto& comment = project.comments.at(id);
+        auto* row = new QWidget(panel);
+        row->setObjectName("commentRow");
+        auto* rows = new QVBoxLayout(row);
+        rows->setContentsMargins(10, 8, 10, 8);
+        rows->setSpacing(6);
+        // A remark stands on the theme's warning colour, faintly, so it reads
+        // as something said about the diagram rather than as part of it -- the
+        // same hue the mark on the canvas wears, so the two are plainly one
+        // thing seen in two places.
+        row->setStyleSheet(QString("QWidget#commentRow { background: %1; border: 1px solid %2;"
+                                   " border-radius: 4px; }")
+                               .arg(over(colors.panel, QColor(colors.warning.red(), colors.warning.green(),
+                                                              colors.warning.blue(), 28)).name(),
+                                    colors.border.name()));
+
+        auto* said = new QLabel(text(comment.text), row);
+        said->setObjectName("commentSaid");
+        said->setWordWrap(true);
+        said->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        // A remark that has been put away is still readable here, faded, so it
+        // can be brought back; putting away quiets the diagram, not the panel.
+        if (comment.hidden) said->setStyleSheet(QString("color: %1; font-style: italic;").arg(colors.muted.name()));
+        rows->addWidget(said);
+
+        // Where else this one remark is pinned, since a remark covering several
+        // things is read differently from one about this alone.
+        if (comment.targets.size() > 1) {
+            const auto others = comment.targets.size() - 1;
+            auto* elsewhere = new QLabel(others == 1 ? QString("Also on 1 other thing.")
+                                                     : QString("Also on %1 other things.").arg(others), row);
+            elsewhere->setObjectName("commentElsewhere");
+            elsewhere->setStyleSheet(QString("color: %1; font-size: 11px;").arg(colors.muted.name()));
+            rows->addWidget(elsewhere);
+        }
+
+        auto* buttons = new QHBoxLayout;
+        buttons->setSpacing(6);
+        auto* edit = new QPushButton("Edit…", row);
+        edit->setObjectName("commentEdit");
+        connect(edit, &QPushButton::clicked, this, [this, id] {
+            const auto found = editor_.project().comments.find(id);
+            if (found == editor_.project().comments.end()) return;
+            const auto words = ask_for_comment(text(found->second.text), {});
+            if (!words.isEmpty()) show_result(editor_.set_comment_text(id, bytes(words)), false);
+        });
+        auto* put_away = new QPushButton(comment.hidden ? "Show" : "Hide", row);
+        put_away->setObjectName("commentHide");
+        put_away->setToolTip(comment.hidden
+            ? "Bring this remark back, so pointing at what it is pinned to shows it again."
+            : "Put this remark away without deleting it. Its mark stays on the diagram.");
+        connect(put_away, &QPushButton::clicked, this, [this, id, was = comment.hidden] {
+            show_result(editor_.set_comment_hidden(id, !was), false);
+        });
+        auto* remove = new QPushButton("Delete", row);
+        remove->setObjectName("commentDelete");
+        connect(remove, &QPushButton::clicked, this, [this, id] {
+            show_result(editor_.erase_comment(id), false);
+        });
+        buttons->addWidget(edit);
+        buttons->addWidget(put_away);
+        buttons->addWidget(remove);
+        buttons->addStretch();
+        rows->addLayout(buttons);
+        layout->addWidget(row);
+    }
 }
 
 void MainWindow::refresh_validation() {
@@ -2556,6 +2659,134 @@ bool MainWindow::copy_picture() {
                                  ? "Copied the selection as a picture."
                                  : "Copied the diagram as a picture.", 7000);
     return true;
+}
+
+QString MainWindow::ask_for_comment(const QString& said, const QString& about) {
+    // A remark is prose, often a sentence or two, so it is written in a box
+    // that takes several lines rather than in a single-line field.
+    QDialog dialog(this);
+    dialog.setObjectName("commentDialog");
+    dialog.setWindowTitle(said.isEmpty() ? "Add comment" : "Edit comment");
+    auto* layout = new QVBoxLayout(&dialog);
+    layout->setContentsMargins(14, 14, 14, 14);
+    layout->setSpacing(8);
+    auto* about_label = new QLabel(about, &dialog);
+    about_label->setObjectName("commentAbout");
+    about_label->setWordWrap(true);
+    layout->addWidget(about_label);
+    auto* editor = new QPlainTextEdit(said, &dialog);
+    editor->setObjectName("commentText");
+    editor->setPlaceholderText("What should whoever reads this diagram know?");
+    editor->setMinimumSize(360, 120);
+    layout->addWidget(editor);
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    buttons->button(QDialogButtonBox::Ok)->setObjectName("commentAccept");
+    buttons->button(QDialogButtonBox::Cancel)->setObjectName("commentCancel");
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    layout->addWidget(buttons);
+    editor->setFocus();
+    if (dialog.exec() != QDialog::Accepted) return {};
+    return editor->toPlainText().trimmed();
+}
+
+namespace {
+// What a remark is being left on, said plainly, so the box asking for the words
+// says what they will be pinned to.
+QString about_targets(const domain::Project& project, const std::vector<domain::CommentTarget>& targets) {
+    if (targets.size() > 1) return QString("On %1 things at once.").arg(targets.size());
+    if (targets.empty()) return {};
+    if (const auto* element = std::get_if<domain::ElementRef>(&targets.front()))
+        return "On " + kind_label(project, *element).toLower() + " " + display_name(project, *element) + ".";
+    if (std::holds_alternative<domain::ConnectorRef>(targets.front())) return "On this line.";
+    const auto& anchor = std::get<domain::TextAnchor>(targets.front());
+    return QString("On the %1 of %2.")
+        .arg(anchor.field == domain::TextField::Name ? "name" : "description",
+             display_name(project, anchor.owner));
+}
+} // namespace
+
+bool MainWindow::add_comment(std::vector<domain::CommentTarget> targets, const QString& said) {
+    if (targets.empty()) return false;
+    finish_field_edit();
+    auto words = said;
+    if (words.isEmpty()) words = ask_for_comment({}, about_targets(editor_.project(), targets));
+    if (words.isEmpty()) return false;
+    const auto result = editor_.create_comment(bytes(words), std::move(targets));
+    show_result(result, false);
+    return bool(result);
+}
+
+void MainWindow::offer_text_comment(QWidget* field) {
+    field->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(field, &QWidget::customContextMenuRequested, this, [this, field](const QPoint& at) {
+        // The standard entries stay: taking cut, copy and paste away from a
+        // text field to add one entry of our own would be a poor trade.
+        auto* line = qobject_cast<QLineEdit*>(field);
+        auto* block = qobject_cast<QPlainTextEdit*>(field);
+        std::unique_ptr<QMenu> menu(line ? line->createStandardContextMenu()
+                                         : block ? block->createStandardContextMenu() : nullptr);
+        if (!menu) return;
+        const bool chosen = line ? line->hasSelectedText() : block->textCursor().hasSelection();
+        menu->addSeparator();
+        auto* comment = menu->addAction("Comment on selection…");
+        comment->setObjectName("fieldComment");
+        comment->setEnabled(chosen);
+        comment->setToolTip(chosen ? "Pin a remark to the words you have chosen."
+                                   : "Choose some words first, and the remark is pinned to those.");
+        const auto name = field->objectName();
+        connect(comment, &QAction::triggered, this, [this, name] { comment_on_selected_text(name); });
+        menu->exec(field->mapToGlobal(at));
+    });
+}
+
+namespace {
+// How many characters stand before a position that Qt counts in UTF-16 code
+// units. A comment's range is counted in characters so that it means the same
+// thing in the file, in the domain and in the panel, none of which index text
+// the way Qt does.
+std::uint32_t characters_before(const QString& text, int units) {
+    const auto clamped = std::clamp(units, 0, static_cast<int>(text.size()));
+    return static_cast<std::uint32_t>(text.left(clamped).toUcs4().size());
+}
+} // namespace
+
+bool MainWindow::comment_on_selected_text(const QString& field_name, const QString& said) {
+    if (selection_.size() != 1) return false;
+    const auto ref = selection_.front();
+    domain::TextAnchor anchor;
+    anchor.owner = ref;
+    QString whole;
+    int begin_units = 0;
+    int end_units = 0;
+    if (auto* line = properties_->findChild<QLineEdit*>(field_name)) {
+        if (!line->hasSelectedText()) return false;
+        anchor.field = domain::TextField::Name;
+        whole = line->text();
+        begin_units = line->selectionStart();
+        end_units = begin_units + static_cast<int>(line->selectedText().size());
+    } else if (auto* block = properties_->findChild<QPlainTextEdit*>(field_name)) {
+        const auto cursor = block->textCursor();
+        if (!cursor.hasSelection()) return false;
+        anchor.field = domain::TextField::Description;
+        whole = block->toPlainText();
+        begin_units = cursor.selectionStart();
+        end_units = cursor.selectionEnd();
+    } else {
+        return false;
+    }
+    // The field may hold text that has not been committed yet. A remark is
+    // pinned into what the model actually holds, so the writing is committed
+    // first and the range is measured against the result.
+    finish_field_edit();
+    const auto stored = text(anchor.field == domain::TextField::Name ? name(editor_.project(), ref)
+                                                                     : description(editor_.project(), ref));
+    if (stored != whole) whole = stored;
+    anchor.begin = characters_before(whole, begin_units);
+    const auto end = characters_before(whole, end_units);
+    if (end <= anchor.begin) return false;
+    anchor.length = end - anchor.begin;
+    return add_comment({domain::CommentTarget{anchor}}, said);
 }
 
 void MainWindow::refresh_download_actions() {

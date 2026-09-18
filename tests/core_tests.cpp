@@ -279,6 +279,7 @@ void participants_recursive_roles_and_bounds() {
     CHECK(editor.project().relationships.at(rel).participants.size() == 1);
     CHECK(editor.undo());
     CHECK(editor.project() == before);
+
 }
 
 void deletion_restores_complete_graph() {
@@ -1150,6 +1151,108 @@ void binary_ratios_and_reversal() {
 
 } // namespace
 
+// A comment is a remark about the work rather than part of it: pinned to things
+// instead of placed, able to cover several at once, and able to be put away
+// without being deleted. None of that is true of a Note, which is a card on the
+// canvas, or of a description, which documents the model itself.
+void comments_are_pinned_to_things() {
+    TestIds ids;
+    Editor editor(ids);
+    const auto first = editor.create_entity("Student", {0, 0, 160, 80});
+    const auto second = editor.create_entity("Course", {400, 0, 160, 80});
+    const auto joined = editor.create_relationship("Enrolled", {200, 200, 190, 110});
+    CHECK(first && second && joined);
+    const auto student = std::get<EntityId>(*first.created);
+    const auto course = std::get<EntityId>(*second.created);
+    const auto enrolled = std::get<RelationshipId>(*joined.created);
+    const auto side = editor.connect(enrolled, student);
+    CHECK(side);
+    const auto participant = *side.participant;
+
+    // One remark over several things at once, which is the point: a reviewer
+    // says a thing once and it appears everywhere it applies.
+    CHECK(editor.create_comment("These two need a join table.",
+                                {CommentTarget{ElementRef{student}}, CommentTarget{ElementRef{course}}}));
+    CHECK(editor.project().comments.size() == 1);
+    const auto id = editor.project().comments.begin()->first;
+    CHECK(comments_on(editor.project(), ElementRef{student}) == std::vector<CommentId>{id});
+    CHECK(comments_on(editor.project(), ElementRef{course}) == std::vector<CommentId>{id});
+    CHECK(comments_on(editor.project(), ElementRef{enrolled}).empty());
+
+    // A line can carry one of its own: a remark about a cardinality belongs on
+    // the line rather than on either shape it joins.
+    CHECK(editor.create_comment("Should this be total?", {CommentTarget{ConnectorRef{participant}}}));
+    CHECK(comments_on_connector(editor.project(), ConnectorRef{participant}).size() == 1);
+
+    // And a remark can be pinned into part of what somebody wrote.
+    TextAnchor anchor{ElementRef{student}, TextField::Name, 0, 7};
+    CHECK(editor.create_comment("Is this the right word?", {CommentTarget{anchor}}));
+    // A remark pinned into an element's own writing counts as a remark on it,
+    // so the mark appears on the shape rather than being buried in a panel.
+    CHECK(comments_on(editor.project(), ElementRef{student}).size() == 2);
+
+    // Pinned to nothing is refused rather than saved: it could never be found.
+    CHECK(!editor.create_comment("Nowhere", {}));
+    CHECK(!editor.create_comment("Gone", {CommentTarget{ElementRef{EntityId{Uuid{}}}}}));
+    // A range outside the text it is pinned into is refused too.
+    CHECK(!editor.create_comment("Past the end", {CommentTarget{TextAnchor{ElementRef{student}, TextField::Name, 0, 99}}}));
+
+    // Put away without being deleted, and brought back.
+    CHECK(editor.set_comment_hidden(id, true));
+    CHECK(editor.project().comments.at(id).hidden);
+    CHECK(editor.set_comment_hidden(id, false));
+    CHECK(!editor.project().comments.at(id).hidden);
+
+    // Shortening the text a remark is pinned into must not refuse the edit, and
+    // must not lose the remark: the range is held inside what the text now is.
+    CHECK(editor.rename(ElementRef{student}, "Stu"));
+    const auto held = std::find_if(editor.project().comments.begin(), editor.project().comments.end(),
+                                   [](const auto& entry) {
+                                       return entry.second.text == "Is this the right word?";
+                                   });
+    CHECK(held != editor.project().comments.end());
+    const auto& moved = std::get<TextAnchor>(held->second.targets.front());
+    CHECK(moved.begin + moved.length <= character_count(name(editor.project(), ElementRef{student})));
+    // The half-joined relationship in this fixture is a warning, as an
+    // unfinished draft should be; nothing about the held range blocks a save.
+    const auto findings = validate(editor.project());
+    CHECK(std::none_of(findings.begin(), findings.end(), [](const Issue& issue) { return issue.blocks_save; }));
+
+    // Deleting a thing unpins every remark on it, and a remark left pinned to
+    // nothing goes with it -- in the same edit, so one undo brings back the
+    // element, the line and what was said about them together.
+    const auto before = editor.project();
+    CHECK(editor.erase({ElementRef{student}}));
+    CHECK(!editor.project().comments.contains(held->first));
+    const auto pair = editor.project().comments.find(id);
+    CHECK(pair != editor.project().comments.end());
+    CHECK(pair->second.targets.size() == 1);
+    CHECK(std::get<ElementRef>(pair->second.targets.front()) == ElementRef{course});
+    // The line went with the entity, so the remark about the line went too.
+    CHECK(comments_on_connector(editor.project(), ConnectorRef{participant}).empty());
+    CHECK(editor.undo());
+    CHECK(editor.project() == before);
+
+    // A triangle goes when its supertype does, though nobody asked for the
+    // triangle. A remark pinned to it has to go with it in that same edit, or
+    // the deletion would be refused for a remark pointing at nothing.
+    const auto parent = editor.create_entity("Person", {0, 400, 160, 80});
+    const auto triangle = editor.create_specialization("Kind", {0, 520, 96, 74}, Inheritance::Specialization);
+    CHECK(parent && triangle);
+    const auto person = std::get<EntityId>(*parent.created);
+    const auto isa = std::get<SpecializationId>(*triangle.created);
+    CHECK(editor.set_supertype(isa, person));
+    CHECK(editor.create_comment("Is this hierarchy worth it?", {CommentTarget{ElementRef{isa}}}));
+    const auto on_triangle = comments_on(editor.project(), ElementRef{isa});
+    CHECK(on_triangle.size() == 1);
+    const auto counted = editor.project().comments.size();
+    CHECK(editor.erase({ElementRef{person}}));
+    CHECK(!editor.project().specializations.contains(isa));
+    CHECK(editor.project().comments.size() == counted - 1);
+    CHECK(editor.undo());
+    CHECK(editor.project().comments.size() == counted);
+}
+
 int main() {
     const std::pair<const char*, std::function<void()>> tests[] = {
         {"identity and work in progress", identity_and_work_in_progress},
@@ -1175,6 +1278,7 @@ int main() {
         {"coloured specialization cascade restores exactly", coloured_specialization_cascade_restores_exactly},
         {"specializations carry inheritance rules", specializations_carry_inheritance_rules},
         {"binary ratios and reversal", binary_ratios_and_reversal},
+        {"comments are pinned to things", comments_are_pinned_to_things},
     };
     std::size_t failures = 0;
     for (const auto& [name, test] : tests) {

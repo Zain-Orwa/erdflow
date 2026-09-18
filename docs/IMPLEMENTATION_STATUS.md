@@ -23,7 +23,7 @@ not been built yet. Their presence in those documents is not a completion claim.
   ruling is in use the editing grid's own dots step aside. The paper travels
   with the document rather than with the application, unlike the theme: a
   diagram drawn on graph paper opens on graph paper. Project files are
-  version 14.
+  version 16.
 - A selection's lines can be locked or released together. Right-click an
   element and **Lock these connectors** pins every line the selection touches
   where it is drawn now, so they stop sliding as the shapes are moved;
@@ -90,9 +90,9 @@ not been built yet. Their presence in those documents is not a completion claim.
   swapping the properties panel over to them; one that would land exactly on
   another steps down and across until it finds room. It is moved, coloured,
   copied, deleted and undone like any other element, and underneath it is a
-  note marked plain, which is what the file records, so project files are
-  version 15. The gallery is a tool window that never takes activation, so
-  the field being written in keeps its caret while its character is chosen.
+  note marked plain, which is what the file records. The gallery is a tool
+  window that never takes activation, so the field being written in keeps its
+  caret while its character is chosen.
 - Pictures and notes as visual aids on the canvas. **Insert → Picture…** places
   an image from a file (PNG and JPEG bytes are kept as they are; other formats
   and large images are re-encoded, scaled to at most 1024 pixels) in the
@@ -274,11 +274,55 @@ not been built yet. Their presence in those documents is not a completion claim.
   the surface from solid to outline-only over whatever colour it has, the
   theme's own included, for one element or the whole selection. Colour
   changes are undoable and saved with the project.
-- Versioned `.erdx` JSON save/load, currently format version 15. Versions 1 to
-  14 still open and upgrade on save. Incomplete but structurally valid diagrams
+- Versioned `.erdx` JSON save/load, currently format version 16. Versions 1 to
+  15 still open and upgrade on save. Incomplete but structurally valid diagrams
   can be saved. Invalid/unsupported files leave the open project intact.
 - Safe file replacement, Save/Discard/Cancel protection, focused text committed
   before save, clean-state tracking, and reopening the file saved at the prompt.
+- **Comments** — remarks left on the work while reviewing it. A comment is not
+  the Note element, which is a card placed on the canvas and part of the
+  drawing, and it is not an element's description, which documents the model
+  and is meant to travel forward into the schema. It is about the work rather
+  than part of it, and per [ADR-017](adr/ADR-017-REVIEW-COMMENTS.md) the three
+  are kept apart.
+- A comment is **pinned rather than placed**: it has no position, colour or
+  transparency of its own. It can be pinned to an **element**, to a **line** —
+  a remark about a cardinality belongs on the line rather than on either shape
+  it joins — or to a **range of text** inside a name or description, which is
+  how a remark comes to be about one word rather than a whole thing. Right-click
+  an element or a line for **Comment…**, or choose some words in the Name or
+  Description field and take **Comment on selection…** from the field's own
+  menu.
+- **One remark may be pinned to several things at once**, so it is written once
+  and appears on all of them. Selecting several elements and choosing **Comment
+  on selection…** does exactly that, and the properties panel says how many
+  other things each remark also covers.
+- Pointing at something carrying a remark **shows what was written**. A
+  commented element or line carries a small mark whether or not remarks are
+  being shown, because a remark nobody can see is a remark nobody can find. The
+  mark is solid when pointing would say something and hollow when it would not.
+- Two levels of hiding, which are different in kind and stored differently.
+  **View → Show comments** (Ctrl+Shift+M) quiets every remark at once; it is
+  how the diagram is being looked at, like the grid, so it is not saved with
+  the document and does not enter the undo history. **Hide** on a single
+  comment, in the properties panel, puts that remark away without deleting it;
+  that belongs to the comment, travels with the document and undoes like any
+  other edit.
+- The properties panel lists the remarks on whatever is selected, and each can
+  be read, reworded, put away, brought back or deleted there.
+- A comment never outlives what it is pinned to. Deleting an element or cutting
+  a line unpins every comment pinned to it, and a comment left pinned to
+  nothing goes with it in the same edit, so one undo brings back the element,
+  the line and the remark about them together. Editing text a remark is pinned
+  into neither refuses the edit nor drops the remark: the range is held inside
+  the text the field now has. Ranges are counted in characters, so they mean
+  the same thing in the file, in the domain and in the panel.
+- A comment records no author, because there are no accounts to name one. That
+  is not a statement that comments have no author: the format is additive, so
+  an author is added when accounts are.
+- An inheritance link cannot carry a comment. It is anchored to its triangle
+  rather than being a connector and has no identity of its own to pin to, so a
+  remark about one goes on the triangle.
 - Work leaves ERDFlow through **Download**, a tab of its own and a menu under
   File, the way a document application offers it. One word is used in both
   places, and one list holds every format ERDFlow writes.
@@ -353,7 +397,7 @@ geometry changes use **Apply position and size**.
 
 | Phase | Evidence and remaining work |
 | --- | --- |
-| 0 — Architecture | Completed review; ADR-001–013 accepted. ADR-014 records implementation choices. ADR-015 records export and interchange formats, whose picture half is now implemented and whose relational half is not; ADR-016 records project organisation and the start experience, which is not implemented. |
+| 0 — Architecture | Completed review; ADR-001–013 accepted. ADR-014 records implementation choices. ADR-015 records export and interchange formats, whose picture half is now implemented and whose relational half is not; ADR-016 records project organisation and the start experience, which is not implemented; ADR-017 records review comments, which are implemented and are deliberately kept apart from an element's description and from the Note element. |
 | 1 — Build foundation | Exit criteria met: layered CMake targets, warning flags, Debug/Release, passing suites, macOS launch, and committed repository state. Windows/Linux instructions exist but those platforms are unverified. |
 | 2 — Shell | Functional desktop shell delivered. Future Schema/Table/SQL/Data navigation waits for usable destinations. |
 | 3 — Commands | Implemented Qt-free semantic operations, atomic deltas, dirty state, bounded undo/redo. |
@@ -395,7 +439,12 @@ measurements. GUI checks currently use Qt's offscreen platform on macOS; the
 rendered example was visually inspected. This does not prove native dialogs,
 platform accessibility, or interaction performance on Windows/Linux.
 
-Useful regression checks include the listings — that each names what is
+Useful regression checks include comments — that one remark pinned to several
+things is found on each of them, that a range held in shortened text neither
+refuses the edit nor blocks a save, that deleting a thing takes the remarks
+about it and one undo brings them all back, that the switch quiets every remark
+without deleting any, and that all three kinds of target survive a round trip
+through the file and are never confused for one another; the listings — that each names what is
 actually on the diagram, calls a weak entity's key a partial key, reads each
 side of a relationship as a person would say it, and comes out the same twice
 for the same model; picture export — that a picture never shows

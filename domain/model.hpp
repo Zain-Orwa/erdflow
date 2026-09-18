@@ -29,6 +29,7 @@ using SpecializationId = Id<struct SpecializationTag>;
 using ParticipantId = Id<struct ParticipantTag>;
 using PictureId = Id<struct PictureTag>;
 using NoteId = Id<struct NoteTag>;
+using CommentId = Id<struct CommentTag>;
 // A specialization is a placed element of its own: it carries the ISA triangle
 // on the canvas and the constraints that decide how it converts to relations.
 // A picture and a note are placed elements too, though not database objects:
@@ -219,6 +220,53 @@ struct Background {
     auto operator<=>(const Background&) const = default;
 };
 
+// Which of an element's two written fields a comment is pinned into. These are
+// the only two: everything on the diagram carries a name and a description, and
+// nothing else it carries is prose a reader would want to remark on.
+enum class TextField { Name, Description };
+
+// A comment pinned to part of what somebody wrote rather than to the whole of
+// an element: the second word of a name, a sentence in a description.
+//
+// The range is counted in characters rather than in bytes, so it means the same
+// thing however the text is stored and however the presentation layer indexes
+// it. A zero length is a caret between two characters, which is what a remark
+// about a missing word is pinned to.
+struct TextAnchor {
+    ElementRef owner;
+    TextField field = TextField::Name;
+    std::uint32_t begin = 0;
+    std::uint32_t length = 0;
+    auto operator<=>(const TextAnchor&) const = default;
+};
+
+// What a comment is pinned to: a whole element, one of the lines between them,
+// or a range of the text inside an element's name or description.
+using CommentTarget = std::variant<ElementRef, ConnectorRef, TextAnchor>;
+
+// A remark somebody has left on the diagram while reviewing it. This is not the
+// Note element, which is a card placed on the canvas and is part of the
+// drawing; and it is not an element's description, which documents the model
+// and travels forward into the schema. A comment is about the work rather than
+// part of it: it is pinned to things rather than placed, it can be pinned to
+// several things at once so one remark covers a whole area, and it can be put
+// away without being deleted.
+//
+// It records no author yet, because there are no accounts to name one. The
+// format is versioned and additive, so an author is added when accounts are,
+// without disturbing anything written here.
+struct Comment {
+    CommentId id;
+    std::string text;
+    // Everything this one remark is pinned to. At least one, because a comment
+    // pinned to nothing could never be found again.
+    std::vector<CommentTarget> targets;
+    // Put away without being deleted: the mark stays on the things it is
+    // pinned to, and the text stops appearing when they are pointed at.
+    bool hidden = false;
+    auto operator<=>(const Comment&) const = default;
+};
+
 struct Project {
     ProjectId id;
     std::string name = "Untitled";
@@ -228,6 +276,10 @@ struct Project {
     std::map<SpecializationId, Specialization> specializations;
     std::map<PictureId, Picture> pictures;
     std::map<NoteId, Note> notes;
+    // Review remarks, kept apart from the drawing because that is what they
+    // are: a comment is pinned to the model rather than placed on the canvas,
+    // so it has no layout, no colour and no transparency of its own.
+    std::map<CommentId, Comment> comments;
     std::map<ElementRef, Rect> layout;
     // How the user has shaped each connector they have touched. An absent entry
     // means the connector is bent and joined entirely automatically.
@@ -265,6 +317,15 @@ struct Issue {
 [[nodiscard]] bool connector_exists(const Project& project, const ConnectorRef& ref);
 // The element a participant attaches to, as a general element reference.
 [[nodiscard]] ElementRef target_ref(const ParticipantTarget& target);
+// Whether a comment's target still refers to something that is there.
+[[nodiscard]] bool target_exists(const Project& project, const CommentTarget& target);
+// The comments pinned to one element, one connector, or anything at all, in a
+// stable order. A caller asking what to draw on a shape asks this.
+[[nodiscard]] std::vector<CommentId> comments_on(const Project& project, const ElementRef& ref);
+[[nodiscard]] std::vector<CommentId> comments_on_connector(const Project& project, const ConnectorRef& ref);
+// How many characters a piece of text holds, which is what a text anchor's
+// range is counted in.
+[[nodiscard]] std::size_t character_count(const std::string& text);
 [[nodiscard]] std::string name(const Project& project, const ElementRef& ref);
 [[nodiscard]] std::string description(const Project& project, const ElementRef& ref);
 [[nodiscard]] std::vector<Issue> validate(const Project& project);
@@ -283,6 +344,11 @@ inline constexpr double max_symbol_size = 4000;
 // well inside the file limit, so a diagram can carry a few pictures and still
 // have room for the model.
 inline constexpr std::size_t max_image_bytes = 2U * 1024U * 1024U;
+// A comment's own limits. The text is bounded like a description, because it
+// is prose of the same kind; the number of things one remark may be pinned to
+// is bounded like everything else that refers to elements.
+inline constexpr std::size_t max_comment_bytes = max_description_bytes;
+inline constexpr std::size_t max_comment_targets = max_elements;
 inline constexpr std::uint8_t max_transparency = 100;
 inline constexpr std::uint8_t max_strength = 100;
 

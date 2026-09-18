@@ -1,4 +1,4 @@
-# ERDX project format — versions 1 to 15
+# ERDX project format — versions 1 to 16
 
 **Status:** Implemented Conceptual ERD format; version 15 is current  
 **Date:** 2026-09-16
@@ -489,6 +489,38 @@ background serialization, cancellation, autosave/recovery, backup history, and
 format migrations remain future work. Opening another project starts a new
 editing session. Undo history, current selection, hover state, and other
 transient UI state are not persisted.
+
+## Comments
+
+Version 16 adds review comments, written as a `comments` array beside the
+elements. A comment is not an element: it has no layout, no colour and no
+transparency, because it is pinned to things rather than placed on the canvas.
+
+Each carries its `id`, its `text`, whether it is `hidden`, and the `targets` it
+is pinned to. A target names its own kind, because the same identifier means
+different things in different roles — an attribute identifier is one thing as an
+element and another as the line that owns it, and a reader must never have to
+guess which was meant:
+
+- `{"kind": "element", "element": {"type": …, "id": …}}`
+- `{"kind": "connector", "link": {"type": "attribute"|"participant", "id": …}}`
+- `{"kind": "text", "element": …, "field": "name"|"description", "begin": n, "length": n}`
+
+A text range is counted in **characters**, not in bytes and not in UTF-16 code
+units, so it means the same thing in the file, in the domain and in the
+interface. Both offsets are whole and not negative, and the range must lie
+inside the text it points into.
+
+A comment must be pinned to at least one thing that exists, and must say
+something. A comment pinned to nothing could never be found again, so it is
+refused rather than saved; deleting the last thing a comment is pinned to
+deletes the comment in the same edit.
+
+A comment records no author. ERDFlow has no accounts yet, so there is nothing to
+name; the format is additive, so an author is added when accounts are.
+
+A file written before version 16 carries no comments, which is all it could
+carry, and none are invented for it.
 
 ## The same bytes inside a picture
 

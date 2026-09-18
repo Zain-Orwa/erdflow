@@ -27,8 +27,10 @@ namespace {
 // version 12 lets an element's surface be see-through by a percentage;
 // version 13 adds weak entities and identifying relationships; version 14 adds
 // the paper the diagram is drawn on; version 15 lets a note be a plain one, a
-// single character drawn bare on the diagram.
-constexpr int current_format_version = 15;
+// single character drawn bare on the diagram; version 16 adds review comments,
+// pinned to elements, to the lines between them, or into a range of the text
+// somebody wrote.
+constexpr int current_format_version = 16;
 QString text(const std::string& value) { return QString::fromUtf8(value.data(), static_cast<qsizetype>(value.size())); }
 Uuid bytes_of(const QUuid& value) {
     Uuid result;
@@ -87,6 +89,31 @@ ConnectorRef parse_connector_reference(const QJsonValue& value) {
     if (type == "attribute") return AttributeId{id};
     if (type == "participant") return ParticipantId{id};
     invalid("Unsupported connector link type.");
+}
+// What a comment is pinned to. The three kinds are told apart by a word rather
+// than by shape, because an attribute identifier means one thing as an element
+// and another as the line that owns it, and a reader must never have to guess
+// which was meant.
+QJsonObject comment_target(const CommentTarget& target) {
+    if (const auto* element = std::get_if<ElementRef>(&target))
+        return {{"kind", QLatin1String("element")}, {"element", reference(*element)}};
+    if (const auto* connector = std::get_if<ConnectorRef>(&target))
+        return {{"kind", QLatin1String("connector")}, {"link", connector_reference(*connector)}};
+    const auto& anchor = std::get<TextAnchor>(target);
+    return {{"kind", QLatin1String("text")}, {"element", reference(anchor.owner)},
+            {"field", QLatin1String(anchor.field == TextField::Name ? "name" : "description")},
+            {"begin", static_cast<double>(anchor.begin)},
+            {"length", static_cast<double>(anchor.length)}};
+}
+// A character offset into somebody's writing: whole, not negative, and no
+// larger than the text could possibly be. Validation then checks it against the
+// text it actually points into.
+std::uint32_t comment_offset(const QJsonValue& value) {
+    if (!value.isDouble()) invalid("A comment's text range must be a number.");
+    const auto number = value.toDouble();
+    if (!std::isfinite(number) || number < 0 || number != std::floor(number) || number > max_comment_bytes)
+        invalid("A comment's text range must be a whole, non-negative offset.");
+    return static_cast<std::uint32_t>(number);
 }
 ElementRef parse_ref(const QJsonValue& value) {
     auto o = object(value, {"type", "id"});
@@ -373,12 +400,19 @@ QByteArray ErdxProjectStore::encode(const Project& project) {
             {"child_anchor", connector.child_anchor ? QJsonValue(*connector.child_anchor) : QJsonValue()},
             {"waypoints", route}});
     }
+    QJsonArray comments;
+    for (const auto& [id, comment] : project.comments) {
+        QJsonArray targets;
+        for (const auto& target : comment.targets) targets.append(comment_target(target));
+        comments.append(QJsonObject{{"id", uuid_text(id.value)}, {"text", text(comment.text)},
+                                    {"targets", targets}, {"hidden", comment.hidden}});
+    }
     auto bytes = QJsonDocument(QJsonObject{{"format", "erdflow"}, {"format_version", current_format_version},
         {"project", QJsonObject{{"id", uuid_text(project.id.value)}, {"name", text(project.name)},
         {"entities", entities}, {"attributes", attributes}, {"relationships", relationships},
         {"layout", layout}, {"connectors", connectors}, {"colours", colours},
         {"specializations", specializations}, {"pictures", pictures}, {"notes", notes},
-        {"transparency", transparency},
+        {"comments", comments}, {"transparency", transparency},
         {"background", QJsonObject{{"style", background_name(project.background.style)},
                                    {"strength", project.background.strength},
                                    {"image", image_text(project.background.image)}}}}}}).toJson(QJsonDocument::Indented);
@@ -436,7 +470,12 @@ application::LoadResult ErdxProjectStore::decode(const QByteArray& input) {
         // Version 15 lets a note be a plain one. A note written by an earlier
         // version is a card, which is what those files meant.
         const bool plain_notes = number_version >= 15;
-        const auto data = papered
+        // Version 16 adds review comments. A file written before it carries
+        // none, which is all it could carry.
+        const bool commented = number_version >= 16;
+        const auto data = commented
+            ? object(root["project"], {"id", "name", "entities", "attributes", "relationships", "layout", "connectors", "specializations", "colours", "pictures", "notes", "comments", "transparency", "background"})
+            : papered
             ? object(root["project"], {"id", "name", "entities", "attributes", "relationships", "layout", "connectors", "specializations", "colours", "pictures", "notes", "transparency", "background"})
             : translucent
             ? object(root["project"], {"id", "name", "entities", "attributes", "relationships", "layout", "connectors", "specializations", "colours", "pictures", "notes", "transparency"})
@@ -615,6 +654,39 @@ application::LoadResult ErdxProjectStore::decode(const QByteArray& input) {
                     note.plain = o["plain"].toBool();
                 }
                 if (!project.notes.emplace(note.id, std::move(note)).second) invalid("Duplicate note identifier.");
+            }
+        }
+        if (commented) {
+            for (const auto& value : array(data["comments"])) {
+                const auto o = object(value, {"id", "text", "targets", "hidden"});
+                Comment comment{CommentId{parse_id(o["id"])}, string(o["text"], max_comment_bytes), {}, false};
+                if (!o["hidden"].isBool()) invalid("A comment's hidden flag must be true or false.");
+                comment.hidden = o["hidden"].toBool();
+                for (const auto& entry : array(o["targets"])) {
+                    const auto target = entry.toObject();
+                    const auto kind = string(target.value("kind"));
+                    if (kind == "element") {
+                        comment.targets.emplace_back(parse_ref(object(entry, {"kind", "element"})["element"]));
+                    } else if (kind == "connector") {
+                        comment.targets.emplace_back(
+                            parse_connector_reference(object(entry, {"kind", "link"})["link"]));
+                    } else if (kind == "text") {
+                        const auto anchored = object(entry, {"kind", "element", "field", "begin", "length"});
+                        TextAnchor written;
+                        written.owner = parse_ref(anchored["element"]);
+                        const auto field = string(anchored["field"]);
+                        if (field == "name") written.field = TextField::Name;
+                        else if (field == "description") written.field = TextField::Description;
+                        else invalid("Unsupported comment text field.");
+                        written.begin = comment_offset(anchored["begin"]);
+                        written.length = comment_offset(anchored["length"]);
+                        comment.targets.emplace_back(written);
+                    } else {
+                        invalid("Unsupported comment target kind.");
+                    }
+                }
+                if (!project.comments.emplace(comment.id, std::move(comment)).second)
+                    invalid("Duplicate comment identifier.");
             }
         }
         if (papered) {
