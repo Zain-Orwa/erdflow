@@ -70,21 +70,43 @@ Ribbon::Ribbon(QMainWindow& window) : QObject(&window), window_(window) {
         add_menu_button(design, "Lines", "designLinesButton", connect_button->menu())
             ->setToolTip("How connectors are drawn.");
 
-    // Download is how work leaves ERDFlow. It waited until there was something
+    // Export is how work leaves ERDFlow. It waited until there was something
     // to hand on, which there now is. Convert is still waiting, because there
     // is nothing to convert to.
-    auto* download = add_row("Download", "tabDownload", "downloadTools");
-    download->setToolButtonStyle(home_->toolButtonStyle());
-    connect(home_, &QToolBar::toolButtonStyleChanged, download, &QToolBar::setToolButtonStyle);
-    if (auto* download_menu = window.findChild<QMenu*>("downloadMenu"))
-        for (auto* action : download_menu->actions()) {
-            download->addAction(action);
+    auto* exporting = add_row("Export", "tabExport", "exportTools");
+    exporting->setToolButtonStyle(home_->toolButtonStyle());
+    connect(home_, &QToolBar::toolButtonStyleChanged, exporting, &QToolBar::setToolButtonStyle);
+    if (auto* export_menu = window.findChild<QMenu*>("exportMenu"))
+        for (auto* action : export_menu->actions()) {
+            // A menu's headings are entries that cannot be chosen, which is
+            // what makes them readable in a menu and useless on a row: the row
+            // already separates its groups with a line, and a heading here
+            // would be a button nobody can press.
+            if (action->objectName().endsWith(QLatin1String("Heading"))) {
+                exporting->addSeparator();
+                continue;
+            }
+            exporting->addAction(action);
             // An entry carrying a submenu, as the rarer picture formats do, is
             // a button that drops its list: a click on it asks for the list,
             // not for the action that merely names it.
             if (action->menu())
-                if (auto* button = qobject_cast<QToolButton*>(download->widgetForAction(action)))
+                if (auto* button = qobject_cast<QToolButton*>(exporting->widgetForAction(action)))
                     button->setPopupMode(QToolButton::InstantPopup);
+        }
+
+    // Import has a tab of its own beside Export, because it is its pair and a
+    // reader looking for one expects the other in the same place. Its row is
+    // short, which is the truth about it: ERDFlow reads what ERDFlow writes,
+    // and the entry for reading what other tools write stands there greyed
+    // with the reason on it rather than being left out and silent.
+    auto* importing = add_row("Import", "tabImport", "importTools");
+    importing->setToolButtonStyle(home_->toolButtonStyle());
+    connect(home_, &QToolBar::toolButtonStyleChanged, importing, &QToolBar::setToolButtonStyle);
+    if (auto* import_menu = window.findChild<QMenu*>("importMenu"))
+        for (auto* action : import_menu->actions()) {
+            if (action->objectName().endsWith(QLatin1String("Heading"))) { importing->addSeparator(); continue; }
+            importing->addAction(action);
         }
 
     // View is what the window shows and how much of it: the panels, the
@@ -138,6 +160,11 @@ QToolBar* Ribbon::add_row(const QString& label, const char* tab_name, const char
     auto* tab = add_tab(label, tab_name);
     auto* row = new QToolBar(label, &window_);
     row->setObjectName(row_name);
+    // Marked as one of the rows that belong to a tab, so the stylesheet can
+    // set all of them at once and any row added later is set with them. Home
+    // is not marked: it is the drawing tools, which carry icons and are
+    // already told apart by them.
+    row->setProperty("ribbonRow", true);
     row->setMovable(false);
     row->setFloatable(false);
     row->toggleViewAction()->setVisible(false);

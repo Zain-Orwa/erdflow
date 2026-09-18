@@ -85,8 +85,29 @@ public:
     // which is a matter of how the diagram is being looked at.
     EditResult set_comment_hidden(domain::CommentId id, bool hidden);
     EditResult erase_comment(domain::CommentId id);
+    // Brings another project's contents into this one, as one edit. Everything
+    // arrives with fresh identities, so the two projects can share names and
+    // even have been copied from one another without anything colliding, and
+    // the whole import undoes in a single step. The offset moves what arrives
+    // clear of what is already drawn. The paper and the project's own name are
+    // left alone: what is imported is the work, not the document around it.
+    EditResult merge_project(const domain::Project& other, double dx, double dy);
     EditResult rename(domain::ElementRef ref, std::string name);
     EditResult describe(domain::ElementRef ref, std::string description);
+    // What this becomes in the schema's own words, for the three things that
+    // become tables and columns. Refused for anything else, so a note or a
+    // picture never carries a comment nothing will ever read.
+    EditResult set_schema_comment(domain::ElementRef ref, std::string comment);
+    // How much the model is being asked to say about itself. One model either
+    // way: nothing is created, destroyed or re-identified by the switch.
+    EditResult set_conceptual_mode(domain::ConceptualMode mode);
+    // What an attribute becomes: a portable type, and the length where the type
+    // takes one. A type that takes no length is given none, whatever it was
+    // told before, so a Text(100) changed to a Boolean does not keep the 100.
+    EditResult set_logical_type(domain::AttributeId id, domain::LogicalType type, std::uint32_t length = 0);
+    // What the table will enforce: part of the identity, must be filled in, no
+    // two rows alike. Set together, because they are read together.
+    EditResult set_attribute_rules(domain::AttributeId id, bool identifier, bool required, bool unique);
     EditResult set_attribute_kind(domain::AttributeId id, domain::AttributeKind kind);
     // Either link can be given a shape as it is made, so a connection drawn
     // by clicking two points is pinned to those points in the same edit

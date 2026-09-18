@@ -406,7 +406,7 @@ void limits_deep_ownership_and_compact_history() {
     for (std::size_t i = 0; i < max_elements; ++i) {
         const EntityId id{ids.next()};
         if (i == 0) first = id;
-        large.entities.emplace(id, Entity{id, "Entity", {}});
+        large.entities.emplace(id, Entity{.id = id, .name = "Entity"});
         large.layout.emplace(ElementRef{id}, Rect{});
     }
     CHECK(editor.replace_project(std::move(large)));
@@ -426,7 +426,7 @@ void limits_deep_ownership_and_compact_history() {
         const AttributeId id{ids.next()};
         if (i == 0) first_attribute = id;
         last_attribute = id;
-        nested.attributes.emplace(id, Attribute{id, "Composite", {}, AttributeKind::Composite, owner});
+        nested.attributes.emplace(id, Attribute{.id = id, .name = "Composite", .kind = AttributeKind::Composite, .owner = owner});
         nested.layout.emplace(ElementRef{id}, Rect{});
         owner = ElementRef{id};
     }
@@ -943,11 +943,11 @@ void deep_relationship_and_inheritance_graphs() {
     for (std::size_t i = 0; i < 2000; ++i) {
         const RelationshipId rel{ids.next()};
         relationship_ids.push_back(rel);
-        relationships.relationships.emplace(rel, Relationship{rel, "Associative", {}, true, {}});
+        relationships.relationships.emplace(rel, Relationship{.id = rel, .name = "Associative", .associative = true});
         relationships.layout.emplace(ElementRef{rel}, Rect{});
         const EntityId ent{ids.next()};
         entity_ids.push_back(ent);
-        inheritance.entities.emplace(ent, Entity{ent, "Entity", {}});
+        inheritance.entities.emplace(ent, Entity{.id = ent, .name = "Entity"});
         inheritance.layout.emplace(ElementRef{ent}, Rect{});
     }
     // The lowest IDs lead to the next highest, forcing the full depth to be
@@ -1253,6 +1253,77 @@ void comments_are_pinned_to_things() {
     CHECK(editor.project().comments.size() == counted);
 }
 
+// Convertible mode asks the same model what it will become. One model either
+// way: switching changes what is asked for, never what anything is.
+void convertible_mode_asks_what_it_becomes() {
+    TestIds ids;
+    Editor editor(ids);
+    const auto made = editor.create_entity("Student", {0, 0, 160, 80});
+    CHECK(made);
+    const auto student = std::get<EntityId>(*made.created);
+    const auto attribute = editor.create_attribute("ID", {0, -160, 150, 60}, ElementRef{student});
+    CHECK(attribute);
+    const auto id = std::get<AttributeId>(*attribute.created);
+
+    CHECK(editor.project().mode == ConceptualMode::Basic);
+    const auto before = editor.project();
+    CHECK(editor.set_conceptual_mode(ConceptualMode::Convertible));
+    CHECK(editor.project().mode == ConceptualMode::Convertible);
+    // Nothing was created, destroyed or re-identified by the switch, which is
+    // the whole of Phase 13's exit criteria.
+    CHECK(editor.project().entities == before.entities);
+    CHECK(editor.project().attributes == before.attributes);
+    CHECK(editor.project().relationships == before.relationships);
+    // And it is an edit like any other, so changing your mind costs one undo.
+    CHECK(editor.undo());
+    CHECK(editor.project() == before);
+    CHECK(editor.redo());
+
+    // A type, and a length only where the type takes one.
+    CHECK(editor.set_logical_type(id, LogicalType::Text, 100));
+    CHECK(editor.project().attributes.at(id).logical_type == LogicalType::Text);
+    CHECK(editor.project().attributes.at(id).length == 100);
+    // Changed to a type that is not measured, the number goes rather than being
+    // carried along to mean nothing later.
+    CHECK(editor.set_logical_type(id, LogicalType::Boolean, 100));
+    CHECK(editor.project().attributes.at(id).length == 0);
+    CHECK(editor.set_logical_type(id, LogicalType::Decimal, 12));
+    CHECK(editor.project().attributes.at(id).length == 12);
+
+    // What the table will enforce, kept apart from how the diagram draws it.
+    CHECK(editor.set_attribute_rules(id, true, true, true));
+    const auto& ruled = editor.project().attributes.at(id);
+    CHECK(ruled.identifier && ruled.required && ruled.unique);
+    CHECK(ruled.kind == AttributeKind::Normal);
+
+    // The comment written for the database, on the three things that become
+    // tables and columns and on nothing else.
+    CHECK(editor.set_schema_comment(ElementRef{id}, "Permanent identifier."));
+    CHECK(editor.project().attributes.at(id).comment == "Permanent identifier.");
+    CHECK(editor.set_schema_comment(ElementRef{student}, "A registered person."));
+    const auto note = editor.create_note("Note", {400, 400, 200, 120});
+    CHECK(note);
+    CHECK(!editor.set_schema_comment(*note.created, "Nobody will ever read this."));
+
+    // An attribute with no type yet is a warning while the model is being asked,
+    // and nothing at all while it is not: a half-answered model is still a model.
+    const auto unanswered = editor.create_attribute("Name", {200, -160, 150, 60}, ElementRef{student});
+    CHECK(unanswered);
+    const auto asking = validate(editor.project());
+    CHECK(std::any_of(asking.begin(), asking.end(), [](const Issue& issue) {
+        return issue.code == "attribute.type.missing" && !issue.blocks_save;
+    }));
+    CHECK(editor.set_conceptual_mode(ConceptualMode::Basic));
+    const auto quiet = validate(editor.project());
+    CHECK(std::none_of(quiet.begin(), quiet.end(), [](const Issue& issue) {
+        return issue.code == "attribute.type.missing";
+    }));
+    // And what it was told in Convertible mode is still there, so a model drawn
+    // in one mode and finished in the other loses nothing in between.
+    CHECK(editor.project().attributes.at(id).logical_type == LogicalType::Decimal);
+    CHECK(editor.project().attributes.at(id).comment == "Permanent identifier.");
+}
+
 int main() {
     const std::pair<const char*, std::function<void()>> tests[] = {
         {"identity and work in progress", identity_and_work_in_progress},
@@ -1279,6 +1350,7 @@ int main() {
         {"specializations carry inheritance rules", specializations_carry_inheritance_rules},
         {"binary ratios and reversal", binary_ratios_and_reversal},
         {"comments are pinned to things", comments_are_pinned_to_things},
+        {"convertible mode asks what it becomes", convertible_mode_asks_what_it_becomes},
     };
     std::size_t failures = 0;
     for (const auto& [name, test] : tests) {

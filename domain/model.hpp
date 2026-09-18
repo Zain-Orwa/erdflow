@@ -95,6 +95,24 @@ struct Rect {
 };
 
 enum class AttributeKind { Normal, Key, Composite, Multivalued, Derived };
+
+// How much a conceptual model is asked to say about itself.
+//
+// Basic is the diagram as it is drawn and taught: shapes, names and the
+// notation. Convertible is the same model asked to carry what turning it into
+// tables will need. It is one model either way -- switching modes changes what
+// is shown and what is asked for, never what anything is or what identity it
+// has, so a diagram can be drawn in Basic and finished in Convertible without
+// being rebuilt.
+enum class ConceptualMode { Basic, Convertible };
+
+// A portable type, chosen without naming a database. Text(100) becomes
+// VARCHAR(100) on one engine and NVARCHAR(100) on another, and that choice
+// belongs to the physical stage rather than to this one.
+//
+// Unset is a real answer and the one every attribute starts with: in Basic it
+// is simply not asked, and in Convertible it is the question still open.
+enum class LogicalType { Unset, Text, Integer, Decimal, Boolean, Date, DateTime, Binary, Uuid };
 enum class Cardinality { One, Many };
 enum class Participation { Partial, Total };
 // Whether an instance of the supertype may belong to more than one subtype,
@@ -111,6 +129,12 @@ struct Entity {
     EntityId id;
     std::string name;
     std::string description;
+    // What this becomes in the schema's own words. A description says what the
+    // thing means to a reader; a comment is written for the database, and is
+    // what a generated table or column carries as its COMMENT. They are kept
+    // apart because they are read by different audiences and one of them
+    // travels out of ERDFlow entirely.
+    std::string comment;
     // A weak entity has no key of its own: it is identified through an
     // identifying relationship with its owner, and its key attribute is only
     // a partial key. Drawn with a double border.
@@ -121,8 +145,25 @@ struct Attribute {
     AttributeId id;
     std::string name;
     std::string description;
+    std::string comment;
     AttributeKind kind = AttributeKind::Normal;
     std::optional<AttributeOwner> owner;
+    // What Convertible mode asks for, and Basic mode leaves alone. Every one of
+    // these is stored whichever mode is on: a model drawn in Basic and finished
+    // in Convertible must not lose what it was told in between, and a model
+    // shown in Basic must not quietly forget what it already knows.
+    LogicalType logical_type = LogicalType::Unset;
+    // How long or how precise, where the type takes a number: Text(100). Zero
+    // is unspecified, which is what a type that takes no number always is.
+    std::uint32_t length = 0;
+    // Whether this is part of what identifies a row, whether it must be filled
+    // in, and whether no two rows may share it. Kept apart from the attribute's
+    // Chen kind: a key oval says how the diagram draws it, these say what the
+    // table will enforce, and the two are set at different stages by different
+    // people.
+    bool identifier = false;
+    bool required = false;
+    bool unique = false;
     auto operator<=>(const Attribute&) const = default;
 };
 // A participant attaches to an entity, or to an associative relationship that
@@ -147,6 +188,7 @@ struct Relationship {
     RelationshipId id;
     std::string name;
     std::string description;
+    std::string comment;
     // An associative relationship carries its own identity and may participate
     // in further relationships. It is drawn as a diamond inside a rectangle.
     bool associative = false;
@@ -280,6 +322,10 @@ struct Project {
     // are: a comment is pinned to the model rather than placed on the canvas,
     // so it has no layout, no colour and no transparency of its own.
     std::map<CommentId, Comment> comments;
+    // What this model is being asked to say about itself. It travels with the
+    // document, because what a model was told is part of the model rather than
+    // part of how somebody happened to be looking at it.
+    ConceptualMode mode = ConceptualMode::Basic;
     std::map<ElementRef, Rect> layout;
     // How the user has shaped each connector they have touched. An absent entry
     // means the connector is bent and joined entirely automatically.
@@ -347,6 +393,10 @@ inline constexpr std::size_t max_image_bytes = 2U * 1024U * 1024U;
 // A comment's own limits. The text is bounded like a description, because it
 // is prose of the same kind; the number of things one remark may be pinned to
 // is bounded like everything else that refers to elements.
+// A logical length is a number a database will be given, so it is bounded well
+// inside anything an engine would accept rather than left to be any number at
+// all.
+inline constexpr std::uint32_t max_logical_length = 1000000;
 inline constexpr std::size_t max_comment_bytes = max_description_bytes;
 inline constexpr std::size_t max_comment_targets = max_elements;
 inline constexpr std::uint8_t max_transparency = 100;

@@ -1,5 +1,5 @@
 #include "main_window.hpp"
-#include "download_dialog.hpp"
+#include "export_dialog.hpp"
 #include "ribbon.hpp"
 #include "search_bar.hpp"
 #include "symbol_picker.hpp"
@@ -78,6 +78,54 @@ QString kind_label(const Project& project, ElementRef ref) {
     }
     return kind_label(ref);
 }
+// What an element actually is, said in full: not "Attribute" but "Derived
+// attribute", not "Entity" but "Weak entity". The Explorer draws each element
+// as the shape the canvas draws it as, and this is the same thing in words, for
+// anyone pointing at the row rather than reading the shape.
+QString kind_description(const Project& project, ElementRef ref) {
+    if (const auto* id = std::get_if<EntityId>(&ref)) {
+        const auto found = project.entities.find(*id);
+        return found != project.entities.end() && found->second.weak ? QStringLiteral("Weak entity")
+                                                                     : QStringLiteral("Entity");
+    }
+    if (const auto* id = std::get_if<AttributeId>(&ref)) {
+        const auto found = project.attributes.find(*id);
+        if (found == project.attributes.end()) return QStringLiteral("Attribute");
+        const auto& attribute = found->second;
+        // A key on a weak entity identifies an instance only once the owner is
+        // known, so it is a partial key and must not be called a key.
+        const bool weak_owner = attribute.owner && std::holds_alternative<EntityId>(*attribute.owner)
+            && [&] {
+                   const auto owner = project.entities.find(std::get<EntityId>(*attribute.owner));
+                   return owner != project.entities.end() && owner->second.weak;
+               }();
+        switch (attribute.kind) {
+            case AttributeKind::Key: return weak_owner ? QStringLiteral("Partial key") : QStringLiteral("Key attribute");
+            case AttributeKind::Composite: return QStringLiteral("Composite attribute");
+            case AttributeKind::Multivalued: return QStringLiteral("Multivalued attribute");
+            case AttributeKind::Derived: return QStringLiteral("Derived attribute");
+            case AttributeKind::Normal: break;
+        }
+        return QStringLiteral("Attribute");
+    }
+    if (const auto* id = std::get_if<RelationshipId>(&ref)) {
+        const auto found = project.relationships.find(*id);
+        if (found == project.relationships.end()) return QStringLiteral("Relationship");
+        switch (relationship_kind(found->second)) {
+            case RelationshipKind::Identifying: return QStringLiteral("Identifying relationship");
+            case RelationshipKind::Associative: return QStringLiteral("Associative relationship");
+            case RelationshipKind::Regular: break;
+        }
+        return QStringLiteral("Relationship");
+    }
+    if (const auto* id = std::get_if<SpecializationId>(&ref)) {
+        const auto found = project.specializations.find(*id);
+        return found != project.specializations.end() && found->second.direction == Inheritance::Generalization
+            ? QStringLiteral("Generalization") : QStringLiteral("Specialization");
+    }
+    return kind_label(project, ref);
+}
+
 QString kind_label(ElementRef ref) {
     if (std::holds_alternative<EntityId>(ref)) return QStringLiteral("Entity");
     if (std::holds_alternative<AttributeId>(ref)) return QStringLiteral("Attribute");
@@ -90,6 +138,23 @@ QString kind_label(ElementRef ref) {
 // given if it has one, and otherwise whatever the theme gives its kind. The
 // panel reads this so that it shows the element's own colour rather than only
 // the colours a user happened to choose by hand.
+// The comment written for the database, for the three things that carry one.
+std::string schema_comment_of(const Project& project, const ElementRef& ref) {
+    if (const auto* id = std::get_if<EntityId>(&ref)) {
+        const auto found = project.entities.find(*id);
+        return found == project.entities.end() ? std::string{} : found->second.comment;
+    }
+    if (const auto* id = std::get_if<AttributeId>(&ref)) {
+        const auto found = project.attributes.find(*id);
+        return found == project.attributes.end() ? std::string{} : found->second.comment;
+    }
+    if (const auto* id = std::get_if<RelationshipId>(&ref)) {
+        const auto found = project.relationships.find(*id);
+        return found == project.relationships.end() ? std::string{} : found->second.comment;
+    }
+    return {};
+}
+
 QColor surface_of(const Project& project, const Theme& colors, ElementRef ref) {
     // A see-through surface shows the canvas through it, so what the panel
     // has to match is the blend the eye sees rather than the paint on its own.
@@ -400,6 +465,65 @@ protected:
     }
 };
 
+// How many attributes belong to a row, when any do. It is painted at the end of
+// the row rather than written into the name, so a name stays a name: a number
+// inside it would read as part of what the element is called.
+constexpr int owned_count_role = Qt::UserRole + 1;
+
+// The size the Explorer draws an element at. Wider than it is tall, because
+// that is the shape most of them are, and large enough that a dashed outline
+// and a doubled one can be told apart at a glance -- which is the whole reason
+// for drawing the element rather than a badge for its kind.
+constexpr QSize explorer_shape{28, 20};
+
+// The strip the raft of view controls is taken hold of by. Every button on the
+// raft does something when it is pressed, so the raft needs somewhere to be
+// picked up that is not one of them.
+class RaftGrip final : public QWidget {
+public:
+    explicit RaftGrip(QWidget* parent) : QWidget(parent) {
+        setFixedHeight(12);
+        setCursor(Qt::OpenHandCursor);
+        setToolTip("Drag to move these controls. Right-click them to put them away.");
+    }
+    std::function<void(QPoint)> dragged;
+    std::function<QColor()> ink;
+
+protected:
+    void paintEvent(QPaintEvent*) override {
+        // Two rows of dots, which is what a thing that can be dragged looks
+        // like everywhere else, so nobody has to be told.
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing);
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(ink ? ink() : palette().color(QPalette::Mid));
+        const auto middle = width() / 2.0;
+        for (const auto row : {-2.0, 2.0})
+            for (const auto column : {-5.0, 0.0, 5.0})
+                painter.drawEllipse(QPointF(middle + column, height() / 2.0 + row), 1.1, 1.1);
+    }
+    void mousePressEvent(QMouseEvent* event) override {
+        holding_ = event->globalPosition().toPoint();
+        setCursor(Qt::ClosedHandCursor);
+        event->accept();
+    }
+    void mouseMoveEvent(QMouseEvent* event) override {
+        if (holding_.isNull()) return;
+        const auto now = event->globalPosition().toPoint();
+        if (dragged) dragged(now - holding_);
+        holding_ = now;
+        event->accept();
+    }
+    void mouseReleaseEvent(QMouseEvent* event) override {
+        holding_ = {};
+        setCursor(Qt::OpenHandCursor);
+        event->accept();
+    }
+
+private:
+    QPoint holding_;
+};
+
 // Draws a dropped-down row's sample in an ink that reads on the surface the row
 // is actually being painted on.
 //
@@ -432,14 +556,41 @@ protected:
 
 // Keeps every row clear of the strip the fold marks stand in, so the two never
 // overlap and a row's highlight ends in the same place whether or not it has
-// anything to fold.
+// anything to fold -- and writes the count of what belongs to a row at the end
+// of it, quietly, in the same column for every row that has one.
 class FoldOnTheRight final : public QStyledItemDelegate {
 public:
     using QStyledItemDelegate::QStyledItemDelegate;
+    // The ink a count is written in: quiet on an ordinary row, and readable on
+    // a row that is lit up, which is a different colour entirely.
+    std::function<QColor(bool lit)> ink;
+
+    [[nodiscard]] static QString counted(const QModelIndex& index) {
+        const auto value = index.data(owned_count_role);
+        return value.isValid() ? QString::number(value.toInt()) : QString();
+    }
+
 protected:
     void initStyleOption(QStyleOptionViewItem* option, const QModelIndex& index) const override {
         QStyledItemDelegate::initStyleOption(option, index);
-        option->rect.adjust(0, 0, -ExplorerTree::fold_strip, 0);
+        auto inset = ExplorerTree::fold_strip;
+        // The name gives up exactly the room the count needs, so a long name is
+        // elided before it reaches the number rather than running under it.
+        if (const auto shown = counted(index); !shown.isEmpty())
+            inset += option->fontMetrics.horizontalAdvance(shown) + 10;
+        option->rect.adjust(0, 0, -inset, 0);
+    }
+
+    void paint(QPainter* painter, const QStyleOptionViewItem& given, const QModelIndex& index) const override {
+        QStyledItemDelegate::paint(painter, given, index);
+        const auto shown = counted(index);
+        if (shown.isEmpty()) return;
+        painter->save();
+        const bool lit = given.state.testFlag(QStyle::State_Selected);
+        painter->setPen(ink ? ink(lit) : given.palette.color(QPalette::Disabled, QPalette::Text));
+        painter->drawText(given.rect.adjusted(0, 0, -ExplorerTree::fold_strip - 2, 0),
+                          Qt::AlignRight | Qt::AlignVCenter, shown);
+        painter->restore();
     }
 };
 
@@ -570,6 +721,15 @@ void MainWindow::build_shell() {
     // tools, because it is about looking at the document rather than adding to
     // it, and because that row is already tight enough to start dropping the
     // names its tools are known by.
+    // What the model is being asked to say about itself, beside the badge that
+    // says what workspace it is. It belongs here because it is a fact about the
+    // document rather than a way of looking at it, and this is where the
+    // document announces itself.
+    mode_button_ = new QToolButton(header);
+    mode_button_->setObjectName("conceptualMode");
+    mode_button_->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    mode_button_->setPopupMode(QToolButton::InstantPopup);
+    header_layout->addWidget(mode_button_);
     search_button_ = new QToolButton(header);
     search_button_->setObjectName("searchButton");
     search_button_->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
@@ -599,7 +759,16 @@ void MainWindow::build_shell() {
     explorer_dock->setObjectName("explorerDock");
     explorer_ = new ExplorerTree(explorer_dock);
     explorer_->setObjectName("explorer");
-    explorer_->setItemDelegate(new FoldOnTheRight(explorer_));
+    auto* rows = new FoldOnTheRight(explorer_);
+    rows->ink = [this](bool lit) {
+        const auto& colors = theme(theme_);
+        return lit ? readable_on(colors.accent) : colors.muted;
+    };
+    explorer_->setItemDelegate(rows);
+    // Room for the element shapes, which say more than a badge for the kind
+    // can: a dashed outline is a derived attribute and a doubled one is
+    // multivalued, and neither reads at the size a plain list icon is drawn at.
+    explorer_->setIconSize(explorer_shape);
     explorer_->setAccessibleName("Project elements");
     explorer_->setHeaderHidden(true);
     explorer_->setSelectionMode(QAbstractItemView::ExtendedSelection);
@@ -691,6 +860,20 @@ const std::array<std::pair<Notation, QString>, 4>& notation_styles() {
 }
 } // namespace
 
+namespace {
+// A heading inside a menu. Written as an entry that cannot be chosen rather
+// than as a style section, because some styles draw a section as a bare line
+// with the words thrown away -- which leaves the groups beneath it looking like
+// one undivided list, or worse, like alternatives.
+QAction* menu_heading(QMenu* menu, const QString& words, const char* named) {
+    if (!menu->isEmpty()) menu->addSeparator();
+    auto* heading = menu->addAction(words);
+    heading->setObjectName(QString::fromLatin1(named));
+    heading->setEnabled(false);
+    return heading;
+}
+} // namespace
+
 void MainWindow::build_actions() {
     // Find, where a document application keeps it, and on the key it keeps it
     // on. It narrows the diagram to what is asked for rather than only walking
@@ -718,39 +901,69 @@ void MainWindow::build_actions() {
     file->addAction("Save &as…", QKeySequence::SaveAs, this, [this] { save(true); });
     file->addSeparator();
 
-    // Download is how work leaves ERDFlow. Its own menu, so the ribbon can put
+    // Export is how work leaves ERDFlow. Its own menu, so the ribbon can put
     // a row over it the way Insert and Design are put over theirs, and a copy
     // of it under File, which is where a document application keeps it.
     //
     // Documents come first. Someone handing this work on is choosing between a
     // report and a picture before they are choosing between PNG and SVG.
-    auto* download_menu = new QMenu("Download", this);
-    download_menu->setObjectName("downloadMenu");
-    download_menu->addSection("Documents");
+    // One model, two modes. The switch is an edit like any other -- it goes
+    // through the history, so changing your mind about it costs one undo.
+    auto* modes = new QMenu("Mode", this);
+    modes->setObjectName("modeMenu");
+    auto* mode_group = new QActionGroup(modes);
+    mode_group->setExclusive(true);
+    struct ModeEntry { domain::ConceptualMode mode; const char* label; const char* name; const char* tip; };
+    for (const auto& entry : {
+             ModeEntry{domain::ConceptualMode::Basic, "Basic", "modeBasic",
+                       "The diagram as it is drawn and taught: shapes, names and the notation."},
+             ModeEntry{domain::ConceptualMode::Convertible, "Convertible", "modeConvertible",
+                       "The same model, asked what it will become: logical types, the rules a table will "
+                       "enforce, and the comment the schema will read."}}) {
+        auto* item = modes->addAction(QString::fromLatin1(entry.label));
+        item->setObjectName(QString::fromLatin1(entry.name));
+        item->setCheckable(true);
+        item->setActionGroup(mode_group);
+        item->setToolTip(QString::fromUtf8(entry.tip));
+        connect(item, &QAction::triggered, this, [this, mode = entry.mode] { set_conceptual_mode(mode); });
+    }
+    if (mode_button_) mode_button_->setMenu(modes);
+
+    auto* export_menu = new QMenu("Export", this);
+    export_menu->setObjectName("exportMenu");
+    // The project itself leads, because it is the only one of these that loses
+    // nothing. Saving writes the project you are working on; this writes a copy
+    // of it somewhere else and leaves the one you are working on alone.
+    menu_heading(export_menu, "Project", "exportProjectHeading");
+    auto* export_project = export_menu->addAction("ERDFlow project…", this, [this] { export_project_file(); });
+    export_project->setObjectName("exportProject");
+    export_project->setToolTip("Write a copy of the project, losing nothing. Saving keeps working on this one; "
+                               "this leaves it where it is.");
+    menu_heading(export_menu, "Documents", "exportDocumentsHeading");
     struct DocumentEntry { DocumentFormat format; const char* name; };
-    for (const auto& entry : {DocumentEntry{DocumentFormat::Pdf, "downloadPdfDocument"},
-                              DocumentEntry{DocumentFormat::Markdown, "downloadMarkdown"},
-                              DocumentEntry{DocumentFormat::Html, "downloadHtml"},
-                              DocumentEntry{DocumentFormat::Csv, "downloadCsv"}}) {
+    for (const auto& entry : {DocumentEntry{DocumentFormat::Pdf, "exportPdfDocument"},
+                              DocumentEntry{DocumentFormat::Markdown, "exportMarkdown"},
+                              DocumentEntry{DocumentFormat::Html, "exportHtml"},
+                              DocumentEntry{DocumentFormat::Csv, "exportCsv"}}) {
         const auto& info = document_format(entry.format);
-        auto* item = download_menu->addAction(QString::fromUtf8(info.label) + "…", this,
-                                              [this, format = entry.format] { download_document(format); });
+        auto* item = export_menu->addAction(QString::fromUtf8(info.label) + "…", this,
+                                              [this, format = entry.format] { export_document(format); });
         item->setObjectName(QString::fromLatin1(entry.name));
         item->setToolTip(QString::fromUtf8(info.caution));
     }
 
     // Then the pictures a person reaches for without thinking about options.
-    // SVG leads because it is the default download: it reads at any size and it
+    // SVG leads because it is the default picture to hand out: it reads at any size and it
     // is one of the two that carry the project home again.
-    download_menu->addSection("Pictures");
+    menu_heading(export_menu, "Pictures", "exportPicturesHeading");
     struct PictureEntry { PictureFormat format; const char* name; bool common; };
     QMenu* more_pictures = nullptr;
-    for (const auto& entry : {PictureEntry{PictureFormat::Svg, "downloadSvg", true},
-                              PictureEntry{PictureFormat::Png, "downloadPng", true},
-                              PictureEntry{PictureFormat::Pdf, "downloadPdfPage", true},
-                              PictureEntry{PictureFormat::Jpeg, "downloadJpeg", false},
-                              PictureEntry{PictureFormat::WebP, "downloadWebp", false},
-                              PictureEntry{PictureFormat::Tiff, "downloadTiff", false}}) {
+    for (const auto& entry : {PictureEntry{PictureFormat::Svg, "exportSvg", true},
+                              PictureEntry{PictureFormat::Png, "exportPng", true},
+                              PictureEntry{PictureFormat::Pdf, "exportPdfPage", true},
+                              PictureEntry{PictureFormat::Jpeg, "exportJpeg", false},
+                              PictureEntry{PictureFormat::WebP, "exportWebp", false},
+                              PictureEntry{PictureFormat::Tiff, "exportTiff", false}}) {
         // A format this build has no writer for is left out rather than offered
         // and then failed.
         if (!picture_format_available(entry.format)) continue;
@@ -758,42 +971,71 @@ void MainWindow::build_actions() {
         // The three anyone wants sit on the menu; the rest are gathered behind
         // one entry, so a common choice is never hunted for among rare ones.
         if (!entry.common && !more_pictures) {
-            more_pictures = download_menu->addMenu("Other picture formats");
-            more_pictures->setObjectName("downloadMorePictures");
+            more_pictures = export_menu->addMenu("Other picture formats");
+            more_pictures->setObjectName("exportMorePictures");
         }
-        auto* into = entry.common ? download_menu : more_pictures;
+        auto* into = entry.common ? export_menu : more_pictures;
         auto* item = into->addAction(QString::fromUtf8(info.label) + "…", this, [this, format = entry.format] {
-            auto options = download_choice_.as_picture;
+            auto options = export_choice_.as_picture;
             options.format = format;
-            download_picture(options);
+            export_picture(options);
         });
         item->setObjectName(QString::fromLatin1(entry.name));
         if (*info.caution) item->setToolTip(QString::fromUtf8(info.caution));
     }
 
-    download_menu->addSeparator();
-    auto* download_options = download_menu->addAction("Download with options…", QKeySequence("Ctrl+Shift+E"),
-                                                      this, &MainWindow::download_dialog);
-    download_options->setObjectName("downloadWithOptions");
-    download_options->setToolTip("Choose the format, and for a picture its size, extent and background.");
-    action_glyphs_[download_options] = Glyph::Download;
-    auto* copy_action = download_menu->addAction("Copy as picture", QKeySequence("Ctrl+Shift+C"),
+    export_menu->addSeparator();
+    auto* export_options = export_menu->addAction("Export with options…", QKeySequence("Ctrl+Shift+E"),
+                                                      this, &MainWindow::export_dialog);
+    export_options->setObjectName("exportWithOptions");
+    export_options->setToolTip("Choose the format, and for a picture its size, extent and background.");
+    action_glyphs_[export_options] = Glyph::Export;
+    auto* copy_action = export_menu->addAction("Copy as picture", QKeySequence("Ctrl+Shift+C"),
                                                  this, [this] { copy_picture(); });
     copy_action->setObjectName("copyAsPicture");
     copy_action->setToolTip("Put a picture of the selection, or of the whole diagram, on the clipboard.");
     // Gathered so they can be turned off together while there is nothing drawn.
     // A submenu's own entries are collected too, since the submenu itself only
     // names them.
-    for (auto* action : download_menu->actions()) {
+    for (auto* action : export_menu->actions()) {
         if (action->isSeparator()) continue;
+        // A heading is not a command, so it is not one of the things turned on
+        // when there is something to export: turning it on would make it look
+        // like something that could be pressed.
+        if (action->objectName().endsWith(QLatin1String("Heading"))) continue;
         if (auto* submenu = action->menu()) {
-            for (auto* nested : submenu->actions()) download_actions_.push_back(nested);
-            download_actions_.push_back(action);
+            for (auto* nested : submenu->actions()) export_actions_.push_back(nested);
+            export_actions_.push_back(action);
             continue;
         }
-        download_actions_.push_back(action);
+        export_actions_.push_back(action);
     }
-    file->addMenu(download_menu);
+    file->addMenu(export_menu);
+
+    // Import sits next to Export, because that is its pair. It reads what
+    // ERDFlow itself writes: the project, and the two pictures that carry one.
+    // Reading what other tools write is a later thing, and the entry that says
+    // so is left in place rather than the absence being silent.
+    auto* import_menu = new QMenu("Import", this);
+    import_menu->setObjectName("importMenu");
+    auto* import_project = import_menu->addAction("ERDFlow project…", QKeySequence("Ctrl+Shift+I"),
+                                                  this, [this] { import_dialog(false); });
+    import_project->setObjectName("importProject");
+    import_project->setToolTip("Bring another project's contents into this one. Everything arrives with "
+                               "identities of its own, so nothing collides, and it all undoes in one step.");
+    auto* import_picture = import_menu->addAction("Picture carrying a project…", this,
+                                                  [this] { import_dialog(true); });
+    import_picture->setObjectName("importPicture");
+    import_picture->setToolTip("An SVG or PNG that ERDFlow wrote carries the whole project inside it.");
+    import_menu->addSeparator();
+    auto* import_later = import_menu->addAction("From another tool…");
+    import_later->setObjectName("importFromOtherTools");
+    import_later->setEnabled(false);
+    import_later->setToolTip("SQL, CSV and JSON arrive with the Relational Schema workspace: they describe "
+                             "tables rather than a conceptual diagram, so there is nowhere yet to put them.");
+    for (auto* action : import_menu->actions())
+        if (!action->isSeparator() && action->isEnabled()) import_actions_.push_back(action);
+    file->addMenu(import_menu);
     file->addSeparator();
     file->addAction("Open example", this, &MainWindow::load_example);
     file->addSeparator();
@@ -1022,6 +1264,15 @@ void MainWindow::build_actions() {
     connect(symbols, &QAction::triggered, this, [this] { show_symbols(QStringLiteral("Relational algebra")); });
     canvas_->on_insert_picture = [this](QPointF at) { insert_picture_dialog(at); };
     canvas_->on_comment = [this](std::vector<domain::CommentTarget> targets) { add_comment(std::move(targets)); };
+    // The way back. Offered only while the raft is away, because an entry that
+    // puts back something already there says nothing worth reading.
+    canvas_->on_canvas_menu = [this](QMenu& menu) {
+        if (!canvas_controls_ || canvas_controls_->isVisible()) return;
+        menu.addSeparator();
+        auto* back = menu.addAction("Show the view controls");
+        back->setObjectName("showCanvasControls");
+        connect(back, &QAction::triggered, this, [this] { show_canvas_controls(true); });
+    };
 
     // Notation follows Connect: it decides how the lines Connect draws are read.
     // The picker draws each option, so the cardinality symbols can be recognised
@@ -1121,9 +1372,25 @@ void MainWindow::build_actions() {
     // a diagram is framed and zoomed rather than across the window from it.
     canvas_controls_ = new QWidget(canvas_);
     canvas_controls_->setObjectName("canvasControls");
+    // Right-clicking the raft offers to put it away. The buttons do not answer
+    // a right-click themselves, so the press reaches the raft beneath them and
+    // the offer is the same wherever on it the pointer was.
+    canvas_controls_->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(canvas_controls_, &QWidget::customContextMenuRequested, this, [this](const QPoint& at) {
+        QMenu menu(canvas_controls_);
+        auto* away = menu.addAction("Hide these controls");
+        away->setObjectName("hideCanvasControls");
+        away->setToolTip("Put the raft away. Right-click the diagram to bring it back.");
+        if (menu.exec(canvas_controls_->mapToGlobal(at)) == away) show_canvas_controls(false);
+    });
     auto* stack = new QVBoxLayout(canvas_controls_);
     stack->setContentsMargins(4, 4, 4, 4);
     stack->setSpacing(2);
+    auto* grip = new RaftGrip(canvas_controls_);
+    grip->setObjectName("canvasControlsGrip");
+    grip->ink = [this] { return theme(theme_).muted; };
+    grip->dragged = [this](QPoint by) { move_canvas_controls(by); };
+    stack->addWidget(grip);
     // Every button on the raft is the same size and sits on the same centre
     // line, so the column reads as one control rather than as icons that
     // happen to be near some signs.
@@ -1147,12 +1414,18 @@ void MainWindow::build_actions() {
     raft_button(pan_action, "canvasPan")->installEventFilter(this);
     // Zooming has no glyph of its own in either set, and a pair of signs says
     // what it does more plainly than a picture would at this size.
+    // The name the platform gives the key that zooms: the Command symbol on a
+    // Mac, the word Control elsewhere. Taken from Qt rather than written out
+    // twice, so it can never be right on one platform and wrong on the other.
+    const auto zoom_key = QKeySequence(QKeySequence::ZoomIn)
+                              .toString(QKeySequence::NativeText).section(QChar('+'), 0, 0);
     for (const auto& [text, name, step] : std::initializer_list<std::tuple<const char*, const char*, int>>{
              {"+", "canvasZoomIn", 1}, {"\u2212", "canvasZoomOut", -1}}) {
         auto* button = new QToolButton(canvas_controls_);
         button->setObjectName(name);
         button->setText(QString::fromUtf8(text));
-        button->setToolTip(step > 0 ? "Zoom in" : "Zoom out");
+        button->setToolTip(QString("%1. Or hold %2 and scroll, which zooms about the pointer.")
+                               .arg(step > 0 ? "Zoom in" : "Zoom out", zoom_key));
         button->setAutoRaise(true);
         button->setFixedSize(26, 24);
         connect(button, &QToolButton::clicked, this,
@@ -1187,6 +1460,15 @@ void MainWindow::build_actions() {
     // saved with the document: it quiets every remark at once, for reading the
     // model or taking a picture of it. The mark on a commented element stays
     // either way, because a remark nobody can see is a remark nobody can find.
+    // The raft of view controls, so there is a way back to it that does not
+    // depend on knowing to right-click the diagram.
+    auto* raft_entry = view->addAction("View controls on the diagram");
+    raft_entry->setCheckable(true);
+    raft_entry->setChecked(true);
+    raft_entry->setObjectName("viewCanvasControls");
+    raft_entry->setToolTip("The small raft on the diagram: full view, fit, pan and zoom. "
+                           "Drag it by its grip, and right-click it to put it away.");
+    connect(raft_entry, &QAction::toggled, this, [this](bool checked) { show_canvas_controls(checked); });
     auto* show_comments = view->addAction("Show comments");
     show_comments->setCheckable(true);
     show_comments->setChecked(true);
@@ -1356,7 +1638,8 @@ void MainWindow::refresh() {
     undo_->setToolTip(undo_->text() + "\t" + undo_->shortcut().toString(QKeySequence::NativeText));
     redo_->setToolTip(redo_->text() + "\t" + redo_->shortcut().toString(QKeySequence::NativeText));
     refresh_selection_commands();
-    refresh_download_actions();
+    refresh_export_actions();
+    refresh_mode_button();
     auto title = text(editor_.project().name);
     document_label_->setText(title + (editor_.dirty() ? " · Unsaved" : ""));
     setWindowTitle(title + "[*] — ERDFlow");
@@ -1396,8 +1679,16 @@ void MainWindow::refresh_explorer() {
     // are built from the active theme and icon set, which is why the tree is
     // rebuilt when either changes.
     const auto& colors = theme(theme_);
-    const auto attribute_badge = glyph_icon(Glyph::Attribute, colors, 22, icon_mode_);
     const auto& attributes = editor_.project().attributes;
+    // Every row is drawn as the element itself rather than as a badge for its
+    // kind, using the canvas's own drawing, so a derived attribute is dashed
+    // here as it is there and a weak entity wears its second border. The badge
+    // stands in only if the canvas has not projected the element yet, which
+    // would otherwise leave the row blank.
+    const auto shaped = [&](const ElementRef& ref, Glyph fallback) {
+        const auto drawn = canvas_->element_preview(ref, explorer_shape);
+        return drawn.isNull() ? glyph_icon(fallback, colors, explorer_shape.height(), icon_mode_) : QIcon(drawn);
+    };
     const auto owned_by = [&](const ElementRef& owner) {
         std::vector<AttributeId> owned;
         for (const auto& [id, attribute] : attributes)
@@ -1409,19 +1700,28 @@ void MainWindow::refresh_explorer() {
     // lists its parts the same way. These are the same attributes the group
     // below counts; here they are shown by what they belong to.
     const auto nest = [&](auto&& self, QStandardItem* under, const ElementRef& owner) -> void {
-        for (const auto id : owned_by(owner)) {
+        const auto owned = owned_by(owner);
+        // What belongs to this row, counted at the end of it. A composite
+        // attribute carries one as much as an entity does: the parts hanging
+        // off it are what belongs to it.
+        if (!owned.empty()) under->setData(static_cast<int>(owned.size()), owned_count_role);
+        for (const auto id : owned) {
             const ElementRef ref{id};
-            auto* row = new QStandardItem(attribute_badge, display_name(editor_.project(), ref));
+            auto* row = new QStandardItem(shaped(ref, Glyph::Attribute), display_name(editor_.project(), ref));
             row->setData(key(ref), Qt::UserRole);
-            row->setToolTip(kind_label(ref) + " · " + key(ref));
+            row->setToolTip(kind_description(editor_.project(), ref) + " · " + key(ref));
             under->appendRow(row);
             references_.emplace(key(ref), ref);
             self(self, row, ref);
         }
     };
     const auto append = [&](const QString& label, Glyph glyph, const auto& collection, bool with_owned) {
-        const auto badge = glyph_icon(glyph, colors, 22, icon_mode_);
-        auto* group = new QStandardItem(badge, label + QString(" (%1)").arg(collection.size()));
+        const auto badge = glyph_icon(glyph, colors, explorer_shape.height(), icon_mode_);
+        // A group keeps its badge, being a kind rather than an element, and its
+        // count goes at the end of the row like every other count, so the tree
+        // says how many in one place and one way.
+        auto* group = new QStandardItem(badge, label);
+        group->setData(static_cast<int>(collection.size()), owned_count_role);
         group->setSelectable(false);
         // The group is known by a key of its own rather than by its text, whose
         // count changes with every element added: an open group that changed
@@ -1431,9 +1731,9 @@ void MainWindow::refresh_explorer() {
         for (const auto& [id, item] : collection) {
             (void)item;
             const ElementRef ref{id};
-            auto* row = new QStandardItem(badge, display_name(editor_.project(), ref));
+            auto* row = new QStandardItem(shaped(ref, glyph), display_name(editor_.project(), ref));
             row->setData(key(ref), Qt::UserRole);
-            row->setToolTip(kind_label(ref) + " · " + key(ref));
+            row->setToolTip(kind_description(editor_.project(), ref) + " · " + key(ref));
             group->appendRow(row);
             references_.emplace(key(ref), ref);
             if (with_owned) nest(nest, row, ref);
@@ -1691,6 +1991,77 @@ void MainWindow::refresh_properties() {
         connect(kind, &QComboBox::activated, this, [this, attribute_id](int index) {
             show_result(editor_.set_attribute_kind(attribute_id, static_cast<AttributeKind>(index)));
         });
+        // What Convertible mode asks of an attribute. Shown only in that mode:
+        // in Basic these questions are not being asked, and the answers already
+        // given are kept rather than cleared, so a model can be drawn in one
+        // mode and finished in the other without losing what it was told.
+        if (project.mode == domain::ConceptualMode::Convertible) {
+            auto* type = narrowable(new QComboBox(panel));
+            type->setObjectName("attributeLogicalType");
+            for (const char* named : {"Not chosen yet", "Text", "Integer", "Decimal", "Boolean",
+                                      "Date", "DateTime", "Binary", "UUID"})
+                type->addItem(QString::fromLatin1(named));
+            type->setCurrentIndex(static_cast<int>(attribute.logical_type));
+            type->setToolTip("A portable type, chosen without naming a database. Text(100) becomes VARCHAR(100) "
+                             "on one engine and NVARCHAR(100) on another, and that is decided later.");
+            attr_form->addRow(field_label("Logical type", label_tone, panel), type);
+
+            // Only the two types that are measured offer a number, so nobody is
+            // asked how long a Boolean is.
+            auto* length = new QSpinBox(panel);
+            length->setObjectName("attributeLength");
+            length->setRange(0, static_cast<int>(domain::max_logical_length));
+            length->setSpecialValueText("Unspecified");
+            length->setValue(static_cast<int>(attribute.length));
+            length->installEventFilter(wheel_guard_);
+            const auto measured = [](domain::LogicalType kind) {
+                return kind == domain::LogicalType::Text || kind == domain::LogicalType::Decimal;
+            };
+            length->setEnabled(measured(attribute.logical_type));
+            attr_form->addRow(field_label("Length", label_tone, panel), length);
+            connect(type, &QComboBox::activated, this, [this, attribute_id, length](int index) {
+                show_result(editor_.set_logical_type(attribute_id, static_cast<domain::LogicalType>(index),
+                                                     static_cast<std::uint32_t>(length->value())));
+            });
+            connect(length, &QSpinBox::editingFinished, this, [this, attribute_id, type, length] {
+                if (refreshing_) return;
+                show_result(editor_.set_logical_type(attribute_id,
+                                                     static_cast<domain::LogicalType>(type->currentIndex()),
+                                                     static_cast<std::uint32_t>(length->value())));
+            });
+
+            // What the table will enforce, kept apart from the Chen kind above:
+            // the oval says how the diagram draws it, these say what the
+            // database will insist on.
+            auto* rules = new QWidget(panel);
+            auto* rules_row = new QHBoxLayout(rules);
+            rules_row->setContentsMargins(0, 0, 0, 0);
+            rules_row->setSpacing(10);
+            struct Rule { const char* label; const char* name; bool set; const char* tip; };
+            std::vector<QCheckBox*> boxes;
+            for (const auto& rule : {
+                     Rule{"Identifier", "attributeIdentifier", attribute.identifier,
+                          "Part of what identifies a row."},
+                     Rule{"Required", "attributeRequired", attribute.required,
+                          "Must be filled in: NOT NULL."},
+                     Rule{"Unique", "attributeUnique", attribute.unique,
+                          "No two rows may share it."}}) {
+                auto* box = new QCheckBox(QString::fromLatin1(rule.label), rules);
+                box->setObjectName(QString::fromLatin1(rule.name));
+                box->setChecked(rule.set);
+                box->setToolTip(QString::fromUtf8(rule.tip));
+                rules_row->addWidget(box);
+                boxes.push_back(box);
+            }
+            rules_row->addStretch();
+            attr_form->addRow(field_label("Rules", label_tone, panel), rules);
+            for (auto* box : boxes)
+                connect(box, &QCheckBox::toggled, this, [this, attribute_id, boxes] {
+                    if (refreshing_) return;
+                    show_result(editor_.set_attribute_rules(attribute_id, boxes[0]->isChecked(),
+                                                            boxes[1]->isChecked(), boxes[2]->isChecked()));
+                });
+        }
         auto* owner = narrowable(new QComboBox(panel));
         owner->setObjectName("attributeOwner");
         owner->addItem("Unassigned");
@@ -1922,6 +2293,29 @@ void MainWindow::refresh_properties() {
         if (value != description(editor_.project(), ref)) show_result(editor_.describe(ref, value));
     };
     layout->addWidget(description_edit);
+    // The comment the schema will read, for the three things that become tables
+    // and columns, and only while the model is being asked what it becomes. It
+    // sits beneath the description because the two are easily confused and the
+    // difference is worth stating where both are written: a description says
+    // what this means to a reader, a comment is written for the database.
+    const bool schema_bound = std::holds_alternative<EntityId>(ref)
+        || std::holds_alternative<AttributeId>(ref) || std::holds_alternative<RelationshipId>(ref);
+    if (schema_bound && project.mode == domain::ConceptualMode::Convertible) {
+        layout->addWidget(field_label("Comment for the schema", label_tone, panel));
+        auto* schema_edit = new DescriptionEdit(panel);
+        schema_edit->setObjectName("elementSchemaComment");
+        schema_edit->setPlainText(text(schema_comment_of(project, ref)));
+        schema_edit->setPlaceholderText("What the generated table or column should say about itself…");
+        schema_edit->setFixedHeight(64);
+        offer_text_comment(schema_edit);
+        schema_edit->commit = [this, ref, schema_edit] {
+            if (refreshing_ || !exists(editor_.project(), ref)) return;
+            const auto value = bytes(schema_edit->toPlainText());
+            if (value != schema_comment_of(editor_.project(), ref))
+                show_result(editor_.set_schema_comment(ref, value));
+        };
+        layout->addWidget(schema_edit);
+    }
     layout->addWidget(hint("Text changes apply when you leave the field. Every applied change can be undone.", panel));
     auto* geometry = new QFormLayout;
     const auto rect = project.layout.at(ref);
@@ -2110,13 +2504,48 @@ void MainWindow::choose_tool(Tool tool, bool locked) {
 void MainWindow::place_canvas_controls() {
     if (!canvas_controls_) return;
     canvas_controls_->adjustSize();
-    // Measured from the view's own edge and inset by a scrollbar's thickness
-    // whether or not one is showing, so fitting the diagram — which brings
-    // scrollbars in or takes them out — never moves the raft.
-    const auto bar = canvas_->style()->pixelMetric(QStyle::PM_ScrollBarExtent, nullptr, canvas_);
-    canvas_controls_->move(canvas_->width() - canvas_controls_->width() - bar - 12,
-                           canvas_->height() - canvas_controls_->height() - bar - 12);
+    const auto size = canvas_controls_->size();
+    QPoint at;
+    if (canvas_controls_place_) {
+        // Kept where it was put as a fraction of the view, so a raft dragged
+        // to the middle stays in the middle when the window is resized rather
+        // than drifting towards a corner.
+        at = QPoint(qRound(canvas_controls_place_->x() * canvas_->width()),
+                    qRound(canvas_controls_place_->y() * canvas_->height()));
+    } else {
+        // Measured from the view's own edge and inset by a scrollbar's thickness
+        // whether or not one is showing, so fitting the diagram — which brings
+        // scrollbars in or takes them out — never moves the raft.
+        const auto bar = canvas_->style()->pixelMetric(QStyle::PM_ScrollBarExtent, nullptr, canvas_);
+        at = QPoint(canvas_->width() - size.width() - bar - 12,
+                    canvas_->height() - size.height() - bar - 12);
+    }
+    // Held inside the view: a raft dragged to an edge and then met with a
+    // smaller window must not end up off the side where it cannot be reached.
+    at.setX(std::clamp(at.x(), 4, std::max(4, canvas_->width() - size.width() - 4)));
+    at.setY(std::clamp(at.y(), 4, std::max(4, canvas_->height() - size.height() - 4)));
+    canvas_controls_->move(at);
     canvas_controls_->raise();
+}
+
+void MainWindow::move_canvas_controls(QPoint by) {
+    if (!canvas_controls_ || canvas_->width() <= 0 || canvas_->height() <= 0) return;
+    const auto at = canvas_controls_->pos() + by;
+    canvas_controls_place_ = QPointF(static_cast<double>(at.x()) / canvas_->width(),
+                                     static_cast<double>(at.y()) / canvas_->height());
+    place_canvas_controls();
+}
+
+void MainWindow::show_canvas_controls(bool shown) {
+    if (!canvas_controls_) return;
+    canvas_controls_->setVisible(shown);
+    if (shown) place_canvas_controls();
+    if (auto* entry = findChild<QAction*>("viewCanvasControls"); entry && entry->isChecked() != shown) {
+        const QSignalBlocker quiet(entry);
+        entry->setChecked(shown);
+    }
+    statusBar()->showMessage(shown ? "The view controls are back."
+                                   : "View controls put away. Right-click the diagram to bring them back.", 7000);
 }
 
 int MainWindow::icon_pixels() const {
@@ -2739,24 +3168,24 @@ bool MainWindow::open_path(const QString& path) {
     return true;
 }
 
-void MainWindow::download_dialog() {
+void MainWindow::export_dialog() {
     finish_field_edit();
     canvas_->cancel_interaction();
-    DownloadDialog dialog(*canvas_, editor_.project(), this);
-    dialog.set_choice(download_choice_);
+    ExportDialog dialog(*canvas_, editor_.project(), this);
+    dialog.set_choice(export_choice_);
     if (dialog.exec() != QDialog::Accepted) return;
-    download_choice_ = dialog.choice();
-    if (download_choice_.document) download_document(download_choice_.as_document);
-    else download_picture(download_choice_.as_picture);
+    export_choice_ = dialog.choice();
+    if (export_choice_.document) export_document(export_choice_.as_document);
+    else export_picture(export_choice_.as_picture);
 }
 
-// Where a downloaded file is suggested to go: named after the project, beside
+// Where an exported file is suggested to go: named after the project, beside
 // it when it has a file of its own, so what leaves lands where the work lives.
-QString MainWindow::download_location(const QString& suffix, const QString& label) {
+QString MainWindow::export_location(const QString& suffix, const QString& label) {
     const auto stem = path_.isEmpty() ? QString("Untitled") : QFileInfo(path_).completeBaseName();
     const auto suggested = path_.isEmpty() ? stem + "." + suffix
                                            : QFileInfo(path_).dir().filePath(stem + "." + suffix);
-    auto location = QFileDialog::getSaveFileName(this, "Download", suggested,
+    auto location = QFileDialog::getSaveFileName(this, "Export", suggested,
                                                  QString("%1 (*.%2)").arg(label, suffix));
     if (location.isEmpty()) return {};
     if (!location.endsWith("." + suffix, Qt::CaseInsensitive)) {
@@ -2768,33 +3197,33 @@ QString MainWindow::download_location(const QString& suffix, const QString& labe
     return location;
 }
 
-bool MainWindow::download_document(DocumentFormat format, const QString& location_given) {
+bool MainWindow::export_document(DocumentFormat format, const QString& location_given) {
     finish_field_edit();
     canvas_->cancel_interaction();
     const auto& info = document_format(format);
     auto location = location_given;
     if (location.isEmpty())
-        location = download_location(QString::fromLatin1(info.suffix), QString::fromUtf8(info.label));
+        location = export_location(QString::fromLatin1(info.suffix), QString::fromUtf8(info.label));
     if (location.isEmpty()) return false;
     const auto result = write_document(*canvas_, editor_.project(), format, location);
     if (!result) {
         QMessageBox::warning(this, "Document could not be written", result.error);
         return false;
     }
-    // A listing is not the project, and someone who downloads one and expects
+    // A listing is not the project, and someone who exports one and expects
     // to reopen it should be told so once rather than discover it later.
-    statusBar()->showMessage("Downloaded " + QFileInfo(location).fileName()
+    statusBar()->showMessage("Exported " + QFileInfo(location).fileName()
                              + ". It is a listing of the model, not the project itself.", 9000);
     return true;
 }
 
-bool MainWindow::download_picture(const PictureOptions& options, const QString& location_given) {
+bool MainWindow::export_picture(const PictureOptions& options, const QString& location_given) {
     finish_field_edit();
     canvas_->cancel_interaction();
     const auto& info = picture_format(options.format);
     const auto suffix = QString::fromLatin1(info.suffix);
     auto location = location_given;
-    if (location.isEmpty()) location = download_location(suffix, QString::fromUtf8(info.label));
+    if (location.isEmpty()) location = export_location(suffix, QString::fromUtf8(info.label));
     if (location.isEmpty()) return false;
     QString note;
     const auto payload = options.carry_project && info.carries_project ? project_payload(note) : QByteArray();
@@ -2805,7 +3234,7 @@ bool MainWindow::download_picture(const PictureOptions& options, const QString& 
     }
     // What was written, and where the project ended up, since a recipient who
     // expects to reopen the picture needs to know whether it can be.
-    auto said = "Downloaded " + QFileInfo(location).fileName();
+    auto said = "Exported " + QFileInfo(location).fileName();
     if (result.carried_project) said += ", with the project inside it";
     said += ".";
     if (!note.isEmpty()) said += " " + note;
@@ -2820,7 +3249,7 @@ bool MainWindow::copy_picture() {
     canvas_->cancel_interaction();
     // A copy is of what is selected, and of the whole diagram when nothing is,
     // which is what every drawing application does with the same command.
-    auto options = download_choice_.as_picture;
+    auto options = export_choice_.as_picture;
     options.extent = canvas_->selection_bounds().isEmpty() ? PictureExtent::WholeDiagram : PictureExtent::Selection;
     QString note;
     const auto payload = options.carry_project ? project_payload(note) : QByteArray();
@@ -3010,11 +3439,97 @@ void MainWindow::close_search() {
     canvas_->setFocus();
 }
 
-void MainWindow::refresh_download_actions() {
+bool MainWindow::export_project_file(const QString& location_given) {
+    finish_field_edit();
+    canvas_->cancel_interaction();
+    auto location = location_given;
+    if (location.isEmpty()) location = export_location(QStringLiteral("erdx"), QStringLiteral("ERDFlow project"));
+    if (location.isEmpty()) return false;
+    // Written through the store directly rather than through the save use case:
+    // this is a copy put somewhere, so the project being worked on keeps its own
+    // file and its own unsaved state.
+    const auto result = store_.save(bytes(location), editor_.project());
+    if (!result) {
+        QMessageBox::warning(this, "Project could not be written", text(result.error));
+        return false;
+    }
+    statusBar()->showMessage("Exported a copy to " + QFileInfo(location).fileName()
+                             + ". You are still working on this one.", 9000);
+    return true;
+}
+
+void MainWindow::import_dialog(bool pictures) {
+    const auto location = QFileDialog::getOpenFileName(this, pictures ? "Import from a picture" : "Import a project",
+        path_, pictures ? "Picture carrying a project (*.svg *.png)" : "ERDFlow project (*.erdx)");
+    if (!location.isEmpty()) import_project(location);
+}
+
+bool MainWindow::import_project(const QString& path) {
+    finish_field_edit();
+    canvas_->cancel_interaction();
+    auto incoming = read_project(path);
+    if (!incoming) {
+        QMessageBox::warning(this, "Nothing could be imported", text(incoming.error));
+        return false;
+    }
+    // Put down to the right of everything already drawn, with a gap, so an
+    // import never lands on top of the work it is joining. The incoming
+    // project has coordinates of its own, so the gap is measured from its own
+    // left edge rather than from nothing.
+    double offset_x = 0;
+    const auto drawn = canvas_->diagram_bounds();
+    if (!drawn.isEmpty() && !incoming.project->layout.empty()) {
+        auto leftmost = incoming.project->layout.begin()->second.x;
+        for (const auto& [ref, rect] : incoming.project->layout) {
+            (void)ref;
+            leftmost = std::min(leftmost, rect.x);
+        }
+        offset_x = drawn.right() + 140 - leftmost;
+    }
+    const auto before = editor_.project();
+    const auto result = editor_.merge_project(*incoming.project, offset_x, 0);
+    if (!result) { show_result(result); return false; }
+    refresh();
+    // What arrived is chosen and brought into view, so the reader can see what
+    // they just imported rather than having to go looking for it.
+    std::vector<domain::ElementRef> arrived;
+    for (const auto& [ref, rect] : editor_.project().layout) {
+        (void)rect;
+        if (!before.layout.contains(ref)) arrived.push_back(ref);
+    }
+    canvas_->select_elements(arrived, true);
+    statusBar()->showMessage(QString("Imported %1 from %2. One undo takes it all back out again.")
+                                 .arg(arrived.size() == 1 ? QString("1 element")
+                                                          : QString("%1 elements").arg(arrived.size()),
+                                      QFileInfo(path).fileName()), 9000);
+    return true;
+}
+
+void MainWindow::set_conceptual_mode(domain::ConceptualMode mode) {
+    finish_field_edit();
+    show_result(editor_.set_conceptual_mode(mode), false);
+}
+
+void MainWindow::refresh_mode_button() {
+    if (!mode_button_) return;
+    const bool convertible = editor_.project().mode == domain::ConceptualMode::Convertible;
+    mode_button_->setText(convertible ? "Convertible" : "Basic");
+    mode_button_->setToolTip(convertible
+        ? "Convertible mode. The model is being asked what it will become: attributes carry a logical type, "
+          "the rules a table will enforce, and the comment the schema will read."
+        : "Basic mode. The diagram as it is drawn and taught. Switch to Convertible to say what it becomes.");
+    if (auto* entry = findChild<QAction*>(convertible ? "modeConvertible" : "modeBasic"))
+        if (!entry->isChecked()) {
+            const QSignalBlocker quiet(entry);
+            entry->setChecked(true);
+        }
+}
+
+void MainWindow::refresh_export_actions() {
     // Nothing drawn is nothing to hand on. The entries stay where they are and
     // go quiet, rather than the row appearing and disappearing as work starts.
     const auto anything = !canvas_->diagram_bounds().isEmpty();
-    for (auto* action : download_actions_) action->setEnabled(anything);
+    for (auto* action : export_actions_) action->setEnabled(anything);
 }
 
 void MainWindow::load_example() {

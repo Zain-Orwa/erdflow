@@ -29,12 +29,16 @@ int main(int argc, char* argv[]) {
     // Which ribbon row the screenshot should show. Development tooling beside
     // the screenshot option, so a row other than Home can be looked at without
     // a person having to click the tab first.
-    parser.addOption({"tab", "Show a ribbon tab before the screenshot, such as tabDownload.", "name"});
+    parser.addOption({"tab", "Show a ribbon tab before the screenshot, such as tabExport.", "name"});
     // Opens the search bar already looking for something, so the search can be
     // seen without anyone having to find the shortcut first. Development
     // tooling beside the two above, and the quickest way to see what a search
     // does to a diagram.
     parser.addOption({"search", "Open the search bar looking for this text.", "text"});
+    // Opens in one mode or the other, so what Convertible mode asks a model can
+    // be seen without anyone having to find the switch first. Development
+    // tooling beside the three above.
+    parser.addOption({"mode", "Open in \"basic\" or \"convertible\" mode.", "mode"});
     parser.addPositionalArgument("project", "An .erdx project to open.", "[project]");
     parser.process(app);
     erdflow::infrastructure::QtIdGenerator ids;
@@ -50,12 +54,24 @@ int main(int argc, char* argv[]) {
         else if (parser.isSet("example")) window.load_example();
         if (parser.isSet("tab") && window.ribbon()) window.ribbon()->show_tab(parser.value("tab"));
         if (parser.isSet("search")) window.open_search(parser.value("search"));
+        if (parser.isSet("mode"))
+            window.set_conceptual_mode(parser.value("mode").compare("convertible", Qt::CaseInsensitive) == 0
+                                           ? erdflow::domain::ConceptualMode::Convertible
+                                           : erdflow::domain::ConceptualMode::Basic);
         QTimer::singleShot(500, &window, [&] {
             if (parser.isSet("screenshot") && !window.grab().save(parser.value("screenshot"))) {
                 app.exit(1);
                 return;
             }
-            if (parser.isSet("smoke-test")) app.quit();
+            if (parser.isSet("smoke-test")) {
+                // A smoke test never means to keep anything, and some of the
+                // options above are real edits -- opening in Convertible mode
+                // is one -- which would leave the document unsaved and the
+                // window asking whether to save it on the way out. Nobody is
+                // there to answer, so the run would hang rather than end.
+                editor.mark_saved(editor.revision());
+                app.quit();
+            }
         });
     });
     return app.exec();

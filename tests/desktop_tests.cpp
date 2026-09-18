@@ -1,6 +1,6 @@
 #include "app/desktop/icons.hpp"
 #include "app/desktop/symbols.hpp"
-#include "app/desktop/download_dialog.hpp"
+#include "app/desktop/export_dialog.hpp"
 #include "app/desktop/main_window.hpp"
 #include "infrastructure/project_store.hpp"
 
@@ -1248,6 +1248,63 @@ int main(int argc, char** argv) {
                 if (attribute.owner && std::holds_alternative<domain::EntityId>(*attribute.owner)) ++owned_by_entities;
             require(nested == owned_by_entities, "Each entity lists exactly the attributes it owns");
             require(nested > 0, "The example has attributes on its entities to show");
+            // A row is drawn as the element itself rather than as a badge for
+            // its kind, so a derived attribute is dashed here as it is on the
+            // canvas and a multivalued one is doubled. The words say the same
+            // thing for anyone pointing at the row instead of reading it.
+            {
+                QStandardItem* derived = nullptr;
+                QStandardItem* multivalued = nullptr;
+                QStandardItem* plain = nullptr;
+                for (int row = 0; row < attributes->rowCount(); ++row) {
+                    auto* item = attributes->child(row);
+                    if (item->text() == "Age") derived = item;
+                    if (item->text() == "Phone") multivalued = item;
+                    if (item->text() == "Gender") plain = item;
+                }
+                require(derived && multivalued && plain, "The example has the kinds to tell apart");
+                require(derived->toolTip().startsWith("Derived attribute"), "A derived attribute says so");
+                require(multivalued->toolTip().startsWith("Multivalued attribute"), "And a multivalued one says so");
+                require(plain->toolTip().startsWith("Attribute ·"), "While an ordinary one is just an attribute");
+                // The drawings differ, which is what makes the shape worth
+                // drawing at all rather than one badge for every attribute.
+                const auto ink = [](QStandardItem* item) {
+                    return item->icon().pixmap(QSize(28, 20)).toImage();
+                };
+                require(!ink(derived).isNull() && ink(derived) != ink(plain),
+                        "A derived attribute is not drawn as an ordinary one");
+                require(ink(multivalued) != ink(plain), "Nor is a multivalued one");
+                require(ink(multivalued) != ink(derived), "And the two are not drawn as each other");
+            }
+
+            // What belongs to a row is counted at the end of it, rather than
+            // written into the name, where a number would read as part of what
+            // the element is called.
+            {
+                constexpr int owned_count_role = Qt::UserRole + 1;
+                // Read off the tree rather than by name, since earlier tests
+                // rename what is on the diagram: what a row counts must be what
+                // is actually listed under it, whatever it is called.
+                int counted_rows = 0;
+                for (int row = 0; row < entities->rowCount(); ++row) {
+                    auto* item = entities->child(row);
+                    require(!item->text().contains(QChar('(')),
+                            "The number is not written into what an element is called");
+                    if (item->rowCount() == 0) {
+                        require(!item->data(owned_count_role).isValid(),
+                                "An entity with nothing under it carries no count at all");
+                        continue;
+                    }
+                    require(item->data(owned_count_role).toInt() == item->rowCount(),
+                            "An entity says how many attributes belong to it");
+                    ++counted_rows;
+                }
+                require(counted_rows > 0, "The example has entities with attributes to count");
+                require(entities->data(owned_count_role).toInt() == entities->rowCount(),
+                        "And a group counts the same way, so the tree counts in one place and one way");
+                require(entities->text() == "Entities", "Rather than in its own text");
+            }
+
             // The fold mark stands against the Explorer's right edge, not in
             // front of the row. The panel is on the left and the diagram fills
             // the middle, so the hand comes back to the panel's near edge: the
@@ -1443,8 +1500,13 @@ int main(int argc, char** argv) {
             auto* tree = child<QTreeView>(window, "explorer");
             auto* model = qobject_cast<QStandardItemModel*>(tree->model());
             bool listed = false;
-            for (int row = 0; row < model->item(0)->rowCount(); ++row)
-                if (model->item(0)->child(row)->text().startsWith("Pictures (1)")) listed = true;
+            for (int row = 0; row < model->item(0)->rowCount(); ++row) {
+                auto* group = model->item(0)->child(row);
+                // The count is carried beside the name rather than inside it,
+                // so a group is found by what it is called and asked how many
+                // it holds separately.
+                if (group->text() == "Pictures" && group->data(Qt::UserRole + 1).toInt() == 1) listed = true;
+            }
             require(listed, "The explorer lists the picture under a group of its own");
 
             note_tool->trigger();
@@ -1576,11 +1638,106 @@ int main(int argc, char** argv) {
         require(window.editor().project().entities.size() == example_entities, "Create is undoable from shell");
         child<QAction>(window, "checkModel")->trigger();
         require(child<QTreeView>(window, "modelIssues")->isVisible(), "Model checks action opens findings");
+        // The raft of view controls: it can be moved, it can be put away, and
+        // there is a way back to it once it has been.
+        {
+            auto* raft = child<QWidget>(window, "canvasControls");
+            require(raft->isVisible(), "The raft is there to begin with");
+            require(window.findChild<QWidget*>("canvasControlsGrip") != nullptr,
+                    "With a grip to take hold of, since every button on it does something when pressed");
+
+            // Moving it puts it where it was dragged, and remembers that
+            // through a resize rather than letting it drift back to a corner.
+            const auto started = raft->pos();
+            window.move_canvas_controls(QPoint(-260, -180));
+            settle();
+            require(raft->pos() != started, "Dragging the grip moves it");
+            const auto moved = raft->pos();
+            const auto was = window.size();
+            window.resize(was.width() - 120, was.height() - 90);
+            settle();
+            require(raft->pos() != started, "And it stays where it was put rather than returning to the corner");
+            window.resize(was);
+            settle();
+
+            // A window too small for where it was put must not leave it off
+            // the side, where nothing could reach it.
+            window.move_canvas_controls(QPoint(4000, 4000));
+            settle();
+            require(raft->x() + raft->width() <= window.canvas()->width()
+                        && raft->y() + raft->height() <= window.canvas()->height(),
+                    "It is held inside the view however far it is pushed");
+            require(raft->x() >= 0 && raft->y() >= 0, "On every side");
+
+            // Put away, and offered back by the diagram's own menu -- an offer
+            // made only while it is away, since putting back what is already
+            // there says nothing worth reading.
+            const auto offers_the_way_back = [&] {
+                QMenu probe;
+                require(window.canvas()->on_canvas_menu != nullptr, "The canvas asks the window what else to offer");
+                window.canvas()->on_canvas_menu(probe);
+                const auto actions = probe.actions();
+                return std::any_of(actions.begin(), actions.end(), [](const QAction* entry) {
+                    return entry->objectName() == "showCanvasControls";
+                });
+            };
+            require(!offers_the_way_back(), "While it is there, nothing offers to put it back");
+            window.show_canvas_controls(false);
+            settle();
+            require(!raft->isVisible(), "It can be put away");
+            require(offers_the_way_back(), "And the diagram's own menu then offers it back");
+            require(!child<QAction>(window, "viewCanvasControls")->isChecked(),
+                    "With the View menu saying the same thing, so the two cannot disagree");
+
+            // And the View menu brings it back as well, for anyone who does
+            // not think to right-click the diagram.
+            child<QAction>(window, "viewCanvasControls")->setChecked(true);
+            settle();
+            require(raft->isVisible(), "The View menu brings it back too");
+            require(!offers_the_way_back(), "And the offer goes away again");
+            (void)moved;
+        }
+
         // Search: a bar above the diagram that narrows it to what is being
         // looked for, and brings what it finds to the middle of the view.
         {
             auto* find = child<QAction>(window, "searchDiagram");
             require(find->shortcut() == QKeySequence::Find, "Search is on the key a document application keeps it on");
+
+            // Fitting the diagram into the view and searching it are different
+            // things and must not be drawn as the same picture. The coloured
+            // set drew both as a magnifying glass, which said "look" for one
+            // and "look" for the other.
+            for (const auto mode : {desktop::IconMode::Normal, desktop::IconMode::Modern,
+                                    desktop::IconMode::Outline}) {
+                const auto& colors = desktop::theme(window.canvas()->theme_id());
+                const auto drawn = [&](desktop::Glyph glyph) {
+                    return desktop::glyph_icon(glyph, colors, 40, mode).pixmap(40, 40).toImage();
+                };
+                const auto fit = drawn(desktop::Glyph::Fit);
+                const auto searching = drawn(desktop::Glyph::Search);
+                require(!fit.isNull() && !searching.isNull(), "Both are drawn in every set");
+                require(fit != searching, "And never as the same picture, whichever set is on");
+                // Byte-inequality is too weak on its own: two different
+                // magnifying glasses are different pictures and still say the
+                // same thing. What is asked instead is that fitting is drawn
+                // as a frame -- a mark in each of the four corners -- which a
+                // glass, being a circle with one handle, never has.
+                const auto frames = [](const QImage& image) {
+                    const auto third_w = image.width() / 3;
+                    const auto third_h = image.height() / 3;
+                    const auto inked = [&](int x0, int y0) {
+                        for (int y = y0; y < y0 + third_h; ++y)
+                            for (int x = x0; x < x0 + third_w; ++x)
+                                if (qAlpha(image.pixel(x, y)) > 60) return true;
+                        return false;
+                    };
+                    return inked(0, 0) && inked(image.width() - third_w, 0)
+                        && inked(0, image.height() - third_h)
+                        && inked(image.width() - third_w, image.height() - third_h);
+                };
+                require(frames(fit), "Fitting is drawn as a frame, with a mark in every corner");
+            }
             auto* bar = window.findChild<QWidget*>("searchBar");
             require(bar != nullptr, "There is a search bar");
             require(!bar->isVisible(), "It takes no room until it is asked for");
@@ -1788,42 +1945,141 @@ int main(int argc, char** argv) {
             settle();
         }
 
-        // Download: how the work leaves. A picture any system can open, with
+        // Convertible mode: the same model asked what it will become. The
+        // extra fields are shown only while it is being asked, and what it was
+        // told is kept when it is not.
+        {
+            auto* mode = child<QToolButton>(window, "conceptualMode");
+            require(mode->text() == "Basic", "A project starts in Basic, which is the diagram as it is drawn");
+            window.canvas()->select_elements({});
+            settle();
+            const auto& project = window.editor().project();
+            domain::AttributeId any_attribute{};
+            for (const auto& [id, attribute] : project.attributes) { (void)attribute; any_attribute = id; break; }
+            window.canvas()->select_elements({domain::ElementRef{any_attribute}});
+            settle();
+            require(window.findChild<QComboBox*>("attributeLogicalType") == nullptr,
+                    "In Basic these questions are not asked, so the panel does not ask them");
+            require(window.findChild<QWidget*>("elementSchemaComment") == nullptr,
+                    "Nor the comment written for a schema that does not exist yet");
+
+            child<QAction>(window, "modeConvertible")->trigger();
+            settle();
+            require(window.editor().project().mode == domain::ConceptualMode::Convertible, "The mode changes");
+            require(mode->text() == "Convertible", "And the button says which mode it is in");
+            window.canvas()->select_elements({domain::ElementRef{any_attribute}});
+            settle();
+            auto* type = child<QComboBox>(window, "attributeLogicalType");
+            auto* length = child<QSpinBox>(window, "attributeLength");
+            require(!length->isEnabled(), "A type that has not been chosen is not measured");
+            type->setCurrentIndex(static_cast<int>(domain::LogicalType::Text));
+            emit type->activated(static_cast<int>(domain::LogicalType::Text));
+            settle();
+            require(window.editor().project().attributes.at(any_attribute).logical_type == domain::LogicalType::Text,
+                    "Choosing a type records it");
+            child<QCheckBox>(window, "attributeRequired")->setChecked(true);
+            settle();
+            require(window.editor().project().attributes.at(any_attribute).required,
+                    "And the rules a table will enforce are recorded too");
+            require(window.findChild<QWidget*>("elementSchemaComment") != nullptr,
+                    "With somewhere to write what the schema should say");
+
+            // Back to Basic: the questions stop being asked and the answers are
+            // kept, so a model drawn in one mode and finished in the other
+            // loses nothing in between.
+            child<QAction>(window, "modeBasic")->trigger();
+            settle();
+            window.canvas()->select_elements({domain::ElementRef{any_attribute}});
+            settle();
+            require(window.findChild<QComboBox*>("attributeLogicalType") == nullptr,
+                    "Basic stops asking");
+            require(window.editor().project().attributes.at(any_attribute).logical_type == domain::LogicalType::Text,
+                    "But keeps what it was told");
+            child<QAction>(window, "undoCommand")->trigger();
+            settle();
+            require(window.editor().project().mode == domain::ConceptualMode::Convertible,
+                    "And switching modes undoes like any other edit");
+            child<QAction>(window, "modeBasic")->trigger();
+            settle();
+        }
+
+        // Export: how the work leaves. A picture any system can open, with
         // the project inside the two formats that can hold one, and a written
         // listing of the model for the people who want words rather than a
         // drawing.
         {
             QTemporaryDir pictures;
-            require(pictures.isValid(), "Temporary download directory");
+            require(pictures.isValid(), "Temporary export directory");
 
-            // The Download tab waited until there was something to hand on.
+            // The Export tab waited until there was something to hand on.
             // There now is, so it is a tab like the others, built from the
             // same menu, and one word is used for it in both places.
-            child<QAction>(window, "tabDownload")->trigger();
+            child<QAction>(window, "tabExport")->trigger();
             settle();
-            auto* download_row = child<QToolBar>(window, "downloadTools");
-            require(download_row->isVisible(), "Download has a row of its own");
-            for (const char* name : {"downloadPdfDocument", "downloadMarkdown", "downloadHtml", "downloadCsv",
-                                     "downloadSvg", "downloadPng", "downloadPdfPage",
-                                     "downloadWithOptions", "copyAsPicture"})
-                require(child<QMenu>(window, "downloadMenu")->findChildren<QAction*>().contains(
+            auto* export_row = child<QToolBar>(window, "exportTools");
+            require(export_row->isVisible(), "Export has a row of its own");
+            for (const char* name : {"exportPdfDocument", "exportMarkdown", "exportHtml", "exportCsv",
+                                     "exportSvg", "exportPng", "exportPdfPage",
+                                     "exportWithOptions", "copyAsPicture"})
+                require(child<QMenu>(window, "exportMenu")->findChildren<QAction*>().contains(
                             child<QAction>(window, name))
-                            || download_row->actions().contains(child<QAction>(window, name)), name);
+                            || export_row->actions().contains(child<QAction>(window, name)), name);
             require(child<QMenu>(window, "fileMenu")->actions().contains(
-                        child<QMenu>(window, "downloadMenu")->menuAction()),
+                        child<QMenu>(window, "exportMenu")->menuAction()),
                     "And the same menu hangs under File");
-            require(child<QMenu>(window, "downloadMorePictures") != nullptr,
-                    "With the rarer picture formats gathered behind one entry");
-            require(child<QAction>(window, "downloadPng")->isEnabled(), "A drawn diagram can be downloaded");
-            require(child<QAction>(window, "downloadSvg")->text() == QString::fromUtf8("SVG picture…"),
-                    "Named in the characters the name was written with, not in mangled bytes");
-            require(!child<QAction>(window, "downloadWithOptions")->icon().isNull(),
-                    "Download carries a glyph of its own");
+            require(child<QMenu>(window, "fileMenu")->actions().contains(
+                        child<QMenu>(window, "importMenu")->menuAction()),
+                    "With Import beside it, which is its pair");
 
-            auto options = window.download_choice().as_picture;
+            // Import has a tab of its own beside Export, because a reader
+            // looking for one expects the other in the same place.
+            child<QAction>(window, "tabImport")->trigger();
+            settle();
+            auto* import_row = child<QToolBar>(window, "importTools");
+            require(import_row->isVisible(), "Import has a row of its own");
+            for (const char* name : {"importProject", "importPicture", "importFromOtherTools"})
+                require(import_row->actions().contains(child<QAction>(window, name)), name);
+            require(child<QAction>(window, "importProject")->isEnabled(),
+                    "Reading what ERDFlow writes can be done now");
+            require(!child<QAction>(window, "importFromOtherTools")->isEnabled(),
+                    "Reading what other tools write cannot, and stands there saying so");
+            child<QAction>(window, "tabExport")->trigger();
+            settle();
+            require(export_row->isVisible() && !import_row->isVisible(), "The two tabs swap rows like the rest");
+
+            // A tab colours itself when it is chosen; the row it brings up is
+            // set heavier than the interface around it, so the row in front of
+            // you reads as the thing you just chose rather than as a strip of
+            // quiet text that looks the same whichever tab is showing.
+            require(export_row->property("ribbonRow").toBool() && import_row->property("ribbonRow").toBool(),
+                    "The rows that belong to a tab are marked as such");
+            require(!child<QToolBar>(window, "modelTools")->property("ribbonRow").toBool(),
+                    "Home is not, being the drawing tools, which their icons already tell apart");
+            for (const char* row : {"insertTools", "designTools", "exportTools", "importTools",
+                                    "viewTools", "helpTools"})
+                require(child<QToolBar>(window, row)->property("ribbonRow").toBool(), row);
+            // The menu's group headings are entries that cannot be chosen,
+            // which reads well in a menu and would be a button nobody can
+            // press on a row. They stay off the row.
+            for (auto* action : export_row->actions())
+                require(!action->objectName().endsWith("Heading"),
+                        "No heading is put on the row as a dead button");
+            require(!child<QAction>(window, "exportDocumentsHeading")->isEnabled(),
+                    "A heading cannot be chosen, which is what makes it read as a heading");
+            require(child<QAction>(window, "exportProject")->isEnabled(),
+                    "While the project itself is a format work leaves in");
+            require(child<QMenu>(window, "exportMorePictures") != nullptr,
+                    "With the rarer picture formats gathered behind one entry");
+            require(child<QAction>(window, "exportPng")->isEnabled(), "A drawn diagram can be exported");
+            require(child<QAction>(window, "exportSvg")->text() == QString::fromUtf8("SVG picture…"),
+                    "Named in the characters the name was written with, not in mangled bytes");
+            require(!child<QAction>(window, "exportWithOptions")->icon().isNull(),
+                    "Export carries a glyph of its own");
+
+            auto options = window.export_choice().as_picture;
             options.format = desktop::PictureFormat::Png;
             const auto png = pictures.filePath("diagram.png");
-            require(window.download_picture(options, png), "A PNG is written where it was told to write one");
+            require(window.export_picture(options, png), "A PNG is written where it was told to write one");
             require(QFileInfo::exists(png), "And the file is there afterwards");
 
             // The picture is also the project. Opening it gives back exactly
@@ -1834,10 +2090,10 @@ int main(int argc, char** argv) {
             require(window.editor().project() == drawn, "Giving back exactly the diagram that was exported");
             require(!window.editor().dirty(), "And it opens clean, like any other project");
 
-            // SVG carries it too, and is the default download for that reason.
+            // SVG carries it too, and is the picture to prefer for that reason.
             options.format = desktop::PictureFormat::Svg;
             const auto svg = pictures.filePath("diagram.svg");
-            require(window.download_picture(options, svg), "An SVG is written");
+            require(window.export_picture(options, svg), "An SVG is written");
             if (window.editor().dirty()) dismiss(QMessageBox::Discard);
             require(window.open_path(svg), "And opens as the project it carries");
             require(window.editor().project() == drawn, "Also exactly as it was drawn");
@@ -1846,7 +2102,7 @@ int main(int argc, char** argv) {
             // so rather than reporting a damaged project.
             options.carry_project = false;
             const auto bare = pictures.filePath("bare.png");
-            require(window.download_picture(options, bare), "A PNG written without the project");
+            require(window.export_picture(options, bare), "A PNG written without the project");
             dismiss(QMessageBox::Ok);
             require(!window.open_path(bare), "Does not open as a project");
             require(window.editor().project() == drawn, "And leaves the open work alone");
@@ -1855,7 +2111,7 @@ int main(int argc, char** argv) {
             // A page is written as a page, and carries nothing, as a page cannot.
             options.format = desktop::PictureFormat::Pdf;
             const auto pdf = pictures.filePath("diagram.pdf");
-            require(window.download_picture(options, pdf), "A PDF page is written");
+            require(window.export_picture(options, pdf), "A PDF page is written");
             QFile page(pdf);
             require(page.open(QIODevice::ReadOnly) && page.read(4) == "%PDF", "Which is a PDF");
 
@@ -1867,6 +2123,52 @@ int main(int argc, char** argv) {
             const auto* clipboard = QApplication::clipboard()->mimeData();
             require(clipboard && clipboard->hasFormat("image/png") && clipboard->hasFormat("image/svg+xml"),
                     "Copy as picture puts a raster and a vector on the clipboard together");
+
+            // The project itself is a format work leaves in, and the only one
+            // that loses nothing. Writing a copy leaves the open project alone:
+            // it keeps its own file and its own unsaved state, which is what
+            // makes it a copy rather than a Save As.
+            {
+                const auto copy = pictures.filePath("copy.erdx");
+                const auto working_on = window.editor().project();
+                require(window.export_project_file(copy), "A copy of the project is written");
+                infrastructure::ErdxProjectStore reader;
+                const auto read_back = reader.load(copy.toStdString());
+                require(read_back.project.has_value(), "And reads back");
+                require(*read_back.project == working_on, "As exactly the project that was open");
+            }
+
+            // Import is Export's pair. It brings another project's contents
+            // into this one rather than replacing it, everything arrives with
+            // identities of its own so nothing collides, and it undoes at once.
+            {
+                const auto source = pictures.filePath("to-import.erdx");
+                require(window.export_project_file(source), "A project to import from");
+                const auto before = window.editor().project();
+                require(window.import_project(source), "It imports");
+                const auto after = window.editor().project();
+                require(after.entities.size() == before.entities.size() * 2,
+                        "Everything arrives beside what was there, rather than replacing it");
+                // Not one identity in common, though the two are the same work:
+                // an import must be able to bring in a project copied from this
+                // very one without a single collision.
+                for (const auto& [id, entity] : before.entities) {
+                    (void)entity;
+                    require(after.entities.contains(id), "What was there is untouched");
+                }
+                std::size_t fresh = 0;
+                for (const auto& [id, entity] : after.entities) {
+                    (void)entity;
+                    if (!before.entities.contains(id)) ++fresh;
+                }
+                require(fresh == before.entities.size(), "And what arrived is all new identity");
+                require(after.comments.size() == before.comments.size() * 2
+                            || before.comments.empty(),
+                        "What was said about the work comes with the work");
+                child<QAction>(window, "undoCommand")->trigger();
+                settle();
+                require(window.editor().project() == before, "And one undo takes the whole import back out");
+            }
 
             // The four written listings, each of which reads the model that is
             // already there. They are listings and not the project, so nothing
@@ -1883,7 +2185,7 @@ int main(int argc, char** argv) {
                                         Listing{desktop::DocumentFormat::Html, "report.html", "<!DOCTYPE html>"},
                                         Listing{desktop::DocumentFormat::Pdf, "report.pdf", "%PDF"}}) {
                 const auto where = pictures.filePath(QString::fromLatin1(listing.file));
-                require(window.download_document(listing.format, where),
+                require(window.export_document(listing.format, where),
                         "A listing is written where it was told to write one");
                 QFile written(where);
                 require(written.open(QIODevice::ReadOnly), listing.file);
@@ -1899,15 +2201,15 @@ int main(int argc, char** argv) {
             // pictures, and turns off what cannot be asked for: an extent with
             // nothing in it, the picture options a document has none of, and
             // carrying the project in a format with nowhere to put it.
-            desktop::DownloadDialog dialog(*window.canvas(), window.editor().project());
-            desktop::DownloadChoice choice;
+            desktop::ExportDialog dialog(*window.canvas(), window.editor().project());
+            desktop::ExportChoice choice;
             choice.as_picture = options;
             dialog.set_choice(choice);
             settle();
-            auto* extent = dialog.findChild<QComboBox*>("downloadExtent");
-            auto* format = dialog.findChild<QComboBox*>("downloadFormat");
-            auto* carry = dialog.findChild<QCheckBox*>("downloadCarryProject");
-            auto* size = dialog.findChild<QLabel*>("downloadSize");
+            auto* extent = dialog.findChild<QComboBox*>("exportExtent");
+            auto* format = dialog.findChild<QComboBox*>("exportFormat");
+            auto* carry = dialog.findChild<QCheckBox*>("exportCarryProject");
+            auto* size = dialog.findChild<QLabel*>("exportSize");
             require(extent && format && carry && size, "The dialog has its controls");
             const auto* extents = qobject_cast<QStandardItemModel*>(extent->model());
             require(extents != nullptr, "Whose extents can be turned off one at a time");
@@ -1938,10 +2240,10 @@ int main(int argc, char** argv) {
             // rather than failing when they are pressed.
             child<QAction>(window, "newProject")->trigger();
             settle();
-            require(!child<QAction>(window, "downloadPng")->isEnabled(), "An empty project has nothing to hand on");
+            require(!child<QAction>(window, "exportPng")->isEnabled(), "An empty project has nothing to hand on");
             window.load_example();
             settle();
-            require(child<QAction>(window, "downloadPng")->isEnabled(), "And a drawn one has something again");
+            require(child<QAction>(window, "exportPng")->isEnabled(), "And a drawn one has something again");
         }
 
         window.close(); // The example was reloaded clean, so no discard dialog.

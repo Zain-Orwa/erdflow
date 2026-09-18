@@ -84,6 +84,7 @@ struct Delta {
     std::string label;
     std::optional<std::string> project_name;
     std::optional<Background> background;
+    std::optional<ConceptualMode> mode;
     Changes<EntityId, Entity> entities;
     Changes<AttributeId, Attribute> attributes;
     Changes<RelationshipId, Relationship> relationships;
@@ -100,7 +101,7 @@ struct Delta {
     std::uint64_t after_state = 0;
 
     [[nodiscard]] bool empty() const {
-        return !project_name && !background && entities.keys.empty() && attributes.keys.empty()
+        return !project_name && !background && !mode && entities.keys.empty() && attributes.keys.empty()
             && relationships.keys.empty() && specializations.keys.empty()
             && pictures.keys.empty() && notes.keys.empty() && comments.keys.empty()
             && layout.keys.empty() && connectors.keys.empty() && colours.keys.empty()
@@ -109,6 +110,7 @@ struct Delta {
     void toggle(Project& project) {
         if (project_name) project.name.swap(*project_name);
         if (background) std::swap(project.background, *background);
+        if (mode) std::swap(project.mode, *mode);
         entities.toggle(project.entities);
         attributes.toggle(project.attributes);
         relationships.toggle(project.relationships);
@@ -285,7 +287,7 @@ EditResult Editor::rename_project(std::string name) {
 EditResult Editor::create_entity(std::string name, Rect rect) {
     return impl_->edit("Create entity", [&](Delta& delta) {
         const EntityId id{impl_->next_id()};
-        delta.entities.put(id, Entity{id, std::move(name), {}});
+        delta.entities.put(id, Entity{.id = id, .name = std::move(name)});
         delta.layout.put(ElementRef{id}, rect);
         return EditResult{true, {}, ElementRef{id}, {}};
     });
@@ -293,7 +295,7 @@ EditResult Editor::create_entity(std::string name, Rect rect) {
 EditResult Editor::create_attribute(std::string name, Rect rect, std::optional<AttributeOwner> owner) {
     return impl_->edit("Create attribute", [&](Delta& delta) {
         const AttributeId id{impl_->next_id()};
-        delta.attributes.put(id, Attribute{id, std::move(name), {}, AttributeKind::Normal, owner});
+        delta.attributes.put(id, Attribute{.id = id, .name = std::move(name), .kind = AttributeKind::Normal, .owner = owner});
         delta.layout.put(ElementRef{id}, rect);
         return EditResult{true, {}, ElementRef{id}, {}};
     });
@@ -301,7 +303,7 @@ EditResult Editor::create_attribute(std::string name, Rect rect, std::optional<A
 EditResult Editor::create_relationship(std::string name, Rect rect) {
     return impl_->edit("Create relationship", [&](Delta& delta) {
         const RelationshipId id{impl_->next_id()};
-        delta.relationships.put(id, Relationship{id, std::move(name), {}, false, false, {}});
+        delta.relationships.put(id, Relationship{.id = id, .name = std::move(name)});
         delta.layout.put(ElementRef{id}, rect);
         return EditResult{true, {}, ElementRef{id}, {}};
     });
@@ -464,6 +466,109 @@ template<class Edit> EditResult edit_element(const Project& project, Delta& delt
 }
 } // namespace
 
+EditResult Editor::merge_project(const Project& other, double dx, double dy) {
+    return impl_->edit("Import project", [&](Delta& delta) {
+        if (&other == &project()) return failure("A project cannot be imported into itself.");
+        // Every element of the incoming project gets an identity of its own
+        // here, so nothing it carries can collide with anything already drawn.
+        std::map<ElementRef, ElementRef> mapping;
+        const auto claim = [&](const ElementRef& ref) {
+            mapping.emplace(ref, std::visit([&](const auto& id) -> ElementRef {
+                using T = std::decay_t<decltype(id)>;
+                (void)id;
+                return T{impl_->next_id()};
+            }, ref));
+        };
+        for (const auto& [id, value] : other.entities) { (void)value; claim(ElementRef{id}); }
+        for (const auto& [id, value] : other.attributes) { (void)value; claim(ElementRef{id}); }
+        for (const auto& [id, value] : other.relationships) { (void)value; claim(ElementRef{id}); }
+        for (const auto& [id, value] : other.specializations) { (void)value; claim(ElementRef{id}); }
+        for (const auto& [id, value] : other.pictures) { (void)value; claim(ElementRef{id}); }
+        for (const auto& [id, value] : other.notes) { (void)value; claim(ElementRef{id}); }
+
+        // The links are renamed too, so a shape drawn on an incoming line
+        // follows it in rather than being left pointing at the old identity.
+        std::map<ConnectorRef, ConnectorRef> links;
+        for (const auto& [id, attribute] : other.attributes) {
+            (void)attribute;
+            links.emplace(ConnectorRef{id}, ConnectorRef{std::get<AttributeId>(mapping.at(ElementRef{id}))});
+        }
+
+        for (const auto& [id, entity] : other.entities) {
+            auto value = entity;
+            value.id = std::get<EntityId>(mapping.at(ElementRef{id}));
+            delta.entities.put(value.id, std::move(value));
+        }
+        for (const auto& [id, attribute] : other.attributes) {
+            auto value = attribute;
+            value.id = std::get<AttributeId>(mapping.at(ElementRef{id}));
+            if (value.owner) value.owner = mapping.at(*value.owner);
+            delta.attributes.put(value.id, std::move(value));
+        }
+        for (const auto& [id, relationship] : other.relationships) {
+            auto value = relationship;
+            value.id = std::get<RelationshipId>(mapping.at(ElementRef{id}));
+            for (auto& participant : value.participants) {
+                const auto was = participant.id;
+                participant.id = ParticipantId{impl_->next_id()};
+                links.emplace(ConnectorRef{was}, ConnectorRef{participant.id});
+                const auto target = mapping.at(target_ref(participant.target));
+                if (const auto* entity = std::get_if<EntityId>(&target)) participant.target = *entity;
+                else participant.target = std::get<RelationshipId>(target);
+            }
+            delta.relationships.put(value.id, std::move(value));
+        }
+        for (const auto& [id, hierarchy] : other.specializations) {
+            auto value = hierarchy;
+            value.id = std::get<SpecializationId>(mapping.at(ElementRef{id}));
+            if (value.supertype) value.supertype = std::get<EntityId>(mapping.at(ElementRef{*value.supertype}));
+            for (auto& subtype : value.subtypes) subtype = std::get<EntityId>(mapping.at(ElementRef{subtype}));
+            delta.specializations.put(value.id, std::move(value));
+        }
+        for (const auto& [id, picture] : other.pictures) {
+            auto value = picture;
+            value.id = std::get<PictureId>(mapping.at(ElementRef{id}));
+            delta.pictures.put(value.id, std::move(value));
+        }
+        for (const auto& [id, note] : other.notes) {
+            auto value = note;
+            value.id = std::get<NoteId>(mapping.at(ElementRef{id}));
+            delta.notes.put(value.id, std::move(value));
+        }
+        // What was said about the work comes with the work.
+        for (const auto& [id, comment] : other.comments) {
+            (void)id;
+            auto value = comment;
+            value.id = CommentId{impl_->next_id()};
+            for (auto& target : value.targets) {
+                if (auto* element = std::get_if<ElementRef>(&target)) *element = mapping.at(*element);
+                else if (auto* link = std::get_if<ConnectorRef>(&target)) *link = links.at(*link);
+                else std::get<TextAnchor>(target).owner = mapping.at(std::get<TextAnchor>(target).owner);
+            }
+            delta.comments.put(value.id, std::move(value));
+        }
+        // Moved clear of what is already drawn, so an import never lands on
+        // top of the work it is joining.
+        for (const auto& [ref, rect] : other.layout) {
+            auto moved = rect;
+            moved.x += dx;
+            moved.y += dy;
+            delta.layout.put(mapping.at(ref), moved);
+        }
+        for (const auto& [ref, colour] : other.colours) delta.colours.put(mapping.at(ref), colour);
+        for (const auto& [ref, percent] : other.transparency) delta.transparency.put(mapping.at(ref), percent);
+        for (const auto& [ref, connector] : other.connectors) {
+            const auto found = links.find(ref);
+            if (found == links.end()) continue;
+            auto shaped = connector;
+            for (auto& point : shaped.waypoints) { point.x += dx; point.y += dy; }
+            delta.connectors.put(found->second, std::move(shaped));
+        }
+        if (delta.empty()) return failure("That project has nothing in it to import.");
+        return EditResult{};
+    });
+}
+
 EditResult Editor::rename(ElementRef ref, std::string name) {
     return impl_->edit("Rename element", [&](Delta& delta) {
         const auto characters = character_count(name);
@@ -544,6 +649,58 @@ EditResult Editor::erase_comment(CommentId id) {
         return EditResult{};
     });
 }
+EditResult Editor::set_schema_comment(ElementRef ref, std::string comment) {
+    return impl_->edit("Edit comment", [&](Delta& delta) {
+        // Only what becomes a table or a column carries one. A triangle, a
+        // picture and a note become nothing, so a comment on one would be
+        // written for a reader that never arrives.
+        if (!std::holds_alternative<EntityId>(ref) && !std::holds_alternative<AttributeId>(ref)
+            && !std::holds_alternative<RelationshipId>(ref))
+            return failure("Only entities, attributes and relationships carry a schema comment.");
+        return edit_element(project(), delta, ref, [&](auto& value) {
+            if constexpr (requires { value.comment; }) value.comment = std::move(comment);
+        });
+    });
+}
+
+EditResult Editor::set_conceptual_mode(ConceptualMode mode) {
+    return impl_->edit(mode == ConceptualMode::Convertible ? "Switch to Convertible mode"
+                                                           : "Switch to Basic mode", [&](Delta& delta) {
+        if (project().mode == mode) return EditResult{};
+        delta.mode = mode;
+        return EditResult{};
+    });
+}
+
+EditResult Editor::set_logical_type(AttributeId id, LogicalType type, std::uint32_t length) {
+    return impl_->edit("Set logical type", [&](Delta& delta) {
+        const auto found = project().attributes.find(id);
+        if (found == project().attributes.end()) return failure("The attribute no longer exists.");
+        auto value = found->second;
+        value.logical_type = type;
+        // Only Text and Decimal are measured, so anything else is given no
+        // number rather than keeping one it cannot use.
+        value.length = (type == LogicalType::Text || type == LogicalType::Decimal) ? length : 0;
+        if (value == found->second) return EditResult{};
+        delta.attributes.put(id, std::move(value));
+        return EditResult{};
+    });
+}
+
+EditResult Editor::set_attribute_rules(AttributeId id, bool identifier, bool required, bool unique) {
+    return impl_->edit("Change attribute rules", [&](Delta& delta) {
+        const auto found = project().attributes.find(id);
+        if (found == project().attributes.end()) return failure("The attribute no longer exists.");
+        auto value = found->second;
+        value.identifier = identifier;
+        value.required = required;
+        value.unique = unique;
+        if (value == found->second) return EditResult{};
+        delta.attributes.put(id, std::move(value));
+        return EditResult{};
+    });
+}
+
 EditResult Editor::set_attribute_kind(AttributeId id, AttributeKind kind) {
     return impl_->edit("Change attribute kind", [&](Delta& delta) {
         const auto found = project().attributes.find(id);
@@ -590,7 +747,7 @@ EditResult Editor::relate(EntityId first, EntityId second, Rect body, std::strin
         const RelationshipId id{impl_->next_id()};
         const ParticipantId first_side{impl_->next_id()};
         const ParticipantId second_side{impl_->next_id()};
-        Relationship relationship{id, std::move(name), {}, false, false, {}};
+        Relationship relationship{.id = id, .name = std::move(name)};
         relationship.participants.push_back({first_side, first, Cardinality::Many, Participation::Partial, {}});
         relationship.participants.push_back({second_side, second, Cardinality::Many, Participation::Partial, {}});
         delta.relationships.put(id, std::move(relationship));

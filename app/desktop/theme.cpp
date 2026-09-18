@@ -222,6 +222,16 @@ QToolBar#ribbonTabs QToolButton { background: transparent; color: @text@; border
 QToolBar#ribbonTabs QToolButton:hover { background: @hover@; color: @text@; border-bottom-color: @hoveredge@; }
 QToolBar#ribbonTabs QToolButton:checked, QToolBar#ribbonTabs QToolButton:pressed { background: @window@; color: @accent@; border-bottom-color: @accent@; }
 QToolBar#ribbonTabs QToolButton::menu-indicator { image: none; width: 0px; }
+/* A tab colours itself when it is chosen, but the row it brings up looked the
+   same whichever tab was showing: a strip of quiet text that never changed. The
+   rows beneath the tabs are words rather than pictures, so they are set in the
+   theme's own ink and carried a weight heavier than the interface around them.
+   The row in front of you then reads as the thing you just chose.
+   Chosen and unavailable entries are restated, because this rule is the more
+   specific one and would otherwise take the colour off both. */
+QToolBar[ribbonRow="true"] QToolButton { color: @text@; font-weight: 600; }
+QToolBar[ribbonRow="true"] QToolButton:checked, QToolBar[ribbonRow="true"] QToolButton:pressed { color: @selected@; }
+QToolBar[ribbonRow="true"] QToolButton:disabled { color: @muted@; font-weight: 500; }
 QToolBar#designTools QToolButton { padding: 5px 22px 5px 9px; }
 QToolBar#designTools QToolButton::menu-indicator { subcontrol-origin: padding; subcontrol-position: center right; right: 4px; width: 12px; }
 QDockWidget { background: @panel@; color: @text@; }

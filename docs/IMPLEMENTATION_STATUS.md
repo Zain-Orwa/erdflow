@@ -33,6 +33,15 @@ not been built yet. Their presence in those documents is not a completion claim.
   corners are left as they are, and the whole set is one edit however many
   lines it covers. Inheritance links are left out, since they are anchored to
   their triangle and have no joins to pin.
+- Turning the wheel, or dragging two fingers, **moves** the diagram; holding the
+  platform's own zoom key — **⌘** on a Mac, **Ctrl** elsewhere — and turning
+  **zooms** it, about the pointer, so what is under the pointer stays under it.
+  A trackpad pinch zooms as it always did. The wheel used to zoom on its own,
+  but only on a device that reported no scroll phase, so the same turn of the
+  same wheel zoomed on one machine and scrolled on another depending on what the
+  driver chose to say; with a key of its own for zooming there is no longer
+  anything to guess at. The raft's **+** and **−** say so in their tooltips,
+  naming the key the way the platform names it.
 - A choice or a number never changes because the pointer passed over it. A
   wheel or a trackpad turn over a combo box or a spin box goes to the panel
   behind it, so the panel scrolls and the value stays; values change by
@@ -55,6 +64,40 @@ not been built yet. Their presence in those documents is not a completion claim.
   the View menu and from Full view.
 - Native Qt window with modeling toolbar, Explorer, Properties, model checks,
   status/zoom display, and a university example.
+- The small raft of view controls on the diagram — full view, fit, pan and zoom
+  — can be **moved and put away**. It is dragged by a grip at its top, because
+  every button on it does something when pressed and it needs somewhere to be
+  taken hold of that is not one of them. Where it is put is remembered as a
+  fraction of the view, so resizing the window keeps it where it was rather than
+  letting it drift towards a corner, and it is held inside the view however far
+  it is pushed, so it can never end up off the side where nothing could reach
+  it. Right-clicking it offers to put it away; right-clicking the diagram then
+  offers it back, as does **View → View controls on the diagram**, and that
+  offer appears only while it is away. It is shown to begin with.
+- Fitting the diagram into the view and searching it are drawn as different
+  things. In the coloured set they were the same file: a magnifying glass for
+  both, saying "look" for one and "look" for the other. Fitting is now a frame
+  with a mark in each corner, which is what the line-art set and the drawn set
+  already said, so all three agree.
+- Every Explorer row is drawn as **the element itself** rather than as a badge
+  for its kind, using the canvas's own drawing: a derived attribute is dashed
+  there as it is on the diagram, a multivalued one is doubled, a weak entity
+  wears its second border, a relationship is a diamond and an identifying one a
+  double diamond. The rows are drawn large enough for those differences to be
+  told apart at a glance, which is the whole reason for drawing the element
+  rather than its kind. Pointing at a row says the same thing in words —
+  **Derived attribute**, **Multivalued attribute**, **Weak entity**, **Partial
+  key** — for anyone pointing rather than reading the shape. A key attribute is
+  the one kind the shape cannot show, since in Chen notation a key is the
+  underline beneath its name and a row's drawing carries no name; the words say
+  it instead.
+- **How many attributes belong to a row** is written at the end of it, quietly,
+  in the same column for every row that has one — on an entity, on a
+  relationship that carries attributes, and on a composite attribute whose parts
+  hang off it. It is painted beside the name rather than written into it, since
+  a number inside a name reads as part of what the element is called. The group
+  rows count the same way, so the tree counts in one place and one way, and a
+  row with nothing under it carries no number at all rather than a nought.
 - The Explorer's fold marks stand against its **right-hand edge** rather than
   in front of each row. The panel is on the left of the window and the diagram
   fills the middle, so the hand comes back from the canvas to the panel's near
@@ -67,11 +110,17 @@ not been built yet. Their presence in those documents is not a completion claim.
 - A row of tabs above the toolbar, the way an office application arranges its
   commands: **File** drops the File menu from its tab; **Home** is the modeling
   toolbar, with Note after Connect; **Insert** carries Picture and Symbols; **Design** carries Theme,
-  Icons, Notation and Lines; **Download** carries everything that leaves;
+  Icons, Notation and Lines; **Export** carries everything that leaves and
+  **Import** everything that comes back, side by side;
   **View** carries the panels, framing, grid and
   align-to-grid; **Help** carries the guide and About. The rows are built from the same
   actions as the menus and the Home toolbar, so a tool chosen or locked on one
-  row is chosen or locked on the other. The Download entries go quiet while
+  row is chosen or locked on the other. A chosen tab wears the theme's accent,
+  and the row it brings up is set in the theme's own ink at a heavier weight
+  than the interface around it, so the row in front of you reads as the thing
+  you just chose rather than as a strip of quiet text that looks the same
+  whichever tab is showing. Home is left alone, being the drawing tools, which
+  their icons already tell apart. The Export entries go quiet while
   there is nothing drawn to hand on, rather than the row coming and going as
   work starts. A Convert tab still waits, because there is nothing to convert to.
 - **Insert → Symbols…** opens a gallery of the characters a conceptual diagram
@@ -294,8 +343,37 @@ not been built yet. Their presence in those documents is not a completion claim.
   the surface from solid to outline-only over whatever colour it has, the
   theme's own included, for one element or the whole selection. Colour
   changes are undoable and saved with the project.
-- Versioned `.erdx` JSON save/load, currently format version 16. Versions 1 to
-  15 still open and upgrade on save. Incomplete but structurally valid diagrams
+- **Basic and Convertible modes** — one model asked for two different amounts.
+  Basic is the diagram as it is drawn and taught. Convertible is the same model
+  asked what it will become, and the switch is beside the **CONCEPTUAL** badge
+  that says which workspace this is.
+- Switching changes what is shown and what is asked for, and **nothing else**:
+  nothing is created, destroyed or re-identified, which is Phase 13's exit
+  criterion. It is an edit like any other, so changing your mind costs one undo,
+  and it travels with the document because what a model was told is part of the
+  model.
+- In Convertible mode an attribute carries a **logical type** — Text, Integer,
+  Decimal, Boolean, Date, DateTime, Binary, UUID — with a **length** where the
+  type is measured. Choosing a type that is not measured drops the number rather
+  than carrying one that would mean nothing later. No database is named: the
+  choice between `VARCHAR(100)` and `NVARCHAR(100)` belongs to the physical
+  stage.
+- It also carries the **rules a table will enforce** — identifier, required,
+  unique — kept deliberately apart from its Chen kind. A key oval says how the
+  diagram draws it; these say what the database will insist on, and the two are
+  set at different stages by different people.
+- Entities, attributes and relationships carry a **comment for the schema**,
+  which is what a generated table or column says about itself. It is not the
+  description, which says what the thing means to a reader, and it is not a
+  review comment, which is a remark about the work. Anything that becomes
+  nothing — a triangle, a picture, a note — is refused one.
+- An attribute with no type yet is a **warning** while the model is being asked
+  and nothing at all while it is not, because a half-answered model is still a
+  model. Making that a gate is Phase 14's job.
+- What Convertible mode was told is **kept in Basic**, so a model drawn in one
+  mode and finished in the other loses nothing in between.
+- Versioned `.erdx` JSON save/load, currently format version 17. Versions 1 to
+  16 still open and upgrade on save. Incomplete but structurally valid diagrams
   can be saved. Invalid/unsupported files leave the open project intact.
 - Safe file replacement, Save/Discard/Cancel protection, focused text committed
   before save, clean-state tracking, and reopening the file saved at the prompt.
@@ -385,9 +463,25 @@ not been built yet. Their presence in those documents is not a completion claim.
   not saved, does not enter the history and does not dirty the project, the same
   rule the grid and the comment switch follow. Closing it puts the whole diagram
   back, so a filter is never left on behind a bar nobody can see.
-- Work leaves ERDFlow through **Download**, a tab of its own and a menu under
-  File, the way a document application offers it. One word is used in both
-  places, and one list holds every format ERDFlow writes.
+- Work leaves ERDFlow through **Export** and comes back through **Import**, the
+  pair the database tools it sits beside use. Each has a tab of its own on the
+  ribbon and a menu under File, side by side, because a reader looking for one
+  expects the other in the same place.
+- **Export → ERDFlow project** writes a copy of the project itself, losing
+  nothing. It is not Save As: the project being worked on keeps its own file and
+  its own unsaved state, so this is a copy put somewhere rather than a change of
+  where the work lives. That, with **SVG** and **PNG**, makes three formats that
+  come back whole.
+- **Import** brings another project's contents **into** the one being worked on,
+  rather than replacing it, which is what the word means in this field and what
+  distinguishes it from Open. It reads an `.erdx`, or an SVG or PNG carrying a
+  project. Everything arrives with identities of its own, so a project copied
+  from this very one can be imported without a single collision; it is put down
+  clear of what is already drawn, selected and brought into view; and the whole
+  import undoes in one step. Reading what other tools write — SQL, CSV, JSON —
+  is named in the menu and left disabled, because those describe tables rather
+  than a conceptual diagram and there is nowhere to put them until the
+  Relational Schema workspace exists.
 - As a **picture**: **SVG**, **PNG**, **JPEG**, **WebP**, **TIFF** or a **PDF**
   page. The three anyone reaches for sit on the menu and the rest are gathered
   behind **Other picture formats**, so a common choice is never hunted for among
@@ -411,14 +505,14 @@ not been built yet. Their presence in those documents is not a completion claim.
   when it was made.
 - The listings are built with Qt's own rich text and PDF writer. ERDFlow still
   has no runtime dependency beyond C++20 and Qt.
-- **Download with options…** opens one dialog over every format, documents
+- **Export with options…** opens one dialog over every format, documents
   above pictures, because somebody handing work on chooses between a report and
   a picture before choosing between PNG and SVG. The options that decide whether
   a picture is usable ship with it rather than after it: the **extent** (whole
   diagram, selection or current view), the **background** (transparent, the
   theme's canvas colour, or white), the **scale** for a raster or the
   **resolution** for a page, and the **margin** left around the diagram. The
-  dialog says what pressing Download will produce, in the units that format is
+  dialog says what pressing Export will produce, in the units that format is
   measured in, and turns off what cannot be asked for: an extent with nothing in
   it, the picture options a document has none of, and carrying the project in a
   format that cannot hold one. A picture larger than ERDFlow will draw is
@@ -470,11 +564,12 @@ geometry changes use **Apply position and size**.
 | 8 — Participation | Implemented partial/total and one/many combinations on the same participant, including a min–max notation option. |
 | 9 — Advanced attributes | Partial: composite, multivalued, derived and partial keys (on weak entities) implemented. Combined kind semantics remain open. |
 | 10–12 — Weak/ISA/associative | Implemented: weak entities with identifying relationships, associative entities, and ISA generalization/specialization including nesting and the disjoint/total rules, drawn on the triangle. |
-| 13–14 — Modes/readiness | Basic properties and structural checks exist. Convertible mode, logical types, key groups, and conversion-readiness policy are not implemented. |
+| 13 — Modes | Implemented: Basic and Convertible modes over one model, logical types with a length, the identifier/required/unique rules, and the schema comment. Switching changes what is asked for and nothing else. |
+| 14 — Readiness | Not implemented. Structural checks exist and Convertible mode warns about an attribute with no type, but the structured readiness policy of ADR-009 — Blocking, Warning, Information, Unresolved Decision — is what conversion will gate on, and key groups are part of it. |
 | 15 — Project files | Single-page native format foundation delivered early to protect the current editor's work. No historical migration or recovery system. |
 | 16–17 — Pages/editor milestone | Not complete; multiple pages, the remaining conceptual semantics, and the start screen, templates and project folders of ADR-016 are required. |
 | 18 onward | Import, schema generation, provenance, physical design, SQL, data, and later production/ecosystem features remain planned. |
-| 35 — Export | Partial, and pulled forward the way Phase 15 was, because ADR-015 splits export into halves with different prerequisites and neither the pictures nor the listings need anything later. Implemented: the pictures, their options, the project carried inside SVG and PNG, and all four documentation listings, offered together under Download. Not implemented: a multi-page PDF of a project, which waits for the multiple pages of Phase 16; the published JSON Schema for `.erdx`; the outline-text option for a pixel-exact handoff; and the whole schema half — `.sql`, Mermaid ER and DBML — which cannot precede the Phase 24 workspace it would read from. |
+| 35 — Export | Partial, and pulled forward the way Phase 15 was, because ADR-015 splits export into halves with different prerequisites and neither the pictures nor the listings need anything later. Implemented: the pictures, their options, the project carried inside SVG and PNG, and all four documentation listings, offered together under Export. Not implemented: a multi-page PDF of a project, which waits for the multiple pages of Phase 16; the published JSON Schema for `.erdx`; the outline-text option for a pixel-exact handoff; and the whole schema half — `.sql`, Mermaid ER and DBML — which cannot precede the Phase 24 workspace it would read from. |
 
 The Part 1 checklist is a coverage inventory, not a replacement for semantic
 prerequisites. Persistence was deliberately pulled into this usable slice so

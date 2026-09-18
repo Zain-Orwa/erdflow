@@ -29,8 +29,11 @@ namespace {
 // the paper the diagram is drawn on; version 15 lets a note be a plain one, a
 // single character drawn bare on the diagram; version 16 adds review comments,
 // pinned to elements, to the lines between them, or into a range of the text
-// somebody wrote.
-constexpr int current_format_version = 16;
+// somebody wrote; version 17 adds what Convertible mode asks a model to say
+// about itself -- the mode, an attribute's logical type and length, whether it
+// identifies, is required or is unique, and the comment a table or column
+// carries into the schema.
+constexpr int current_format_version = 17;
 QString text(const std::string& value) { return QString::fromUtf8(value.data(), static_cast<qsizetype>(value.size())); }
 Uuid bytes_of(const QUuid& value) {
     Uuid result;
@@ -94,6 +97,44 @@ ConnectorRef parse_connector_reference(const QJsonValue& value) {
 // than by shape, because an attribute identifier means one thing as an element
 // and another as the line that owns it, and a reader must never have to guess
 // which was meant.
+QLatin1String logical_type_name(LogicalType type) {
+    switch (type) {
+        case LogicalType::Text: return QLatin1String("text");
+        case LogicalType::Integer: return QLatin1String("integer");
+        case LogicalType::Decimal: return QLatin1String("decimal");
+        case LogicalType::Boolean: return QLatin1String("boolean");
+        case LogicalType::Date: return QLatin1String("date");
+        case LogicalType::DateTime: return QLatin1String("datetime");
+        case LogicalType::Binary: return QLatin1String("binary");
+        case LogicalType::Uuid: return QLatin1String("uuid");
+        case LogicalType::Unset: break;
+    }
+    return QLatin1String("unset");
+}
+LogicalType parse_logical_type(const QJsonValue& value) {
+    const auto name = string(value);
+    if (name == "unset") return LogicalType::Unset;
+    if (name == "text") return LogicalType::Text;
+    if (name == "integer") return LogicalType::Integer;
+    if (name == "decimal") return LogicalType::Decimal;
+    if (name == "boolean") return LogicalType::Boolean;
+    if (name == "date") return LogicalType::Date;
+    if (name == "datetime") return LogicalType::DateTime;
+    if (name == "binary") return LogicalType::Binary;
+    if (name == "uuid") return LogicalType::Uuid;
+    invalid("Unsupported logical type.");
+}
+std::uint32_t parse_length(const QJsonValue& value) {
+    if (!value.isDouble()) invalid("A logical length must be a number.");
+    const auto number = value.toDouble();
+    if (!std::isfinite(number) || number < 0 || number != std::floor(number) || number > max_logical_length)
+        invalid("A logical length must be a whole, non-negative number within 1,000,000.");
+    return static_cast<std::uint32_t>(number);
+}
+bool parse_flag(const QJsonValue& value, const char* what) {
+    if (!value.isBool()) invalid(QString("The %1 flag must be true or false.").arg(QLatin1String(what)));
+    return value.toBool();
+}
 QJsonObject comment_target(const CommentTarget& target) {
     if (const auto* element = std::get_if<ElementRef>(&target))
         return {{"kind", QLatin1String("element")}, {"element", reference(*element)}};
@@ -341,11 +382,15 @@ QByteArray ErdxProjectStore::encode(const Project& project) {
     QJsonArray entities, attributes, relationships, layout;
     for (const auto& [id, entity] : project.entities)
         entities.append(QJsonObject{{"id", uuid_text(id.value)}, {"name", text(entity.name)},
-                                    {"description", text(entity.description)}, {"weak", entity.weak}});
+                                    {"description", text(entity.description)}, {"weak", entity.weak},
+                                    {"comment", text(entity.comment)}});
     for (const auto& [id, attribute] : project.attributes)
         attributes.append(QJsonObject{{"id", uuid_text(id.value)}, {"name", text(attribute.name)},
             {"description", text(attribute.description)}, {"kind", kind_name(attribute.kind)},
-            {"owner", attribute.owner ? QJsonValue(reference(*attribute.owner)) : QJsonValue(QJsonValue::Null)}});
+            {"owner", attribute.owner ? QJsonValue(reference(*attribute.owner)) : QJsonValue(QJsonValue::Null)},
+            {"comment", text(attribute.comment)}, {"type", logical_type_name(attribute.logical_type)},
+            {"length", static_cast<double>(attribute.length)}, {"identifier", attribute.identifier},
+            {"required", attribute.required}, {"unique", attribute.unique}});
     for (const auto& [id, relationship] : project.relationships) {
         QJsonArray participants;
         for (const auto& p : relationship.participants)
@@ -355,7 +400,8 @@ QByteArray ErdxProjectStore::encode(const Project& project) {
                 {"show_constraints", p.show_constraints}});
         relationships.append(QJsonObject{{"id", uuid_text(id.value)}, {"name", text(relationship.name)},
             {"description", text(relationship.description)}, {"associative", relationship.associative},
-            {"identifying", relationship.identifying}, {"participants", participants}});
+            {"identifying", relationship.identifying}, {"participants", participants},
+            {"comment", text(relationship.comment)}});
     }
     for (const auto& [ref, rect] : project.layout)
         layout.append(QJsonObject{{"element", reference(ref)}, {"x", rect.x}, {"y", rect.y}, {"width", rect.width}, {"height", rect.height}});
@@ -413,6 +459,7 @@ QByteArray ErdxProjectStore::encode(const Project& project) {
         {"layout", layout}, {"connectors", connectors}, {"colours", colours},
         {"specializations", specializations}, {"pictures", pictures}, {"notes", notes},
         {"comments", comments}, {"transparency", transparency},
+        {"mode", QLatin1String(project.mode == ConceptualMode::Convertible ? "convertible" : "basic")},
         {"background", QJsonObject{{"style", background_name(project.background.style)},
                                    {"strength", project.background.strength},
                                    {"image", image_text(project.background.image)}}}}}}).toJson(QJsonDocument::Indented);
@@ -473,7 +520,12 @@ application::LoadResult ErdxProjectStore::decode(const QByteArray& input) {
         // Version 16 adds review comments. A file written before it carries
         // none, which is all it could carry.
         const bool commented = number_version >= 16;
-        const auto data = commented
+        // Version 17 lets a model say what it will become. A file written
+        // before it is a Basic one carrying no types, which is all it could be.
+        const bool convertible = number_version >= 17;
+        const auto data = convertible
+            ? object(root["project"], {"id", "name", "entities", "attributes", "relationships", "layout", "connectors", "specializations", "colours", "pictures", "notes", "comments", "transparency", "mode", "background"})
+            : commented
             ? object(root["project"], {"id", "name", "entities", "attributes", "relationships", "layout", "connectors", "specializations", "colours", "pictures", "notes", "comments", "transparency", "background"})
             : papered
             ? object(root["project"], {"id", "name", "entities", "attributes", "relationships", "layout", "connectors", "specializations", "colours", "pictures", "notes", "transparency", "background"})
@@ -492,9 +544,12 @@ application::LoadResult ErdxProjectStore::decode(const QByteArray& input) {
         project.id = ProjectId{parse_id(data["id"])};
         project.name = string(data["name"]);
         for (const auto& value : array(data["entities"])) {
-            auto o = weak_entities ? object(value, {"id", "name", "description", "weak"})
+            auto o = convertible ? object(value, {"id", "name", "description", "weak", "comment"})
+                   : weak_entities ? object(value, {"id", "name", "description", "weak"})
                                    : object(value, {"id", "name", "description"});
-            Entity entity{EntityId{parse_id(o["id"])}, string(o["name"]), string(o["description"], max_description_bytes)};
+            Entity entity{.id = EntityId{parse_id(o["id"])}, .name = string(o["name"]),
+                          .description = string(o["description"], max_description_bytes)};
+            if (convertible) entity.comment = string(o["comment"], max_comment_bytes);
             if (weak_entities) {
                 if (!o["weak"].isBool()) invalid("An entity's weak flag must be true or false.");
                 entity.weak = o["weak"].toBool();
@@ -502,19 +557,36 @@ application::LoadResult ErdxProjectStore::decode(const QByteArray& input) {
             if (!project.entities.emplace(entity.id, entity).second) invalid("Duplicate entity identifier.");
         }
         for (const auto& value : array(data["attributes"])) {
-            auto o = object(value, {"id", "name", "description", "kind", "owner"});
-            Attribute attribute{AttributeId{parse_id(o["id"])}, string(o["name"]), string(o["description"], max_description_bytes), parse_kind(o["kind"]), {}};
+            auto o = convertible
+                ? object(value, {"id", "name", "description", "kind", "owner", "comment", "type", "length",
+                                 "identifier", "required", "unique"})
+                : object(value, {"id", "name", "description", "kind", "owner"});
+            Attribute attribute{.id = AttributeId{parse_id(o["id"])}, .name = string(o["name"]),
+                                .description = string(o["description"], max_description_bytes),
+                                .kind = parse_kind(o["kind"])};
             if (!o["owner"].isNull()) attribute.owner = parse_ref(o["owner"]);
+            if (convertible) {
+                attribute.comment = string(o["comment"], max_comment_bytes);
+                attribute.logical_type = parse_logical_type(o["type"]);
+                attribute.length = parse_length(o["length"]);
+                attribute.identifier = parse_flag(o["identifier"], "identifier");
+                attribute.required = parse_flag(o["required"], "required");
+                attribute.unique = parse_flag(o["unique"], "unique");
+            }
             if (!project.attributes.emplace(attribute.id, attribute).second) invalid("Duplicate attribute identifier.");
         }
         std::size_t participant_count = 0;
         for (const auto& value : array(data["relationships"])) {
-            auto o = weak_entities
+            auto o = convertible
+                ? object(value, {"id", "name", "description", "associative", "identifying", "participants", "comment"})
+                : weak_entities
                 ? object(value, {"id", "name", "description", "associative", "identifying", "participants"})
                 : associative_entities
                 ? object(value, {"id", "name", "description", "associative", "participants"})
                 : object(value, {"id", "name", "description", "participants"});
-            Relationship relationship{RelationshipId{parse_id(o["id"])}, string(o["name"]), string(o["description"], max_description_bytes), false, false, {}};
+            Relationship relationship{.id = RelationshipId{parse_id(o["id"])}, .name = string(o["name"]),
+                                      .description = string(o["description"], max_description_bytes)};
+            if (convertible) relationship.comment = string(o["comment"], max_comment_bytes);
             if (associative_entities) {
                 if (!o["associative"].isBool()) invalid("A relationship's associative flag must be true or false.");
                 relationship.associative = o["associative"].toBool();
@@ -688,6 +760,12 @@ application::LoadResult ErdxProjectStore::decode(const QByteArray& input) {
                 if (!project.comments.emplace(comment.id, std::move(comment)).second)
                     invalid("Duplicate comment identifier.");
             }
+        }
+        if (convertible) {
+            const auto named = string(data["mode"]);
+            if (named == "convertible") project.mode = ConceptualMode::Convertible;
+            else if (named == "basic") project.mode = ConceptualMode::Basic;
+            else invalid("Unsupported conceptual mode.");
         }
         if (papered) {
             const auto o = object(data["background"], {"style", "strength", "image"});

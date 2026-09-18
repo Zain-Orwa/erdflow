@@ -14,7 +14,7 @@ namespace erdflow::desktop {
 enum class Glyph {
     New, Open, Save, Undo, Redo, Select, Entity, Attribute, Relationship,
     Isa, Connect, Pan, Fit, Check, Duplicate, Rename, Delete, Theme,
-    Picture, Note, FullView, Dismiss, Symbols, Download, Search
+    Picture, Note, FullView, Dismiss, Symbols, Export, Search
 };
 
 // Which set a glyph is taken from. Painted follows the theme's colours and

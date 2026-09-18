@@ -209,6 +209,13 @@ std::vector<Issue> validate(const Project& project) {
         if (details.size() > max_description_bytes || !valid_text(details, true))
             error("text.description.invalid", "Descriptions must be valid UTF-8 and fit in 16,384 bytes.", ref);
     };
+    // A comment written for the database is prose like a description, and is
+    // held to the same bounds. It is checked separately because only the three
+    // things that become tables and columns carry one.
+    auto schema_comment = [&](const std::string& words, std::optional<ElementRef> ref) {
+        if (words.size() > max_comment_bytes || !valid_text(words, true))
+            error("text.comment.invalid", "Comments must be valid UTF-8 and fit in 16,384 bytes.", ref);
+    };
     identity(project.id.value);
     text_fields(project.name, {});
     for (const auto& [id, entity] : project.entities) {
@@ -217,6 +224,7 @@ std::vector<Issue> validate(const Project& project) {
         identity(id.value, ref);
         if (entity.id != id) error("identity.key_mismatch", "The entity key and identifier differ.", ref);
         text_fields(entity.name, entity.description, ref);
+        schema_comment(entity.comment, ref);
     }
     for (const auto& [id, attribute] : project.attributes) {
         const ElementRef ref = id;
@@ -224,6 +232,7 @@ std::vector<Issue> validate(const Project& project) {
         identity(id.value, ref);
         if (attribute.id != id) error("identity.key_mismatch", "The attribute key and identifier differ.", ref);
         text_fields(attribute.name, attribute.description, ref);
+        schema_comment(attribute.comment, ref);
         switch (attribute.kind) {
         case AttributeKind::Normal: case AttributeKind::Key: case AttributeKind::Composite:
         case AttributeKind::Multivalued: case AttributeKind::Derived: break;
@@ -271,6 +280,7 @@ std::vector<Issue> validate(const Project& project) {
         identity(id.value, ref);
         if (relationship.id != id) error("identity.key_mismatch", "The relationship key and identifier differ.", ref);
         text_fields(relationship.name, relationship.description, ref);
+        schema_comment(relationship.comment, ref);
         if (relationship.participants.size() < 2)
             warning("relationship.participants.incomplete", "Connect at least two participant roles to complete this relationship.", ref);
         if (relationship.associative && relationship.identifying)
@@ -497,6 +507,41 @@ std::vector<Issue> validate(const Project& project) {
         if (!exists(project, ref)) error("transparency.reference.missing", "A transparency refers to a missing element.", ref);
         if (percent > max_transparency) error("transparency.invalid", "Transparency is a percentage from 0 to 100.", ref);
     }
+    // What Convertible mode asks for. These are checked whichever mode is on,
+    // because the values are stored either way and a file that arrives holding
+    // nonsense must be refused whether or not anyone is currently looking at it.
+    switch (project.mode) {
+    case ConceptualMode::Basic: case ConceptualMode::Convertible: break;
+    default: error("project.mode.invalid", "The conceptual mode is invalid.");
+    }
+    for (const auto& [id, attribute] : project.attributes) {
+        const ElementRef ref = id;
+        switch (attribute.logical_type) {
+        case LogicalType::Unset: case LogicalType::Text: case LogicalType::Integer:
+        case LogicalType::Decimal: case LogicalType::Boolean: case LogicalType::Date:
+        case LogicalType::DateTime: case LogicalType::Binary: case LogicalType::Uuid: break;
+        default: error("attribute.type.invalid", "The attribute's logical type is invalid.", ref);
+        }
+        if (attribute.length > max_logical_length)
+            error("attribute.length.limit", "A logical length must be within 1,000,000.", ref);
+        // A number belongs only to the types that take one. Left on a Boolean
+        // it would be carried into the schema and mean nothing there.
+        if (attribute.length != 0 && attribute.logical_type != LogicalType::Text
+            && attribute.logical_type != LogicalType::Decimal)
+            error("attribute.length.unused", "Only Text and Decimal carry a length.", ref);
+    }
+    // In Convertible mode the model is being asked what it will become, and an
+    // attribute with no type yet has not answered. It is a warning rather than
+    // a refusal: a model is allowed to be half answered while it is being
+    // worked on, and Phase 14 is where answering becomes a gate.
+    if (project.mode == ConceptualMode::Convertible)
+        for (const auto& [id, attribute] : project.attributes) {
+            if (attribute.logical_type != LogicalType::Unset) continue;
+            // A composite is made of its parts and carries no value of its own,
+            // so it is not asked for a type.
+            if (attribute.kind == AttributeKind::Composite) continue;
+            warning("attribute.type.missing", "This attribute has no logical type yet.", ElementRef{id});
+        }
     if (project.comments.size() > max_elements) error("comment.limit", "The comments exceed the element limit.");
     for (const auto& [id, comment] : project.comments) {
         // A comment has no element reference of its own, so anything wrong with

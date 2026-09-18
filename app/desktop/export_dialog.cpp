@@ -1,4 +1,4 @@
-#include "download_dialog.hpp"
+#include "export_dialog.hpp"
 
 #include "diagram_view.hpp"
 
@@ -49,10 +49,10 @@ const std::vector<Choice>& backgrounds() {
 
 } // namespace
 
-DownloadDialog::DownloadDialog(DiagramView& view, const domain::Project& project, QWidget* parent)
+ExportDialog::ExportDialog(DiagramView& view, const domain::Project& project, QWidget* parent)
     : QDialog(parent), view_(view), project_(project) {
-    setObjectName("downloadDialog");
-    setWindowTitle("Download");
+    setObjectName("exportDialog");
+    setWindowTitle("Export");
 
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(14, 14, 14, 14);
@@ -62,7 +62,7 @@ DownloadDialog::DownloadDialog(DiagramView& view, const domain::Project& project
     form->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
 
     format_ = new QComboBox(this);
-    format_->setObjectName("downloadFormat");
+    format_->setObjectName("exportFormat");
     // Documents first: a person handing this work on is choosing between a
     // report and a picture before they are choosing between PNG and SVG.
     for (const auto& info : document_formats()) {
@@ -81,7 +81,7 @@ DownloadDialog::DownloadDialog(DiagramView& view, const domain::Project& project
     form->addRow("Format", format_);
 
     extent_ = new QComboBox(this);
-    extent_->setObjectName("downloadExtent");
+    extent_->setObjectName("exportExtent");
     for (const auto& choice : extents()) {
         extent_->addItem(QString::fromUtf8(choice.label), choice.value);
         extent_->setItemData(extent_->count() - 1, QString::fromUtf8(choice.explanation), Qt::ToolTipRole);
@@ -89,7 +89,7 @@ DownloadDialog::DownloadDialog(DiagramView& view, const domain::Project& project
     form->addRow("Extent", extent_);
 
     background_ = new QComboBox(this);
-    background_->setObjectName("downloadBackground");
+    background_->setObjectName("exportBackground");
     for (const auto& choice : backgrounds()) {
         background_->addItem(QString::fromUtf8(choice.label), choice.value);
         background_->setItemData(background_->count() - 1, QString::fromUtf8(choice.explanation), Qt::ToolTipRole);
@@ -97,7 +97,7 @@ DownloadDialog::DownloadDialog(DiagramView& view, const domain::Project& project
     form->addRow("Background", background_);
 
     scale_ = new QDoubleSpinBox(this);
-    scale_->setObjectName("downloadScale");
+    scale_->setObjectName("exportScale");
     scale_->setRange(0.05, 40);
     scale_->setSingleStep(0.5);
     scale_->setDecimals(2);
@@ -106,7 +106,7 @@ DownloadDialog::DownloadDialog(DiagramView& view, const domain::Project& project
     form->addRow("Scale", scale_);
 
     resolution_ = new QSpinBox(this);
-    resolution_->setObjectName("downloadResolution");
+    resolution_->setObjectName("exportResolution");
     resolution_->setRange(72, 1200);
     resolution_->setSingleStep(50);
     resolution_->setSuffix(" dpi");
@@ -114,7 +114,7 @@ DownloadDialog::DownloadDialog(DiagramView& view, const domain::Project& project
     form->addRow("Resolution", resolution_);
 
     margin_ = new QDoubleSpinBox(this);
-    margin_->setObjectName("downloadMargin");
+    margin_->setObjectName("exportMargin");
     margin_->setRange(0, 400);
     margin_->setDecimals(0);
     margin_->setSingleStep(8);
@@ -123,25 +123,25 @@ DownloadDialog::DownloadDialog(DiagramView& view, const domain::Project& project
     layout->addLayout(form);
 
     carry_ = new QCheckBox("Carry the project inside the picture", this);
-    carry_->setObjectName("downloadCarryProject");
+    carry_->setObjectName("exportCarryProject");
     carry_->setToolTip("The picture is also the project: anyone can open it as a picture, and ERDFlow reopens it as the diagram it was.");
     layout->addWidget(carry_);
 
     caution_ = new QLabel(this);
-    caution_->setObjectName("downloadCaution");
+    caution_->setObjectName("exportCaution");
     caution_->setWordWrap(true);
     layout->addWidget(caution_);
 
     size_ = new QLabel(this);
-    size_->setObjectName("downloadSize");
+    size_->setObjectName("exportSize");
     size_->setWordWrap(true);
     layout->addWidget(size_);
 
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Cancel, this);
-    auto* accept = buttons->addButton("Download…", QDialogButtonBox::AcceptRole);
-    accept->setObjectName("downloadAccept");
+    auto* accept = buttons->addButton("Export…", QDialogButtonBox::AcceptRole);
+    accept->setObjectName("exportAccept");
     accept->setDefault(true);
-    buttons->button(QDialogButtonBox::Cancel)->setObjectName("downloadCancel");
+    buttons->button(QDialogButtonBox::Cancel)->setObjectName("exportCancel");
     connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
     layout->addWidget(buttons);
@@ -156,7 +156,7 @@ DownloadDialog::DownloadDialog(DiagramView& view, const domain::Project& project
     set_choice(choice_);
 }
 
-void DownloadDialog::set_choice(const DownloadChoice& choice) {
+void ExportDialog::set_choice(const ExportChoice& choice) {
     choice_ = choice;
     refreshing_ = true;
     const auto code = choice.document ? code_of(choice.as_document) : code_of(choice.as_picture.format);
@@ -171,7 +171,7 @@ void DownloadDialog::set_choice(const DownloadChoice& choice) {
     refresh();
 }
 
-void DownloadDialog::collect() {
+void ExportDialog::collect() {
     const auto code = format_->currentData().toInt();
     choice_.document = is_document(code);
     if (choice_.document) choice_.as_document = static_cast<DocumentFormat>(code - document_offset);
@@ -184,7 +184,7 @@ void DownloadDialog::collect() {
     choice_.as_picture.carry_project = carry_->isChecked();
 }
 
-void DownloadDialog::refresh() {
+void ExportDialog::refresh() {
     if (refreshing_) return;
     refreshing_ = true;
     collect();
@@ -243,12 +243,12 @@ void DownloadDialog::refresh() {
     caution_->setText(caution);
     caution_->setVisible(!caution.isEmpty());
 
-    // What pressing Download will actually produce, in the units the format is
+    // What pressing Export will actually produce, in the units the format is
     // measured in, worked out the way the writer works it out so the two cannot
     // disagree about the size of the file.
     auto source = picture_extent(view_, choice_.as_picture.extent);
     if (source.isEmpty()) {
-        size_->setText("There is nothing to download yet.");
+        size_->setText("There is nothing to export yet.");
     } else {
         const auto margin = choice_.as_picture.margin;
         source = source.adjusted(-margin, -margin, margin, margin);

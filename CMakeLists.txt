@@ -40,7 +40,7 @@ target_link_libraries(erdflow_canvas PUBLIC erdflow_application Qt6::Widgets Qt6
 
 add_library(erdflow_desktop app/desktop/main_window.cpp app/desktop/ribbon.cpp app/desktop/icons.cpp
                             app/desktop/symbols.cpp app/desktop/symbol_picker.cpp
-                            app/desktop/download_dialog.cpp app/desktop/search_bar.cpp)
+                            app/desktop/export_dialog.cpp app/desktop/search_bar.cpp)
 target_link_libraries(erdflow_desktop PUBLIC erdflow_canvas Qt6::Svg PRIVATE erdflow_warnings)
 # The icon set is compiled in rather than read from disk, so a built ERDFlow is
 # one file that cannot be started without its own artwork. Qt6::Svg brings the
