@@ -44,6 +44,15 @@ not been built yet. Their presence in those documents is not a completion claim.
   the View menu and from Full view.
 - Native Qt window with modeling toolbar, Explorer, Properties, model checks,
   status/zoom display, and a university example.
+- The Explorer's fold marks stand against its **right-hand edge** rather than
+  in front of each row. The panel is on the left of the window and the diagram
+  fills the middle, so the hand comes back from the canvas to the panel's near
+  edge: a mark in front of a row means crossing the whole width of the panel to
+  open a group and crossing back to carry on, while one against the right edge
+  is the first thing reached. Every group folds from the same column whatever
+  depth it sits at, and the indentation is unchanged, since that is what says
+  what belongs to what. Pressing a mark folds that group and does nothing else,
+  so reaching for one never throws away the selection being worked with.
 - A row of tabs above the toolbar, the way an office application arranges its
   commands: **File** drops the File menu from its tab; **Home** is the modeling
   toolbar, with Note after Connect; **Insert** carries Picture and Symbols; **Design** carries Theme,

@@ -42,6 +42,8 @@
 #include <QSignalBlocker>
 #include <QSlider>
 #include <QStandardItemModel>
+#include <QStyle>
+#include <QStyledItemDelegate>
 #include <QStatusBar>
 #include <QResizeEvent>
 #include <QToolBar>
@@ -335,6 +337,80 @@ QLabel* hint(const QString& value, QWidget* parent) {
     return label;
 }
 // Descriptions commit through the same command path on focus loss.
+// The Explorer's fold marks sit against its right-hand edge rather than in
+// front of each row.
+//
+// The Explorer is on the left of the window and the diagram fills the middle,
+// so the hand comes back from the canvas to the panel's near edge. A mark in
+// front of a row is the far edge: it means crossing the whole width of the
+// panel to open a group and crossing back to carry on. Against the right edge
+// it is the first thing reached rather than the last, and every group opens
+// from the same column whatever depth it sits at.
+//
+// The indentation is left exactly as it was, because that is what says what
+// belongs to what. Only the mark moves.
+class ExplorerTree final : public QTreeView {
+public:
+    using QTreeView::QTreeView;
+    // The width of the strip the marks live in, kept clear of the text so a
+    // long name is elided before it reaches the mark rather than under it.
+    static constexpr int fold_strip = 20;
+
+    // Where a row's mark is drawn: against the viewport's right edge, so the
+    // marks stay in one column as the panel is resized and, when the tree is
+    // scrolled sideways, stay where the hand expects rather than sliding away.
+    [[nodiscard]] QRect fold_rect(const QRect& row) const {
+        constexpr int mark = 14;
+        return QRect(viewport()->width() - fold_strip + (fold_strip - mark) / 2,
+                     row.top() + (row.height() - mark) / 2, mark, mark);
+    }
+
+protected:
+    // Nothing is drawn in the branch column, so no mark appears in front of a
+    // row. The column is still there and still indents.
+    void drawBranches(QPainter*, const QRect&, const QModelIndex&) const override {}
+
+    void drawRow(QPainter* painter, const QStyleOptionViewItem& options, const QModelIndex& index) const override {
+        QTreeView::drawRow(painter, options, index);
+        if (!model() || !model()->hasChildren(index)) return;
+        // Drawn by the style itself rather than by hand, so it is the same
+        // mark the rest of the window uses and follows whatever theme is on.
+        QStyleOptionViewItem mark = options;
+        mark.rect = fold_rect(options.rect);
+        mark.state |= QStyle::State_Children;
+        if (isExpanded(index)) mark.state |= QStyle::State_Open;
+        else mark.state &= ~QStyle::State_Open;
+        style()->drawPrimitive(QStyle::PE_IndicatorBranch, &mark, painter, this);
+    }
+
+    void mousePressEvent(QMouseEvent* event) override {
+        // Pressing the mark opens or closes the group, and does nothing else:
+        // it must not also change what is selected, or reaching for a fold
+        // would throw away the selection the user was working with.
+        const auto index = indexAt(event->pos());
+        if (index.isValid() && model() && model()->hasChildren(index)
+            && fold_rect(visualRect(index)).contains(event->pos())) {
+            setExpanded(index, !isExpanded(index));
+            event->accept();
+            return;
+        }
+        QTreeView::mousePressEvent(event);
+    }
+};
+
+// Keeps every row clear of the strip the fold marks stand in, so the two never
+// overlap and a row's highlight ends in the same place whether or not it has
+// anything to fold.
+class FoldOnTheRight final : public QStyledItemDelegate {
+public:
+    using QStyledItemDelegate::QStyledItemDelegate;
+protected:
+    void initStyleOption(QStyleOptionViewItem* option, const QModelIndex& index) const override {
+        QStyledItemDelegate::initStyleOption(option, index);
+        option->rect.adjust(0, 0, -ExplorerTree::fold_strip, 0);
+    }
+};
+
 class DescriptionEdit final : public QPlainTextEdit {
 public:
     using QPlainTextEdit::QPlainTextEdit;
@@ -464,8 +540,9 @@ void MainWindow::build_shell() {
 
     auto* explorer_dock = new QDockWidget("Explorer", this);
     explorer_dock->setObjectName("explorerDock");
-    explorer_ = new QTreeView(explorer_dock);
+    explorer_ = new ExplorerTree(explorer_dock);
     explorer_->setObjectName("explorer");
+    explorer_->setItemDelegate(new FoldOnTheRight(explorer_));
     explorer_->setAccessibleName("Project elements");
     explorer_->setHeaderHidden(true);
     explorer_->setSelectionMode(QAbstractItemView::ExtendedSelection);
