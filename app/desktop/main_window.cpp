@@ -1551,10 +1551,13 @@ void MainWindow::build_actions() {
         // Hovering a name shows the theme on the whole window, which is the only
         // way to judge one: a palette is about how the diagram reads, not about
         // what it is called.
-        connect(action, &QAction::hovered, this, [this, id = entry.id] { preview_theme(id); });
+        connect(action, &QAction::hovered, this, [this, id = entry.id] { preview_theme_soon(id); });
     }
     // Leaving the menu without choosing puts back what was chosen before.
     connect(themes, &QMenu::aboutToHide, this, [this] {
+        // A look that has not happened yet must not happen after the menu has
+        // gone, or it would put a theme on the window nobody is still pointing at.
+        if (theme_preview_timer_) theme_preview_timer_->stop();
         if (theme_ != committed_theme_) apply_appearance(committed_theme_);
     });
     // Appearance is tried repeatedly rather than set once, so the same list is
@@ -2638,6 +2641,15 @@ void MainWindow::set_icon_mode(IconMode mode) {
 // one and merely looking at one do the same work; only what is remembered and
 // what is ticked differ between them.
 void MainWindow::apply_appearance(ThemeId id) {
+    // Wearing a theme is the most expensive thing the window does on a whim:
+    // the application's whole stylesheet is rebuilt and every widget in it
+    // re-polished, every icon is redrawn, and the Explorer and the panel are
+    // rebuilt in the new colours. Qt repeats `hovered` while the pointer moves
+    // within one entry, so without this the same theme is put on again and
+    // again for no change at all -- which measured slower than changing to a
+    // different one, since nothing about the window was already right.
+    if (appearance_applied_ && id == theme_) return;
+    appearance_applied_ = true;
     theme_ = id;
     if (auto* application = qobject_cast<QApplication*>(QCoreApplication::instance()))
         apply_theme(*application, id);
@@ -2652,9 +2664,35 @@ void MainWindow::apply_appearance(ThemeId id) {
     refreshing_ = was_refreshing;
 }
 
-void MainWindow::preview_theme(ThemeId id) { apply_appearance(id); }
+void MainWindow::preview_theme(ThemeId id) {
+    if (theme_preview_timer_) theme_preview_timer_->stop();
+    apply_appearance(id);
+}
+
+// Hovering asks for a theme; it does not ask for it this instant. A pointer
+// travelling to the bottom of the menu crosses every entry above it, and
+// showing each one costs the whole window, so what is asked for is remembered
+// and shown once the pointer has settled. Resting on an entry still shows it
+// promptly -- the wait is shorter than a deliberate pause -- while sliding
+// past a dozen now costs one theme rather than a dozen.
+void MainWindow::preview_theme_soon(ThemeId id) {
+    if (id == theme_) {
+        if (theme_preview_timer_) theme_preview_timer_->stop();
+        return;
+    }
+    pending_preview_ = id;
+    if (!theme_preview_timer_) {
+        theme_preview_timer_ = new QTimer(this);
+        theme_preview_timer_->setSingleShot(true);
+        theme_preview_timer_->setInterval(45);
+        connect(theme_preview_timer_, &QTimer::timeout, this,
+                [this] { apply_appearance(pending_preview_); });
+    }
+    theme_preview_timer_->start();
+}
 
 void MainWindow::set_theme(ThemeId id) {
+    if (theme_preview_timer_) theme_preview_timer_->stop();
     committed_theme_ = id;
     apply_appearance(id);
     QSettings().setValue("theme", theme(id).key);

@@ -9,6 +9,7 @@
 #include <QPointF>
 #include <QIcon>
 #include <QPointer>
+#include <QTimer>
 #include <functional>
 #include <map>
 #include <optional>
@@ -141,6 +142,17 @@ private:
     // They differ only while a theme is being previewed under the pointer.
     ThemeId theme_ = ThemeId::OfficeLight;
     ThemeId committed_theme_ = ThemeId::OfficeLight;
+    // Whether the window has worn a theme yet. Without it the guard in
+    // apply_appearance would mistake the very first application for a repeat,
+    // since the member above already names the theme the window starts on.
+    bool appearance_applied_ = false;
+    // A theme hovered but not yet shown, and the wait before it is. Wearing a
+    // theme costs the whole window, so a pointer travelling down the menu
+    // spends it on every entry it crosses rather than on the one it stops at.
+    // The wait collapses the crossings into the resting place.
+    ThemeId pending_preview_ = ThemeId::OfficeLight;
+    QTimer* theme_preview_timer_ = nullptr;
+    void preview_theme_soon(ThemeId id);
     void apply_appearance(ThemeId id);
     // Fits the toolbar to the width there is, rather than letting it run off
     // the end of the window.

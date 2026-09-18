@@ -186,7 +186,13 @@ const std::array<Theme, theme_count> theme_table{{
             "#a6e22e", "#e6db74", "#f92672"}),
 }};
 
-QString style_sheet(const Theme& colors) {
+// The sheet is the same text for a given theme every time it is asked for,
+// and building it walks a ten-kilobyte string once per placeholder. A theme is
+// applied far more often than there are themes -- looking down the Theme menu
+// applies one per entry passed -- so each is built once and kept. There are
+// nineteen of them and the table they come from is fixed, so the cache has a
+// ceiling and never needs clearing.
+QString build_style_sheet(const Theme& colors) {
     // Keep geometry compact and consistent between themes. Color placeholders
     // reference the table above; the stylesheet contains no second palette.
     QString sheet = QStringLiteral(R"(
@@ -335,6 +341,13 @@ QToolTip { background: @panel@; color: @text@; border: 1px solid @border@; paddi
     }};
     for (const auto& [placeholder, value] : replacements) sheet.replace(placeholder, value.name());
     return sheet;
+}
+
+const QString& style_sheet(const Theme& colors) {
+    static std::array<QString, theme_count> cache;
+    auto& slot = cache[static_cast<std::size_t>(colors.id)];
+    if (slot.isEmpty()) slot = build_style_sheet(colors);
+    return slot;
 }
 
 } // namespace
