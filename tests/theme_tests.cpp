@@ -3,6 +3,7 @@
 #include <QApplication>
 #include <QLineEdit>
 #include <QPalette>
+#include <QStringList>
 
 #include <algorithm>
 #include <cmath>
@@ -150,6 +151,42 @@ void live_palette_tests(QApplication& app) {
     require(app.palette().color(QPalette::Window) == theme(ThemeId::OfficeLight).window,
             "Switching back restores Normal");
 }
+
+// Specialization and Connect carry their choice on a split arrow, and the
+// section that arrow sits in is drawn from the platform's own defaults
+// whenever it has no rule of its own -- which paints it solid black on
+// Windows. Qt drops a stylesheet rule whole when any one of its declarations
+// will not parse, so piling decoration onto the rule that keeps that section
+// quiet is what brings the black back: one declaration a platform's Qt
+// dislikes costs the entire rule, and an unstyled menu-button is the bug.
+// The resting rule is therefore held to the two declarations it needs, and
+// anything else belongs in a rule of its own, where the worst it can cost is
+// its own effect.
+void split_arrow_tests(QApplication& app) {
+    const QString selector = "QToolBar#modelTools QToolButton::menu-button";
+    for (const auto& candidate : themes()) {
+        apply_theme(app, candidate.id);
+        bool found = false;
+        for (const QString& line : app.styleSheet().split('\n')) {
+            const QString rule = line.trimmed();
+            if (!rule.startsWith(selector + " {")) continue;
+            found = true;
+            const auto open = rule.indexOf('{');
+            const auto close = rule.lastIndexOf('}');
+            require(open >= 0 && close > open, "The resting menu-button rule needs a body");
+            int declarations = 0;
+            for (const QString& part : rule.mid(open + 1, close - open - 1).split(';'))
+                if (!part.trimmed().isEmpty()) ++declarations;
+            require(declarations <= 2, candidate.key.toStdString() +
+                    ": the resting menu-button rule must stay at the two declarations that keep "
+                    "the section quiet, so a declaration one platform's Qt will not parse cannot "
+                    "drop the rule and let that platform paint the section black");
+        }
+        require(found, candidate.key.toStdString() +
+                ": the split arrow's section needs a rule of its own, or the platform draws it");
+    }
+    apply_theme(app, ThemeId::OfficeLight);
+}
 } // namespace
 
 int main(int argc, char* argv[]) {
@@ -160,7 +197,8 @@ int main(int argc, char* argv[]) {
         plain_theme_tests();
         contrast_tests();
         live_palette_tests(app);
-        std::cout << "Theme identity, contrast, and live palette tests passed\n";
+        split_arrow_tests(app);
+        std::cout << "Theme identity, contrast, live palette, and split arrow tests passed\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "Theme test failed: " << error.what() << '\n';

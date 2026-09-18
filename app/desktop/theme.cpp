@@ -250,18 +250,28 @@ QToolBar#designTools QToolButton::menu-indicator { subcontrol-origin: padding; s
    being in two halves is a worse button on every platform than it was on the
    one it was broken on.
 
-   So it is drawn by the theme instead, in all three states, which is what
-   keeps the platform out of it. Nothing at rest, so the button reads as one
-   thing until it is reached for; its own surface and seam under the pointer;
+   So it is drawn by the theme instead, which is what keeps the platform out
+   of it. Nothing at rest, so the button reads as one thing until it is
+   reached for; its own surface under the pointer, whose edge is the seam;
    deeper again while it is held. The lift is a wash of black rather than a
    colour out of the palette, because it has to read over whatever is beneath
    it -- the toolbar on a light theme, the toolbar on a dark one, and the
    accent the button fills with once its tool is the chosen one, which no
    fixed colour reads over all three of. The arrow itself is left to the
-   style, which centres it in the section on its own. */
-QToolBar#modelTools QToolButton::menu-button { background: transparent; border: none; border-left: 1px solid transparent; width: 18px; }
-QToolBar#modelTools QToolButton::menu-button:hover { background: rgba(0, 0, 0, 0.13); border-left: 1px solid rgba(0, 0, 0, 0.18); }
-QToolBar#modelTools QToolButton::menu-button:pressed { background: rgba(0, 0, 0, 0.25); border-left: 1px solid rgba(0, 0, 0, 0.30); }
+   style, which centres it in the section on its own.
+
+   The rule that paints nothing is kept to those two declarations, and every
+   decoration is put in a rule of its own, because a stylesheet rule is
+   dropped whole when any one of its declarations will not parse. Piling the
+   decoration onto this rule is what brought the black back on Windows: a
+   single declaration its Qt would not take cost the whole rule, and a
+   menu-button with no rule at all is exactly the unstyled section that paints
+   black there. Split up, the worst a rule its Qt dislikes can cost is its own
+   effect -- a section that does not light up, never one that turns black.
+   Anything added here later belongs in its own rule for the same reason. */
+QToolBar#modelTools QToolButton::menu-button { background: transparent; border: none; }
+QToolBar#modelTools QToolButton::menu-button:hover { background: rgba(0, 0, 0, 13%); }
+QToolBar#modelTools QToolButton::menu-button:pressed { background: rgba(0, 0, 0, 25%); }
 QDockWidget { background: @panel@; color: @text@; }
 QDockWidget::title { background: @window@; color: @text@; padding: 6px 8px; border-bottom: 1px solid @border@; font-weight: 600; }
 QDockWidget::close-button, QDockWidget::float-button { border: 1px solid transparent; padding: 2px; }
