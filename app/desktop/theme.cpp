@@ -240,13 +240,28 @@ QToolBar#designTools QToolButton { padding: 5px 22px 5px 9px; }
 QToolBar#designTools QToolButton::menu-indicator { subcontrol-origin: padding; subcontrol-position: center right; right: 4px; width: 12px; }
 /* Specialization and Connect carry their choice on a split arrow rather than
    an InstantPopup button, so the arrow sits in its own menu-button section
-   instead of the padding trick above. Left unstyled, that section paints
-   with whatever the platform's own defaults are rather than the theme's, so
-   it is only told what NOT to paint: no seam, no fill of its own, reading as
-   one button with the main click and the arrow simply sharing it. The arrow
-   itself is left to the style, which centres it in that section on its own. */
-QToolBar#modelTools QToolButton::menu-button { background: transparent; border: none; }
-QToolBar#modelTools QToolButton::menu-button:hover { background: @hover@; }
+   instead of the padding trick above. Left unstyled, that section is drawn
+   from the platform's own defaults rather than the theme's, which is what
+   painted it solid black on Windows.
+
+   Telling it to paint nothing at all fixes that, but takes the split button
+   with it: the section is what says the arrow opens a menu of its own rather
+   than being part of the click beside it, and a button that gives no sign of
+   being in two halves is a worse button on every platform than it was on the
+   one it was broken on.
+
+   So it is drawn by the theme instead, in all three states, which is what
+   keeps the platform out of it. Nothing at rest, so the button reads as one
+   thing until it is reached for; its own surface and seam under the pointer;
+   deeper again while it is held. The lift is a wash of black rather than a
+   colour out of the palette, because it has to read over whatever is beneath
+   it -- the toolbar on a light theme, the toolbar on a dark one, and the
+   accent the button fills with once its tool is the chosen one, which no
+   fixed colour reads over all three of. The arrow itself is left to the
+   style, which centres it in the section on its own. */
+QToolBar#modelTools QToolButton::menu-button { background: transparent; border: none; border-left: 1px solid transparent; width: 18px; }
+QToolBar#modelTools QToolButton::menu-button:hover { background: rgba(0, 0, 0, 0.13); border-left: 1px solid rgba(0, 0, 0, 0.18); }
+QToolBar#modelTools QToolButton::menu-button:pressed { background: rgba(0, 0, 0, 0.25); border-left: 1px solid rgba(0, 0, 0, 0.30); }
 QDockWidget { background: @panel@; color: @text@; }
 QDockWidget::title { background: @window@; color: @text@; padding: 6px 8px; border-bottom: 1px solid @border@; font-weight: 600; }
 QDockWidget::close-button, QDockWidget::float-button { border: 1px solid transparent; padding: 2px; }
