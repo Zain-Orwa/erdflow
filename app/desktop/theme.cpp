@@ -217,6 +217,10 @@ QToolButton#themeButton::menu-indicator { subcontrol-origin: padding; subcontrol
 QToolButton#searchSettings { padding: 4px 22px 4px 8px; }
 QToolButton#searchSettings::menu-indicator { subcontrol-origin: padding; subcontrol-position: center right; right: 5px; width: 12px; }
 QToolButton#themeButton:hover, QToolButton#themeButton:pressed { border-color: @accent@; background: @base@; color: @text@; }
+/* Basic/Convertible on the workspace header is the same InstantPopup button
+   as themeButton and searchSettings, and needs the same telling. */
+QToolButton#conceptualMode { padding: 5px 22px 5px 9px; }
+QToolButton#conceptualMode::menu-indicator { subcontrol-origin: padding; subcontrol-position: center right; right: 4px; width: 12px; }
 QToolBar#ribbonTabs { background: @panel@; border-bottom: 1px solid @border@; padding: 0px; spacing: 0px; }
 QToolBar#ribbonTabs QToolButton { background: transparent; color: @text@; border: none; border-bottom: 2px solid transparent; border-radius: 0px; padding: 6px 13px 4px 13px; }
 QToolBar#ribbonTabs QToolButton:hover { background: @hover@; color: @text@; border-bottom-color: @hoveredge@; }
@@ -234,6 +238,15 @@ QToolBar[ribbonRow="true"] QToolButton:checked, QToolBar[ribbonRow="true"] QTool
 QToolBar[ribbonRow="true"] QToolButton:disabled { color: @muted@; font-weight: 500; }
 QToolBar#designTools QToolButton { padding: 5px 22px 5px 9px; }
 QToolBar#designTools QToolButton::menu-indicator { subcontrol-origin: padding; subcontrol-position: center right; right: 4px; width: 12px; }
+/* Specialization and Connect carry their choice on a split arrow rather than
+   an InstantPopup button, so the arrow sits in its own menu-button section
+   instead of the padding trick above. Left unstyled, that section paints
+   with whatever the platform's own defaults are rather than the theme's, so
+   it is only told what NOT to paint: no seam, no fill of its own, reading as
+   one button with the main click and the arrow simply sharing it. The arrow
+   itself is left to the style, which centres it in that section on its own. */
+QToolBar#modelTools QToolButton::menu-button { background: transparent; border: none; }
+QToolBar#modelTools QToolButton::menu-button:hover { background: @hover@; }
 QDockWidget { background: @panel@; color: @text@; }
 QDockWidget::title { background: @window@; color: @text@; padding: 6px 8px; border-bottom: 1px solid @border@; font-weight: 600; }
 QDockWidget::close-button, QDockWidget::float-button { border: 1px solid transparent; padding: 2px; }
