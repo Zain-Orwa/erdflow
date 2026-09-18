@@ -6,6 +6,7 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QElapsedTimer>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDialog>
@@ -55,6 +56,18 @@ void require(bool condition, const char* message) {
 void settle() {
     QApplication::processEvents();
     QApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+}
+// Some work is deliberately not done on the instant it is asked for. A theme
+// hovered in the menu is shown once the pointer has settled rather than while
+// it is still travelling, so a test waiting for one has to let the clock run
+// as well as the event loop.
+void settle_for(int milliseconds) {
+    QElapsedTimer clock;
+    clock.start();
+    while (clock.elapsed() < milliseconds) {
+        QApplication::processEvents(QEventLoop::AllEvents, 5);
+        settle();
+    }
 }
 template<class T> T* child(desktop::MainWindow& window, const char* name) {
     settle();
@@ -973,7 +986,7 @@ int main(int argc, char** argv) {
             const auto chosen = window.canvas()->theme_id();
             auto* dracula = child<QAction>(window, "themedracula");
             emit dracula->hovered();
-            settle();
+            settle_for(150);
             require(window.canvas()->theme_id() == desktop::ThemeId::Dracula,
                     "Hovering a theme shows it on the window");
             require(QSettings().value("theme").toString() != "dracula",
@@ -988,13 +1001,39 @@ int main(int argc, char** argv) {
             // Choosing one while previewing keeps it, rather than being undone
             // by the same closing that would have reverted a mere look.
             emit dracula->hovered();
-            settle();
+            settle_for(150);
             dracula->trigger();
             settle();
             emit child<QMenu>(window, "themeMenu")->aboutToHide();
             settle();
             require(window.canvas()->theme_id() == desktop::ThemeId::Dracula, "Choosing one keeps it");
             require(QSettings().value("theme").toString() == "dracula", "And remembers it");
+            child<QAction>(window, "themeofficelight")->trigger();
+            settle();
+        }
+
+        // Wearing a theme costs the whole window, and a pointer on its way to
+        // an entry crosses every entry above it. Only the one it stops on is
+        // worth paying for, so what is hovered is remembered and shown once the
+        // pointer has settled rather than while it is still travelling.
+        {
+            window.set_theme(desktop::ThemeId::OfficeLight);
+            settle();
+            // Both are looked up first: fetching one settles the loop, which
+            // would let the wait elapse in the middle of the crossing.
+            auto* midnight = child<QAction>(window, "thememidnight");
+            auto* dracula = child<QAction>(window, "themedracula");
+            emit midnight->hovered();
+            emit dracula->hovered();
+            require(window.canvas()->theme_id() == desktop::ThemeId::OfficeLight,
+                    "An entry merely crossed is never put on the window");
+            settle_for(150);
+            require(window.canvas()->theme_id() == desktop::ThemeId::Dracula,
+                    "The entry the pointer settles on is the one shown");
+            emit child<QMenu>(window, "themeMenu")->aboutToHide();
+            settle_for(150);
+            require(window.canvas()->theme_id() == desktop::ThemeId::OfficeLight,
+                    "And a look owed when the menu closes is never paid");
             child<QAction>(window, "themeofficelight")->trigger();
             settle();
         }
