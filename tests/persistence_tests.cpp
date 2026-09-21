@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <functional>
+#include <map>
 #include <iostream>
 #include <set>
 #include <stdexcept>
@@ -81,6 +82,91 @@ void reject_because(const QByteArray& input, const std::string& reason) {
     CHECK(!result);
     CHECK(result.error.find(reason) != std::string::npos);
 }
+// A document claiming to predate version 19 must look like one throughout: it
+// knew nothing of which relationship sides had been answered.
+void forget_answered_sides(QJsonObject& project) {
+    QJsonArray relationships;
+    for (const auto& value : project["relationships"].toArray()) {
+        auto entry = value.toObject();
+        QJsonArray sides;
+        for (const auto& side : entry["participants"].toArray()) {
+            auto one = side.toObject();
+            one.remove("cardinality_confirmed");
+            one.remove("participation_confirmed");
+            sides.append(one);
+        }
+        entry["participants"] = sides;
+        relationships.append(entry);
+    }
+    project["relationships"] = relationships;
+}
+
+// A document claiming to predate version 22 must look like one throughout: it
+// recorded nothing about how the schema had been arranged, because it could
+// not yet be arranged by hand.
+void forget_schema_layout(QJsonObject& project) {
+    project.remove("schema_layout");
+}
+// A document claiming to predate version 25 knew nothing of a column counting
+// itself up, so it says so nowhere -- neither on an attribute nor on a column
+// the schema added on its own.
+void forget_auto_increment(QJsonObject& project) {
+    QJsonArray kept;
+    for (const auto& value : project.value("attributes").toArray()) {
+        auto entry = value.toObject();
+        entry.remove("auto_increment");
+        kept.append(entry);
+    }
+    if (!kept.isEmpty()) project["attributes"] = kept;
+    if (!project.contains("schema")) return;
+    auto schema = project["schema"].toObject();
+    QJsonArray tables;
+    for (const auto& value : schema.value("added").toArray()) {
+        auto table = value.toObject();
+        QJsonArray columns;
+        for (const auto& one : table.value("columns").toArray()) {
+            auto column = one.toObject();
+            column.remove("auto_increment");
+            columns.append(column);
+        }
+        table["columns"] = columns;
+        tables.append(table);
+    }
+    schema["added"] = tables;
+    // Nor did it know a key the conversion invented could count itself up.
+    schema.remove("counting_keys");
+    project["schema"] = schema;
+}
+// And one claiming to predate version 21 recorded nothing about the schema
+// differing from the diagram, because it could not yet be edited away from it.
+void forget_schema_edits(QJsonObject& project) {
+    project.remove("schema");
+}
+// A document claiming to predate version 20 must look like one throughout: it
+// recorded no conversion decisions, gave no column a scale, and named its
+// types from the small portable set rather than from the SQL catalogue.
+void forget_decisions(QJsonObject& project) {
+    project.remove("decisions");
+    static const std::map<QString, QString> portable{
+        {"varchar", "text"}, {"int", "integer"}, {"decimal", "decimal"}, {"bit", "boolean"},
+        {"date", "date"}, {"datetime", "datetime"}, {"varbinary", "binary"},
+        {"uniqueidentifier", "uuid"}, {"unset", "unset"}};
+    QJsonArray kept;
+    for (const auto& value : project.value("attributes").toArray()) {
+        auto entry = value.toObject();
+        entry.remove("scale");
+        // value() rather than operator[]: the non-const subscript inserts the
+        // key it is asked for, which would put back the very field a document
+        // of this age must not have.
+        if (entry.contains("type")) {
+            const auto found = portable.find(entry.value("type").toString());
+            if (found != portable.end()) entry["type"] = found->second;
+        }
+        kept.append(entry);
+    }
+    project["attributes"] = kept;
+}
+
 void change_project(QJsonObject& root, const std::function<void(QJsonObject&)>& change) {
     auto project = root["project"].toObject();
     change(project);
@@ -201,7 +287,7 @@ void malformed_json_and_text() {
 
 void strict_version_and_field_contract() {
     Fixture fixture;
-    for (const auto& version : {QJsonValue(0), QJsonValue(18), QJsonValue(1.5), QJsonValue("1"), QJsonValue(true)}) {
+    for (const auto& version : {QJsonValue(0), QJsonValue(26), QJsonValue(1.5), QJsonValue("1"), QJsonValue(true)}) {
         auto root = fixture.document();
         root["format_version"] = version;
         reject(bytes(root));
@@ -300,7 +386,7 @@ void connector_shapes_persist_and_older_versions_still_open() {
 
     const auto encoded = ErdxProjectStore::encode(fixture.editor.project());
     const auto root = QJsonDocument::fromJson(encoded).object();
-    CHECK(root["format_version"].toInt() == 17);
+    CHECK(root["format_version"].toInt() == 25);
     CHECK(root["project"].toObject()["connectors"].toArray().size() == 2);
 
     // A pinned join survives the same round trip.
@@ -490,6 +576,11 @@ void connector_shapes_persist_and_older_versions_still_open() {
             project["connectors"] = connectors;
         }
         if (version < 2) project.remove("connectors");
+        forget_answered_sides(project);
+        forget_schema_layout(project);
+        forget_auto_increment(project);
+        forget_schema_edits(project);
+        forget_decisions(project);
         document["project"] = project;
         document["format_version"] = version;
         return document;
@@ -518,7 +609,7 @@ void connector_shapes_persist_and_older_versions_still_open() {
             // and reads as specialization, which is how those files were drawn.
             CHECK(specialization.direction == (version >= 5 ? Inheritance::Generalization : Inheritance::Specialization));
         }
-        CHECK(QJsonDocument::fromJson(ErdxProjectStore::encode(*opened.project)).object()["format_version"].toInt() == 17);
+        CHECK(QJsonDocument::fromJson(ErdxProjectStore::encode(*opened.project)).object()["format_version"].toInt() == 25);
     }
 
     // A document whose shape contradicts its declared version is refused rather
@@ -558,7 +649,7 @@ void pictures_and_notes_persist() {
 
     const auto encoded = ErdxProjectStore::encode(fixture.editor.project());
     const auto root = QJsonDocument::fromJson(encoded).object();
-    CHECK(root["format_version"].toInt() == 17);
+    CHECK(root["format_version"].toInt() == 25);
     const auto project = root["project"].toObject();
     CHECK(project["pictures"].toArray().size() == 1);
     CHECK(project["notes"].toArray().size() == 1);
@@ -615,6 +706,11 @@ void pictures_and_notes_persist() {
         stripped.append(entry);
     }
     older_project["notes"] = stripped;
+    forget_answered_sides(older_project);
+    forget_schema_layout(older_project);
+    forget_auto_increment(older_project);
+    forget_schema_edits(older_project);
+    forget_decisions(older_project);
     older["project"] = older_project;
     const auto from_older = ErdxProjectStore::decode(QJsonDocument(older).toJson(QJsonDocument::Compact));
     CHECK(from_older);
@@ -738,6 +834,193 @@ void weak_entities_and_identifying_relationships_persist() {
     auto both = root;
     change_first(both, "relationships", [](QJsonObject& item) { item["associative"] = true; item["identifying"] = true; });
     reject_because(bytes(both), "not both");
+}
+
+// Whether a relationship side was answered travels with it from version 19. A
+// side reads Many and Partial whether somebody chose that or never looked, so
+// without this a conversion cannot tell a decided M:M from two untouched
+// defaults, and would build junction tables out of questions nobody was asked.
+void answered_sides_persist() {
+    Fixture fixture;
+    auto& editor = fixture.editor;
+
+    // The fixture answers both of its sides, so this needs a relationship of
+    // its own that has only been drawn.
+    const auto made = editor.create_relationship("Mentors", {320, 220, 150, 100});
+    CHECK(made);
+    const auto mentors = std::get<RelationshipId>(*made.created);
+    const auto left = editor.connect(mentors, fixture.employee);
+    const auto right = editor.connect(mentors, fixture.employee);
+    CHECK(left && right);
+
+    // A side that is merely connected reads Many and Partial, and has not been
+    // answered. Those two facts are exactly what has to stay distinguishable.
+    for (const auto& side : editor.project().relationships.at(mentors).participants) {
+        CHECK(side.maximum == Cardinality::Many);
+        CHECK(side.participation == Participation::Partial);
+        CHECK(!side.cardinality_confirmed);
+        CHECK(!side.participation_confirmed);
+    }
+
+    // Answering one says so, and leaves the other side alone. The values do not
+    // move: choosing Many is a different fact from never having been asked, and
+    // that is why the flag sits beside the value rather than being derived
+    // from it.
+    CHECK(editor.update_participant(mentors, *left.participant, Cardinality::Many, Participation::Partial, ""));
+    const auto& answered = editor.project().relationships.at(mentors);
+    CHECK(answered.participants.front().cardinality_confirmed);
+    CHECK(answered.participants.front().participation_confirmed);
+    CHECK(answered.participants.front().maximum == Cardinality::Many);
+    CHECK(answered.participants.front().participation == Participation::Partial);
+    CHECK(!answered.participants.back().cardinality_confirmed);
+    CHECK(!answered.participants.back().participation_confirmed);
+
+    const auto encoded = ErdxProjectStore::encode(editor.project());
+    const auto root = QJsonDocument::fromJson(encoded).object();
+    CHECK(root["format_version"].toInt() == 25);
+    for (const auto& value : root["project"].toObject()["relationships"].toArray())
+        for (const auto& side : value.toObject()["participants"].toArray()) {
+            CHECK(side.toObject().contains("cardinality_confirmed"));
+            CHECK(side.toObject().contains("participation_confirmed"));
+        }
+    const auto reread = ErdxProjectStore::decode(encoded);
+    CHECK(reread);
+    CHECK(*reread.project == editor.project());
+    // Specifically: the side nobody answered comes back unanswered, rather than
+    // being quietly promoted by the round trip.
+    const auto& back = reread.project->relationships.at(mentors);
+    CHECK(back.participants.front().cardinality_confirmed);
+    CHECK(!back.participants.back().cardinality_confirmed);
+    CHECK(!back.participants.back().participation_confirmed);
+
+    // A file written before version 19 says nothing about who answered what.
+    // Every side in it is read as answered, so a finished diagram is not
+    // greeted with a readiness question about every line on it.
+    auto older = root;
+    older["format_version"] = 18;
+    auto older_project = older["project"].toObject();
+    QJsonArray kept;
+    for (const auto& value : older_project["relationships"].toArray()) {
+        auto entry = value.toObject();
+        QJsonArray sides;
+        for (const auto& side : entry["participants"].toArray()) {
+            auto one = side.toObject();
+            one.remove("cardinality_confirmed");
+            one.remove("participation_confirmed");
+            sides.append(one);
+        }
+        entry["participants"] = sides;
+        kept.append(entry);
+    }
+    older_project["relationships"] = kept;
+    forget_schema_layout(older_project);
+    forget_auto_increment(older_project);
+    forget_schema_edits(older_project);
+    forget_decisions(older_project);
+    older["project"] = older_project;
+    const auto from_older = ErdxProjectStore::decode(bytes(older));
+    CHECK(from_older);
+    for (const auto& [id, relationship] : from_older.project->relationships) {
+        (void)id;
+        for (const auto& side : relationship.participants) {
+            CHECK(side.cardinality_confirmed);
+            CHECK(side.participation_confirmed);
+        }
+    }
+
+    // The version and the fields agree in both directions.
+    auto stale = root;
+    stale["format_version"] = 18;
+    reject(bytes(stale));
+    auto wrong = root;
+    auto wrong_project = wrong["project"].toObject();
+    auto relationships = wrong_project["relationships"].toArray();
+    auto entry = relationships[0].toObject();
+    auto sides = entry["participants"].toArray();
+    auto one = sides[0].toObject();
+    one["cardinality_confirmed"] = "yes";
+    sides[0] = one;
+    entry["participants"] = sides;
+    relationships[0] = entry;
+    wrong_project["relationships"] = relationships;
+    wrong["project"] = wrong_project;
+    reject(bytes(wrong));
+}
+
+// The answers to what a conversion cannot decide for itself travel with the
+// project from version 20, keyed by stable identity so that a decision survives
+// renaming and is never asked a second time.
+void conversion_decisions_persist() {
+    Fixture fixture;
+    auto& editor = fixture.editor;
+
+    // Nothing is answered to begin with, which is not the same as every
+    // question being answered the default way.
+    CHECK(editor.project().decisions.isa.empty());
+    CHECK(editor.project().decisions.naming == TableNaming::Plural);
+
+    CHECK(editor.set_table_naming(TableNaming::AsDrawn));
+    CHECK(editor.set_isa_strategy(fixture.specialisation, IsaStrategy::SingleTable));
+    CHECK(editor.set_composite_mode(fixture.address, CompositeMode::Both));
+    const auto side = editor.project().relationships.at(fixture.supervises).participants.front().id;
+    CHECK(editor.set_one_to_one_key(fixture.supervises, side));
+    CHECK(editor.set_junction_name(fixture.supervises, "EmployeeSupervisor"));
+    CHECK(editor.set_table_name(ElementRef{fixture.employee}, "Staff"));
+
+    // A decision is an edit like any other, so it undoes.
+    const auto before = editor.project();
+    CHECK(editor.set_table_naming(TableNaming::Plural));
+    CHECK(editor.project().decisions.naming == TableNaming::Plural);
+    CHECK(editor.undo());
+    CHECK(editor.project() == before);
+
+    const auto encoded = ErdxProjectStore::encode(editor.project());
+    const auto root = QJsonDocument::fromJson(encoded).object();
+    CHECK(root["format_version"].toInt() == 25);
+    CHECK(root["project"].toObject().contains("decisions"));
+
+    const auto reread = ErdxProjectStore::decode(encoded);
+    CHECK(reread);
+    CHECK(*reread.project == editor.project());
+    const auto& decided = reread.project->decisions;
+    CHECK(decided.naming == TableNaming::AsDrawn);
+    CHECK(decided.isa.at(fixture.specialisation) == IsaStrategy::SingleTable);
+    CHECK(decided.composite.at(fixture.address) == CompositeMode::Both);
+    CHECK(decided.one_to_one_key.at(fixture.supervises) == side);
+    CHECK(decided.junction_name.at(fixture.supervises) == "EmployeeSupervisor");
+    CHECK(decided.table_name.at(ElementRef{fixture.employee}) == "Staff");
+
+    // Taking an answer back returns that question to its default rather than
+    // recording a different answer.
+    CHECK(editor.set_isa_strategy(fixture.specialisation, std::nullopt));
+    CHECK(editor.project().decisions.isa.empty());
+
+    // A decision cannot point at something that is not there, nor at the wrong
+    // kind of thing: a composite decision belongs to a composite alone.
+    const auto plain = editor.create_attribute("Grade", {}, ElementRef{fixture.employee});
+    CHECK(plain);
+    CHECK(!editor.set_composite_mode(std::get<AttributeId>(*plain.created), CompositeMode::Parts));
+    CHECK(!editor.set_one_to_one_key(fixture.supervises, ParticipantId{}));
+
+    // A file written before version 20 answered nothing at all.
+    auto older = root;
+    older["format_version"] = 19;
+    auto older_project = older["project"].toObject();
+    forget_schema_layout(older_project);
+    forget_auto_increment(older_project);
+    forget_schema_edits(older_project);
+    forget_decisions(older_project);
+    older["project"] = older_project;
+    const auto from_older = ErdxProjectStore::decode(bytes(older));
+    CHECK(from_older);
+    CHECK(from_older.project->decisions.isa.empty());
+    CHECK(from_older.project->decisions.table_name.empty());
+    CHECK(from_older.project->decisions.naming == TableNaming::Plural);
+
+    // The version and the fields agree in both directions.
+    auto stale = root;
+    stale["format_version"] = 19;
+    reject(bytes(stale));
 }
 
 // The paper a diagram is drawn on travels with it from version 14: the style,
@@ -1023,29 +1306,157 @@ void failed_load_and_save_preserve_session() {
 
 // Comments travel with the project, including the three different things one
 // can be pinned to, and a file written before they existed carries none.
-// What Convertible mode asks a model to say about itself travels with it.
-void convertible_metadata_persists() {
+// What a model says about what it will become travels with it.
+// Where the schema has been edited away from the diagram, that difference is
+// part of the document: it was deliberate, so losing it on save would be
+// losing work. A file written before version 21 has no such section, and reads
+// correctly as the two levels agreeing about everything.
+void schema_divergence_persists() {
     Fixture fixture;
     auto& editor = fixture.editor;
-    CHECK(editor.set_conceptual_mode(ConceptualMode::Convertible));
-    CHECK(editor.set_logical_type(fixture.address, LogicalType::Text, 240));
+    CHECK(editor.add_schema_column(ElementRef{fixture.employee}, "Nickname"));
+    const auto added = editor.project().schema.added.at(ElementRef{fixture.employee}).front().id;
+    CHECK(editor.hide_in_schema(fixture.address, true));
+
+    const auto encoded = ErdxProjectStore::encode(editor.project());
+    const auto root = QJsonDocument::fromJson(encoded).object();
+    CHECK(root["format_version"].toInt() == 25);
+    const auto reopened = ErdxProjectStore::decode(encoded);
+    CHECK(reopened);
+    CHECK(*reopened.project == editor.project());
+    CHECK(reopened.project->schema.added.at(ElementRef{fixture.employee}).front().id == added);
+    CHECK(reopened.project->schema.added.at(ElementRef{fixture.employee}).front().name == "Nickname");
+    CHECK(reopened.project->schema.hidden.contains(fixture.address));
+    // The diagram is untouched by either: a hidden attribute is still on it.
+    CHECK(reopened.project->attributes.contains(fixture.address));
+
+    // A file from before the schema could differ opens with the two agreeing.
+    auto older = root;
+    auto older_project = older["project"].toObject();
+    forget_schema_layout(older_project);
+    forget_auto_increment(older_project);
+    forget_schema_edits(older_project);
+    older["project"] = older_project;
+    older["format_version"] = 20;
+    const auto from_older = ErdxProjectStore::decode(bytes(older));
+    CHECK(from_older);
+    CHECK(from_older.project->schema.empty());
+
+    // And a version 21 file that omits the section is refused, rather than
+    // read leniently: a document must look like the version it claims.
+    auto liar = root;
+    auto liar_project = liar["project"].toObject();
+    forget_schema_edits(liar_project);
+    liar["project"] = liar_project;
+    reject(bytes(liar));
+}
+
+// How the schema has been arranged by hand is part of the document, and that
+// includes how tall a table has been pulled as well as how wide.
+void schema_arrangement_persists() {
+    Fixture fixture;
+    auto& editor = fixture.editor;
+    const ElementRef table{fixture.employee};
+    CHECK(editor.resize_schema_tables({{table, SchemaTableBox{340, 260, Point{80, 120}}}}));
+    CHECK(editor.shape_schema_line(LinkSource{fixture.address},
+                                   SchemaLine{{Point{10, 10}, Point{10, 60}}, std::nullopt, std::nullopt}));
+
+    const auto encoded = ErdxProjectStore::encode(editor.project());
+    const auto root = QJsonDocument::fromJson(encoded).object();
+    CHECK(root["format_version"].toInt() == 25);
+    const auto reopened = ErdxProjectStore::decode(encoded);
+    CHECK(reopened);
+    CHECK(*reopened.project == editor.project());
+    CHECK(reopened.project->schema_layout.widths.at(table) == 340);
+    CHECK(reopened.project->schema_layout.heights.at(table) == 260);
+    CHECK((reopened.project->schema_layout.tables.at(table) == Point{80, 120}));
+
+    // A table that has only been made taller still has a row of its own, so
+    // its height is not lost for want of anything else to write beside it.
+    Fixture only_taller;
+    CHECK(only_taller.editor.resize_schema_tables(
+        {{ElementRef{only_taller.employee}, SchemaTableBox{0, 300, std::nullopt}}}));
+    const auto tall = ErdxProjectStore::decode(ErdxProjectStore::encode(only_taller.editor.project()));
+    CHECK(tall);
+    CHECK(tall.project->schema_layout.widths.empty());
+    CHECK(tall.project->schema_layout.heights.at(ElementRef{only_taller.employee}) == 300);
+
+    // A version 22 file says only how wide a table was pulled, which reads
+    // correctly as one still as tall as its own rows make it.
+    auto older = root;
+    auto older_project = older["project"].toObject();
+    auto layout = older_project["schema_layout"].toObject();
+    QJsonArray tables;
+    for (const auto& value : layout["tables"].toArray()) {
+        auto entry = value.toObject();
+        entry.remove("height");
+        tables.append(entry);
+    }
+    layout["tables"] = tables;
+    older_project["schema_layout"] = layout;
+    // A file of that age carries no names for invented keys either, that being
+    // a version 24 section.
+    auto older_schema = older_project["schema"].toObject();
+    older_schema.remove("keys");
+    older_project["schema"] = older_schema;
+    forget_auto_increment(older_project);
+    older["project"] = older_project;
+    older["format_version"] = 22;
+    const auto from_older = ErdxProjectStore::decode(bytes(older));
+    CHECK(from_older);
+    CHECK(from_older.project->schema_layout.heights.empty());
+    CHECK(from_older.project->schema_layout.widths.at(table) == 340);
+
+    // And a version 23 file that omits the height is refused rather than read
+    // leniently: a document must look like the version it claims.
+    auto liar = older;
+    liar["format_version"] = 23;
+    reject(bytes(liar));
+
+    // A height outside what a table may be is refused, as a width is.
+    auto impossible = root;
+    auto impossible_project = impossible["project"].toObject();
+    auto impossible_layout = impossible_project["schema_layout"].toObject();
+    QJsonArray stretched;
+    for (const auto& value : impossible_layout["tables"].toArray()) {
+        auto entry = value.toObject();
+        if (entry["height"].toDouble() > 0) entry["height"] = max_table_height + 1;
+        stretched.append(entry);
+    }
+    impossible_layout["tables"] = stretched;
+    impossible_project["schema_layout"] = impossible_layout;
+    impossible["project"] = impossible_project;
+    reject_because(bytes(impossible), "A schema table height is outside what a table may be.");
+}
+
+void schema_metadata_persists() {
+    Fixture fixture;
+    auto& editor = fixture.editor;
+    CHECK(editor.set_logical_type(fixture.address, LogicalType::Varchar, 240));
     CHECK(editor.set_attribute_rules(fixture.address, true, true, false));
+    // A column that counts itself up, so the version 25 field makes the trip.
+    const auto counter = std::get<AttributeId>(
+        *editor.create_attribute("Ticket", {}, AttributeOwner{ElementRef{fixture.employee}}).created);
+    CHECK(editor.set_logical_type(counter, LogicalType::Int));
+    CHECK(editor.set_auto_increment(counter, true));
     CHECK(editor.set_schema_comment(ElementRef{fixture.address}, "Where they live."));
     CHECK(editor.set_schema_comment(ElementRef{fixture.employee}, "A person on the payroll."));
     CHECK(editor.set_schema_comment(ElementRef{fixture.supervises}, "Who reports to whom."));
 
     const auto encoded = ErdxProjectStore::encode(editor.project());
     const auto root = QJsonDocument::fromJson(encoded).object();
-    CHECK(root["format_version"].toInt() == 17);
-    CHECK(root["project"].toObject()["mode"].toString() == "convertible");
+    CHECK(root["format_version"].toInt() == 25);
+    // Version 18 has no conceptual mode to write, because there are no modes.
+    CHECK(!root["project"].toObject().contains("mode"));
 
     const auto reread = ErdxProjectStore::decode(encoded);
     CHECK(reread);
     CHECK(*reread.project == editor.project());
-    CHECK(reread.project->mode == ConceptualMode::Convertible);
-    CHECK(reread.project->attributes.at(fixture.address).logical_type == LogicalType::Text);
+    CHECK(reread.project->attributes.at(fixture.address).logical_type == LogicalType::Varchar);
     CHECK(reread.project->attributes.at(fixture.address).length == 240);
     CHECK(reread.project->attributes.at(fixture.address).identifier);
+    CHECK(reread.project->attributes.at(counter).auto_increment);
+    CHECK(!reread.project->attributes.at(fixture.address).auto_increment);
     CHECK(!reread.project->attributes.at(fixture.address).unique);
     CHECK(reread.project->entities.at(fixture.employee).comment == "A person on the payroll.");
     CHECK(ErdxProjectStore::encode(*reread.project) == encoded);
@@ -1063,15 +1474,9 @@ void convertible_metadata_persists() {
         broken["project"] = project;
         reject(bytes(broken));
     }
-    auto wrong_mode = root;
-    auto project = wrong_mode["project"].toObject();
-    project["mode"] = "engineering";
-    wrong_mode["project"] = project;
-    reject(bytes(wrong_mode));
-
     // Only the measured types carry a number, whatever a file says.
     auto stray = root;
-    project = stray["project"].toObject();
+    auto project = stray["project"].toObject();
     auto attributes = project["attributes"].toArray();
     auto first = attributes[0].toObject();
     first["type"] = "boolean";
@@ -1080,6 +1485,48 @@ void convertible_metadata_persists() {
     project["attributes"] = attributes;
     stray["project"] = project;
     reject(bytes(stray));
+
+    // A version 17 file names a conceptual mode. Modes are gone, but the files
+    // are not: such a file still opens, everything it says about what it
+    // becomes is kept, and only the mode itself is dropped on the floor.
+    for (const char* named : {"basic", "convertible"}) {
+        auto moded = root;
+        moded["format_version"] = 17;
+        auto moded_project = moded["project"].toObject();
+        moded_project["mode"] = QLatin1String(named);
+        forget_answered_sides(moded_project);
+        forget_schema_layout(moded_project);
+        forget_auto_increment(moded_project);
+        forget_schema_edits(moded_project);
+        forget_decisions(moded_project);
+        moded["project"] = moded_project;
+        const auto from_moded = ErdxProjectStore::decode(bytes(moded));
+        CHECK(from_moded);
+        CHECK(from_moded.project->attributes.at(fixture.address).logical_type == LogicalType::Varchar);
+        CHECK(from_moded.project->attributes.at(fixture.address).length == 240);
+        CHECK(from_moded.project->attributes.at(fixture.address).identifier);
+        CHECK(from_moded.project->entities.at(fixture.employee).comment == "A person on the payroll.");
+        // Read back, it is a version 18 project like any other, carrying no mode.
+        const auto again = QJsonDocument::fromJson(ErdxProjectStore::encode(*from_moded.project)).object();
+        CHECK(again["format_version"].toInt() == 25);
+        CHECK(!again["project"].toObject().contains("mode"));
+    }
+
+    // A version 17 file whose mode is nonsense is still refused, exactly as
+    // that version always refused it.
+    auto wrong_mode = root;
+    wrong_mode["format_version"] = 17;
+    auto wrong_project = wrong_mode["project"].toObject();
+    wrong_project["mode"] = "engineering";
+    wrong_mode["project"] = wrong_project;
+    reject(bytes(wrong_mode));
+
+    // And a version 18 file may not carry one at all.
+    auto stray_mode = root;
+    auto stray_project = stray_mode["project"].toObject();
+    stray_project["mode"] = "basic";
+    stray_mode["project"] = stray_project;
+    reject(bytes(stray_mode));
 }
 
 void comments_persist() {
@@ -1095,7 +1542,7 @@ void comments_persist() {
 
     const auto encoded = ErdxProjectStore::encode(editor.project());
     const auto root = QJsonDocument::fromJson(encoded).object();
-    CHECK(root["format_version"].toInt() == 17);
+    CHECK(root["format_version"].toInt() == 25);
     const auto written = root["project"].toObject()["comments"].toArray();
     CHECK(written.size() == 2);
 
@@ -1169,11 +1616,15 @@ void comments_persist() {
         }
         older_project[group] = kept;
     }
+    forget_answered_sides(older_project);
+    forget_schema_layout(older_project);
+    forget_auto_increment(older_project);
+    forget_schema_edits(older_project);
+    forget_decisions(older_project);
     older["project"] = older_project;
     const auto from_older = ErdxProjectStore::decode(bytes(older));
     CHECK(from_older);
     CHECK(from_older.project->comments.empty());
-    CHECK(from_older.project->mode == ConceptualMode::Basic);
 }
 
 int main() {
@@ -1186,9 +1637,13 @@ int main() {
         {"connector shapes persist across versions", connector_shapes_persist_and_older_versions_still_open},
         {"pictures and notes persist", pictures_and_notes_persist},
         {"comments persist", comments_persist},
-        {"convertible metadata persists", convertible_metadata_persists},
+        {"schema metadata persists", schema_metadata_persists},
+        {"schema divergence persists", schema_divergence_persists},
+        {"schema arrangement persists", schema_arrangement_persists},
         {"transparency persists", transparency_persists},
         {"weak entities and identifying relationships persist", weak_entities_and_identifying_relationships_persist},
+        {"answered sides persist", answered_sides_persist},
+        {"conversion decisions persist", conversion_decisions_persist},
         {"backgrounds persist", backgrounds_persist},
         {"invalid connector shapes", invalid_connector_shapes},
         {"invalid IDs, references, enums and layout", invalid_identifiers_references_and_enums},

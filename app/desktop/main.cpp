@@ -35,40 +35,58 @@ int main(int argc, char* argv[]) {
     // tooling beside the two above, and the quickest way to see what a search
     // does to a diagram.
     parser.addOption({"search", "Open the search bar looking for this text.", "text"});
-    // Opens in one mode or the other, so what Convertible mode asks a model can
-    // be seen without anyone having to find the switch first. Development
-    // tooling beside the three above.
-    parser.addOption({"mode", "Open in \"basic\" or \"convertible\" mode.", "mode"});
+    // Raises the schema panel, which is otherwise closed until somebody asks
+    // for it. Development tooling beside the three above: it is the only way
+    // to photograph the schema without a person clicking Preview first.
+    parser.addOption({"schema", "Raise the schema preview panel."});
+    // Which of the four notations the ends are drawn in, so each can be
+    // photographed without a person working the picker. Development tooling
+    // beside the options above.
+    parser.addOption({"notation", "Draw ends as chen, minmax, crowsfoot or bachman.", "name"});
+    // Which appearance to wear, so a screenshot can be taken of any of them
+    // without disturbing the remembered choice. Development tooling like the
+    // options above it.
+    parser.addOption({"theme", "Wear this theme, such as midnight, for this run only.", "key"});
+    parser.addOption({"schema-full", "Raise the schema preview panel at full height."});
     parser.addPositionalArgument("project", "An .erdx project to open.", "[project]");
     parser.process(app);
+    const auto wearing = parser.isSet("theme")
+        ? erdflow::desktop::theme_from_key(parser.value("theme"))
+        : chosen;
+    if (wearing != chosen) erdflow::desktop::apply_theme(app, wearing);
     erdflow::infrastructure::QtIdGenerator ids;
     erdflow::application::Editor editor(ids);
     erdflow::infrastructure::ErdxProjectStore store;
     erdflow::desktop::MainWindow window(editor, store, ids);
     window.set_icon_mode(erdflow::desktop::icon_mode_from_key(
         settings.value("iconMode", "outline").toString()));
-    window.set_theme(chosen);
+    window.set_theme(wearing);
     window.show();
     QTimer::singleShot(0, &window, [&] {
         if (!parser.positionalArguments().isEmpty()) window.open_path(parser.positionalArguments().front());
         else if (parser.isSet("example")) window.load_example();
         if (parser.isSet("tab") && window.ribbon()) window.ribbon()->show_tab(parser.value("tab"));
         if (parser.isSet("search")) window.open_search(parser.value("search"));
-        if (parser.isSet("mode"))
-            window.set_conceptual_mode(parser.value("mode").compare("convertible", Qt::CaseInsensitive) == 0
-                                           ? erdflow::domain::ConceptualMode::Convertible
-                                           : erdflow::domain::ConceptualMode::Basic);
-        QTimer::singleShot(500, &window, [&] {
+        if (parser.isSet("notation")) {
+            const auto wanted = parser.value("notation").toLower();
+            if (wanted == "chen") window.set_notation(erdflow::desktop::Notation::Chen);
+            else if (wanted == "minmax") window.set_notation(erdflow::desktop::Notation::MinMax);
+            else if (wanted == "crowsfoot") window.set_notation(erdflow::desktop::Notation::CrowsFoot);
+            else if (wanted == "bachman") window.set_notation(erdflow::desktop::Notation::Bachman);
+        }
+        if (parser.isSet("schema") || parser.isSet("schema-full"))
+            window.open_schema(parser.isSet("schema-full"));
+        QTimer::singleShot(900, &window, [&] {
             if (parser.isSet("screenshot") && !window.grab().save(parser.value("screenshot"))) {
                 app.exit(1);
                 return;
             }
             if (parser.isSet("smoke-test")) {
                 // A smoke test never means to keep anything, and some of the
-                // options above are real edits -- opening in Convertible mode
-                // is one -- which would leave the document unsaved and the
-                // window asking whether to save it on the way out. Nobody is
-                // there to answer, so the run would hang rather than end.
+                // options above are real edits -- opening the example is one --
+                // which would leave the document unsaved and the window asking
+                // whether to save it on the way out. Nobody is there to answer,
+                // so the run would hang rather than end.
                 editor.mark_saved(editor.revision());
                 app.quit();
             }

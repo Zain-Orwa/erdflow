@@ -642,7 +642,7 @@ Conversion
 
 ## 28. Project-Level Defaults
 
-Some decisions may later be stored as project settings.
+Some decisions are stored as project settings.
 
 Example:
 
@@ -652,7 +652,42 @@ Default specialization strategy
 
 Then future conversions can be deterministic without repeated prompts.
 
-The exact settings are deferred.
+### Resolved decisions persist
+
+**Amended 2026-09-19.** A decision the user has answered is stored in the
+project and is not asked again. It is tied to the element's stable identity
+(ADR-001), never to a name or a position:
+
+```text
+EntityId           →  identifier / surrogate-key decision
+SpecializationId   →  ISA mapping strategy
+RelationshipId     →  junction relation name
+Project            →  naming convention, FK convention, surrogate policy
+```
+
+Because a decision lives in the project rather than inside a dialog, it is also
+editable wherever the element is edited, and a later conversion reuses it.
+
+### A default is not a decision
+
+A value the editor supplies because nothing was said is not a value the user
+chose. The two must be distinguishable, or conversion will treat silence as
+intent.
+
+The concrete case: a relationship participant defaults to `Many` / `Partial`.
+Conversion must not read that as a deliberate M:M. Confirmation is therefore
+tracked beside the value:
+
+```text
+Participant
+├── cardinality
+├── cardinality_confirmed
+├── participation
+└── participation_confirmed
+```
+
+An unconfirmed value is a readiness issue — an unresolved decision, not an
+error. The model remains valid and saveable.
 
 ---
 
@@ -1177,44 +1212,72 @@ force complete correctness at every keystroke
 
 ---
 
-## 58. Basic Mode
+## 58. One Conceptual Model
 
-Basic/Learning Mode may intentionally permit less engineering metadata.
+**Superseded 2026-09-19.** This section previously described a Basic/Learning
+mode. ERDFlow no longer has conceptual modes. There is one Conceptual Model,
+and a project does not record which mode it is in.
 
-Validation should respect the current modeling mode.
+What a beginner and a professional see differs only in the Properties panel,
+where the engineering fields sit in a collapsible "For the schema" section.
+That section's state is a **user preference**. It is never written to the
+project, and two people working in one project may hold it differently.
 
-Example:
+Consequently:
 
 ```text
-LogicalType missing
+Hiding a field in the UI
+    ↓
+does not remove it from the model
+    ↓
+and does not withhold it from validation or conversion
 ```
 
-may not be relevant while purely learning conceptual notation.
-
-But conversion readiness may still explain what additional data is required.
+Validation and readiness always see the whole model. There is no mode for them
+to respect, and no display setting that can weaken a gate.
 
 ---
 
-## 59. Convertible Mode
+## 59. Validation and Readiness Are Separate Systems
 
-Convertible/Engineering Mode exposes richer requirements.
-
-Validation may require:
+The core exposes two distinct queries over the same project:
 
 ```text
-logical types
-identifiers
-other conversion metadata
+validate(project)   →  Is the project structurally and semantically valid?
+readiness(project)  →  Is this valid model ready to be converted?
 ```
 
-for selected transformations.
+They answer different questions and must not be merged.
 
-Both modes still use one underlying Conceptual Model.
+Validation concerns broken models:
 
-Changing display mode cannot bypass an operation's validation gate. The same
-snapshot and conversion options have the same blockers in either mode; Basic
-Mode may hide engineering fields but must expose required issues when the
-user requests conversion.
+```text
+broken reference
+invalid relationship
+impossible weak-entity structure
+violated domain invariant
+deleted object still referenced
+```
+
+Readiness concerns sound models that have not yet answered what a conversion
+needs:
+
+```text
+entity has no identifier
+attribute has no logical type
+ISA mapping strategy not selected
+M:M junction relation not named
+surrogate-key policy unresolved
+```
+
+A model may be entirely valid and not ready. It may be saved in that state, per
+§16 and §17. Readiness is evaluated when a conversion is requested, and may
+also be shown continuously; showing it continuously is a Presentation choice
+and changes no gate.
+
+Readiness classifies every issue using the five classes of §5 through §12. A
+missing logical type that was previously reported as a mode-dependent
+validation warning is a readiness issue, not a validation warning.
 
 ---
 
@@ -1293,6 +1356,32 @@ Required Decisions
 The core provides structured data.
 
 Presentation controls layout.
+
+### Readiness is a navigable report, not a wizard
+
+**Amended 2026-09-19.** Conversion must not be answered with one large dialog
+that collects dozens of values. It presents the structured list, and each issue
+returns the user to the element it concerns:
+
+```text
+click an issue
+    ↓
+navigate to the element
+    ↓
+select it on the diagram
+    ↓
+open and focus its Properties panel
+    ↓
+highlight the field needing attention
+```
+
+The model is edited where the model lives. A focused dialog is reserved for a
+decision that is a genuine structural choice with no natural home in the
+Properties panel — the ISA mapping strategy is the clearest example — and is
+never used for data an existing panel can already collect.
+
+Each of these steps is Presentation behavior. The core supplies the issue, its
+class, and the element reference it points at.
 
 ---
 
@@ -1984,6 +2073,25 @@ Conversion does not mutate its source.
 
 Generated candidates are validated before controlled application where appropriate.
 
+### Invariant 13
+
+There is one Conceptual Model. No conceptual mode exists, and no display
+setting can weaken a gate.
+
+### Invariant 14
+
+Validation and conversion readiness are separate queries over the same project.
+
+### Invariant 15
+
+A resolved conversion decision persists, keyed by stable identity, and is not
+asked again.
+
+### Invariant 16
+
+A default supplied by the editor is distinguishable from a value the user
+confirmed, and is never read as a deliberate choice.
+
 ---
 
 ## 104. Relationship to Other ADRs
@@ -2063,3 +2171,28 @@ Outcome: accepted. Confirmed operation-specific gates; clarified semantic determ
 See [Phase 0 review](../PHASE_0_REVIEW.md) for cross-document findings,
 quality requirements, and deferred implementation gates. Acceptance records
 the architecture contract, not completion of its implementation or tests.
+
+---
+
+## 109. Amendment Record — 2026-09-19
+
+Outcome: amended. Conceptual modes were removed from the product, and this ADR
+was brought in line with that decision.
+
+Changes:
+
+- §58 superseded. There is one Conceptual Model and no Basic/Convertible mode.
+  The engineering fields are a collapsible panel section and a user preference.
+- §59 replaced. `validate(project)` and `readiness(project)` are separate
+  queries. The mode-dependent "missing logical type" validation warning becomes
+  a readiness issue.
+- §28 amended. Resolved conversion decisions persist, keyed by stable identity;
+  a default supplied by the editor is tracked separately from a value the user
+  confirmed.
+- §63 amended. Readiness is presented as a navigable report that returns the
+  user to the element, not as a conversion wizard.
+- §103 gained invariants 13 to 16.
+
+The gate policy itself is unchanged: the five issue classes, the save/convert
+split, and the rule that hard invalidity cannot be waived all stand as
+accepted on 2026-08-31.

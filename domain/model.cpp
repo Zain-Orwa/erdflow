@@ -87,6 +87,61 @@ bool empty_name(const std::string& value) {
 }
 } // namespace
 
+bool countable(LogicalType type) {
+    switch (type) {
+    case LogicalType::TinyInt: case LogicalType::SmallInt:
+    case LogicalType::Int: case LogicalType::BigInt:
+    case LogicalType::Decimal: case LogicalType::Numeric:
+        return true;
+    default:
+        return false;
+    }
+}
+
+TypeSize size_of(LogicalType type) {
+    switch (type) {
+    case LogicalType::Char: case LogicalType::Varchar:
+    case LogicalType::NChar: case LogicalType::NVarchar:
+    case LogicalType::Binary: case LogicalType::Varbinary:
+    case LogicalType::Float:
+    case LogicalType::Time: case LogicalType::DateTime2: case LogicalType::DateTimeOffset:
+        return TypeSize::Length;
+    case LogicalType::Decimal: case LogicalType::Numeric:
+        return TypeSize::Precision;
+    default:
+        return TypeSize::None;
+    }
+}
+
+bool deprecated_type(LogicalType type) {
+    return type == LogicalType::Text || type == LogicalType::NText || type == LogicalType::Image;
+}
+
+// Every value the enum actually has. A file that names something outside it is
+// refused rather than read as whatever happens to share its number.
+bool known_type(LogicalType type) {
+    switch (type) {
+    case LogicalType::Unset:
+    case LogicalType::Int: case LogicalType::BigInt: case LogicalType::SmallInt:
+    case LogicalType::TinyInt: case LogicalType::Bit: case LogicalType::Decimal:
+    case LogicalType::Numeric: case LogicalType::Money: case LogicalType::SmallMoney:
+    case LogicalType::Float: case LogicalType::Real:
+    case LogicalType::Char: case LogicalType::Varchar: case LogicalType::VarcharMax:
+    case LogicalType::Text:
+    case LogicalType::NChar: case LogicalType::NVarchar: case LogicalType::NVarcharMax:
+    case LogicalType::NText:
+    case LogicalType::Binary: case LogicalType::Varbinary: case LogicalType::VarbinaryMax:
+    case LogicalType::Image:
+    case LogicalType::Date: case LogicalType::Time: case LogicalType::DateTime:
+    case LogicalType::DateTime2: case LogicalType::DateTimeOffset: case LogicalType::SmallDateTime:
+    case LogicalType::UniqueIdentifier: case LogicalType::Xml: case LogicalType::RowVersion:
+    case LogicalType::HierarchyId: case LogicalType::SqlVariant: case LogicalType::Cursor:
+    case LogicalType::Table: case LogicalType::Geometry: case LogicalType::Geography:
+        return true;
+    }
+    return false;
+}
+
 bool exists(const Project& project, const ElementRef& ref) {
     return visit_element(project, ref, [](const auto* element) { return element != nullptr; });
 }
@@ -112,6 +167,18 @@ bool connector_exists(const Project& project, const ConnectorRef& ref) {
         return std::any_of(entry.second.participants.begin(), entry.second.participants.end(),
                            [&](const auto& item) { return item.id == participant; });
     });
+}
+
+// What a schema line is drawn from, asked the same way a connector is. The
+// three alternatives are every foreign key there is: a relationship's key on a
+// participant, a multivalued attribute's table pointing home, and a subtype
+// pointing at its parent. The first two are connectors under another name, so
+// they are asked through the same question rather than a second copy of it.
+bool link_exists(const Project& project, const LinkSource& link) {
+    if (const auto* entity = std::get_if<EntityId>(&link)) return project.entities.contains(*entity);
+    if (const auto* attribute = std::get_if<AttributeId>(&link))
+        return connector_exists(project, ConnectorRef{*attribute});
+    return connector_exists(project, ConnectorRef{std::get<ParticipantId>(link)});
 }
 
 std::size_t character_count(const std::string& text) {
@@ -507,41 +574,149 @@ std::vector<Issue> validate(const Project& project) {
         if (!exists(project, ref)) error("transparency.reference.missing", "A transparency refers to a missing element.", ref);
         if (percent > max_transparency) error("transparency.invalid", "Transparency is a percentage from 0 to 100.", ref);
     }
-    // What Convertible mode asks for. These are checked whichever mode is on,
-    // because the values are stored either way and a file that arrives holding
-    // nonsense must be refused whether or not anyone is currently looking at it.
-    switch (project.mode) {
-    case ConceptualMode::Basic: case ConceptualMode::Convertible: break;
-    default: error("project.mode.invalid", "The conceptual mode is invalid.");
-    }
+    // What turning an attribute into a column will need. A file that arrives
+    // holding nonsense is refused whether or not anyone is currently looking
+    // at these fields, because they are part of the model either way.
     for (const auto& [id, attribute] : project.attributes) {
         const ElementRef ref = id;
-        switch (attribute.logical_type) {
-        case LogicalType::Unset: case LogicalType::Text: case LogicalType::Integer:
-        case LogicalType::Decimal: case LogicalType::Boolean: case LogicalType::Date:
-        case LogicalType::DateTime: case LogicalType::Binary: case LogicalType::Uuid: break;
-        default: error("attribute.type.invalid", "The attribute's logical type is invalid.", ref);
-        }
+        if (size_of(attribute.logical_type) == TypeSize::None && attribute.logical_type != LogicalType::Unset
+            && !known_type(attribute.logical_type))
+            error("attribute.type.invalid", "The attribute's logical type is invalid.", ref);
         if (attribute.length > max_logical_length)
             error("attribute.length.limit", "A logical length must be within 1,000,000.", ref);
-        // A number belongs only to the types that take one. Left on a Boolean
-        // it would be carried into the schema and mean nothing there.
-        if (attribute.length != 0 && attribute.logical_type != LogicalType::Text
-            && attribute.logical_type != LogicalType::Decimal)
-            error("attribute.length.unused", "Only Text and Decimal carry a length.", ref);
+        // A size belongs only to the types that take one. Left on a Bit it
+        // would be carried into the schema and mean nothing there.
+        const auto takes = size_of(attribute.logical_type);
+        if (attribute.length != 0 && takes == TypeSize::None)
+            error("attribute.length.unused", "Only a sized type carries a length.", ref);
+        // A scale is the digits after the point, so only a precision has one,
+        // and it can never exceed the precision it is part of.
+        if (attribute.scale != 0 && takes != TypeSize::Precision)
+            error("attribute.scale.unused", "Only Decimal and Numeric carry a scale.", ref);
+        if (attribute.scale > attribute.length)
+            error("attribute.scale.invalid", "A scale cannot exceed its precision.", ref);
     }
-    // In Convertible mode the model is being asked what it will become, and an
-    // attribute with no type yet has not answered. It is a warning rather than
-    // a refusal: a model is allowed to be half answered while it is being
-    // worked on, and Phase 14 is where answering becomes a gate.
-    if (project.mode == ConceptualMode::Convertible)
-        for (const auto& [id, attribute] : project.attributes) {
-            if (attribute.logical_type != LogicalType::Unset) continue;
-            // A composite is made of its parts and carries no value of its own,
-            // so it is not asked for a type.
-            if (attribute.kind == AttributeKind::Composite) continue;
-            warning("attribute.type.missing", "This attribute has no logical type yet.", ElementRef{id});
+    // Every answer must still be about something that is there. An element can
+    // be deleted after a question about it was answered, and a decision left
+    // pointing at nothing would be carried silently into a conversion.
+    {
+        const auto& decided = project.decisions;
+        switch (decided.naming) {
+        case TableNaming::Plural: case TableNaming::AsDrawn: break;
+        default: error("decision.naming.invalid", "The table naming convention is invalid.");
         }
+        for (const auto& [id, strategy] : decided.isa) {
+            const ElementRef ref = id;
+            if (!project.specializations.contains(id))
+                error("decision.isa.missing", "A mapping strategy refers to a missing hierarchy.", ref);
+            switch (strategy) {
+            case IsaStrategy::PerSubclass: case IsaStrategy::SingleTable: case IsaStrategy::PerConcrete: break;
+            default: error("decision.isa.invalid", "The mapping strategy is invalid.", ref);
+            }
+        }
+        for (const auto& [id, mode] : decided.composite) {
+            const ElementRef ref = id;
+            const auto found = project.attributes.find(id);
+            if (found == project.attributes.end())
+                error("decision.composite.missing", "A composite decision refers to a missing attribute.", ref);
+            else if (found->second.kind != AttributeKind::Composite)
+                error("decision.composite.unused", "Only a composite attribute is asked what it becomes.", ref);
+            switch (mode) {
+            case CompositeMode::Parts: case CompositeMode::Whole: case CompositeMode::Both: break;
+            default: error("decision.composite.invalid", "The composite decision is invalid.", ref);
+            }
+        }
+        for (const auto& [id, side] : decided.one_to_one_key) {
+            const ElementRef ref = id;
+            const auto found = project.relationships.find(id);
+            if (found == project.relationships.end()) {
+                error("decision.key_side.missing", "A key-side decision refers to a missing relationship.", ref);
+                continue;
+            }
+            const auto& sides = found->second.participants;
+            if (std::none_of(sides.begin(), sides.end(),
+                             [&](const Participant& one) { return one.id == side; }))
+                error("decision.key_side.invalid", "The chosen side does not belong to this relationship.", ref);
+        }
+        for (const auto& [id, chosen] : decided.junction_name) {
+            const ElementRef ref = id;
+            if (!project.relationships.contains(id))
+                error("decision.junction.missing", "A bridge name refers to a missing relationship.", ref);
+            if (chosen.size() > max_name_bytes || !valid_text(chosen, false) || empty_name(chosen))
+                error("decision.junction.invalid", "A bridge table name must be valid text.", ref);
+        }
+        for (const auto& [id, chosen] : decided.identifier) {
+            const ElementRef ref = id;
+            if (!project.entities.contains(id))
+                error("decision.identifier.missing", "An identifier refers to a missing entity.", ref);
+            const auto found = project.attributes.find(chosen);
+            if (found == project.attributes.end() || found->second.owner != AttributeOwner{ElementRef{id}})
+                error("decision.identifier.invalid", "The chosen identifier is not this entity's attribute.", ref);
+        }
+        for (const auto& [ref, chosen] : decided.table_name) {
+            if (!exists(project, ref))
+                error("decision.table_name.missing", "A table name refers to a missing element.", ref);
+            if (chosen.size() > max_name_bytes || !valid_text(chosen, false) || empty_name(chosen))
+                error("decision.table_name.invalid", "A table name must be valid text.", ref);
+        }
+    }
+    // What the schema has been told that the diagram does not say. ADR-010
+    // allows the two levels to differ, and a difference is a fact to be
+    // recorded rather than a mistake -- but a difference has to be about
+    // something. A column added to a table whose element is gone, and a hidden
+    // attribute that no longer exists, are not differences but remnants.
+    // Nothing asked this until now, so a remnant was written to the file and
+    // read back without complaint.
+    {
+        std::size_t added = 0;
+        for (const auto& [ref, columns] : project.schema.added) {
+            if (!exists(project, ref))
+                error("schema.table.missing", "A schema column was added to a missing element.", ref);
+            added += columns.size();
+            for (const auto& column : columns) {
+                identity(column.id.value, ref);
+                if (column.name.size() > max_name_bytes || !valid_text(column.name, false) || empty_name(column.name))
+                    error("schema.column.name.invalid", "A schema column needs a valid name.", ref);
+                schema_comment(column.comment, ref);
+                // A column added here becomes a column like any other, so it is
+                // held to the same type rules an attribute is held to.
+                const auto takes = size_of(column.logical_type);
+                if (takes == TypeSize::None && column.logical_type != LogicalType::Unset
+                    && !known_type(column.logical_type))
+                    error("schema.column.type.invalid", "The schema column's logical type is invalid.", ref);
+                if (column.length > max_logical_length)
+                    error("schema.column.length.limit", "A logical length must be within 1,000,000.", ref);
+                if (column.length != 0 && takes == TypeSize::None)
+                    error("schema.column.length.unused", "Only a sized type carries a length.", ref);
+                if (column.scale != 0 && takes != TypeSize::Precision)
+                    error("schema.column.scale.unused", "Only Decimal and Numeric carry a scale.", ref);
+                if (column.scale > column.length)
+                    error("schema.column.scale.invalid", "A scale cannot exceed its precision.", ref);
+            }
+        }
+        if (added > max_elements)
+            error("schema.column.limit", "The added schema columns exceed the element limit.");
+        if (project.schema.hidden.size() > max_elements)
+            error("schema.hidden.limit", "The hidden columns exceed the element limit.");
+        for (const auto& id : project.schema.hidden) {
+            const ElementRef ref = id;
+            if (!project.attributes.contains(id))
+                error("schema.hidden.missing", "A hidden column refers to a missing attribute.", ref);
+        }
+        // A name given to an invented key is text like a table's typed name,
+        // and belongs to an element that has to still be there.
+        for (const auto& [ref, chosen] : project.schema.key_names) {
+            if (!exists(project, ref))
+                error("schema.key_name.missing", "A key name refers to a missing element.", ref);
+            if (chosen.size() > max_name_bytes || !valid_text(chosen, false) || empty_name(chosen))
+                error("schema.key_name.invalid", "A key name must be valid text.", ref);
+        }
+    }
+    // An attribute with no logical type yet has not answered a question that
+    // conversion will ask. That is a matter of readiness rather than validity:
+    // validate() says whether the model is sound, and a model is allowed to be
+    // half answered while it is being worked on. Phase 14's readiness() is
+    // where the question is asked, under the issue classes of ADR-009.
     if (project.comments.size() > max_elements) error("comment.limit", "The comments exceed the element limit.");
     for (const auto& [id, comment] : project.comments) {
         // A comment has no element reference of its own, so anything wrong with
@@ -582,6 +757,55 @@ std::vector<Issue> validate(const Project& project) {
             || rect.width <= 0 || rect.height <= 0 || rect.width > max_coordinate || rect.height > max_coordinate
             || std::abs(rect.x + rect.width) > max_coordinate || std::abs(rect.y + rect.height) > max_coordinate)
             error("layout.bounds.invalid", "Element bounds must be finite, positive, and within the supported canvas.", ref);
+    }
+    // The schema's arrangement is presentation exactly as the layout above is,
+    // so it is held to the same bounds and asked the same question: a place, a
+    // size and a shaped line must each be about something that is still there.
+    {
+        const auto& arranged = project.schema_layout;
+        const auto on_canvas = [](const Point& point) {
+            return std::isfinite(point.x) && std::isfinite(point.y)
+                && std::abs(point.x) <= max_coordinate && std::abs(point.y) <= max_coordinate;
+        };
+        if (arranged.tables.size() > max_elements || arranged.widths.size() > max_elements
+            || arranged.heights.size() > max_elements || arranged.lines.size() > max_elements)
+            error("schema.layout.limit", "The schema arrangement exceeds the element limit.");
+        for (const auto& [ref, point] : arranged.tables) {
+            if (!exists(project, ref))
+                error("schema.layout.reference.missing", "A schema place refers to a missing element.", ref);
+            if (!on_canvas(point))
+                error("schema.layout.bounds.invalid", "A schema table must be placed within the supported canvas.", ref);
+        }
+        // A width and a height are pulled separately and stored separately, so
+        // they are asked separately rather than assumed to arrive together.
+        for (const auto* sizes : {&arranged.widths, &arranged.heights})
+            for (const auto& [ref, size] : *sizes) {
+                if (!exists(project, ref))
+                    error("schema.layout.reference.missing", "A schema size refers to a missing element.", ref);
+                if (!std::isfinite(size) || size <= 0 || size > max_coordinate)
+                    error("schema.layout.size.invalid", "A schema table's size must be finite, positive, and within the supported canvas.", ref);
+            }
+        for (const auto& [link, line] : arranged.lines) {
+            // Report against the element the line is drawn from where there is
+            // one, so the schema can highlight it; a participant has none.
+            std::optional<ElementRef> owner;
+            if (const auto* attribute = std::get_if<AttributeId>(&link)) owner = ElementRef{*attribute};
+            else if (const auto* entity = std::get_if<EntityId>(&link)) owner = ElementRef{*entity};
+            if (!link_exists(project, link))
+                error("schema.line.reference.missing", "A schema line refers to a link that no longer exists.", owner);
+            if (line.route.size() > max_elements)
+                error("schema.line.route.limit", "A schema line route exceeds the element limit.", owner);
+            for (const auto& point : line.route)
+                if (!on_canvas(point))
+                    error("schema.line.route.invalid", "A schema line route point must be within the supported canvas.", owner);
+            // An end is a fraction of its table's box where it sits on the
+            // table and a point on the schema where it does not. Both are
+            // within the canvas, which is what is asked here; which of the two
+            // it is belongs to the schema that reads it.
+            for (const auto& end : {line.from, line.to})
+                if (end && !on_canvas(end->at))
+                    error("schema.line.end.invalid", "A schema line's end must be within the supported canvas.", owner);
+        }
     }
     return issues;
 }

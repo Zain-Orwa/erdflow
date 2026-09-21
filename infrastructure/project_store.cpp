@@ -8,6 +8,7 @@
 #include <QUuid>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
 #include <set>
@@ -29,11 +30,26 @@ namespace {
 // the paper the diagram is drawn on; version 15 lets a note be a plain one, a
 // single character drawn bare on the diagram; version 16 adds review comments,
 // pinned to elements, to the lines between them, or into a range of the text
-// somebody wrote; version 17 adds what Convertible mode asks a model to say
-// about itself -- the mode, an attribute's logical type and length, whether it
+// somebody wrote; version 17 adds what a model says about what it will become
+// -- a conceptual mode, an attribute's logical type and length, whether it
 // identifies, is required or is unique, and the comment a table or column
-// carries into the schema.
-constexpr int current_format_version = 17;
+// carries into the schema; version 18 drops the mode, because there is one
+// model and no modes, and what a panel shows is a user's preference rather than
+// anything the document holds; version 19 records whether a relationship side's
+// cardinality and participation were chosen or are merely what a new side
+// starts as, which conversion needs in order to tell a decided M:M from two
+// untouched defaults; version 20 replaces the small portable type set with the
+// whole SQL catalogue, gives a decimal its scale, and records the answers to
+// the questions a conversion cannot decide for itself; version 21 records
+// where the schema has been edited away from the diagram it came from, which
+// ADR-010 allows and which therefore has to survive being saved; version 22
+// records how the schema has been arranged by hand, for the same reason the
+// diagram's own layout is recorded -- it is work; version 24 records what a
+// key the conversion invented has been renamed to, which renames every
+// foreign key that points at it; version 23 records how tall
+// a table has been pulled as well as how wide, since a table answers to all
+// four of its edges.
+constexpr int current_format_version = 25;
 QString text(const std::string& value) { return QString::fromUtf8(value.data(), static_cast<qsizetype>(value.size())); }
 Uuid bytes_of(const QUuid& value) {
     Uuid result;
@@ -97,33 +113,161 @@ ConnectorRef parse_connector_reference(const QJsonValue& value) {
 // than by shape, because an attribute identifier means one thing as an element
 // and another as the line that owns it, and a reader must never have to guess
 // which was meant.
-QLatin1String logical_type_name(LogicalType type) {
-    switch (type) {
-        case LogicalType::Text: return QLatin1String("text");
-        case LogicalType::Integer: return QLatin1String("integer");
-        case LogicalType::Decimal: return QLatin1String("decimal");
-        case LogicalType::Boolean: return QLatin1String("boolean");
-        case LogicalType::Date: return QLatin1String("date");
-        case LogicalType::DateTime: return QLatin1String("datetime");
-        case LogicalType::Binary: return QLatin1String("binary");
-        case LogicalType::Uuid: return QLatin1String("uuid");
-        case LogicalType::Unset: break;
+// The type catalogue, written by its SQL name. The names are what the file
+// carries, so they are spelled once here and read back by the same table.
+struct TypeName { LogicalType type; const char* name; };
+constexpr std::array<TypeName, 38> type_names{{
+    {LogicalType::Unset, "unset"},
+    {LogicalType::Int, "int"}, {LogicalType::BigInt, "bigint"},
+    {LogicalType::SmallInt, "smallint"}, {LogicalType::TinyInt, "tinyint"},
+    {LogicalType::Bit, "bit"}, {LogicalType::Decimal, "decimal"},
+    {LogicalType::Numeric, "numeric"}, {LogicalType::Money, "money"},
+    {LogicalType::SmallMoney, "smallmoney"},
+    {LogicalType::Float, "float"}, {LogicalType::Real, "real"},
+    {LogicalType::Char, "char"}, {LogicalType::Varchar, "varchar"},
+    {LogicalType::VarcharMax, "varchar(max)"}, {LogicalType::Text, "text"},
+    {LogicalType::NChar, "nchar"}, {LogicalType::NVarchar, "nvarchar"},
+    {LogicalType::NVarcharMax, "nvarchar(max)"}, {LogicalType::NText, "ntext"},
+    {LogicalType::Binary, "binary"}, {LogicalType::Varbinary, "varbinary"},
+    {LogicalType::VarbinaryMax, "varbinary(max)"}, {LogicalType::Image, "image"},
+    {LogicalType::Date, "date"}, {LogicalType::Time, "time"},
+    {LogicalType::DateTime, "datetime"}, {LogicalType::DateTime2, "datetime2"},
+    {LogicalType::DateTimeOffset, "datetimeoffset"}, {LogicalType::SmallDateTime, "smalldatetime"},
+    {LogicalType::UniqueIdentifier, "uniqueidentifier"}, {LogicalType::Xml, "xml"},
+    {LogicalType::RowVersion, "rowversion"}, {LogicalType::HierarchyId, "hierarchyid"},
+    {LogicalType::SqlVariant, "sql_variant"}, {LogicalType::Cursor, "cursor"},
+    {LogicalType::Table, "table"}, {LogicalType::Geometry, "geometry"},
+}};
+
+QLatin1String isa_name(IsaStrategy strategy) {
+    switch (strategy) {
+    case IsaStrategy::SingleTable: return QLatin1String("single_table");
+    case IsaStrategy::PerConcrete: return QLatin1String("per_concrete");
+    case IsaStrategy::PerSubclass: break;
     }
+    return QLatin1String("per_subclass");
+}
+IsaStrategy parse_isa(const QJsonValue& value) {
+    const auto name = string(value);
+    if (name == "per_subclass") return IsaStrategy::PerSubclass;
+    if (name == "single_table") return IsaStrategy::SingleTable;
+    if (name == "per_concrete") return IsaStrategy::PerConcrete;
+    invalid("Unsupported mapping strategy.");
+}
+QLatin1String composite_name(CompositeMode mode) {
+    switch (mode) {
+    case CompositeMode::Whole: return QLatin1String("whole");
+    case CompositeMode::Both: return QLatin1String("both");
+    case CompositeMode::Parts: break;
+    }
+    return QLatin1String("parts");
+}
+CompositeMode parse_composite(const QJsonValue& value) {
+    const auto name = string(value);
+    if (name == "parts") return CompositeMode::Parts;
+    if (name == "whole") return CompositeMode::Whole;
+    if (name == "both") return CompositeMode::Both;
+    invalid("Unsupported composite decision.");
+}
+
+// Defined below, beside the other readers.
+ElementRef parse_ref(const QJsonValue& value);
+
+// Each decision is written as a list of {id, value} rather than as an object
+// keyed by identity, so the file says plainly what it is about and nothing
+// depends on how a map orders itself.
+template<class Map, class Value>
+QJsonArray decision_list(const Map& answers, Value&& value_of) {
+    QJsonArray out;
+    for (const auto& [key, answer] : answers)
+        out.append(QJsonObject{{"id", uuid_text(key.value)}, {"value", value_of(answer)}});
+    return out;
+}
+
+QJsonObject encode_decisions(const ConversionDecisions& decided) {
+    QJsonArray names;
+    for (const auto& [ref, chosen] : decided.table_name)
+        names.append(QJsonObject{{"element", reference(ref)}, {"value", text(chosen)}});
+    return QJsonObject{
+        {"naming", QLatin1String(decided.naming == TableNaming::AsDrawn ? "as_drawn" : "plural")},
+        {"isa", decision_list(decided.isa, [](IsaStrategy s) { return QJsonValue(isa_name(s)); })},
+        {"composite", decision_list(decided.composite, [](CompositeMode m) { return QJsonValue(composite_name(m)); })},
+        {"one_to_one_key", decision_list(decided.one_to_one_key,
+            [](ParticipantId side) { return QJsonValue(uuid_text(side.value)); })},
+        {"junction_name", decision_list(decided.junction_name,
+            [](const std::string& chosen) { return QJsonValue(text(chosen)); })},
+        {"identifier", decision_list(decided.identifier,
+            [](AttributeId chosen) { return QJsonValue(uuid_text(chosen.value)); })},
+        {"table_name", names}};
+}
+
+ConversionDecisions parse_decisions(const QJsonValue& value) {
+    auto o = object(value, {"naming", "isa", "composite", "one_to_one_key",
+                            "junction_name", "identifier", "table_name"});
+    ConversionDecisions decided;
+    const auto naming = string(o["naming"]);
+    if (naming == "as_drawn") decided.naming = TableNaming::AsDrawn;
+    else if (naming == "plural") decided.naming = TableNaming::Plural;
+    else invalid("Unsupported table naming convention.");
+
+    for (const auto& item : array(o["isa"])) {
+        auto entry = object(item, {"id", "value"});
+        decided.isa.emplace(SpecializationId{parse_id(entry["id"])}, parse_isa(entry["value"]));
+    }
+    for (const auto& item : array(o["composite"])) {
+        auto entry = object(item, {"id", "value"});
+        decided.composite.emplace(AttributeId{parse_id(entry["id"])}, parse_composite(entry["value"]));
+    }
+    for (const auto& item : array(o["one_to_one_key"])) {
+        auto entry = object(item, {"id", "value"});
+        decided.one_to_one_key.emplace(RelationshipId{parse_id(entry["id"])},
+                                       ParticipantId{parse_id(entry["value"])});
+    }
+    for (const auto& item : array(o["junction_name"])) {
+        auto entry = object(item, {"id", "value"});
+        decided.junction_name.emplace(RelationshipId{parse_id(entry["id"])}, string(entry["value"]));
+    }
+    for (const auto& item : array(o["identifier"])) {
+        auto entry = object(item, {"id", "value"});
+        decided.identifier.emplace(EntityId{parse_id(entry["id"])}, AttributeId{parse_id(entry["value"])});
+    }
+    for (const auto& item : array(o["table_name"])) {
+        auto entry = object(item, {"element", "value"});
+        decided.table_name.emplace(parse_ref(entry["element"]), string(entry["value"]));
+    }
+    return decided;
+}
+
+QLatin1String logical_type_name(LogicalType type) {
+    for (const auto& entry : type_names)
+        if (entry.type == type) return QLatin1String(entry.name);
+    if (type == LogicalType::Geography) return QLatin1String("geography");
     return QLatin1String("unset");
 }
-LogicalType parse_logical_type(const QJsonValue& value) {
+
+// Before version 20 a file held a small portable set. Each of those names is
+// the SQL type it always meant: a portable "text" was a varying string, so it
+// reads as varchar, and a "boolean" was a bit.
+LogicalType parse_logical_type(const QJsonValue& value, bool catalogued) {
     const auto name = string(value);
-    if (name == "unset") return LogicalType::Unset;
-    if (name == "text") return LogicalType::Text;
-    if (name == "integer") return LogicalType::Integer;
-    if (name == "decimal") return LogicalType::Decimal;
-    if (name == "boolean") return LogicalType::Boolean;
-    if (name == "date") return LogicalType::Date;
-    if (name == "datetime") return LogicalType::DateTime;
-    if (name == "binary") return LogicalType::Binary;
-    if (name == "uuid") return LogicalType::Uuid;
+    if (!catalogued) {
+        if (name == "unset") return LogicalType::Unset;
+        if (name == "text") return LogicalType::Varchar;
+        if (name == "integer") return LogicalType::Int;
+        if (name == "decimal") return LogicalType::Decimal;
+        if (name == "boolean") return LogicalType::Bit;
+        if (name == "date") return LogicalType::Date;
+        if (name == "datetime") return LogicalType::DateTime;
+        if (name == "binary") return LogicalType::Varbinary;
+        if (name == "uuid") return LogicalType::UniqueIdentifier;
+        invalid("Unsupported logical type.");
+    }
+    for (const auto& entry : type_names)
+        if (name == entry.name) return entry.type;
+    if (name == "geography") return LogicalType::Geography;
     invalid("Unsupported logical type.");
 }
+
 std::uint32_t parse_length(const QJsonValue& value) {
     if (!value.isDouble()) invalid("A logical length must be a number.");
     const auto number = value.toDouble();
@@ -134,6 +278,80 @@ std::uint32_t parse_length(const QJsonValue& value) {
 bool parse_flag(const QJsonValue& value, const char* what) {
     if (!value.isBool()) invalid(QString("The %1 flag must be true or false.").arg(QLatin1String(what)));
     return value.toBool();
+}
+
+// Where the schema has been edited away from the diagram. Written as its own
+// section rather than folded into the conversion decisions, because the two
+// are different kinds of fact: a decision answers a question the conversion
+// cannot settle, and these are somebody editing its result. A file from before
+// this existed simply has no section, which reads as no differences at all.
+QJsonObject encode_schema(const SchemaOverrides& schema) {
+    QJsonArray added;
+    for (const auto& [table, columns] : schema.added) {
+        QJsonArray of_table;
+        for (const auto& column : columns)
+            of_table.append(QJsonObject{{"id", uuid_text(column.id.value)}, {"name", text(column.name)},
+                {"type", logical_type_name(column.logical_type)},
+                {"length", static_cast<double>(column.length)},
+                {"scale", static_cast<double>(column.scale)}, {"identifier", column.identifier},
+                {"required", column.required}, {"unique", column.unique},
+                {"auto_increment", column.auto_increment},
+                {"comment", text(column.comment)}});
+        added.append(QJsonObject{{"element", reference(table)}, {"columns", of_table}});
+    }
+    QJsonArray hidden;
+    for (const auto& id : schema.hidden) hidden.append(uuid_text(id.value));
+    QJsonArray keys;
+    for (const auto& [table, chosen] : schema.key_names)
+        keys.append(QJsonObject{{"element", reference(table)}, {"name", text(chosen)}});
+    QJsonArray counting;
+    for (const auto& table : schema.counting_keys) counting.append(reference(table));
+    return QJsonObject{{"added", added}, {"hidden", hidden}, {"keys", keys},
+                       {"counting_keys", counting}};
+}
+
+SchemaOverrides parse_schema(const QJsonValue& value, bool named_keys, bool counted) {
+    auto o = counted ? object(value, {"added", "hidden", "keys", "counting_keys"})
+           : named_keys ? object(value, {"added", "hidden", "keys"})
+                        : object(value, {"added", "hidden"});
+    SchemaOverrides schema;
+    for (const auto& item : array(o["added"])) {
+        auto entry = object(item, {"element", "columns"});
+        std::vector<SchemaColumn> columns;
+        for (const auto& one : array(entry["columns"])) {
+            auto c = counted
+                ? object(one, {"id", "name", "type", "length", "scale", "identifier",
+                               "required", "unique", "comment", "auto_increment"})
+                : object(one, {"id", "name", "type", "length", "scale", "identifier",
+                               "required", "unique", "comment"});
+            SchemaColumn column{.id = SchemaColumnId{parse_id(c["id"])},
+                                .name = string(c["name"], max_name_bytes)};
+            column.logical_type = parse_logical_type(c["type"], true);
+            column.length = parse_length(c["length"]);
+            column.scale = parse_length(c["scale"]);
+            column.identifier = parse_flag(c["identifier"], "identifier");
+            column.required = parse_flag(c["required"], "required");
+            column.unique = parse_flag(c["unique"], "unique");
+            if (counted) column.auto_increment = parse_flag(c["auto_increment"], "auto_increment");
+            column.comment = string(c["comment"], max_comment_bytes);
+            columns.push_back(std::move(column));
+        }
+        if (columns.empty()) continue;
+        if (!schema.added.emplace(parse_ref(entry["element"]), std::move(columns)).second)
+            invalid("Duplicate schema column owner.");
+    }
+    for (const auto& item : array(o["hidden"])) schema.hidden.insert(AttributeId{parse_id(item)});
+    if (named_keys)
+        for (const auto& item : array(o["keys"])) {
+            auto entry = object(item, {"element", "name"});
+            if (!schema.key_names.emplace(parse_ref(entry["element"]), string(entry["name"])).second)
+                invalid("Duplicate schema key name.");
+        }
+    if (counted)
+        for (const auto& item : array(o["counting_keys"]))
+            if (!schema.counting_keys.insert(parse_ref(item)).second)
+                invalid("Duplicate counting key.");
+    return schema;
 }
 QJsonObject comment_target(const CommentTarget& target) {
     if (const auto* element = std::get_if<ElementRef>(&target))
@@ -227,6 +445,122 @@ AttributeKind parse_kind(const QJsonValue& value) {
 double number(const QJsonValue& value) {
     if (!value.isDouble() || !std::isfinite(value.toDouble())) invalid("Invalid layout number.");
     return value.toDouble();
+}
+
+// How the schema has been arranged by hand. A link is named by whichever of
+// the three things put the foreign key there, so the kind is written beside
+// the identifier and read back the same way.
+QJsonObject encode_link(const LinkSource& link) {
+    if (std::holds_alternative<ParticipantId>(link))
+        return {{"kind", QLatin1String("participant")},
+                {"id", uuid_text(std::get<ParticipantId>(link).value)}};
+    if (std::holds_alternative<AttributeId>(link))
+        return {{"kind", QLatin1String("attribute")},
+                {"id", uuid_text(std::get<AttributeId>(link).value)}};
+    return {{"kind", QLatin1String("subtype")}, {"id", uuid_text(std::get<EntityId>(link).value)}};
+}
+
+LinkSource parse_link(const QJsonValue& value) {
+    auto o = object(value, {"kind", "id"});
+    const auto kind = string(o["kind"]);
+    const auto id = parse_id(o["id"]);
+    if (kind == "participant") return LinkSource{ParticipantId{id}};
+    if (kind == "attribute") return LinkSource{AttributeId{id}};
+    if (kind == "subtype") return LinkSource{EntityId{id}};
+    invalid("Unsupported schema link kind.");
+}
+
+QJsonObject encode_end(const SchemaEnd& end) {
+    return {{"on_table", end.on_table}, {"x", end.at.x}, {"y", end.at.y}};
+}
+
+SchemaEnd parse_end(const QJsonValue& value) {
+    auto o = object(value, {"on_table", "x", "y"});
+    return SchemaEnd{parse_flag(o["on_table"], "on_table"), Point{number(o["x"]), number(o["y"])}};
+}
+
+QJsonObject encode_layout(const SchemaLayout& layout) {
+    // A table's place and the size it was pulled to are written together, so a
+    // table that has only been widened or made taller still has a row of its
+    // own and is not lost.
+    std::map<ElementRef, QJsonObject> arranged;
+    for (const auto& [table, at] : layout.tables)
+        arranged[table] = QJsonObject{{"element", reference(table)}, {"x", at.x}, {"y", at.y}};
+    const auto pulled = [&](const std::map<ElementRef, double>& sizes, const char* field) {
+        for (const auto& [table, size] : sizes) {
+            auto& entry = arranged[table];
+            if (entry.isEmpty())
+                entry = QJsonObject{{"element", reference(table)}, {"x", 0.0}, {"y", 0.0}};
+            entry[QLatin1String(field)] = size;
+            if (!layout.tables.contains(table)) entry["placed"] = false;
+        }
+    };
+    pulled(layout.widths, "width");
+    pulled(layout.heights, "height");
+    QJsonArray tables;
+    for (auto& [table, entry] : arranged) {
+        if (!entry.contains("placed")) entry["placed"] = layout.tables.contains(table);
+        // Nothing said about a size is a zero, which reads back as a table
+        // that was never pulled that way rather than as one pulled to nothing.
+        if (!entry.contains("width")) entry["width"] = 0.0;
+        if (!entry.contains("height")) entry["height"] = 0.0;
+        tables.append(entry);
+    }
+    QJsonArray lines;
+    for (const auto& [link, line] : layout.lines) {
+        QJsonArray route;
+        for (const auto& corner : line.route)
+            route.append(QJsonObject{{"x", corner.x}, {"y", corner.y}});
+        lines.append(QJsonObject{
+            {"link", encode_link(link)}, {"route", route},
+            {"from", line.from ? QJsonValue(encode_end(*line.from)) : QJsonValue(QJsonValue::Null)},
+            {"to", line.to ? QJsonValue(encode_end(*line.to)) : QJsonValue(QJsonValue::Null)}});
+    }
+    return QJsonObject{{"tables", tables}, {"lines", lines}};
+}
+
+// Version 23 added the height a table has been pulled to. A file written
+// before it has width alone, which reads correctly as a table whose height is
+// still however many rows it has.
+SchemaLayout parse_layout(const QJsonValue& value, bool tall) {
+    auto o = object(value, {"tables", "lines"});
+    SchemaLayout layout;
+    for (const auto& item : array(o["tables"])) {
+        auto entry = tall ? object(item, {"element", "x", "y", "width", "height", "placed"})
+                          : object(item, {"element", "x", "y", "width", "placed"});
+        const auto table = parse_ref(entry["element"]);
+        if (parse_flag(entry["placed"], "placed")
+            && !layout.tables.emplace(table, Point{number(entry["x"]), number(entry["y"])}).second)
+            invalid("Duplicate schema table placement.");
+        const auto wide = number(entry["width"]);
+        if (wide > 0) {
+            if (wide < min_table_width || wide > max_table_width)
+                invalid("A schema table width is outside what a table may be.");
+            if (!layout.widths.emplace(table, wide).second)
+                invalid("Duplicate schema table width.");
+        }
+        if (!tall) continue;
+        const auto high = number(entry["height"]);
+        if (high <= 0) continue;
+        if (high < min_table_height || high > max_table_height)
+            invalid("A schema table height is outside what a table may be.");
+        if (!layout.heights.emplace(table, high).second)
+            invalid("Duplicate schema table height.");
+    }
+    for (const auto& item : array(o["lines"])) {
+        auto entry = object(item, {"link", "route", "from", "to"});
+        SchemaLine line;
+        for (const auto& corner : array(entry["route"])) {
+            auto at = object(corner, {"x", "y"});
+            line.route.push_back(Point{number(at["x"]), number(at["y"])});
+        }
+        if (!entry["from"].isNull()) line.from = parse_end(entry["from"]);
+        if (!entry["to"].isNull()) line.to = parse_end(entry["to"]);
+        if (line.empty()) continue;
+        if (!layout.lines.emplace(parse_link(entry["link"]), std::move(line)).second)
+            invalid("Duplicate schema line shape.");
+    }
+    return layout;
 }
 void require_valid(const Project& project) {
     for (const auto& issue : validate(project)) if (issue.blocks_save) invalid(text(issue.message));
@@ -339,9 +673,12 @@ void check_structure(const QByteArray& input) {
             if (std::find(keys.begin(), keys.end(), key) != keys.end())
                 invalid("Duplicate project JSON field.");
             keys.push_back(std::move(key));
-            // Current objects have at most six fields. This conservative cap
-            // bounds preflight bookkeeping for hostile objects before parsing.
-            if (keys.size() > 16) invalid("Unsupported project fields.");
+            // A cap on how many fields one object may carry, to bound the
+            // bookkeeping this preflight does for a hostile document before
+            // the real parse ever runs. It is not a schema check: it only has
+            // to stay above the widest object the format actually writes,
+            // which is the project itself at seventeen fields.
+            if (keys.size() > 20) invalid("Unsupported project fields.");
         }
     }
 }
@@ -389,14 +726,18 @@ QByteArray ErdxProjectStore::encode(const Project& project) {
             {"description", text(attribute.description)}, {"kind", kind_name(attribute.kind)},
             {"owner", attribute.owner ? QJsonValue(reference(*attribute.owner)) : QJsonValue(QJsonValue::Null)},
             {"comment", text(attribute.comment)}, {"type", logical_type_name(attribute.logical_type)},
-            {"length", static_cast<double>(attribute.length)}, {"identifier", attribute.identifier},
-            {"required", attribute.required}, {"unique", attribute.unique}});
+            {"length", static_cast<double>(attribute.length)},
+            {"scale", static_cast<double>(attribute.scale)}, {"identifier", attribute.identifier},
+            {"required", attribute.required}, {"unique", attribute.unique},
+            {"auto_increment", attribute.auto_increment}});
     for (const auto& [id, relationship] : project.relationships) {
         QJsonArray participants;
         for (const auto& p : relationship.participants)
             participants.append(QJsonObject{{"id", uuid_text(p.id.value)}, {"target", reference(target_ref(p.target))},
                 {"maximum", p.maximum == Cardinality::One ? "one" : "many"},
-                {"participation", p.participation == Participation::Total ? "total" : "partial"}, {"role", text(p.role)},
+                {"participation", p.participation == Participation::Total ? "total" : "partial"},
+                {"cardinality_confirmed", p.cardinality_confirmed},
+                {"participation_confirmed", p.participation_confirmed}, {"role", text(p.role)},
                 {"show_constraints", p.show_constraints}});
         relationships.append(QJsonObject{{"id", uuid_text(id.value)}, {"name", text(relationship.name)},
             {"description", text(relationship.description)}, {"associative", relationship.associative},
@@ -459,7 +800,9 @@ QByteArray ErdxProjectStore::encode(const Project& project) {
         {"layout", layout}, {"connectors", connectors}, {"colours", colours},
         {"specializations", specializations}, {"pictures", pictures}, {"notes", notes},
         {"comments", comments}, {"transparency", transparency},
-        {"mode", QLatin1String(project.mode == ConceptualMode::Convertible ? "convertible" : "basic")},
+        {"decisions", encode_decisions(project.decisions)},
+        {"schema", encode_schema(project.schema)},
+        {"schema_layout", encode_layout(project.schema_layout)},
         {"background", QJsonObject{{"style", background_name(project.background.style)},
                                    {"strength", project.background.strength},
                                    {"image", image_text(project.background.image)}}}}}}).toJson(QJsonDocument::Indented);
@@ -520,11 +863,54 @@ application::LoadResult ErdxProjectStore::decode(const QByteArray& input) {
         // Version 16 adds review comments. A file written before it carries
         // none, which is all it could carry.
         const bool commented = number_version >= 16;
-        // Version 17 lets a model say what it will become. A file written
-        // before it is a Basic one carrying no types, which is all it could be.
+        // Version 17 lets a model say what it will become, and carries a
+        // conceptual mode saying how much of that it was being asked for.
+        // Version 18 drops the mode: there is one model and no modes, and what
+        // the Properties panel shows is a user's preference rather than
+        // anything the document holds. A version 17 file still names a mode and
+        // is still read, and the name is discarded. Files written before 17
+        // carry no types, which is all they could carry.
         const bool convertible = number_version >= 17;
-        const auto data = convertible
+        const bool moded = number_version == 17;
+        // Version 19 records whether each relationship side was answered.
+        // Earlier files say only what the sides are, never whether anyone
+        // chose them.
+        const bool answered_sides = number_version >= 19;
+        // Version 20 writes the SQL type catalogue, a decimal's scale, and the
+        // conversion decisions. Earlier files name a type from the small
+        // portable set and record no decisions at all.
+        const bool catalogued = number_version >= 20;
+        // Version 25 records whether a column counts itself up. A file written
+        // before it simply says nothing about it, which reads correctly as no
+        // column doing so.
+        const bool generated = number_version >= 25;
+        // Version 21 records where the schema differs from the diagram. A file
+        // written before it simply has no such section, which reads correctly
+        // as the two agreeing about everything.
+        const bool diverged = number_version >= 21;
+        // Version 22 records how the schema has been arranged by hand. A file
+        // written before it simply has no such section, which reads correctly
+        // as nothing having been arranged.
+        const bool arranged = number_version >= 22;
+        // Version 23 records how tall a table has been pulled beside how wide.
+        // A file written before it says only the width, which reads correctly
+        // as a table still as tall as its rows make it.
+        const bool pulled_tables = number_version >= 23;
+        // Version 24 records what a key the conversion invented has been
+        // renamed to. A file written before it simply has no such section,
+        // which reads correctly as every generated key still carrying the name
+        // the rule gave it.
+        const bool named_keys = number_version >= 24;
+        const auto data = arranged
+            ? object(root["project"], {"id", "name", "entities", "attributes", "relationships", "layout", "connectors", "specializations", "colours", "pictures", "notes", "comments", "transparency", "decisions", "schema", "schema_layout", "background"})
+            : diverged
+            ? object(root["project"], {"id", "name", "entities", "attributes", "relationships", "layout", "connectors", "specializations", "colours", "pictures", "notes", "comments", "transparency", "decisions", "schema", "background"})
+            : catalogued
+            ? object(root["project"], {"id", "name", "entities", "attributes", "relationships", "layout", "connectors", "specializations", "colours", "pictures", "notes", "comments", "transparency", "decisions", "background"})
+            : moded
             ? object(root["project"], {"id", "name", "entities", "attributes", "relationships", "layout", "connectors", "specializations", "colours", "pictures", "notes", "comments", "transparency", "mode", "background"})
+            : convertible
+            ? object(root["project"], {"id", "name", "entities", "attributes", "relationships", "layout", "connectors", "specializations", "colours", "pictures", "notes", "comments", "transparency", "background"})
             : commented
             ? object(root["project"], {"id", "name", "entities", "attributes", "relationships", "layout", "connectors", "specializations", "colours", "pictures", "notes", "comments", "transparency", "background"})
             : papered
@@ -557,7 +943,13 @@ application::LoadResult ErdxProjectStore::decode(const QByteArray& input) {
             if (!project.entities.emplace(entity.id, entity).second) invalid("Duplicate entity identifier.");
         }
         for (const auto& value : array(data["attributes"])) {
-            auto o = convertible
+            auto o = generated
+                ? object(value, {"id", "name", "description", "kind", "owner", "comment", "type", "length",
+                                 "scale", "identifier", "required", "unique", "auto_increment"})
+                : catalogued
+                ? object(value, {"id", "name", "description", "kind", "owner", "comment", "type", "length",
+                                 "scale", "identifier", "required", "unique"})
+                : convertible
                 ? object(value, {"id", "name", "description", "kind", "owner", "comment", "type", "length",
                                  "identifier", "required", "unique"})
                 : object(value, {"id", "name", "description", "kind", "owner"});
@@ -567,11 +959,13 @@ application::LoadResult ErdxProjectStore::decode(const QByteArray& input) {
             if (!o["owner"].isNull()) attribute.owner = parse_ref(o["owner"]);
             if (convertible) {
                 attribute.comment = string(o["comment"], max_comment_bytes);
-                attribute.logical_type = parse_logical_type(o["type"]);
+                attribute.logical_type = parse_logical_type(o["type"], catalogued);
                 attribute.length = parse_length(o["length"]);
+                if (catalogued) attribute.scale = parse_length(o["scale"]);
                 attribute.identifier = parse_flag(o["identifier"], "identifier");
                 attribute.required = parse_flag(o["required"], "required");
                 attribute.unique = parse_flag(o["unique"], "unique");
+                if (generated) attribute.auto_increment = parse_flag(o["auto_increment"], "auto_increment");
             }
             if (!project.attributes.emplace(attribute.id, attribute).second) invalid("Duplicate attribute identifier.");
         }
@@ -598,7 +992,10 @@ application::LoadResult ErdxProjectStore::decode(const QByteArray& input) {
             for (const auto& part : array(o["participants"])) {
                 if (++participant_count > max_elements) invalid("The project exceeds its participant limit.");
                 auto p = associative_entities
-                    ? (hidable_constraints
+                    ? (answered_sides
+                        ? object(part, {"id", "target", "maximum", "participation", "cardinality_confirmed",
+                                        "participation_confirmed", "role", "show_constraints"})
+                        : hidable_constraints
                         ? object(part, {"id", "target", "maximum", "participation", "role", "show_constraints"})
                         : object(part, {"id", "target", "maximum", "participation", "role"}))
                     : object(part, {"id", "entity", "maximum", "participation", "role"});
@@ -621,9 +1018,18 @@ application::LoadResult ErdxProjectStore::decode(const QByteArray& input) {
                 // which is what every one of those diagrams meant.
                 const auto shown = hidable_constraints ? p["show_constraints"] : QJsonValue(true);
                 if (!shown.isBool()) invalid("A participant's show_constraints must be true or false.");
+                // A file written before version 19 has no record of which sides
+                // were answered. Every side in it is read as answered, because
+                // the alternative would greet a diagram somebody has already
+                // finished with a readiness question about every line on it.
+                const auto chose_maximum = answered_sides ? p["cardinality_confirmed"] : QJsonValue(true);
+                const auto chose_participation = answered_sides ? p["participation_confirmed"] : QJsonValue(true);
+                if (!chose_maximum.isBool() || !chose_participation.isBool())
+                    invalid("A participant's confirmation flags must be true or false.");
                 relationship.participants.push_back({ParticipantId{parse_id(p["id"])}, target,
                     maximum == "one" ? Cardinality::One : Cardinality::Many,
-                    participation == "total" ? Participation::Total : Participation::Partial, string(p["role"]),
+                    participation == "total" ? Participation::Total : Participation::Partial,
+                    chose_maximum.toBool(), chose_participation.toBool(), string(p["role"]),
                     shown.toBool()});
             }
             if (!project.relationships.emplace(relationship.id, relationship).second) invalid("Duplicate relationship identifier.");
@@ -761,12 +1167,16 @@ application::LoadResult ErdxProjectStore::decode(const QByteArray& input) {
                     invalid("Duplicate comment identifier.");
             }
         }
-        if (convertible) {
+        // A version 17 file names a conceptual mode. The concept is gone, so
+        // the name is read only to refuse a file that holds nonsense, exactly
+        // as that version always did, and is then discarded.
+        if (moded) {
             const auto named = string(data["mode"]);
-            if (named == "convertible") project.mode = ConceptualMode::Convertible;
-            else if (named == "basic") project.mode = ConceptualMode::Basic;
-            else invalid("Unsupported conceptual mode.");
+            if (named != "convertible" && named != "basic") invalid("Unsupported conceptual mode.");
         }
+        if (catalogued) project.decisions = parse_decisions(data["decisions"]);
+        if (diverged) project.schema = parse_schema(data["schema"], named_keys, generated);
+        if (arranged) project.schema_layout = parse_layout(data["schema_layout"], pulled_tables);
         if (papered) {
             const auto o = object(data["background"], {"style", "strength", "image"});
             project.background.style = parse_background_style(o["style"]);

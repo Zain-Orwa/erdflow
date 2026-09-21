@@ -326,6 +326,36 @@ void draw(QPainter& painter, Glyph glyph, const Theme& colors, qreal side) {
                          QPointF(box.right() - box.width() * 0.06, box.bottom() - box.height() * 0.06));
         break;
     }
+    case Glyph::Key: {
+        // A key held as a key is held when it is about to be used: the bow at
+        // the top with its hole through it, the shaft below, and the teeth at
+        // the bottom. Drawn solid rather than in outline, and in one warm
+        // colour, because the padlock the diagram puts on a locked element is
+        // solid for the same reason: it is read at a glance in a small space,
+        // and a hairline at that size reads as a smudge.
+        const auto radius = box.width() * 0.27;
+        const QPointF bow(centre.x(), box.top() + radius + box.height() * 0.03);
+        const auto shaft = std::max(box.width() * 0.16, weight);
+        const auto foot = box.bottom() - box.height() * 0.04;
+        QPainterPath key;
+        key.addEllipse(bow, radius, radius);
+        // The hole, cut by the odd-even rule rather than painted over, so the
+        // glyph works on any surface it is put on.
+        key.addEllipse(bow, radius * 0.40, radius * 0.40);
+        key.setFillRule(Qt::OddEvenFill);
+        QPainterPath stem;
+        stem.addRect(QRectF(bow.x() - shaft / 2, bow.y() + radius * 0.55, shaft, foot - bow.y() - radius * 0.55));
+        // Two teeth on one side, which is what tells a key from a pin.
+        const auto tooth = box.width() * 0.34;
+        const auto thick = std::max(box.height() * 0.13, weight);
+        stem.addRect(QRectF(bow.x() + shaft / 2 - 0.1, foot - thick, tooth, thick));
+        stem.addRect(QRectF(bow.x() + shaft / 2 - 0.1, foot - thick * 2.8, tooth * 0.66, thick));
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(accent);
+        painter.drawPath(key);
+        painter.drawPath(stem);
+        break;
+    }
     case Glyph::Export: {
         // Work leaving: an arrow rising out of a tray. It is the same motif the
         // coloured set draws, so the two sets say the same thing about it.
@@ -454,6 +484,7 @@ QString icon_name(Glyph glyph) {
     // for it; the command it draws is Export.
     case Glyph::Export: return QStringLiteral("export");
     case Glyph::Search: return QStringLiteral("search");
+    case Glyph::Key: return QStringLiteral("key");
     }
     return QStringLiteral("select");
 }

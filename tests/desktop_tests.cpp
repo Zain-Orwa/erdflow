@@ -6,6 +6,7 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QStatusBar>
 #include <QElapsedTimer>
 #include <QCheckBox>
 #include <QComboBox>
@@ -30,6 +31,7 @@
 #include <QMouseEvent>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QAbstractButton>
 #include <QSettings>
 #include <QSlider>
 #include <QWidgetAction>
@@ -80,6 +82,12 @@ void dismiss(QMessageBox::StandardButton choice) {
         if (auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget()))
             box->button(choice)->click();
     });
+}
+// A list's itemClicked only comes from real pointer work, so a test says what
+// it means directly: this item was chosen.
+void QTest_activate(QListWidget* list, QListWidgetItem* item) {
+    list->setCurrentItem(item);
+    emit list->itemActivated(item);
 }
 void click_canvas(desktop::DiagramView& canvas, QPointF position) {
     const auto local = canvas.mapFromScene(position);
@@ -1984,62 +1992,1427 @@ int main(int argc, char** argv) {
             settle();
         }
 
-        // Convertible mode: the same model asked what it will become. The
-        // extra fields are shown only while it is being asked, and what it was
-        // told is kept when it is not.
+        // One model, and a section that folds. There is no mode to switch: the
+        // fields conversion needs are part of every model and are always kept.
+        // The fold decides whether they are on screen, and nothing else.
         {
-            auto* mode = child<QToolButton>(window, "conceptualMode");
-            require(mode->text() == "Basic", "A project starts in Basic, which is the diagram as it is drawn");
+            require(window.findChild<QToolButton*>("conceptualMode") == nullptr,
+                    "There is no mode, so there is nothing in the header saying which one it is in");
+            require(window.findChild<QMenu*>("modeMenu") == nullptr, "And no menu for switching between them");
             window.canvas()->select_elements({});
             settle();
             const auto& project = window.editor().project();
             domain::AttributeId any_attribute{};
             for (const auto& [id, attribute] : project.attributes) { (void)attribute; any_attribute = id; break; }
+            domain::EntityId any_entity{};
+            for (const auto& [id, entity] : project.entities) { (void)entity; any_entity = id; break; }
             window.canvas()->select_elements({domain::ElementRef{any_attribute}});
             settle();
-            require(window.findChild<QComboBox*>("attributeLogicalType") == nullptr,
-                    "In Basic these questions are not asked, so the panel does not ask them");
-            require(window.findChild<QWidget*>("elementSchemaComment") == nullptr,
-                    "Nor the comment written for a schema that does not exist yet");
 
-            child<QAction>(window, "modeConvertible")->trigger();
+            // Shut to begin with, which is how the diagram was drawn before the
+            // fields had a section of their own.
+            auto* header = child<QAbstractButton>(window, "sectionHeader");
+            require(!header->isChecked(), "The section starts folded away");
+            require(child<QWidget>(window, "schemaSectionBody")->isHidden(),
+                    "So the questions it asks are not on screen");
+            // Folded away is not absent: the fields exist, and so does what
+            // they hold. Hiding a question never hides an answer.
+            auto* type = child<QComboBox>(window, "attributeLogicalType");
+            // The list holds family headings as well as types, so a row is not
+            // an enum value: a type is found by what its row carries.
+            const auto row_for = [](QComboBox* box, domain::LogicalType wanted) {
+                for (int row = 0; row < box->count(); ++row) {
+                    const auto data = box->itemData(row);
+                    if (data.isValid() && data.toInt() == static_cast<int>(wanted)) return row;
+                }
+                return -1;
+            };
+            require(type->itemData(type->currentIndex()).toInt() == static_cast<int>(domain::LogicalType::Unset),
+                    "An attribute starts with the question open rather than with an answer");
+            require(row_for(type, domain::LogicalType::NVarchar) > 0,
+                    "The whole SQL catalogue is offered, not a handful of portable names");
+            require(row_for(type, domain::LogicalType::Geography) > 0, "Down to the spatial types");
+
+            header->click();
             settle();
-            require(window.editor().project().mode == domain::ConceptualMode::Convertible, "The mode changes");
-            require(mode->text() == "Convertible", "And the button says which mode it is in");
+            require(child<QWidget>(window, "schemaSectionBody")->isHidden() == false,
+                    "Opening the section puts the fields on screen");
+            require(QSettings().value("schemaSectionOpen").toBool(), "And the choice is remembered");
+
+            // Remembered across a rebuild of the panel: the preference belongs
+            // to the person, not to the element they happen to be looking at.
+            window.canvas()->select_elements({domain::ElementRef{any_entity}});
+            settle();
+            require(child<QAbstractButton>(window, "sectionHeader")->isChecked(),
+                    "An entity's section is open too, because the preference is the user's");
+            require(window.findChild<QComboBox*>("attributeLogicalType") == nullptr,
+                    "An entity has no logical type: it is a table, not a column");
+            require(window.findChild<QWidget*>("elementSchemaComment") != nullptr,
+                    "But it does say what the generated table should say about itself");
+
             window.canvas()->select_elements({domain::ElementRef{any_attribute}});
             settle();
-            auto* type = child<QComboBox>(window, "attributeLogicalType");
+            require(child<QAbstractButton>(window, "sectionHeader")->isChecked(), "And still open coming back");
+            type = child<QComboBox>(window, "attributeLogicalType");
             auto* length = child<QSpinBox>(window, "attributeLength");
             require(!length->isEnabled(), "A type that has not been chosen is not measured");
-            type->setCurrentIndex(static_cast<int>(domain::LogicalType::Text));
-            emit type->activated(static_cast<int>(domain::LogicalType::Text));
+            const auto varchar = row_for(type, domain::LogicalType::Varchar);
+            require(varchar > 0, "varchar is in the list");
+            type->setCurrentIndex(varchar);
+            emit type->activated(varchar);
             settle();
-            require(window.editor().project().attributes.at(any_attribute).logical_type == domain::LogicalType::Text,
+            require(window.editor().project().attributes.at(any_attribute).logical_type == domain::LogicalType::Varchar,
                     "Choosing a type records it");
             child<QCheckBox>(window, "attributeRequired")->setChecked(true);
             settle();
             require(window.editor().project().attributes.at(any_attribute).required,
                     "And the rules a table will enforce are recorded too");
-            require(window.findChild<QWidget*>("elementSchemaComment") != nullptr,
-                    "With somewhere to write what the schema should say");
 
-            // Back to Basic: the questions stop being asked and the answers are
-            // kept, so a model drawn in one mode and finished in the other
-            // loses nothing in between.
-            child<QAction>(window, "modeBasic")->trigger();
+            // Folding it away again hides the questions and keeps the answers,
+            // which is the whole of the section's contract. Folding is not an
+            // edit: it leaves the project byte for byte as it was, costs no
+            // revision, and so can never be undone or saved.
+            const auto before_fold = window.editor().project();
+            const auto revision_before = window.editor().revision();
+            child<QAbstractButton>(window, "sectionHeader")->click();
             settle();
-            window.canvas()->select_elements({domain::ElementRef{any_attribute}});
+            require(child<QWidget>(window, "schemaSectionBody")->isHidden(), "Folded away again");
+            require(!QSettings().value("schemaSectionOpen").toBool(), "And that is remembered too");
+            require(window.editor().project() == before_fold,
+                    "Folding changed nothing in the project, so every answer is still there");
+            require(window.editor().revision() == revision_before, "And it did not even count as a revision");
+
+            // Put the attribute back as it was found, so what follows is not
+            // working against a document this block has changed.
+            while (window.editor().can_undo() &&
+                   window.editor().project().attributes.at(any_attribute).logical_type != domain::LogicalType::Unset)
+                child<QAction>(window, "undoCommand")->trigger();
             settle();
-            require(window.findChild<QComboBox*>("attributeLogicalType") == nullptr,
-                    "Basic stops asking");
-            require(window.editor().project().attributes.at(any_attribute).logical_type == domain::LogicalType::Text,
-                    "But keeps what it was told");
+        }
+
+        {
+            // The schema rises over the diagram, and the panel it rises in can
+            // be pulled to any height: half the stage, all of it, or a sliver.
+            child<QPushButton>(window, "previewSchema")->click();
+            settle_for(600);   // the panel rises over 280ms
+            auto* grip = child<QWidget>(window, "schemaGrip");
+            require(grip->isVisible(), "The panel wears a grip to resize it by");
+            // Pulled all the way up, the panel covers the diagram; pushed down,
+            // it becomes a sliver and the diagram comes back.
+            const auto* panel = child<QWidget>(window, "schemaPanel");
+            const auto before = panel->height();
+            const auto double_click = [](QWidget* target) {
+                QMouseEvent event(QEvent::MouseButtonDblClick, QPointF(10, 5), QPointF(10, 5),
+                                  Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+                QApplication::sendEvent(target, &event);
+            };
+            double_click(grip);
+            settle();
+            require(panel->height() > before, "Double-clicking it fills the stage");
+            double_click(grip);
+            settle();
+            require(panel->height() < window.height(), "And again gives the diagram half back");
+
+            // Full gives the whole window to the schema: the panels go away,
+            // and leaving it puts back exactly what it put away.
+            auto* explorer_dock = child<QDockWidget>(window, "explorerDock");
+            require(explorer_dock->isVisible(), "The Explorer is there to begin with");
+            auto* full = child<QPushButton>(window, "schemaFull");
+            full->click();
+            settle();
+            require(!explorer_dock->isVisible(), "Full puts the panels away");
+            settle_for(200);
+            require(panel->width() >= window.width() - 8, "And the panel fills the window it was given");
+            require(!child<QLabel>(window, "canvasInstructions")->isVisible(),
+                    "The diagram's own furniture goes away with the panels");
+            require(full->text() == "Exit full", "And says how to come back");
+            // The tools for drawing go with the canvas they draw on. A row of
+            // shapes to place, above a diagram nobody can see, is a row of
+            // things that cannot be done.
+            require(!child<QToolBar>(window, "modelTools")->isVisible(),
+                    "Full puts the drawing tools away with the diagram");
+            auto* kept = child<QWidget>(window, "schemaHeaderTools");
+            require(kept->isVisible(), "And the few still worth reaching for come out in the header");
+            require(child<QToolButton>(window, "schemaUndo")->defaultAction() != nullptr,
+                    "Undo among them, the same action the menu has");
+            require(!child<QToolButton>(window, "searchButton")->isVisible(),
+                    "The diagram's own search goes: it is not what is on screen");
+            full->click();
+            settle();
+            require(explorer_dock->isVisible(), "Leaving it brings them back");
+            require(child<QToolBar>(window, "modelTools")->isVisible(), "The drawing tools with them");
+            require(!kept->isVisible(), "And the header gives its own back");
+            require(child<QLabel>(window, "canvasInstructions")->isVisible(),
+                    "And the furniture with them");
+            require(full->text() == "Full", "And says so");
+
+            // A name typed on the schema is the name on the diagram. Renaming
+            // a table renames the entity it came from, so the two never come
+            // to disagree about what a thing is called; renaming the key the
+            // conversion invented gives that key a name of its own, since it
+            // has nothing behind it to rename.
+            {
+                // Found by name rather than by type: the view is a plain QWidget
+                // subclass with no Q_OBJECT, and its name is its own.
+                auto* schema = static_cast<desktop::SchemaView*>(child<QWidget>(window, "schemaView"));
+                require(!schema->preview().tables.empty(), "The schema has tables to rename");
+                const auto boxes = schema->table_boxes();
+                require(!boxes.empty(), "And they have been placed");
+                const auto named = [&](std::size_t which) {
+                    return QString::fromStdString(schema->preview().tables[which].name);
+                };
+                const auto was = named(0);
+                const auto header = boxes.front().topLeft() + QPointF(20, 8);
+                QMouseEvent opened(QEvent::MouseButtonDblClick, header, schema->mapToGlobal(header.toPoint()),
+                                   Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+                QApplication::sendEvent(schema, &opened);
+                settle();
+                auto* field = child<QLineEdit>(window, "schemaName");
+                require(field->isVisible(), "Double-clicking a table's name opens it for typing");
+                require(field->text() == was, "Opened on the name that is there");
+                field->setText("Renamed");
+                QKeyEvent done(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+                QApplication::sendEvent(field, &done);
+                settle();
+                require(!field->isVisible(), "Return puts the box away");
+                bool on_diagram = false;
+                for (const auto& [id, entity] : editor.project().entities) {
+                    (void)id;
+                    if (entity.name == "Renamed") on_diagram = true;
+                }
+                require(on_diagram, "And the entity on the diagram carries the typed name");
+
+                // Escape keeps what was there.
+                QApplication::sendEvent(schema, &opened);
+                settle();
+                field->setText("Discarded");
+                QKeyEvent gave_up(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+                QApplication::sendEvent(field, &gave_up);
+                settle();
+                for (const auto& [id, entity] : editor.project().entities) {
+                    (void)id;
+                    require(entity.name != "Discarded", "Escape keeps the name that was there");
+                }
+            
+                // Another column is added where it will be read, with nothing
+                // asked first: the slot under the table is pressed, the row is
+                // made, and its name is waiting to be typed in the row itself.
+                // It reflects, so the diagram gains the attribute and the
+                // schema follows from it.
+                const auto attributes = editor.project().attributes.size();
+                const auto table = schema->table_boxes().front();
+                const auto onto = QPointF(table.center().x(), table.bottom() + 10);
+                QMouseEvent over_slot(QEvent::MouseMove, onto, schema->mapToGlobal(onto.toPoint()),
+                                      Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+                QApplication::sendEvent(schema, &over_slot);
+                QMouseEvent pressed(QEvent::MouseButtonPress, onto, schema->mapToGlobal(onto.toPoint()),
+                                    Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+                QApplication::sendEvent(schema, &pressed);
+                settle();
+                require(editor.project().attributes.size() == attributes + 1,
+                        "Pressing the slot adds an attribute to the diagram, not a schema-only column");
+                require(field->isVisible(), "And opens its name for typing, with no dialog in the way");
+                field->setText("Enrolled");
+                QKeyEvent typed(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+                QApplication::sendEvent(field, &typed);
+                settle();
+                bool renamed = false;
+                for (const auto& [id, attribute] : editor.project().attributes) {
+                    (void)id;
+                    if (attribute.name == "Enrolled") renamed = true;
+                }
+                require(renamed, "And the name typed in the row is the attribute's name");
+
+                // A line's end goes where the hand puts it, including where the
+                // schema cannot mean it -- and is told what is wrong and why
+                // rather than being sprung back to where it belonged.
+                const auto shapes = schema->line_shapes();
+                if (!shapes.empty()) {
+                    QString heard;
+                    auto reported = schema->warned;
+                    schema->warned = [&](const QString& words) {
+                        heard = words;
+                        if (reported) reported(words);
+                    };
+                    const auto tables = schema->table_boxes();
+                    const auto& where = tables.front();
+                    QPointF end;
+                    double best = 1e9;
+                    for (const auto& shape : shapes)
+                        for (const auto& corner : {shape.front(), shape.back()}) {
+                            const auto away = std::hypot(corner.x() - where.center().x(),
+                                                         corner.y() - where.center().y());
+                            if (away < best) { best = away; end = corner; }
+                        }
+                    const QPointF adrift(where.center().x(), where.bottom() + 80);
+                    QMouseEvent took(QEvent::MouseButtonPress, end, schema->mapToGlobal(end.toPoint()),
+                                     Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+                    QApplication::sendEvent(schema, &took);
+                    QMouseEvent hauled(QEvent::MouseMove, adrift, schema->mapToGlobal(adrift.toPoint()),
+                                       Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+                    QApplication::sendEvent(schema, &hauled);
+                    QMouseEvent dropped(QEvent::MouseButtonRelease, adrift, schema->mapToGlobal(adrift.toPoint()),
+                                        Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+                    QApplication::sendEvent(schema, &dropped);
+                    settle();
+                    schema->warned = reported;
+                    require(heard.contains("belongs on"),
+                            "A misplaced end is told which row it belongs on");
+                    require(heard.contains("joins nothing") || heard.contains("can only run to a key")
+                            || heard.contains("points at"),
+                            "And why where it was left cannot serve");
+                    require(schema->loose_ends() > 0, "And it is left exactly where it was put");
+                    // Put back, so what follows finds the schema as it was: the
+                    // end was moved by an edit like any other, so one undo
+                    // takes it back.
+                    child<QAction>(window, "undoCommand")->trigger();
+                    settle();
+                    require(schema->loose_ends() == 0, "And one undo puts it back");
+                }
+            }
+
+            // Closing the panel while it is full does not leave the window
+            // stripped with nothing in it.
+            full->click();
+            settle();
+            child<QPushButton>(window, "previewSchema")->click();
+            settle();
+            require(explorer_dock->isVisible(), "Closing the schema gives the panels back too");
+            child<QPushButton>(window, "previewSchema")->click();
+            settle_for(400);
+            child<QPushButton>(window, "previewSchema")->click();
+            settle();
+        }
+
+        {
+            // A line between two tables is not only drawn. Any straight run
+            // of it can be pushed sideways, either end can be moved around the
+            // table it joins, and a double-click hands the whole line back to
+            // the router.
+            child<QPushButton>(window, "previewSchema")->click();
+            settle_for(600);
+            auto* schema = window.schema();
+            require(schema != nullptr, "The panel holds the schema itself");
+            const auto drawn = schema->line_shapes();
+            require(!drawn.empty(), "The example's schema is drawn with lines between its tables");
+            require(schema->shaped_lines() == 0, "None of them has been shaped by hand yet");
+
+            // The longest straight run there is: certainly part of a line and
+            // certainly clear of every table.
+            std::size_t on_line = 0;
+            QPointF ran_from;
+            QPointF ran_to;
+            double longest = 0;
+            for (std::size_t line = 0; line < drawn.size(); ++line)
+                for (std::size_t i = 1; i < drawn[line].size(); ++i) {
+                    const auto length = std::hypot(drawn[line][i].x() - drawn[line][i - 1].x(),
+                                                   drawn[line][i].y() - drawn[line][i - 1].y());
+                    if (length <= longest) continue;
+                    longest = length;
+                    on_line = line;
+                    ran_from = drawn[line][i - 1];
+                    ran_to = drawn[line][i];
+                }
+            require(longest > 40, "And at least one run is long enough to take hold of");
+
+            const auto drag = [&](QEvent::Type type, QPointF at, Qt::MouseButton button,
+                                  Qt::MouseButtons held) {
+                QMouseEvent event(type, at, schema->mapToGlobal(at.toPoint()), button, held,
+                                  Qt::NoModifier);
+                QApplication::sendEvent(schema, &event);
+            };
+
+            // A run moves across itself, never along itself: an upright run
+            // goes sideways and a level one goes up and down.
+            const bool upright = std::abs(ran_from.x() - ran_to.x()) < 0.01;
+            const QPointF across = upright ? QPointF(34, 0) : QPointF(0, 34);
+            const auto grab = (ran_from + ran_to) / 2;
+            const auto moved_to = grab + across;
+            drag(QEvent::MouseButtonPress, grab, Qt::LeftButton, Qt::LeftButton);
+            drag(QEvent::MouseMove, grab + across / 3, Qt::NoButton, Qt::LeftButton);
+            drag(QEvent::MouseMove, moved_to, Qt::NoButton, Qt::LeftButton);
+            drag(QEvent::MouseButtonRelease, moved_to, Qt::LeftButton, Qt::NoButton);
+            settle();
+            require(schema->shaped_lines() == 1, "Pushing a run sideways shapes that line");
+
+            // The whole run has moved over, not one point on it: there is a run
+            // of about the same length lying where the pointer left it.
+            const auto pushed = schema->line_shapes()[on_line];
+            const auto wanted = upright ? moved_to.x() : moved_to.y();
+            bool run_moved = false;
+            for (std::size_t i = 1; i < pushed.size(); ++i) {
+                const auto a = pushed[i - 1];
+                const auto b = pushed[i];
+                const auto sits = upright ? a.x() : a.y();
+                const auto still_upright = std::abs(a.x() - b.x()) < 0.01;
+                const auto length = std::hypot(b.x() - a.x(), b.y() - a.y());
+                if (still_upright == upright && std::abs(sits - wanted) < 0.01 && length > longest / 2)
+                    run_moved = true;
+            }
+            require(run_moved, "The whole run moves across, keeping its length and its direction");
+
+            // And it moved rather than sprouting a detour. A line sent out to
+            // a dropped point and back again reverses on itself, which is the
+            // spur that made this look wrong in the first place.
+            const auto doubles_back = [](const std::vector<QPointF>& shape) {
+                for (std::size_t i = 2; i < shape.size(); ++i) {
+                    const auto in = shape[i - 1] - shape[i - 2];
+                    const auto out = shape[i] - shape[i - 1];
+                    if (QPointF::dotProduct(in, out) < -0.01) return true;
+                }
+                return false;
+            };
+            require(!doubles_back(pushed), "And the line never doubles back on itself");
+
+            // A run next to an end cannot be pushed in over the symbols drawn
+            // there. The line is held off the turn, so the foot and the
+            // minimum always have straight line to sit on and are never left
+            // standing beside it.
+            {
+                const auto shapes = schema->line_shapes();
+                std::size_t which = 0;
+                for (std::size_t line = 0; line < shapes.size(); ++line)
+                    if (shapes[line].size() >= 3) { which = line; break; }
+                const auto& shape = shapes[which];
+                require(shape.size() >= 3, "A line with a turn in it");
+                const auto stub_upright = std::abs(shape[0].x() - shape[1].x()) < 0.01;
+                const auto out = shape[1] - shape[0];
+                const auto reach = stub_upright ? std::abs(out.y()) : std::abs(out.x());
+                require(reach >= 27, "Its first stretch already has room for the symbols");
+                // Grab the run past the stub and shove it back at the table.
+                const auto hold = (shape[1] + shape[2]) / 2;
+                const auto onto = stub_upright ? QPointF(hold.x(), shape[0].y())
+                                               : QPointF(shape[0].x(), hold.y());
+                drag(QEvent::MouseButtonPress, hold, Qt::LeftButton, Qt::LeftButton);
+                drag(QEvent::MouseMove, (hold + onto) / 2, Qt::NoButton, Qt::LeftButton);
+                drag(QEvent::MouseMove, onto, Qt::NoButton, Qt::LeftButton);
+                drag(QEvent::MouseButtonRelease, onto, Qt::LeftButton, Qt::NoButton);
+                settle();
+                const auto after = schema->line_shapes()[which];
+                require(after.size() >= 2, "The line survives being shoved");
+                const auto held = after[1] - after[0];
+                const auto now = std::abs(held.x()) + std::abs(held.y());
+                require(now >= 27, "And keeps the room its symbols need");
+                child<QAction>(window, "schemaTidy")->trigger();
+                settle();
+            }
+
+            // Every corner is a right angle, before and after being shaped: a
+            // schema is drawn with square lines and never with diagonals.
+            for (const auto& shape : schema->line_shapes())
+                for (std::size_t i = 1; i < shape.size(); ++i)
+                    require(std::abs(shape[i].x() - shape[i - 1].x()) < 0.01
+                                || std::abs(shape[i].y() - shape[i - 1].y()) < 0.01,
+                            "Every run of a line is square");
+
+            QMouseEvent twice(QEvent::MouseButtonDblClick, moved_to,
+                              schema->mapToGlobal(moved_to.toPoint()), Qt::LeftButton,
+                              Qt::LeftButton, Qt::NoModifier);
+            QApplication::sendEvent(schema, &twice);
+            settle();
+            require(schema->shaped_lines() == 0, "Double-clicking gives the line back to the router");
+            require(schema->line_shapes()[on_line] == drawn[on_line], "Which puts its own way back");
+
+            // A press that barely travels is a click on a line, not a push of
+            // it: nothing should move under a hand that merely twitched.
+            drag(QEvent::MouseButtonPress, grab, Qt::LeftButton, Qt::LeftButton);
+            drag(QEvent::MouseMove, grab + QPointF(1, 1), Qt::NoButton, Qt::LeftButton);
+            drag(QEvent::MouseButtonRelease, grab + QPointF(1, 1), Qt::LeftButton, Qt::NoButton);
+            settle();
+            require(schema->shaped_lines() == 0, "A press that barely moves leaves the line alone");
+            require(schema->line_shapes()[on_line] == drawn[on_line], "And leaves its route alone too");
+
+            // And Tidy puts every line back at once, as it does every table.
+            drag(QEvent::MouseButtonPress, grab, Qt::LeftButton, Qt::LeftButton);
+            drag(QEvent::MouseMove, moved_to, Qt::NoButton, Qt::LeftButton);
+            drag(QEvent::MouseButtonRelease, moved_to, Qt::LeftButton, Qt::NoButton);
+            settle();
+            require(schema->shaped_lines() == 1, "A run pushed aside again");
+            child<QAction>(window, "schemaTidy")->trigger();
+            settle();
+            require(schema->shaped_lines() == 0, "Tidy gives back the lines as well as the tables");
+
+            // An end is taken hold of and moved around the table it belongs
+            // to, and pulling it off the table leaves it where it was let go.
+            const auto ends_of = [&](std::size_t line) {
+                const auto shapes = schema->line_shapes();
+                return std::pair{shapes[line].front(), shapes[line].back()};
+            };
+            const auto head = ends_of(0).first;
+            require(head != ends_of(0).second, "A line has two ends to take hold of");
+
+            // The end sits on the outline of the table it joins, which is what
+            // says which way it may be slid without coming off.
+            const auto boxes = schema->table_boxes();
+            const auto joins = std::find_if(boxes.begin(), boxes.end(), [&](const QRectF& box) {
+                return box.contains(head) && !box.adjusted(1, 1, -1, -1).contains(head);
+            });
+            require(joins != boxes.end(), "An end sits on the outline of the table it joins");
+            const bool down_a_side = std::abs(head.x() - joins->left()) < 0.5
+                                  || std::abs(head.x() - joins->right()) < 0.5;
+            const auto along = down_a_side
+                ? QPointF(head.x(), std::clamp(head.y() + 40, joins->top(), joins->bottom()))
+                : QPointF(std::clamp(head.x() + 40, joins->left(), joins->right()), head.y());
+            require(along != head, "And has room to be slid along that edge");
+
+            drag(QEvent::MouseButtonPress, head, Qt::LeftButton, Qt::LeftButton);
+            drag(QEvent::MouseMove, along, Qt::NoButton, Qt::LeftButton);
+            drag(QEvent::MouseButtonRelease, along, Qt::LeftButton, Qt::NoButton);
+            settle();
+            const auto slid = ends_of(0).first;
+            require(std::hypot(slid.x() - along.x(), slid.y() - along.y()) < 0.01,
+                    "An end dragged along its table follows the pointer down the edge");
+            require(schema->loose_ends() == 0, "And is still joined to it");
+
+            // Then off it. Nothing pulls the end back, and the schema says so.
+            auto lowest = 0.0;
+            for (const auto& box : boxes) lowest = std::max(lowest, box.bottom());
+            const QPointF adrift(joins->center().x(), lowest + 60);
+            drag(QEvent::MouseButtonPress, slid, Qt::LeftButton, Qt::LeftButton);
+            drag(QEvent::MouseMove, QPointF(slid.x(), lowest + 20), Qt::NoButton, Qt::LeftButton);
+            drag(QEvent::MouseMove, adrift, Qt::NoButton, Qt::LeftButton);
+            drag(QEvent::MouseButtonRelease, adrift, Qt::LeftButton, Qt::NoButton);
+            settle();
+            const auto let_go = ends_of(0).first;
+            require(std::hypot(let_go.x() - adrift.x(), let_go.y() - adrift.y()) < 0.01,
+                    "An end pulled off its table stops exactly where it was let go");
+            require(schema->loose_ends() == 1, "And is counted as a connection left hanging");
+            require(child<QLabel>(window, "schemaState")->text().contains("1 end not connected"),
+                    "Which the schema says out loud rather than quietly undoing it");
+
+            // It is still the line's end, so it can be picked up again and put
+            // back, and the count goes down when it is.
+            drag(QEvent::MouseButtonPress, adrift, Qt::LeftButton, Qt::LeftButton);
+            drag(QEvent::MouseMove, head, Qt::NoButton, Qt::LeftButton);
+            drag(QEvent::MouseButtonRelease, head, Qt::LeftButton, Qt::NoButton);
+            settle();
+            require(schema->loose_ends() == 0, "Put back on its table it is joined again");
+            require(!child<QLabel>(window, "schemaState")->text().contains("not connected"),
+                    "And the schema stops saying so");
+
+            child<QAction>(window, "schemaTidy")->trigger();
+            settle();
+            require(schema->shaped_lines() == 0, "And Tidy gives back the ends as well");
+
+            child<QPushButton>(window, "previewSchema")->click();
+            settle_for(400);
+        }
+
+        {
+            // The schema can be edited away from the diagram it came from, and
+            // says so when it has been. The menu that offers this and the
+            // question box that follows it both stop and wait for somebody, so
+            // what they drive is checked here instead of what they look like.
+            child<QPushButton>(window, "previewSchema")->click();
+            settle_for(600);
+            auto* schema = window.schema();
+            require(schema->asked != nullptr, "Right-clicking the schema asks what can be done");
+            const auto columns_of = [&](const QString& table) {
+                QStringList names;
+                for (const auto& one : schema->preview().tables)
+                    if (QString::fromStdString(one.name) == table)
+                        for (const auto& column : one.columns)
+                            names << QString::fromStdString(column.name);
+                return names;
+            };
+            // Edits made straight to the Editor do not pass the window, which
+            // is what normally tells the panel to read the model again, so the
+            // panel is closed and reopened to bring it up to date.
+            const auto reopen = [&] {
+                child<QPushButton>(window, "previewSchema")->click();
+                settle_for(400);
+                child<QPushButton>(window, "previewSchema")->click();
+                settle_for(600);
+            };
+
+            // Taken by value: the preview is worked out afresh after every
+            // edit, so anything pointing into the old one is stale by then.
+            const auto found = std::find_if(schema->preview().tables.begin(), schema->preview().tables.end(),
+                                            [](const domain::PreviewTable& one) {
+                                                return one.origin && std::holds_alternative<domain::EntityId>(*one.origin);
+                                            });
+            require(found != schema->preview().tables.end(), "An entity became a table");
+            const auto table_of = *found->origin;
+            const auto table_named = QString::fromStdString(found->name);
+            const auto attributes = window.editor().project().attributes.size();
+            const auto named = std::find_if(window.editor().project().attributes.begin(),
+                                            window.editor().project().attributes.end(),
+                                            [&](const auto& entry) {
+                                                return entry.second.owner
+                                                    && *entry.second.owner == table_of
+                                                    && entry.second.kind == domain::AttributeKind::Normal;
+                                            });
+            require(named != window.editor().project().attributes.end(),
+                    "That table's entity has an attribute of its own");
+            const auto hidden_id = named->first;
+            const auto hidden_name = QString::fromStdString(named->second.name);
+            require(columns_of(table_named).contains(hidden_name), "Which the schema draws as a column");
+
+            // Declining to reflect keeps a new column here and nowhere else,
+            // and hiding one keeps the attribute on the diagram: both are
+            // differences between the levels rather than edits to the model.
+            require(editor.add_schema_column(table_of, "Nickname").ok, "A column is added to the schema alone");
+            require(editor.hide_in_schema(hidden_id, true).ok, "And an attribute is hidden from the schema");
+            reopen();
+            require(window.editor().project().attributes.size() == attributes,
+                    "Neither creates or destroys an attribute, so the diagram is untouched");
+            require(window.editor().project().attributes.contains(hidden_id),
+                    "The hidden attribute is still on the diagram");
+            require(columns_of(table_named).contains("Nickname"), "The schema shows the added column");
+            require(!columns_of(table_named).contains(hidden_name), "And stops showing the hidden one");
+            require(child<QLabel>(window, "schemaState")->text().contains("2 changes not on the diagram"),
+                    "And the schema says how far the two levels have come apart");
+
+            // Each is an ordinary edit, so Undo puts the two levels back.
+            require(editor.undo() && editor.undo(), "Both undo");
+            reopen();
+            require(columns_of(table_named).contains(hidden_name), "Undo brings the hidden column back");
+            require(!columns_of(table_named).contains("Nickname"), "And takes the added one away");
+            require(!child<QLabel>(window, "schemaState")->text().contains("not on the diagram"),
+                    "And the schema stops saying they differ");
+
+            child<QPushButton>(window, "previewSchema")->click();
+            settle_for(400);
+        }
+
+        {
+            // Pressing a table asks what it is joined to; the chips ask about
+            // a whole kind of table; and the questions a conversion cannot
+            // settle are answered on the tables they are about.
+            child<QPushButton>(window, "previewSchema")->click();
+            settle_for(600);
+            auto* schema = window.schema();
+            const auto boxes = schema->table_boxes();
+            require(boxes.size() >= 3, "The example makes several tables");
+            const auto press_at = [&](QPointF at) {
+                QMouseEvent down(QEvent::MouseButtonPress, at, schema->mapToGlobal(at.toPoint()),
+                                 Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+                QApplication::sendEvent(schema, &down);
+                QMouseEvent up(QEvent::MouseButtonRelease, at, schema->mapToGlobal(at.toPoint()),
+                               Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+                QApplication::sendEvent(schema, &up);
+                settle();
+            };
+            // Earlier work in this window has left a table being asked about,
+            // so the schema is put back before anything is checked.
+            press_at(QPointF(boxes.front().left(), boxes.front().bottom() + 400));
+            require(!schema->selected().has_value(), "Pressing the bare canvas asks about nothing");
+
+            // The header, which is table and not column, line or answer.
+            const auto on_first = boxes.front().topLeft() + QPointF(40, 6);
+            press_at(on_first);
+            require(schema->selected().has_value(), "Pressing a table asks about it");
+            require(*schema->selected() == *schema->preview().tables.front().origin,
+                    "And it is that table it asks about");
+            // The ring round it runs out along everything it is joined to, so
+            // the lines have to be findable from the table that was pressed.
+            require(schema->selected_table() == std::optional<std::size_t>{0},
+                    "And the table is findable by its place, which is what the lines are matched on");
+            press_at(QPointF(boxes.front().left(), boxes.front().bottom() + 400));
+            require(!schema->selected().has_value(), "And pressing it again puts the whole schema back");
+            require(!schema->selected_table().has_value(), "So no line is ringed either");
+
+            require(schema->showing() == desktop::SchemaShowing::Everything, "Everything, to begin with");
+            child<QPushButton>(window, "schemaShowFromrelationships")->click();
+            settle();
+            require(schema->showing() == desktop::SchemaShowing::FromRelationships,
+                    "A chip narrows the schema to one kind of table");
+            press_at(on_first);
+            require(schema->selected().has_value(), "A table can still be asked about while narrowed");
+            child<QPushButton>(window, "schemaShowEverything")->click();
+            settle();
+            require(schema->showing() == desktop::SchemaShowing::Everything, "And the chips put it back");
+            require(!schema->selected().has_value(), "Asking about a kind puts down the one being asked about");
+
+            // Every table's questions are the ones the conversion cannot
+            // settle for itself, asked where their answers will be seen.
+            std::size_t asked = 0;
+            for (const auto& table : schema->preview().tables) asked += table.decisions.size();
+            require(asked > 0, "The example leaves questions a conversion cannot answer itself");
+            const auto composite = std::find_if(
+                window.editor().project().attributes.begin(), window.editor().project().attributes.end(),
+                [](const auto& entry) { return entry.second.kind == domain::AttributeKind::Composite; });
+            require(composite != window.editor().project().attributes.end(), "One of them is a composite");
+            bool found_question = false;
+            for (const auto& table : schema->preview().tables)
+                for (const auto& decision : table.decisions)
+                    if (decision.kind == domain::DecisionKind::CompositeMode) {
+                        require(!decision.answered, "Which nobody has answered yet");
+                        require(decision.chosen == 0, "So it reads as the default, Parts");
+                        found_question = true;
+                    }
+            require(found_question, "And the schema asks it on the table it concerns");
+            require(editor.set_composite_mode(composite->first, domain::CompositeMode::Whole).ok,
+                    "Answering it is an ordinary edit");
+            settle();
+
+            // Pressing a column's blank opens every type there is, in one run
+            // from the most reached for to the least, with a line to search by.
+            // Aimed at the cell the view actually drew rather than at an
+            // offset from the table's edge: the constraint marks sit at the
+            // right of every row now, so the edge is no longer where the type
+            // is.
+            const auto blank = [&]() -> std::optional<QPointF> {
+                const auto cells = schema->cell_boxes();
+                for (std::size_t t = 0; t < schema->preview().tables.size() && t < cells.size(); ++t) {
+                    const auto& columns = schema->preview().tables[t].columns;
+                    for (std::size_t row = 0; row < columns.size() && row < cells[t].size(); ++row) {
+                        if (columns[row].ignored || !columns[row].origin) continue;
+                        if (columns[row].type != domain::LogicalType::Unset) continue;
+                        if (cells[t][row].type.isEmpty()) continue;
+                        return cells[t][row].type.center();
+                    }
+                }
+                return std::nullopt;
+            }();
+            require(blank.has_value(), "The example leaves a column waiting for a type");
+            press_at(*blank);
+            auto* picker = window.findChild<QWidget*>("typePicker");
+            require(picker != nullptr, "Pressing it opens the types");
+            auto* listed = child<QListWidget>(window, "typePickerList");
+            require(listed->count() == 38, "Which is every type there is, and no headings among them");
+            require(listed->item(0)->text() == "int", "The most reached for leads");
+            require(listed->item(listed->count() - 1)->text() == "table", "And the least brings up the rear");
+
+            // The highlight follows the pointer rather than staying where the
+            // keyboard left it, so what a click takes and what Return takes
+            // are never two different things.
+            // While the list is open over it, the cell it came from is drawn
+            // as the empty slot it has become rather than as the question it
+            // was: the question has been asked and is being answered.
+            require(schema->answering().has_value(), "The cell being answered says so while it waits");
+            require(listed->currentRow() == 0, "The first is in hand to begin with");
+            const auto over = [&](int row) {
+                const auto at = listed->visualItemRect(listed->item(row)).center();
+                QMouseEvent moved(QEvent::MouseMove, QPointF(at), listed->viewport()->mapToGlobal(at),
+                                  Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+                QApplication::sendEvent(listed->viewport(), &moved);
+                settle();
+            };
+            over(4);
+            require(listed->currentRow() == 4, "Moving over a type takes it in hand");
+            over(1);
+            require(listed->currentRow() == 1, "And the highlight goes back with the pointer");
+
+            // The search narrows it without disturbing the order.
+            auto* looking = child<QLineEdit>(window, "typePickerSearch");
+            looking->setText("char");
+            settle();
+            // char, varchar, varchar(max), nchar, nvarchar, nvarchar(max).
+            require(listed->count() == 6, "Searching narrows the list");
+            for (int i = 0; i < listed->count(); ++i)
+                require(listed->item(i)->text().contains("char"), "To what was searched for");
+            looking->setText("zzz");
+            settle();
+            require(listed->count() == 1 && !(listed->item(0)->flags() & Qt::ItemIsEnabled),
+                    "And says so when nothing matches");
+            looking->setText("nvarchar");
+            settle();
+
+            // Choosing one answers that column, and it is an ordinary edit.
+            const auto before = window.editor().revision();
+            QTest_activate(listed, listed->item(0));
+            settle();
+            require(window.editor().revision() != before, "Choosing a type is an edit");
+            require(!picker->isVisible(), "And the list closes behind it");
+            require(!schema->answering().has_value(), "And the cell stops waiting when it closes");
+            bool answered = false;
+            for (const auto& table : schema->preview().tables)
+                for (const auto& column : table.columns)
+                    if (column.type == domain::LogicalType::NVarchar) answered = true;
+            require(answered, "The column now carries the type it was given");
+            // A measured type grows a second cell beside it for the number,
+            // and pressing that asks how long in the terms that type is
+            // measured in.
+            const auto sized = [&]() -> std::optional<QPointF> {
+                const auto cells = schema->cell_boxes();
+                for (std::size_t t = 0; t < schema->preview().tables.size() && t < cells.size(); ++t) {
+                    const auto& columns = schema->preview().tables[t].columns;
+                    for (std::size_t row = 0; row < columns.size() && row < cells[t].size(); ++row) {
+                        if (columns[row].type != domain::LogicalType::NVarchar) continue;
+                        if (cells[t][row].size.isEmpty()) continue;
+                        return cells[t][row].size.center();
+                    }
+                }
+                return std::nullopt;
+            }();
+            require(sized.has_value(), "The column just answered is a measured type");
+            press_at(*sized);
+            auto* sizes = window.findChild<QWidget*>("sizePicker");
+            require(sizes != nullptr, "Pressing its size asks how long");
+            auto* common = child<QListWidget>(window, "sizePickerCommon");
+            require(common->count() > 0, "And offers the lengths that type usually takes");
+            require(child<QLineEdit>(window, "sizePickerScale")->isHidden(),
+                    "A type with no scale is not asked for one");
+            const auto counted = [&] {
+                for (const auto& table : schema->preview().tables)
+                    for (const auto& column : table.columns)
+                        if (column.type == domain::LogicalType::NVarchar) return column.length;
+                return std::uint32_t{0};
+            };
+            require(counted() == 0, "Nobody has said how long yet");
+
+            // A number nobody thought to offer is typed in. The list is a
+            // convenience, not the whole of what can be said.
+            auto* typed_in = child<QLineEdit>(window, "sizePickerLength");
+            typed_in->setText("77");
+            QKeyEvent entered(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+            QApplication::sendEvent(typed_in, &entered);
+            settle();
+            require(counted() == 77, "A length typed in is the length it takes");
             child<QAction>(window, "undoCommand")->trigger();
             settle();
-            require(window.editor().project().mode == domain::ConceptualMode::Convertible,
-                    "And switching modes undoes like any other edit");
-            child<QAction>(window, "modeBasic")->trigger();
+            require(counted() == 0, "And that undoes too");
+
+            // Typed and then clicked away from counts just the same: a number
+            // written into the field is an answer, finished with Return or not.
+            press_at(*sized);
             settle();
+            child<QLineEdit>(window, "sizePickerLength")->setText("31");
+            window.findChild<QWidget*>("sizePicker")->hide();
+            settle();
+            require(counted() == 31, "A length typed and left is still the length");
+            child<QAction>(window, "undoCommand")->trigger();
+            settle();
+            require(counted() == 0, "And undoes with everything else");
+
+            // Opened and closed with nothing said changes nothing.
+            const auto quiet = window.editor().revision();
+            press_at(*sized);
+            settle();
+            window.findChild<QWidget*>("sizePicker")->hide();
+            settle();
+            require(window.editor().revision() == quiet, "Opening it and saying nothing is not an edit");
+            press_at(*sized);
+            settle();
+            sizes = window.findChild<QWidget*>("sizePicker");
+            common = child<QListWidget>(window, "sizePickerCommon");
+            const auto wanted = common->item(common->count() - 1)->data(Qt::UserRole).toUInt();
+            QTest_activate(common, common->item(common->count() - 1));
+            settle();
+            require(counted() == wanted, "Choosing one sets the length");
+            require(!sizes->isVisible(), "And the list closes behind it");
+            // Undone through the window, because an edit made straight to
+            // the Editor never tells the panel to read the model again.
+            child<QAction>(window, "undoCommand")->trigger();
+            settle();
+            require(counted() == 0, "The length undoes on its own, leaving the type where it was");
+
+            require(editor.undo().ok, "And it undoes like anything else");
+            settle();
+
+            // The constraints a row carries, all in one column and chosen
+            // from the list that opens under it. The list stops and waits for
+            // somebody, so what is wanted from it is asked for before it
+            // opens and taken as soon as it is there.
+            {
+                const auto choose = [&](QPointF where, const char* which) {
+                    QTimer::singleShot(0, &window, [&window, which] {
+                        auto* menu = window.findChild<QMenu*>("schemaRulesMenu");
+                        if (!menu) return;
+                        if (auto* action = menu->findChild<QAction*>(which)) action->trigger();
+                        menu->close();
+                    });
+                    press_at(where);
+                    settle();
+                };
+                const auto cells = schema->cell_boxes();
+                // An ordinary column, whose rules are its attribute's own.
+                std::optional<QPointF> ordinary;
+                std::optional<domain::AttributeId> behind;
+                for (std::size_t t = 0; t < schema->preview().tables.size() && t < cells.size(); ++t) {
+                    const auto& columns = schema->preview().tables[t].columns;
+                    for (std::size_t row = 0; row < columns.size() && row < cells[t].size(); ++row) {
+                        if (!columns[row].origin || columns[row].primary_key) continue;
+                        if (cells[t][row].rules.isEmpty()) continue;
+                        ordinary = cells[t][row].rules.center();
+                        behind = *columns[row].origin;
+                        break;
+                    }
+                    if (ordinary) break;
+                }
+                require(ordinary.has_value(), "Every real column has somewhere to carry its rules");
+                require(!window.editor().project().attributes.at(*behind).unique,
+                        "The column starts without a unique constraint");
+                choose(*ordinary, "schemaRuleUnique");
+                require(window.editor().project().attributes.at(*behind).unique,
+                        "Choosing UNIQUE puts one on the attribute behind the column");
+                child<QAction>(window, "undoCommand")->trigger();
+                settle();
+                require(!window.editor().project().attributes.at(*behind).unique,
+                        "And it undoes like any other edit");
+
+                // A foreign key's nullability is not a fact about the column:
+                // it is the participation of the side it points at, so
+                // choosing it reaches the relationship on the diagram.
+                const auto fresh = schema->cell_boxes();
+                std::optional<QPointF> keyed;
+                std::optional<domain::ParticipantId> side;
+                bool was_required = false;
+                for (std::size_t t = 0; t < schema->preview().tables.size() && t < fresh.size(); ++t) {
+                    const auto& columns = schema->preview().tables[t].columns;
+                    for (std::size_t row = 0; row < columns.size() && row < fresh[t].size(); ++row) {
+                        if (!columns[row].link || fresh[t][row].rules.isEmpty()) continue;
+                        if (!std::holds_alternative<domain::ParticipantId>(*columns[row].link)) continue;
+                        keyed = fresh[t][row].rules.center();
+                        side = std::get<domain::ParticipantId>(*columns[row].link);
+                        was_required = columns[row].required;
+                        break;
+                    }
+                    if (keyed) break;
+                }
+                require(keyed.has_value(), "The example has a foreign key put there by a relationship");
+                const auto participation_of = [&] {
+                    for (const auto& [id, relationship] : window.editor().project().relationships) {
+                        (void)id;
+                        for (const auto& one : relationship.participants)
+                            if (one.id == *side) return one.participation;
+                    }
+                    return domain::Participation::Partial;
+                };
+                choose(*keyed, "schemaRuleNotNull");
+                require((participation_of() == domain::Participation::Total) != was_required,
+                        "Choosing a foreign key's nullability turns the side it points at over");
+                child<QAction>(window, "undoCommand")->trigger();
+                settle();
+                require((participation_of() == domain::Participation::Total) == was_required,
+                        "And that undoes with everything else");
+
+                // A key the conversion invented has no attribute behind it,
+                // which is where choosing a constraint used to do nothing at
+                // all. It is the commonest place of all to want one.
+                const auto again = schema->cell_boxes();
+                std::optional<QPointF> invented;
+                std::optional<domain::ElementRef> whose;
+                for (std::size_t t = 0; t < schema->preview().tables.size() && t < again.size(); ++t) {
+                    const auto& one = schema->preview().tables[t];
+                    if (!one.origin) continue;
+                    for (std::size_t row = 0; row < one.columns.size() && row < again[t].size(); ++row) {
+                        if (one.columns[row].origin_kind != domain::ColumnOrigin::Generated) continue;
+                        if (again[t][row].rules.isEmpty()) continue;
+                        invented = again[t][row].rules.center();
+                        whose = *one.origin;
+                        break;
+                    }
+                    if (invented) break;
+                }
+                require(invented.has_value(), "The example has a key the conversion invented");
+                require(!window.editor().project().schema.counting_keys.contains(*whose),
+                        "Which does not count itself up to begin with");
+                choose(*invented, "schemaRuleIdentity");
+                require(window.editor().project().schema.counting_keys.contains(*whose),
+                        "Choosing IDENTITY makes it count itself up");
+                child<QAction>(window, "undoCommand")->trigger();
+                settle();
+                require(!window.editor().project().schema.counting_keys.contains(*whose),
+                        "And that undoes like anything else");
+            }
+
+            // Narrowing a table folds its columns away from the right, one
+            // at a time, and never moves the tables beside it.
+            {
+                // Held by value: the preview is worked out afresh on every
+                // refresh, so a reference into it would not survive the first
+                // pull.
+                const auto first_origin = schema->preview().tables.front().origin;
+                require(first_origin.has_value(), "The first table came from the diagram");
+                const auto beside_before = schema->table_boxes();
+                const auto pull_to = [&](double width) {
+                    std::map<domain::ElementRef, domain::SchemaTableBox> asked;
+                    domain::SchemaTableBox box;
+                    box.width = width;
+                    box.height = schema->table_boxes().front().height();
+                    asked.emplace(*first_origin, box);
+                    require(editor.resize_schema_tables(asked).ok, "The table is pulled");
+                    schema->refresh();
+                    settle();
+                };
+                // How many columns a row still shows beyond its name, read
+                // off what was actually drawn.
+                const auto columns_now = [&] {
+                    const auto cells = schema->cell_boxes();
+                    require(!cells.empty() && !cells.front().empty(), "The table has rows");
+                    int shown = 0;
+                    for (const auto& one : cells.front()) {
+                        if (!one.rules.isEmpty()) return 2;
+                        if (!one.type.isEmpty()) shown = std::max(shown, 1);
+                    }
+                    return shown;
+                };
+                require(columns_now() == 2, "At its own width a table shows all of its columns");
+                // Swept down rather than pulled to chosen numbers: where each
+                // column gives way depends on what that table happens to
+                // hold, and what is being checked is the order they go in,
+                // not the width at which each one does.
+                const auto from = schema->table_boxes().front().width();
+                std::vector<int> seen{2};
+                for (auto width = from; width > domain::min_table_width; width -= 10) {
+                    pull_to(std::max(domain::min_table_width, width));
+                    const auto now = columns_now();
+                    require(now <= seen.back(), "A narrower table never shows more than a wider one");
+                    if (now != seen.back()) seen.push_back(now);
+                }
+                pull_to(domain::min_table_width);
+                if (columns_now() != seen.back()) seen.push_back(columns_now());
+                require((seen == std::vector<int>{2, 1, 0}),
+                        "They fold from the right, one at a time: constraints, then type");
+                require(columns_now() == 0,
+                        "Leaving the keys and the names, which nothing else can stand in for");
+                require(schema->table_boxes().front().width() == domain::min_table_width,
+                        "And the table is as narrow as a table may be");
+                // None of that moved anything else.
+                const auto beside_after = schema->table_boxes();
+                require(beside_after.size() == beside_before.size(), "Same tables throughout");
+                for (std::size_t i = 1; i < beside_after.size(); ++i)
+                    require(beside_after[i].topLeft() == beside_before[i].topLeft(),
+                            "Pulling one table about leaves the others where they were");
+                // Widened again, every column comes back in the reverse order.
+                pull_to(from);
+                require(columns_now() == 2, "Widened again, every column comes back");
+                // Put the table back where it was, so what follows sees the
+                // schema it expects rather than one this case left narrowed.
+                while (window.editor().can_undo() && schema->table_boxes().front().width() != from) {
+                    child<QAction>(window, "undoCommand")->trigger();
+                    settle();
+                }
+            }
+
+            // A search of the schema, which is not the diagram's search: it
+            // picks out the tables and columns whose names carry the words.
+            auto* looking_at_schema = child<QLineEdit>(window, "schemaSearch");
+            looking_at_schema->setText("phone");
+            settle();
+            require(schema->looking_for() == "phone", "The schema is searched by its own bar");
+            require(!schema->selected().has_value(),
+                    "Which is a broader question than asking about one table");
+            looking_at_schema->clear();
+            settle();
+            require(schema->looking_for().isEmpty(), "And clearing it puts the whole schema back");
+
+            // Release gives the lines back without moving the tables.
+            const auto where = schema->table_boxes();
+            child<QAction>(window, "schemaRelease")->trigger();
+            settle();
+            require(schema->shaped_lines() == 0, "Release gives every line back to the router");
+            require(schema->table_boxes() == where, "And leaves every table where it was");
+
+            child<QPushButton>(window, "previewSchema")->click();
+            settle_for(400);
+        }
+
+        {
+            // Everything done on the schema undoes, and redoes. Arranging it
+            // is presentation, but it is work somebody did, so it is an edit
+            // like any other rather than something the window keeps to itself
+            // and loses.
+            child<QPushButton>(window, "previewSchema")->click();
+            settle_for(600);
+            auto* schema = window.schema();
+            auto* undo = child<QAction>(window, "undoCommand");
+            auto* redo = child<QAction>(window, "redoCommand");
+            const auto drag = [&](QEvent::Type type, QPointF at, Qt::MouseButton button,
+                                  Qt::MouseButtons held) {
+                QMouseEvent event(type, at, schema->mapToGlobal(at.toPoint()), button, held,
+                                  Qt::NoModifier);
+                QApplication::sendEvent(schema, &event);
+                settle();
+            };
+
+            // Moving a table.
+            const auto before_move = schema->table_boxes();
+            require(!before_move.empty(), "The schema has tables to move");
+            const auto grab_table = before_move.front().topLeft() + QPointF(60, 8);
+            drag(QEvent::MouseButtonPress, grab_table, Qt::LeftButton, Qt::LeftButton);
+            drag(QEvent::MouseMove, grab_table + QPointF(40, 60), Qt::NoButton, Qt::LeftButton);
+            drag(QEvent::MouseButtonRelease, grab_table + QPointF(40, 60), Qt::LeftButton, Qt::NoButton);
+            const auto after_move = schema->table_boxes();
+            require(after_move.front().topLeft() != before_move.front().topLeft(), "A table moves");
+            require(undo->isEnabled(), "Which is an edit, so there is something to undo");
+            // One drag is one step, not one step for every frame of it.
+            undo->trigger();
+            settle();
+            require(schema->table_boxes().front().topLeft() == before_move.front().topLeft(),
+                    "Undo puts the table back where it was, in one step");
+            redo->trigger();
+            settle();
+            require(schema->table_boxes().front().topLeft() == after_move.front().topLeft(),
+                    "And redo puts it back where it was taken");
+            undo->trigger();
+            settle();
+
+            // Moving one table moves that table. Every other table stays
+            // exactly where it was, which is only true because the automatic
+            // arrangement is worked out for all of them and a moved table
+            // simply sits elsewhere: leave a moved table out of the packing
+            // and the ones after it shuffle up behind it.
+            {
+                const auto settled = schema->table_boxes();
+                require(settled.size() >= 3, "Several tables to leave alone");
+                const auto lift = settled[1].topLeft() + QPointF(60, 8);
+                drag(QEvent::MouseButtonPress, lift, Qt::LeftButton, Qt::LeftButton);
+                drag(QEvent::MouseMove, lift + QPointF(70, 120), Qt::NoButton, Qt::LeftButton);
+                drag(QEvent::MouseButtonRelease, lift + QPointF(70, 120), Qt::LeftButton, Qt::NoButton);
+                const auto after = schema->table_boxes();
+                require(after.size() == settled.size(), "The same tables are there");
+                require(after[1].topLeft() != settled[1].topLeft(), "The one that was moved moved");
+                for (std::size_t i = 0; i < after.size(); ++i) {
+                    if (i == 1) continue;
+                    require(after[i] == settled[i], "And no other table moved with it");
+                }
+                undo->trigger();
+                settle();
+            }
+
+            // Pushing a line sideways.
+            const auto drawn = schema->line_shapes();
+            std::size_t on_line = 0;
+            QPointF ran_from;
+            QPointF ran_to;
+            double longest = 0;
+            for (std::size_t line = 0; line < drawn.size(); ++line)
+                for (std::size_t i = 1; i < drawn[line].size(); ++i) {
+                    const auto length = std::hypot(drawn[line][i].x() - drawn[line][i - 1].x(),
+                                                   drawn[line][i].y() - drawn[line][i - 1].y());
+                    if (length <= longest) continue;
+                    longest = length;
+                    on_line = line;
+                    ran_from = drawn[line][i - 1];
+                    ran_to = drawn[line][i];
+                }
+            require(longest > 40, "There is a run long enough to push");
+            const bool upright = std::abs(ran_from.x() - ran_to.x()) < 0.01;
+            const auto across = upright ? QPointF(34, 0) : QPointF(0, 34);
+            const auto hold = (ran_from + ran_to) / 2;
+            drag(QEvent::MouseButtonPress, hold, Qt::LeftButton, Qt::LeftButton);
+            drag(QEvent::MouseMove, hold + across / 3, Qt::NoButton, Qt::LeftButton);
+            drag(QEvent::MouseMove, hold + across, Qt::NoButton, Qt::LeftButton);
+            drag(QEvent::MouseButtonRelease, hold + across, Qt::LeftButton, Qt::NoButton);
+            require(schema->shaped_lines() == 1, "A run pushed sideways shapes that line");
+            const auto pushed = schema->line_shapes()[on_line];
+            undo->trigger();
+            settle();
+            require(schema->shaped_lines() == 0, "Undo gives the line back to the router");
+            require(schema->line_shapes()[on_line] == drawn[on_line], "With the route it had");
+            redo->trigger();
+            settle();
+            require(schema->shaped_lines() == 1, "Redo shapes it again");
+            require(schema->line_shapes()[on_line] == pushed, "The same way it was shaped");
+
+            // Moving a line's end off its table.
+            const auto head = schema->line_shapes()[on_line].front();
+            auto lowest = 0.0;
+            for (const auto& box : schema->table_boxes()) lowest = std::max(lowest, box.bottom());
+            const QPointF adrift(head.x(), lowest + 70);
+            drag(QEvent::MouseButtonPress, head, Qt::LeftButton, Qt::LeftButton);
+            drag(QEvent::MouseMove, QPointF(head.x(), lowest + 30), Qt::NoButton, Qt::LeftButton);
+            drag(QEvent::MouseMove, adrift, Qt::NoButton, Qt::LeftButton);
+            drag(QEvent::MouseButtonRelease, adrift, Qt::LeftButton, Qt::NoButton);
+            require(schema->loose_ends() == 1, "An end pulled off its table is left hanging");
+            undo->trigger();
+            settle();
+            require(schema->loose_ends() == 0, "Undo puts the end back on its table");
+            redo->trigger();
+            settle();
+            require(schema->loose_ends() == 1, "And redo takes it off again");
+
+            // Tidy, which throws away every arrangement at once.
+            child<QAction>(window, "schemaTidy")->trigger();
+            settle();
+            require(schema->shaped_lines() == 0 && schema->loose_ends() == 0,
+                    "Tidy gives back every line");
+            undo->trigger();
+            settle();
+            require(schema->shaped_lines() == 1 && schema->loose_ends() == 1,
+                    "And one undo brings the whole arrangement back");
+            child<QAction>(window, "schemaTidy")->trigger();
+            settle();
+
+            // A line shaped by hand holds its shape when a table is moved on
+            // top of it, unless it has been asked to get out of the way.
+            {
+                auto* give_way = child<QAction>(window, "schemaGiveWay");
+                require(!give_way->isChecked(), "Lines hold their shape unless asked otherwise");
+                // A shaped line of its own, since the block before this one
+                // tidied everything away.
+                const auto runs = schema->line_shapes();
+                QPointF take;
+                double reach = 0;
+                for (const auto& shape : runs)
+                    for (std::size_t i = 1; i < shape.size(); ++i) {
+                        const auto length = std::hypot(shape[i].x() - shape[i - 1].x(),
+                                                       shape[i].y() - shape[i - 1].y());
+                        if (length <= reach) continue;
+                        reach = length;
+                        take = (shape[i] + shape[i - 1]) / 2;
+                    }
+                require(reach > 40, "A run long enough to shape");
+                drag(QEvent::MouseButtonPress, take, Qt::LeftButton, Qt::LeftButton);
+                drag(QEvent::MouseMove, take + QPointF(0, 30), Qt::NoButton, Qt::LeftButton);
+                drag(QEvent::MouseButtonRelease, take + QPointF(0, 30), Qt::LeftButton, Qt::NoButton);
+                require(schema->shaped_lines() == 1, "There is a shaped line to leave alone");
+                const auto boxes = schema->table_boxes();
+                const auto onto = boxes.front().topLeft() + QPointF(60, 8);
+                drag(QEvent::MouseButtonPress, onto, Qt::LeftButton, Qt::LeftButton);
+                drag(QEvent::MouseMove, onto + QPointF(120, 40), Qt::NoButton, Qt::LeftButton);
+                drag(QEvent::MouseButtonRelease, onto + QPointF(120, 40), Qt::LeftButton, Qt::NoButton);
+                require(schema->shaped_lines() == 1, "The shape survives a table moving about");
+                undo->trigger();
+                settle();
+
+                // Asked to, a line a move has left lying across a table is
+                // handed back to the router -- in the same edit as the move,
+                // so one undo takes both back together.
+                give_way->setChecked(true);
+                settle();
+                require(schema->lines_give_way(), "The option reaches the schema");
+                const auto sat = schema->table_boxes();
+                const auto shapes_before = schema->line_shapes();
+                drag(QEvent::MouseButtonPress, onto, Qt::LeftButton, Qt::LeftButton);
+                drag(QEvent::MouseMove, onto + QPointF(120, 40), Qt::NoButton, Qt::LeftButton);
+                drag(QEvent::MouseButtonRelease, onto + QPointF(120, 40), Qt::LeftButton, Qt::NoButton);
+                require(schema->table_boxes() != sat, "The move happens");
+                // One undo, whether or not the move freed a line: the two are
+                // one edit, so they come back together rather than in turn.
+                undo->trigger();
+                settle();
+                require(schema->table_boxes() == sat, "One undo puts the table back");
+                require(schema->shaped_lines() == 1, "And the shaped line back with it");
+                require(schema->line_shapes() == shapes_before, "Exactly as it was");
+                give_way->setChecked(false);
+                settle();
+            }
+
+            // A table is pulled about by any of its four edges and any of its
+            // corners, which is an edit like the rest: it undoes, it redoes,
+            // and it is saved.
+            {
+                require(schema->tables_resizable(), "Tables can be resized unless told otherwise");
+                // A line always answers the pointer before the table it
+                // crosses, so a pull is aimed at a stretch of edge no line is
+                // lying on -- as a hand would aim it.
+                const auto clear_of_lines = [&](QPointF at) {
+                    for (const auto& shape : schema->line_shapes())
+                        for (std::size_t i = 1; i < shape.size(); ++i) {
+                            const auto from = shape[i - 1];
+                            const auto to = shape[i];
+                            const auto length = std::hypot(to.x() - from.x(), to.y() - from.y());
+                            const auto steps = static_cast<int>(length / 3) + 1;
+                            for (int step = 0; step <= steps; ++step) {
+                                const auto on = from + (to - from) * (static_cast<double>(step) / steps);
+                                if (std::hypot(on.x() - at.x(), on.y() - at.y()) < 14) return false;
+                            }
+                        }
+                    return true;
+                };
+                // Somewhere along one edge of a box that is clear, keeping
+                // well away from the corners so the edge itself is what is
+                // taken hold of. The edges are numbered clockwise from the
+                // left, as they are read out below.
+                enum Edge { LeftEdge, TopEdge, RightEdge, BottomEdge };
+                const auto clear_spot = [&](const QRectF& box, Edge edge) {
+                    const auto along = edge == TopEdge || edge == BottomEdge ? box.width() : box.height();
+                    const auto spot = [&](double step) {
+                        switch (edge) {
+                        case LeftEdge: return QPointF(box.left() + 2, box.top() + step);
+                        case TopEdge: return QPointF(box.left() + step, box.top() + 2);
+                        case RightEdge: return QPointF(box.right() - 2, box.top() + step);
+                        case BottomEdge: break;
+                        }
+                        return QPointF(box.left() + step, box.bottom() - 2);
+                    };
+                    for (double step = 26; step < along - 26; step += 5)
+                        if (clear_of_lines(spot(step))) return spot(step);
+                    return spot(along / 2);
+                };
+                const auto before_width = schema->table_boxes().front();
+                const auto edge = QPointF(before_width.right() - 2, before_width.center().y());
+                drag(QEvent::MouseButtonPress, edge, Qt::LeftButton, Qt::LeftButton);
+                drag(QEvent::MouseMove, edge + QPointF(90, 0), Qt::NoButton, Qt::LeftButton);
+                drag(QEvent::MouseButtonRelease, edge + QPointF(90, 0), Qt::LeftButton, Qt::NoButton);
+                const auto widened = schema->table_boxes().front();
+                require(widened.width() > before_width.width() + 40, "The table is wider");
+                require(widened.topLeft() == before_width.topLeft(), "And has not moved doing it");
+                require(widened.height() == before_width.height(),
+                        "Nor grown taller: only the side that was pulled moves");
+                undo->trigger();
+                settle();
+                require(schema->table_boxes().front().width() == before_width.width(),
+                        "Undo puts the width back");
+                redo->trigger();
+                settle();
+                require(schema->table_boxes().front().width() == widened.width(),
+                        "And redo pulls it out again");
+
+                // A table cannot be pulled past what a table may be.
+                const auto wide_edge = QPointF(schema->table_boxes().front().right() - 2,
+                                               schema->table_boxes().front().center().y());
+                drag(QEvent::MouseButtonPress, wide_edge, Qt::LeftButton, Qt::LeftButton);
+                drag(QEvent::MouseMove, wide_edge + QPointF(4000, 0), Qt::NoButton, Qt::LeftButton);
+                drag(QEvent::MouseButtonRelease, wide_edge + QPointF(4000, 0), Qt::LeftButton, Qt::NoButton);
+                require(schema->table_boxes().front().width() <= domain::max_table_width,
+                        "However far the edge is pulled");
+                undo->trigger();
+                settle();
+
+                // The left edge carries the table's corner with it and leaves
+                // the right-hand side exactly where it was. Both the size and
+                // the place arrive as one edit, so one undo takes them back
+                // together rather than leaving the table somewhere it was
+                // never put.
+                {
+                    const auto before = schema->table_boxes().front();
+                    const auto edge = clear_spot(before, LeftEdge);
+                    drag(QEvent::MouseButtonPress, edge, Qt::LeftButton, Qt::LeftButton);
+                    drag(QEvent::MouseMove, edge - QPointF(40, 0), Qt::NoButton, Qt::LeftButton);
+                    drag(QEvent::MouseButtonRelease, edge - QPointF(40, 0), Qt::LeftButton, Qt::NoButton);
+                    const auto reached = schema->table_boxes().front();
+                    require(reached.left() < before.left() - 20, "The left edge follows the pointer");
+                    require(std::abs(reached.right() - before.right()) < 0.01,
+                            "And the right-hand side stays where it was");
+                    require(std::abs(reached.height() - before.height()) < 0.01, "Its height is untouched");
+                    undo->trigger();
+                    settle();
+                    require(schema->table_boxes().front() == before,
+                            "One undo takes back the size and the place together");
+                }
+
+                // The bottom edge makes a table taller, and a table pulled
+                // taller does not push the tables under it down the column:
+                // pulling one table about is pulling one table about.
+                {
+                    const auto before = schema->table_boxes();
+                    const auto standard_rows = schema->row_boxes().front();
+                    const auto edge = clear_spot(before.front(), BottomEdge);
+                    drag(QEvent::MouseButtonPress, edge, Qt::LeftButton, Qt::LeftButton);
+                    drag(QEvent::MouseMove, edge + QPointF(0, 70), Qt::NoButton, Qt::LeftButton);
+                    drag(QEvent::MouseButtonRelease, edge + QPointF(0, 70), Qt::LeftButton, Qt::NoButton);
+                    const auto taller = schema->table_boxes();
+                    require(taller.front().height() > before.front().height() + 50, "The table is taller");
+                    require(taller.front().topLeft() == before.front().topLeft(),
+                            "Without moving to do it");
+                    require(std::equal(before.begin() + 1, before.end(), taller.begin() + 1),
+                            "And no other table moves for it");
+                    undo->trigger();
+                    settle();
+                    require(schema->table_boxes() == before, "Undo puts the height back");
+                    redo->trigger();
+                    settle();
+                    require(schema->table_boxes().front().height() == taller.front().height(),
+                            "And redo makes it tall again");
+
+                    // The room it gained is shared out between its rows, so
+                    // the table is a roomier one rather than one with a gap
+                    // under its last row.
+                    const auto deep = schema->row_boxes().front();
+                    require(!deep.empty(), "The table has rows to share the room between");
+                    require(deep.front().height() > standard_rows.front().height() + 1,
+                            "Each row is drawn deeper for the room the table was given");
+                    const auto rows_grew = (deep.back().bottom() - deep.front().top())
+                                         - (standard_rows.back().bottom() - standard_rows.front().top());
+                    require(std::abs(rows_grew - (taller.front().height() - before.front().height())) < 1.0,
+                            "And every bit of the room the table gained went into them");
+
+                    // The top edge is the same thing the other way up: it
+                    // takes the table's corner with it and leaves the bottom
+                    // where it is. A table that has been given room can give
+                    // it back this way; one that has none cannot be pulled
+                    // down over its own rows.
+                    const auto room = schema->table_boxes().front();
+                    const auto top_edge = clear_spot(room, TopEdge);
+                    drag(QEvent::MouseButtonPress, top_edge, Qt::LeftButton, Qt::LeftButton);
+                    drag(QEvent::MouseMove, top_edge + QPointF(0, 40), Qt::NoButton, Qt::LeftButton);
+                    drag(QEvent::MouseButtonRelease, top_edge + QPointF(0, 40), Qt::LeftButton, Qt::NoButton);
+                    const auto shortened = schema->table_boxes().front();
+                    require(shortened.top() > room.top() + 30, "The top edge follows the pointer down");
+                    require(std::abs(shortened.bottom() - room.bottom()) < 0.01,
+                            "And the bottom of the table stays where it was");
+                    undo->trigger();
+                    settle();
+                    require(schema->table_boxes().front() == room,
+                            "One undo takes back the height and the place together");
+                    undo->trigger();
+                    settle();
+                }
+
+                // A corner pulls the two sides that meet at it, and leaves the
+                // corner opposite it exactly where it was.
+                {
+                    const auto before = schema->table_boxes().front();
+                    const std::array<QPointF, 4> corners{
+                        before.topLeft() + QPointF(2, 2), before.topRight() + QPointF(-2, 2),
+                        before.bottomRight() + QPointF(-2, -2), before.bottomLeft() + QPointF(2, -2)};
+                    const std::array<QPointF, 4> opposite{before.bottomRight(), before.bottomLeft(),
+                                                          before.topLeft(), before.topRight()};
+                    // The bottom two first, since the schema is packed from
+                    // the top left and a table near the top has nowhere to
+                    // grow upwards into.
+                    std::size_t which = 2;
+                    for (const std::size_t i : {2u, 3u, 1u, 0u}) {
+                        const auto room = (corners[i].y() > before.center().y() || before.top() > 80)
+                                       && (corners[i].x() > before.center().x() || before.left() > 80);
+                        if (room && clear_of_lines(corners[i])) { which = i; break; }
+                    }
+                    const auto corner = corners[which];
+                    // Outwards from the middle of the table, whichever corner
+                    // it is, so the pull always makes it bigger.
+                    const QPointF away(corner.x() < before.center().x() ? -50 : 50,
+                                       corner.y() < before.center().y() ? -50 : 50);
+                    drag(QEvent::MouseButtonPress, corner, Qt::LeftButton, Qt::LeftButton);
+                    drag(QEvent::MouseMove, corner + away, Qt::NoButton, Qt::LeftButton);
+                    drag(QEvent::MouseButtonRelease, corner + away, Qt::LeftButton, Qt::NoButton);
+                    const auto pulled = schema->table_boxes().front();
+                    require(pulled.width() > before.width() + 30 && pulled.height() > before.height() + 30,
+                            "A corner pulls two sides at once");
+                    const std::array<QPointF, 4> now{pulled.bottomRight(), pulled.bottomLeft(),
+                                                     pulled.topLeft(), pulled.topRight()};
+                    require(std::abs(now[which].x() - opposite[which].x()) < 0.01
+                                && std::abs(now[which].y() - opposite[which].y()) < 0.01,
+                            "Leaving the corner opposite it alone");
+                    undo->trigger();
+                    settle();
+                }
+
+                // Fixed, and the edge is no longer a handle at all.
+                child<QAction>(window, "schemaFixed")->trigger();
+                settle();
+                require(!schema->tables_resizable(), "Fixed takes the handle away");
+                const auto held = schema->table_boxes().front();
+                const auto held_edge = QPointF(held.right() - 2, held.center().y());
+                drag(QEvent::MouseButtonPress, held_edge, Qt::LeftButton, Qt::LeftButton);
+                drag(QEvent::MouseMove, held_edge + QPointF(90, 0), Qt::NoButton, Qt::LeftButton);
+                drag(QEvent::MouseButtonRelease, held_edge + QPointF(90, 0), Qt::LeftButton, Qt::NoButton);
+                require(schema->table_boxes().front().width() == held.width(),
+                        "So pulling the edge no longer widens it");
+                const auto held_bottom = QPointF(held.center().x(), held.bottom() - 2);
+                drag(QEvent::MouseButtonPress, held_bottom, Qt::LeftButton, Qt::LeftButton);
+                drag(QEvent::MouseMove, held_bottom + QPointF(0, 60), Qt::NoButton, Qt::LeftButton);
+                drag(QEvent::MouseButtonRelease, held_bottom + QPointF(0, 60), Qt::LeftButton, Qt::NoButton);
+                require(schema->table_boxes().front().height() == held.height(),
+                        "Nor the bottom one make it taller");
+                child<QAction>(window, "schemaResizable")->trigger();
+                settle();
+                child<QAction>(window, "schemaTidy")->trigger();
+                settle();
+            }
+
+            // And an arrangement is part of the document, so it is saved.
+            QTemporaryDir folder;
+            require(folder.isValid(), "A place to save into");
+            drag(QEvent::MouseButtonPress, grab_table, Qt::LeftButton, Qt::LeftButton);
+            drag(QEvent::MouseMove, grab_table + QPointF(30, 30), Qt::NoButton, Qt::LeftButton);
+            drag(QEvent::MouseButtonRelease, grab_table + QPointF(30, 30), Qt::LeftButton, Qt::NoButton);
+            const auto arranged = window.editor().project().schema_layout;
+            require(!arranged.empty(), "Which has something in it to save");
+            const auto where = folder.filePath("arranged.erdx");
+            require(window.export_project_file(where), "The project writes");
+            infrastructure::ErdxProjectStore store_again;
+            const auto opened = store_again.load(where.toStdString());
+            require(opened.project.has_value(), "And opens again");
+            require(opened.project->schema_layout == arranged,
+                    "With the arrangement exactly as it was left");
+
+            child<QPushButton>(window, "previewSchema")->click();
+            settle_for(400);
         }
 
         // Export: how the work leaves. A picture any system can open, with

@@ -223,10 +223,21 @@ QToolButton#themeButton::menu-indicator { subcontrol-origin: padding; subcontrol
 QToolButton#searchSettings { padding: 4px 22px 4px 8px; }
 QToolButton#searchSettings::menu-indicator { subcontrol-origin: padding; subcontrol-position: center right; right: 5px; width: 12px; }
 QToolButton#themeButton:hover, QToolButton#themeButton:pressed { border-color: @accent@; background: @base@; color: @text@; }
-/* Basic/Convertible on the workspace header is the same InstantPopup button
-   as themeButton and searchSettings, and needs the same telling. */
-QToolButton#conceptualMode { padding: 5px 22px 5px 9px; }
-QToolButton#conceptualMode::menu-indicator { subcontrol-origin: padding; subcontrol-position: center right; right: 4px; width: 12px; }
+/* The schema panel's own menus, and the header's theme button beside them:
+   the same trap again, where a style drops a menu arrow into the bottom-right
+   corner unless it is told to put it level with the word.
+
+   These are written as rules of their own rather than by adding selectors to
+   the rules above. Qt drops a rule whole when any one declaration in it will
+   not parse, so a rule that several buttons share is a rule that can take all
+   of them down together. Written for the bar rather than for each button, so
+   a menu added to that row later is level without anybody remembering this. */
+QWidget#schemaBar QToolButton { border-color: @border@; background: @panel@; padding: 5px 22px 5px 9px; }
+QWidget#schemaBar QToolButton::menu-indicator { subcontrol-origin: padding; subcontrol-position: center right; right: 4px; width: 12px; }
+QWidget#schemaBar QToolButton:hover, QWidget#schemaBar QToolButton:pressed { border-color: @accent@; background: @base@; color: @text@; }
+QToolButton#schemaTheme { border-color: @border@; background: @panel@; padding: 5px 22px 5px 9px; }
+QToolButton#schemaTheme::menu-indicator { subcontrol-origin: padding; subcontrol-position: center right; right: 4px; width: 12px; }
+QToolButton#schemaTheme:hover, QToolButton#schemaTheme:pressed { border-color: @accent@; background: @base@; color: @text@; }
 QToolBar#ribbonTabs { background: @panel@; border-bottom: 1px solid @border@; padding: 0px; spacing: 0px; }
 QToolBar#ribbonTabs QToolButton { background: transparent; color: @text@; border: none; border-bottom: 2px solid transparent; border-radius: 0px; padding: 6px 13px 4px 13px; }
 QToolBar#ribbonTabs QToolButton:hover { background: @hover@; color: @text@; border-bottom-color: @hoveredge@; }

@@ -3,6 +3,7 @@
 #include "diagram_view.hpp"
 #include "export_dialog.hpp"
 #include "icons.hpp"
+#include "schema_view.hpp"
 #include "application/project_store.hpp"
 
 #include <QMainWindow>
@@ -16,10 +17,13 @@
 #include <vector>
 
 class QAction;
+class QActionGroup;
 class QDockWidget;
 class QLabel;
+class QLineEdit;
 class QComboBox;
 class QScrollArea;
+class QPushButton;
 class QToolButton;
 class QVBoxLayout;
 class QStandardItemModel;
@@ -75,11 +79,17 @@ public:
     // into the middle of the view. Also how anything that already knows what to
     // look for drives the search.
     void search_diagram(const DiagramSearch& search);
+    // Raises the schema panel, optionally at full height. Development tooling
+    // beside open_search: it is how anything that already knows the panel is
+    // wanted drives it, including a screenshot taken with nobody there to
+    // click the button.
+    void open_schema(bool full = false);
+    // Chooses the notation every end is drawn in, on the diagram and on the
+    // schema alike. Public so that anything already knowing which notation is
+    // wanted can drive it, a screenshot of one of the four included.
+    void set_notation(Notation notation) { choose_notation(notation); }
     // Opens the search bar, or closes it and puts the whole diagram back.
     void open_search(const QString& looking_for = {});
-    // How much the model is being asked to say about itself. Also how anything
-    // that already knows which mode it wants sets it.
-    void set_conceptual_mode(domain::ConceptualMode mode);
     void close_search();
     // Leaves a remark on the given things, asking for the words. With text
     // supplied it asks nothing, which is how anything that already has the
@@ -92,6 +102,10 @@ public:
     [[nodiscard]] const ExportChoice& export_choice() const { return export_choice_; }
     [[nodiscard]] const application::Editor& editor() const { return editor_; }
     [[nodiscard]] DiagramView* canvas() const { return canvas_; }
+    // The schema the diagram would become, once the panel holding it has been
+    // raised. Reached the same way as the canvas, since neither carries the
+    // Qt object macro that would let it be found by type.
+    [[nodiscard]] SchemaView* schema() const { return schema_; }
     // The row of tabs above the tool row: File, Home, Insert, Design, Export,
     // Import, View, Help.
     [[nodiscard]] Ribbon* ribbon() const { return ribbon_; }
@@ -120,6 +134,87 @@ private:
     QStandardItemModel* explorer_model_ = nullptr;
     QStandardItemModel* issue_model_ = nullptr;
     QScrollArea* properties_ = nullptr;
+    // The schema the diagram would become, and the panel it rises in. It is
+    // derived from the model every time it is shown, and holds nothing.
+    SchemaView* schema_ = nullptr;
+    QWidget* schema_panel_ = nullptr;
+    QScrollArea* schema_scroll_ = nullptr;
+    QLabel* schema_state_ = nullptr;
+    // The schema's own settings, as groups of choices in its two menus
+    // rather than as pickers in a row of their own.
+    QActionGroup* schema_names_ = nullptr;
+    QActionGroup* schema_lines_ = nullptr;
+    QActionGroup* schema_sizing_ = nullptr;
+    QPointer<class TypePicker> type_picker_;
+    QPointer<class SizePicker> size_picker_;
+    // What the header shows while the schema has the whole window. The
+    // drawing tools go away with the diagram, so the few things still worth
+    // reaching for come out here instead of being lost with them.
+    QWidget* schema_header_tools_ = nullptr;
+    QLineEdit* schema_search_ = nullptr;
+    QToolButton* schema_theme_ = nullptr;
+    std::vector<QPointer<QWidget>> hidden_chrome_;
+    QActionGroup* schema_notation_ = nullptr;
+    std::vector<QPushButton*> schema_chips_;
+    QWidget* shared_names_ = nullptr;
+    QWidget* shared_names_body_ = nullptr;
+    QPushButton* shared_names_head_ = nullptr;
+    bool shared_names_open_ = false;
+    bool schema_open_ = false;
+    // How much of the stage the panel takes, and what it was when a resize
+    // began. Remembered so it opens again at the height it was left at.
+    double schema_share_ = 0.62;
+    double schema_share_at_grab_ = 0.62;
+    // Raises or lowers the schema over the lower part of the diagram.
+    void show_schema(bool shown);
+    // The whole window for the schema, and back again.
+    void set_schema_full(bool full);
+    bool schema_full_ = false;
+    bool laying_out_schema_ = false;
+    // The diagram's own furniture, put away while the schema has the window.
+    std::vector<QPointer<QWidget>> hidden_for_schema_;
+    bool schema_took_full_view_ = false;
+    double schema_share_before_full_ = 0.62;
+    void lay_out_schema();
+    void refresh_schema();
+    void refresh_schema_state();
+    // The strip under the schema that gathers columns sharing a name, so a
+    // type can be given to all of them at once.
+    void refresh_shared_names();
+    [[nodiscard]] std::vector<QWidget*> chrome_for_drawing() const;
+    // What can be done to the table or column that was asked about, and doing
+    // it. Adding and removing a column may or may not mean the same change to
+    // the diagram, and ADR-010 says the user is asked before the diagram is
+    // touched and never after.
+    void offer_schema_actions(const SchemaView::Spot& spot);
+    // One of a row's constraint marks was pressed. Which command that is
+    // depends on what the column is made of, and this is the only place that
+    // knows: an ordinary column carries its own rules, a foreign key's
+    // nullability belongs to the relationship behind it, and a column the
+    // conversion invented has nothing to carry them at all.
+    void toggle_schema_constraint(const SchemaView::Constrained& hit,
+                                  SchemaView::Constraint which);
+    // The list of what can be said about one column's constraints, opened
+    // where the cell is. Several of them apply at once, so it is a list of
+    // things to tick rather than a choice between them.
+    void offer_schema_rules(const SchemaView::Constrained& hit, QPoint at);
+    // Which side of a relationship carries a foreign key, given the side it
+    // points at. The preview remembers the target, because that is what
+    // decides the key's nullability; whether the key is unique belongs to the
+    // other side, the one whose rows hold it.
+    [[nodiscard]] std::optional<domain::ParticipantId> carrying_side(
+        const domain::PreviewColumn& column) const;
+    // A conversion question answered on the schema. Each is an ordinary edit,
+    // so each undoes, and the schema and the diagram both follow it.
+    void answer_decision(const domain::OpenDecision& decision, std::size_t choice);
+    // Ask for a column's type where the column is, rather than sending the
+    // reader to the Properties panel for something the schema is already
+    // showing them a blank for.
+    void ask_column_type(const domain::PreviewColumn& column, QPoint at);
+    void ask_column_size(const domain::PreviewColumn& column, QPoint at);
+    void rename_from_schema(const SchemaView::Spot& spot, const QString& typed);
+    void add_schema_column(domain::ElementRef table, bool schema_only = false);
+    void remove_schema_column(domain::ElementRef table, const domain::PreviewColumn& column);
     QDockWidget* validation_dock_ = nullptr;
     QLabel* document_label_ = nullptr;
     QLabel* count_label_ = nullptr;
@@ -190,9 +285,6 @@ private:
     // made once and shown in both.
     QAction* find_action_ = nullptr;
     QToolButton* search_button_ = nullptr;
-    QToolButton* mode_button_ = nullptr;
-    // Keeps the mode button saying which mode the document is in.
-    void refresh_mode_button();
     // Keeps a wheel from changing whatever the pointer happens to be over.
     QObject* wheel_guard_ = nullptr;
     std::map<domain::BackgroundStyle, QAction*> background_actions_;
@@ -263,6 +355,12 @@ private:
     std::vector<domain::ElementRef> selection_;
     QString path_;
     bool refreshing_ = false;
+    // Whether the Properties panel's "For the schema" section is open. It is
+    // a view preference rather than anything the project holds, so it is read
+    // from the application's settings once and written back when the user
+    // folds the section; the panel is rebuilt on every selection and reads
+    // this rather than the settings.
+    bool schema_section_open_ = false;
 
     void build_shell();
     void build_actions();

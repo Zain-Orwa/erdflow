@@ -76,7 +76,7 @@ ERDFlow is being built to combine:
 
 - **Chen conceptual modeling**
 - **Correct M:M modeling**
-- **Basic and Convertible conceptual modes**
+- **One conceptual model, clean for learning and complete for engineering**
 - **Deterministic downstream conversion**
 - **Safe schema refinement**
 - **Structured SQL generation**
@@ -108,10 +108,10 @@ ERDFlow is being built to combine:
   - `M:1`
   - `M:M`
 
-- **Basic vs Convertible Modes**
+- **One model, no modes**
   - learn with a clean conceptual view
-  - switch to a richer engineering-oriented mode
-  - keep the same underlying model
+  - open the "For the schema" section for the engineering fields
+  - the model is the same either way, and nothing is hidden from conversion
 
 - **Safe downstream refinement**
   - generated models stay reviewable

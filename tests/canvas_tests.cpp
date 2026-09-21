@@ -1330,6 +1330,43 @@ void recursive_loop_tests() {
 
 // Elements line up with their neighbours as they are dragged, the way a page
 // layout does, and a selection can be lined up on one edge or middle at once.
+// Dragging an element near another's edge or middle lines the two up and draws
+// a guide along what they now share. What can be lined up against is gathered
+// once when the drag begins rather than asked for again on every pointer move,
+// and anything too far away on both axes is passed over without being
+// compared -- so this checks both that lining up still happens, and that it
+// still happens against a shape far away across, which is the whole point of a
+// guide and the case a nearby-only search would lose.
+void alignment_guide_tests() {
+    SequentialIds ids;
+    application::Editor editor(ids);
+    const auto moving = *editor.create_entity("Moving", {0, 0, 160, 80}).created;
+    // Far away across, and far away both ways, so only an alignment can bring
+    // the first into line with either and only the first one should.
+    editor.create_entity("Across", {1200, 200, 160, 80});
+    editor.create_entity("Elsewhere", {1200, 900, 160, 80});
+    desktop::DiagramView view(editor);
+    view.resize(900, 500);
+    view.show();
+    view.set_align_to_grid(false);
+    view.centerOn(600, 150);
+    QApplication::processEvents();
+    auto* item = find_node(view, "Moving");
+    view.select_elements({moving});
+
+    const auto start = view.mapFromScene(item->sceneBoundingRect().center());
+    mouse(view, QEvent::MouseButtonPress, start, Qt::LeftButton, Qt::LeftButton);
+    // Three short of the distant element's top, which is within reach of it.
+    mouse(view, QEvent::MouseMove, start + QPoint(0, 197), Qt::NoButton, Qt::LeftButton);
+    require(item->pos().y() == 200, "A drag within reach lines up with a distant element's top");
+    // Well clear of everything, so nothing is lined up with and the drag is
+    // left exactly where the hand put it.
+    mouse(view, QEvent::MouseMove, start + QPoint(0, 500), Qt::NoButton, Qt::LeftButton);
+    require(item->pos().y() == 500, "A drag out of reach is left where it was put");
+    mouse(view, QEvent::MouseButtonRelease, start + QPoint(0, 500), Qt::LeftButton, Qt::NoButton);
+    require(editor.project().layout.at(moving).y == 500, "The drag is committed where it was let go");
+}
+
 void alignment_tests() {
     SequentialIds ids;
     application::Editor editor(ids);
@@ -2059,7 +2096,7 @@ void notation_tests() {
     view.set_grid_visible(false);
     view.fit_diagram();
     QApplication::processEvents();
-    require(view.notation() == desktop::Notation::Chen, "Chen is the default notation");
+    require(view.notation() == desktop::Notation::CrowsFoot, "Crow's foot is the default notation");
 
     const auto render = [&] {
         QApplication::processEvents();
@@ -2940,6 +2977,133 @@ void search_tests() {
 }
 // Turning the wheel moves the diagram; holding the platform's zoom key and
 // turning it makes the diagram larger or smaller, about the pointer.
+// An entity is a box holding a name, and how wide and how tall it is are two
+// questions, so it answers to each of its four edges and each of its corners:
+// the side that is pulled moves, the side opposite it stays exactly where it
+// was, and nothing is offered at all until the entity is the thing chosen.
+void entity_resize_tests() {
+    SequentialIds ids;
+    application::Editor editor(ids);
+    const auto student = std::get<domain::EntityId>(*editor.create_entity("Student", {-80, -40, 160, 80}).created);
+    const domain::ElementRef ref{student};
+    desktop::DiagramView view(editor);
+    view.resize(900, 600);
+    view.show();
+    view.actual_size();
+    view.centerOn(0, 0);
+    QApplication::processEvents();
+
+    const auto box = [&] { return editor.project().layout.at(ref); };
+    const auto pull = [&](const QPointF& from, const QPoint& by) {
+        const auto start = view.mapFromScene(from);
+        mouse(view, QEvent::MouseButtonPress, start, Qt::LeftButton, Qt::LeftButton);
+        for (int step = 1; step <= 6; ++step)
+            mouse(view, QEvent::MouseMove, start + by * step / 6, Qt::NoButton, Qt::LeftButton);
+        mouse(view, QEvent::MouseButtonRelease, start + by, Qt::LeftButton, Qt::NoButton);
+        view.synchronize();
+        QApplication::processEvents();
+    };
+
+    // Nothing is pulled while nothing is chosen: the same press moves the
+    // entity, which is what a press on a shape means.
+    const auto placed = box();
+    pull(QPointF(placed.x + placed.width, placed.y + placed.height / 2), QPoint(40, 0));
+    require(std::abs(box().width - placed.width) < 0.01, "An unchosen entity is not resized by its edge");
+    require(box().x > placed.x + 20, "It is moved, which is what pressing a shape does");
+    require(editor.undo(), "Put it back");
+    view.synchronize();
+    QApplication::processEvents();
+
+    view.select_elements({ref});
+    QApplication::processEvents();
+
+    // The right edge: wider, and standing where it always stood.
+    const auto before = box();
+    pull(QPointF(before.x + before.width - 2, before.y + before.height / 2), QPoint(60, 0));
+    require(box().width > before.width + 40, "The right edge makes the entity wider");
+    require(std::abs(box().x - before.x) < 0.01 && std::abs(box().y - before.y) < 0.01,
+            "Without moving it, because the side opposite the one pulled stays put");
+    require(std::abs(box().height - before.height) < 0.01, "And without changing its height");
+    require(editor.undo_label() == "Resize entity", "The history says what was done");
+    require(editor.undo(), "Undo the pull");
+    view.synchronize();
+    QApplication::processEvents();
+    require(std::abs(box().width - before.width) < 0.01, "Which puts the width back");
+    require(editor.redo(), "And redo pulls it out again");
+    view.synchronize();
+    QApplication::processEvents();
+    const auto widened = box();
+
+    // The left edge, which carries the entity's corner with it and leaves the
+    // right-hand side alone.
+    pull(QPointF(widened.x + 2, widened.y + widened.height / 2), QPoint(-50, 0));
+    require(box().x < widened.x - 30, "The left edge follows the pointer");
+    require(std::abs(box().x + box().width - (widened.x + widened.width)) < 0.01,
+            "And the right-hand side stays where it was");
+
+    // The bottom edge, and then the top one, which is the same thing the other
+    // way up.
+    const auto sideways = box();
+    pull(QPointF(sideways.x + sideways.width / 2, sideways.y + sideways.height - 2), QPoint(0, 45));
+    require(box().height > sideways.height + 30, "The bottom edge makes it taller");
+    require(std::abs(box().y - sideways.y) < 0.01, "With its top edge where it was");
+    const auto taller = box();
+    pull(QPointF(taller.x + taller.width / 2, taller.y + 2), QPoint(0, -35));
+    require(box().y < taller.y - 20, "The top edge reaches upwards");
+    require(std::abs(box().y + box().height - (taller.y + taller.height)) < 0.01,
+            "And leaves the bottom where it was");
+
+    // A corner pulls both of the sides that meet at it.
+    const auto squared = box();
+    pull(QPointF(squared.x + squared.width - 2, squared.y + squared.height - 2), QPoint(40, 40));
+    require(box().width > squared.width + 20 && box().height > squared.height + 20,
+            "A corner pulls two sides at once");
+    require(std::abs(box().x - squared.x) < 0.01 && std::abs(box().y - squared.y) < 0.01,
+            "Leaving the corner opposite it alone");
+
+    // Its attributes and relationships are drawn from its outline, so they
+    // follow the edge while it is being pulled rather than snapping into place
+    // when it is let go. And a pull can be abandoned: Escape puts the box back
+    // exactly as it was, with the lines back on it.
+    {
+        const auto attribute = editor.create_attribute("ID", {200, -20, 150, 60}, domain::AttributeOwner{student});
+        require(attribute && attribute.created, "An attribute to hang off it");
+        view.synchronize();
+        view.select_elements({ref});
+        QApplication::processEvents();
+        auto* link = find_edge(view, QStringLiteral("Attribute ownership"));
+        const auto drawn = link->shape();
+        const auto kept = box();
+        const auto outline = find_node(view, "Student")->sceneBoundingRect();
+        const auto start = view.mapFromScene(QPointF(kept.x + kept.width - 2, kept.y + kept.height / 2));
+        mouse(view, QEvent::MouseButtonPress, start, Qt::LeftButton, Qt::LeftButton);
+        mouse(view, QEvent::MouseMove, start + QPoint(50, 0), Qt::NoButton, Qt::LeftButton);
+        require(find_node(view, "Student")->sceneBoundingRect().width() > outline.width() + 30,
+                "The pull is previewed on the diagram before it is let go");
+        require(link->shape() != drawn, "And the line it carries follows its edge");
+        const auto revision = editor.revision();
+        key(view, Qt::Key_Escape);
+        QApplication::processEvents();
+        require(editor.revision() == revision, "Escape writes nothing");
+        require(find_node(view, "Student")->sceneBoundingRect() == outline,
+                "And puts the box back as it was");
+        require(link->shape() == drawn, "With the line back on it");
+        mouse(view, QEvent::MouseButtonRelease, start + QPoint(50, 0), Qt::LeftButton, Qt::NoButton);
+        require(editor.revision() == revision, "Letting go after Escape asks for nothing");
+        require(editor.erase({*attribute.created}), "Put the diagram back");
+        view.synchronize();
+        view.select_elements({ref});
+        QApplication::processEvents();
+    }
+
+    // A pull that runs far past what a box may be asks for the end of the
+    // range rather than for the entity to be turned inside out.
+    const auto full = box();
+    pull(QPointF(full.x + 2, full.y + full.height / 2), QPoint(4000, 0));
+    require(box().width == domain::min_entity_width, "However far an edge is pulled past the other one");
+    require(box().x + box().width <= full.x + full.width + 0.01, "And the far side is still the far side");
+}
+
 void wheel_zoom_tests() {
     SequentialIds ids;
     application::Editor editor(ids);
@@ -3002,6 +3166,10 @@ int main(int argc, char** argv) {
         desktop::DiagramView view(editor);
         view.resize(1000, 700);
         view.show();
+        // The label beside an end is how Chen reads a cardinality; crow's foot
+        // draws a foot and writes nothing. This case is about where that label
+        // falls, so it asks for the notation that has one.
+        view.set_notation(desktop::Notation::Chen);
         view.centerOn(280, 160);
         QApplication::processEvents();
         auto* entity_item = find_node(view, "Person");
@@ -3148,6 +3316,7 @@ int main(int argc, char** argv) {
         symbol_resize_tests();
         recursive_loop_tests();
         alignment_tests();
+        alignment_guide_tests();
         lock_selection_tests();
         background_tests();
         element_shape_preview_tests();
@@ -3168,6 +3337,7 @@ int main(int argc, char** argv) {
         document_export_tests();
         search_tests();
         wheel_zoom_tests();
+        entity_resize_tests();
         std::cout << "Canvas tests passed\n";
     } catch (const std::exception& exception) {
         std::cerr << "Canvas test failed: " << exception.what() << '\n';

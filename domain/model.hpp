@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <map>
 #include <optional>
+#include <set>
 #include <string>
 #include <variant>
 #include <vector>
@@ -30,6 +31,7 @@ using ParticipantId = Id<struct ParticipantTag>;
 using PictureId = Id<struct PictureTag>;
 using NoteId = Id<struct NoteTag>;
 using CommentId = Id<struct CommentTag>;
+using SchemaColumnId = Id<struct SchemaColumnTag>;
 // A specialization is a placed element of its own: it carries the ISA triangle
 // on the canvas and the constraints that decide how it converts to relations.
 // A picture and a note are placed elements too, though not database objects:
@@ -96,23 +98,51 @@ struct Rect {
 
 enum class AttributeKind { Normal, Key, Composite, Multivalued, Derived };
 
-// How much a conceptual model is asked to say about itself.
+// What a column is. The whole SQL data type catalogue, grouped the way SQL
+// Server groups it, rather than a small portable set: a model is written
+// against the database it is going to become, and a designer who wants
+// NVARCHAR should be able to say NVARCHAR.
 //
-// Basic is the diagram as it is drawn and taught: shapes, names and the
-// notation. Convertible is the same model asked to carry what turning it into
-// tables will need. It is one model either way -- switching modes changes what
-// is shown and what is asked for, never what anything is or what identity it
-// has, so a diagram can be drawn in Basic and finished in Convertible without
-// being rebuilt.
-enum class ConceptualMode { Basic, Convertible };
+// Unset is a real answer and the one every attribute starts with. It is the
+// question still open, and conversion readiness is what asks it.
+//
+// Text, NText and Image are here because files and databases still hold them.
+// They are on their way out of SQL Server, and VarcharMax, NVarcharMax and
+// VarbinaryMax replace them; readiness says so rather than refusing them.
+enum class LogicalType {
+    Unset,
+    // Exact numerics.
+    Int, BigInt, SmallInt, TinyInt, Bit, Decimal, Numeric, Money, SmallMoney,
+    // Approximate numerics.
+    Float, Real,
+    // Character strings.
+    Char, Varchar, VarcharMax, Text,
+    // Unicode character strings.
+    NChar, NVarchar, NVarcharMax, NText,
+    // Binary strings.
+    Binary, Varbinary, VarbinaryMax, Image,
+    // Date and time.
+    Date, Time, DateTime, DateTime2, DateTimeOffset, SmallDateTime,
+    // Everything else.
+    UniqueIdentifier, Xml, RowVersion, HierarchyId, SqlVariant, Cursor, Table,
+    Geometry, Geography
+};
 
-// A portable type, chosen without naming a database. Text(100) becomes
-// VARCHAR(100) on one engine and NVARCHAR(100) on another, and that choice
-// belongs to the physical stage rather than to this one.
-//
-// Unset is a real answer and the one every attribute starts with: in Basic it
-// is simply not asked, and in Convertible it is the question still open.
-enum class LogicalType { Unset, Text, Integer, Decimal, Boolean, Date, DateTime, Binary, Uuid };
+// Whether a type carries a size after its name, and what shape that size is.
+// Nothing else takes one, so nobody is asked how long a Bit is.
+enum class TypeSize { None, Length, Precision };
+[[nodiscard]] TypeSize size_of(LogicalType type);
+// Whether a column of this type could count itself up. SQL Server's IDENTITY
+// takes the exact numerics that hold whole numbers, and nothing else: there is
+// no counting up a date or a string. Decimal and Numeric qualify only with a
+// scale of nothing, which is a question about the column rather than the type,
+// so it is asked where the column is.
+[[nodiscard]] bool countable(LogicalType type);
+// True for the three SQL Server is removing. They still read and still save;
+// readiness advises what to use instead.
+[[nodiscard]] bool deprecated_type(LogicalType type);
+// Whether the value is one the enum actually has.
+[[nodiscard]] bool known_type(LogicalType type);
 enum class Cardinality { One, Many };
 enum class Participation { Partial, Total };
 // Whether an instance of the supertype may belong to more than one subtype,
@@ -148,14 +178,16 @@ struct Attribute {
     std::string comment;
     AttributeKind kind = AttributeKind::Normal;
     std::optional<AttributeOwner> owner;
-    // What Convertible mode asks for, and Basic mode leaves alone. Every one of
-    // these is stored whichever mode is on: a model drawn in Basic and finished
-    // in Convertible must not lose what it was told in between, and a model
-    // shown in Basic must not quietly forget what it already knows.
+    // What turning this into a column will need. These are part of the model
+    // and are always stored; the Properties panel keeps them in a section that
+    // collapses, which is a matter of how somebody is looking at the model and
+    // never of what the model holds.
     LogicalType logical_type = LogicalType::Unset;
-    // How long or how precise, where the type takes a number: Text(100). Zero
-    // is unspecified, which is what a type that takes no number always is.
+    // How long, or how precise: Varchar(100), Decimal(10,2). Zero is
+    // unspecified, which is what a type taking no size always is. The scale is
+    // the digits after the point and belongs only to Decimal and Numeric.
     std::uint32_t length = 0;
+    std::uint32_t scale = 0;
     // Whether this is part of what identifies a row, whether it must be filled
     // in, and whether no two rows may share it. Kept apart from the attribute's
     // Chen kind: a key oval says how the diagram draws it, these say what the
@@ -164,6 +196,13 @@ struct Attribute {
     bool identifier = false;
     bool required = false;
     bool unique = false;
+    // Whether the database fills this in for itself, as SQL Server's IDENTITY
+    // does. It has no meaning on a Chen diagram -- nothing there says a value
+    // is generated rather than recorded -- so unlike the three above it is a
+    // fact about the table alone. It is kept here all the same, beside the
+    // type and the length, because that is where everything the column will
+    // need already lives.
+    bool auto_increment = false;
     auto operator<=>(const Attribute&) const = default;
 };
 // A participant attaches to an entity, or to an associative relationship that
@@ -175,6 +214,19 @@ struct Participant {
     ParticipantTarget target;
     Cardinality maximum = Cardinality::Many;
     Participation participation = Participation::Partial;
+    // Whether the two above were chosen, or are merely what a new side starts
+    // as. A side nobody has answered reads Many and Partial, which is also
+    // exactly what a deliberate M:M looks like, so without these a conversion
+    // cannot tell a decision from a silence and would build junction tables
+    // out of questions that were never asked. Kept beside the values rather
+    // than derived from them, because there is nothing in Many or Partial
+    // itself that says which it is.
+    //
+    // These say nothing about whether the model is valid: an unconfirmed side
+    // is a readiness question, not a fault, and the diagram draws it the same
+    // either way.
+    bool cardinality_confirmed = false;
+    bool participation_confirmed = false;
     std::string role;
     // Whether this side's constraints are drawn on the line. The constraints
     // themselves are unaffected: the model still holds them and anything that
@@ -309,6 +361,171 @@ struct Comment {
     auto operator<=>(const Comment&) const = default;
 };
 
+// How a specialization becomes tables. Disjointness and completeness inform a
+// default; they do not decide it, which is why the answer is recorded rather
+// than derived.
+enum class IsaStrategy { PerSubclass, SingleTable, PerConcrete };
+
+// What a composite attribute becomes. Parts is the rule first normal form
+// asks for and the default. Whole keeps one column and stores no parts. Both
+// stores the parts and computes the whole from them, which is what a derived
+// attribute already is.
+enum class CompositeMode { Parts, Whole, Both };
+
+// Whether a table is named for the many rows it holds -- Student becomes
+// Students -- or kept as the diagram draws it.
+enum class TableNaming { Plural, AsDrawn };
+
+// The answers to questions a deterministic conversion cannot decide for
+// itself. Every one of them is a legitimate choice with a working default, so
+// none of them blocks a conversion; they are recorded so that the same
+// question is never asked twice and so a second conversion agrees with the
+// first.
+//
+// Everything is keyed by a stable identity, never by a name or a position, so
+// an answer survives renaming and moving.
+struct ConversionDecisions {
+    TableNaming naming = TableNaming::Plural;
+    // How each hierarchy is mapped. Absent means the default has not been
+    // departed from, which readiness reports as a decision still open.
+    std::map<SpecializationId, IsaStrategy> isa;
+    std::map<AttributeId, CompositeMode> composite;
+    // Which side of a one-to-one relationship carries the foreign key. Either
+    // side is correct, which is exactly why somebody has to say.
+    std::map<RelationshipId, ParticipantId> one_to_one_key;
+    // What a bridge table is called, where the generated name is not wanted.
+    std::map<RelationshipId, std::string> junction_name;
+    // Which attribute identifies an entity that has no key drawn on it.
+    std::map<EntityId, AttributeId> identifier;
+    // A table name typed over the one that was derived. Derived names come
+    // from rules and a word list, and neither is ever complete, so a correction
+    // must always be possible and must always win.
+    std::map<ElementRef, std::string> table_name;
+    auto operator<=>(const ConversionDecisions&) const = default;
+};
+
+// A column that exists on the schema and nowhere else.
+//
+// Somebody reading the model as tables added a column, or took one away, and
+// chose not to have the diagram follow. ADR-010 allows that: the conceptual
+// model and the relational schema describe different levels and are not
+// required to agree, so a difference between them is a fact to be recorded
+// rather than a mistake to be corrected. What is recorded is only the
+// difference; everything the two levels still agree about is derived from the
+// diagram as it always was.
+struct SchemaColumn {
+    SchemaColumnId id;
+    std::string name;
+    LogicalType logical_type = LogicalType::Unset;
+    std::uint32_t length = 0;
+    std::uint32_t scale = 0;
+    bool identifier = false;
+    bool required = false;
+    bool unique = false;
+    bool auto_increment = false;
+    // What the column means to a reader, as an attribute carries one. It is a
+    // description, not a review remark.
+    std::string comment;
+    auto operator<=>(const SchemaColumn&) const = default;
+};
+
+// Everything the schema says that the diagram does not.
+//
+// Kept apart from ConversionDecisions on purpose. A decision answers a
+// question the conversion cannot settle for itself and every answer is
+// legitimate; these are somebody editing the result of the conversion, which
+// is a different kind of fact with a different future. When the Relational
+// Schema workspace arrives these become real relational objects with their own
+// identities, and the decisions stay where they are.
+// What put a foreign key where it is, and so which line on the schema draws
+// it. A line is worked out afresh every time the schema is read, so a shape
+// somebody gave it needs something stable to be remembered against. These
+// three are between them every foreign key there is: a participant carries a
+// relationship's key, a multivalued attribute's table points home, and a
+// subtype points at its parent.
+using LinkSource = std::variant<ParticipantId, AttributeId, EntityId>;
+
+// Where one end of a line has been put by hand. On its table the place is a
+// fraction of the table's box, so the join keeps its position when the table
+// is moved or gains a row; off its table it is a point on the schema.
+struct SchemaEnd {
+    bool on_table = true;
+    Point at;
+    auto operator<=>(const SchemaEnd&) const = default;
+};
+
+// A line as a hand has it: the whole route it takes, and where each of its
+// ends was put.
+struct SchemaLine {
+    std::vector<Point> route;
+    std::optional<SchemaEnd> from;
+    std::optional<SchemaEnd> to;
+    [[nodiscard]] bool empty() const { return route.empty() && !from && !to; }
+    auto operator<=>(const SchemaLine&) const = default;
+};
+
+// Where the schema has been arranged by hand.
+//
+// This is presentation, exactly as the diagram's own layout is, and it is kept
+// for the same two reasons: it is work somebody did, so it survives being
+// saved; and it is an edit like any other, so it undoes. A schema arranged
+// over an afternoon and lost to a closed window would be a schema nobody
+// arranges twice.
+struct SchemaLayout {
+    std::map<ElementRef, Point> tables;
+    // How wide a table has been pulled, and how tall. A table is taken hold of
+    // by whichever of its four edges or corners the hand reaches for, so both
+    // are a table's to choose. Absent means the standard width, and the height
+    // the rows themselves ask for; a height that has been given is room the
+    // rows share between them rather than a gap under the last of them.
+    std::map<ElementRef, double> widths;
+    std::map<ElementRef, double> heights;
+    std::map<LinkSource, SchemaLine> lines;
+    [[nodiscard]] bool empty() const {
+        return tables.empty() && widths.empty() && heights.empty() && lines.empty();
+    }
+    auto operator<=>(const SchemaLayout&) const = default;
+};
+
+// A table's box as the hand has left it: the size it was pulled to, and where
+// its top-left corner ended up. A right or bottom edge leaves that corner
+// where it was and carries no place; a left or top edge moves it, and the
+// table has to be put there in the same edit, or undoing the pull would take
+// the size back and leave the table somewhere else.
+struct SchemaTableBox {
+    double width = 0;
+    double height = 0;
+    std::optional<Point> at;
+    auto operator<=>(const SchemaTableBox&) const = default;
+};
+
+struct SchemaOverrides {
+    // Columns added to one table at the schema level only, in the order they
+    // were added, under the element whose table they were added to.
+    std::map<ElementRef, std::vector<SchemaColumn>> added;
+    // Attributes the schema does not show, though the diagram still draws them.
+    std::set<AttributeId> hidden;
+    // What a key the conversion invented is called, where the generated name
+    // was not wanted. A table with nothing to identify it is given a key of its
+    // own, which is right, but the name it is given is a guess from the table's
+    // own name and the user may have a better one. Keyed by the element the
+    // table came from, since the key itself has no identity to be keyed by.
+    // Every foreign key pointing at that table is named for its primary key, so
+    // renaming the key here renames those too, which is the point.
+    std::map<ElementRef, std::string> key_names;
+    // Whether a key the conversion invented counts itself up. Kept here for
+    // the same reason its name is: the key has no attribute behind it and no
+    // identity of its own, so the element the table came from is the only
+    // stable thing it can be remembered against. This is the commonest place
+    // of all to want it -- a table with nothing to identify it is given a
+    // surrogate, and a surrogate is what IDENTITY is for.
+    std::set<ElementRef> counting_keys;
+    [[nodiscard]] bool empty() const {
+        return added.empty() && hidden.empty() && key_names.empty() && counting_keys.empty();
+    }
+    auto operator<=>(const SchemaOverrides&) const = default;
+};
+
 struct Project {
     ProjectId id;
     std::string name = "Untitled";
@@ -322,10 +539,12 @@ struct Project {
     // are: a comment is pinned to the model rather than placed on the canvas,
     // so it has no layout, no colour and no transparency of its own.
     std::map<CommentId, Comment> comments;
-    // What this model is being asked to say about itself. It travels with the
-    // document, because what a model was told is part of the model rather than
-    // part of how somebody happened to be looking at it.
-    ConceptualMode mode = ConceptualMode::Basic;
+    // What the user has answered about turning this into tables.
+    ConversionDecisions decisions;
+    // Where the schema has been edited away from the diagram it came from.
+    SchemaOverrides schema;
+    // Where the schema has been arranged by hand, beside the diagram's own.
+    SchemaLayout schema_layout;
     std::map<ElementRef, Rect> layout;
     // How the user has shaped each connector they have touched. An absent entry
     // means the connector is bent and joined entirely automatically.
@@ -386,6 +605,14 @@ inline constexpr double max_coordinate = 100000;
 // it is drawn on. Between them a symbol can be enlarged and shrunk freely.
 inline constexpr double min_symbol_size = 16;
 inline constexpr double max_symbol_size = 4000;
+// How small and how large an entity's box may be pulled. Small enough for a
+// compact diagram of short names, large enough to hold a long one without
+// shortening it, and bounded at both ends so a pull that runs away cannot
+// leave a box that nothing can reach.
+inline constexpr double min_entity_width = 70;
+inline constexpr double min_entity_height = 44;
+inline constexpr double max_entity_width = 2000;
+inline constexpr double max_entity_height = 1400;
 // A picture's bytes, before the text encoding a project file gives them. Kept
 // well inside the file limit, so a diagram can carry a few pictures and still
 // have room for the model.
@@ -397,6 +624,18 @@ inline constexpr std::size_t max_image_bytes = 2U * 1024U * 1024U;
 // inside anything an engine would accept rather than left to be any number at
 // all.
 inline constexpr std::uint32_t max_logical_length = 1000000;
+// How narrow and how wide a schema table may be pulled. Narrow enough to be a
+// column of keys beside short names, wide enough for a long name and a type
+// without either being shortened, and no wider: past that the line between
+// the name and what it is made of is too far to follow across.
+inline constexpr double min_table_width = 150;
+inline constexpr double max_table_width = 620;
+// How short and how tall a table may be pulled. A table is never shorter than
+// the rows it holds -- only the view knows how tall a row is drawn, so it
+// keeps that floor -- and these are the outer bounds the document itself will
+// hold, wide enough for a long table and no further.
+inline constexpr double min_table_height = 40;
+inline constexpr double max_table_height = 2400;
 inline constexpr std::size_t max_comment_bytes = max_description_bytes;
 inline constexpr std::size_t max_comment_targets = max_elements;
 inline constexpr std::uint8_t max_transparency = 100;
