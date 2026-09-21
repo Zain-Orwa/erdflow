@@ -21,7 +21,7 @@ if(ERDFLOW_SANITIZERS AND NOT MSVC)
     target_link_options(erdflow_warnings INTERFACE -fsanitize=address,undefined)
 endif()
 
-add_library(erdflow_domain domain/model.cpp)
+add_library(erdflow_domain domain/model.cpp domain/schema_preview.cpp)
 target_include_directories(erdflow_domain PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(erdflow_domain PRIVATE erdflow_warnings)
 
@@ -38,7 +38,7 @@ add_library(erdflow_canvas app/desktop/diagram_view.cpp app/desktop/theme.cpp ap
                           app/desktop/document_export.cpp)
 target_link_libraries(erdflow_canvas PUBLIC erdflow_application Qt6::Widgets Qt6::Svg PRIVATE erdflow_warnings)
 
-add_library(erdflow_desktop app/desktop/main_window.cpp app/desktop/ribbon.cpp app/desktop/icons.cpp
+add_library(erdflow_desktop app/desktop/main_window.cpp app/desktop/schema_view.cpp app/desktop/ribbon.cpp app/desktop/icons.cpp
                             app/desktop/symbols.cpp app/desktop/symbol_picker.cpp
                             app/desktop/export_dialog.cpp app/desktop/search_bar.cpp)
 target_link_libraries(erdflow_desktop PUBLIC erdflow_canvas Qt6::Svg PRIVATE erdflow_warnings)
@@ -88,6 +88,7 @@ qt_add_resources(erdflow_desktop "erdflow_icons_outline"
     PREFIX "/erdflow/icons-outline"
     BASE "assets/icons-outline"
     FILES
+        assets/icons-outline/key.svg
         assets/icons-outline/select.svg assets/icons-outline/entity.svg
         assets/icons-outline/attribute.svg assets/icons-outline/relationship.svg
         assets/icons-outline/isa.svg assets/icons-outline/connect.svg

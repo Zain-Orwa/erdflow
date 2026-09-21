@@ -1,4 +1,5 @@
 #include "application/editor.hpp"
+#include "domain/schema_preview.hpp"
 
 #include <algorithm>
 #include <array>
@@ -395,6 +396,496 @@ void hostile_models_are_rejected() {
     malformed.layout.emplace(ElementRef{EntityId{ids.next()}}, Rect{});
     CHECK(has_issue(malformed, "layout.reference.missing"));
     CHECK(editor.project() == original);
+}
+
+// The schema half of the model was never asked whether it made sense. A column
+// could be added to a table whose element was gone, a line could be shaped from
+// a participant that no longer existed, and a table could be placed at
+// infinity; validate() had no opinion about any of it, so all of it was written
+// to the file and read back. It is asked the same questions the diagram is.
+void hostile_schema_state_is_rejected() {
+    TestIds ids;
+    Editor editor(ids);
+    const auto person = entity(editor, "Person");
+    const auto name = std::get<AttributeId>(
+        *editor.create_attribute("Name", {}, AttributeOwner{ElementRef{person}}).created);
+    CHECK(editor.add_schema_column(ElementRef{person}, "Nickname"));
+    CHECK(editor.move_schema_tables({{ElementRef{person}, Point{40, 40}}}));
+    const auto original = editor.project();
+    CHECK(validate(original).empty());
+
+    // A column the schema added has to be added to something, and is held to
+    // the same name, identity and type rules a drawn attribute is held to.
+    auto malformed = original;
+    malformed.schema.added[ElementRef{EntityId{ids.next()}}] = malformed.schema.added.at(ElementRef{person});
+    CHECK(has_issue(malformed, "schema.table.missing"));
+    CHECK(!editor.replace_project(malformed));
+    malformed = original;
+    malformed.schema.added.at(ElementRef{person}).front().name.clear();
+    CHECK(has_issue(malformed, "schema.column.name.invalid"));
+    malformed = original;
+    malformed.schema.added.at(ElementRef{person}).front().id = SchemaColumnId{person.value};
+    CHECK(has_issue(malformed, "identity.duplicate"));
+    malformed = original;
+    {
+        auto& column = malformed.schema.added.at(ElementRef{person}).front();
+        column.logical_type = LogicalType::Decimal;
+        column.length = 4;
+        column.scale = 9;
+    }
+    CHECK(has_issue(malformed, "schema.column.scale.invalid"));
+
+    // An attribute the schema hides has to be an attribute the diagram has.
+    malformed = original;
+    malformed.schema.hidden.insert(AttributeId{ids.next()});
+    CHECK(has_issue(malformed, "schema.hidden.missing"));
+
+    // The arrangement is held to the bounds the diagram's layout is held to.
+    malformed = original;
+    malformed.schema_layout.tables[ElementRef{EntityId{ids.next()}}] = Point{5, 5};
+    CHECK(has_issue(malformed, "schema.layout.reference.missing"));
+    malformed = original;
+    malformed.schema_layout.tables.at(ElementRef{person}) =
+        Point{std::numeric_limits<double>::infinity(), 0};
+    CHECK(has_issue(malformed, "schema.layout.bounds.invalid"));
+    malformed = original;
+    malformed.schema_layout.widths[ElementRef{person}] = -30;
+    CHECK(has_issue(malformed, "schema.layout.size.invalid"));
+
+    // And a shaped line has to be drawn from a link that is still there.
+    malformed = original;
+    malformed.schema_layout.lines[LinkSource{ParticipantId{ids.next()}}] = SchemaLine{{Point{1, 1}}, {}, {}};
+    CHECK(has_issue(malformed, "schema.line.reference.missing"));
+    malformed = original;
+    malformed.schema_layout.lines[LinkSource{name}] =
+        SchemaLine{{Point{std::numeric_limits<double>::quiet_NaN(), 0}}, {}, {}};
+    CHECK(has_issue(malformed, "schema.line.route.invalid"));
+    malformed = original;
+    malformed.schema_layout.lines[LinkSource{name}] = SchemaLine{{}, SchemaEnd{false, Point{1e12, 0}}, {}};
+    CHECK(has_issue(malformed, "schema.line.end.invalid"));
+
+    // Nothing hostile was let through, so the editor still holds what it held.
+    CHECK(editor.project() == original);
+}
+
+// A column the schema added carries a persistent identity like everything else,
+// so it must come from the guarded generator rather than the raw one, and it
+// must be remembered when its project is opened. Taken raw, a column could be
+// given an identity that was not a UUIDv7, or one already in use, and be stored
+// either way; forgotten on open, its identity was free to be handed to a new
+// element, leaving two things sharing one.
+void schema_column_identities_are_guarded() {
+    TestIds ids;
+    Editor editor(ids);
+    const auto person = entity(editor, "Person");
+    const auto untouched = editor.project();
+    auto refused = [&](const EditResult& result) {
+        CHECK(!result);
+        CHECK(!result.error.empty());
+        CHECK(editor.project() == untouched);
+    };
+
+    // A generator stuck on an identity already in use, and one that hands back
+    // something that is not a UUIDv7, are both refused where the identity is
+    // asked for rather than stored and found to be wrong afterwards.
+    ids.fixed = person.value;
+    refused(editor.add_schema_column(ElementRef{person}, "Nickname"));
+    ids.fixed = Uuid{};
+    refused(editor.add_schema_column(ElementRef{person}, "Nickname"));
+    ids.fixed.reset();
+    CHECK(editor.add_schema_column(ElementRef{person}, "Nickname"));
+
+    // Opening a project hands the guard the schema's identities too, so a
+    // column's identity cannot afterwards be given to something new.
+    const auto saved = editor.project();
+    const auto column = saved.schema.added.at(ElementRef{person}).front().id;
+    Editor opened(ids);
+    CHECK(opened.replace_project(saved));
+    const auto reopened = opened.project();
+    ids.fixed = column.value;
+    const auto made = opened.create_entity("Course", {});
+    CHECK(!made);
+    CHECK(opened.project() == reopened);
+    ids.fixed.reset();
+}
+
+// The conversion answers, the schema's own edits and its arrangement are the
+// three fields history swaps whole rather than key by key, so each such delta
+// retains a copy of the entire field beside the project's. That makes them the
+// most expensive deltas there are, and they were the only ones the undo budget
+// counted as costing nothing: a history of them could grow past the 32 MiB it
+// is allowed without the budget ever noticing.
+void whole_object_edits_cost_the_budget() {
+    TestIds ids;
+    Editor editor(ids);
+    std::vector<ElementRef> drawn;
+    for (std::size_t i = 0; i < 200; ++i)
+        drawn.push_back(*editor.create_entity("Entity " + std::to_string(i), {}).created);
+    const auto drawing = editor.history_bytes();
+    for (std::size_t i = 0; i < drawn.size(); ++i)
+        CHECK(editor.set_table_name(drawn[i], "A typed table name " + std::to_string(i)));
+    const auto naming = editor.history_bytes() - drawing;
+    // Two hundred answers, each delta holding all two hundred twice over, has
+    // to cost more than two hundred entities with a name apiece. Uncounted,
+    // these deltas cost less than the entities did.
+    CHECK(naming > drawing);
+    CHECK(editor.history_bytes() <= 32U * 1024U * 1024U);
+
+    // The schema's own edits are held to the same accounting.
+    Editor second(ids);
+    const auto table = *second.create_entity("Person", {}).created;
+    const auto before = second.history_bytes();
+    for (std::size_t i = 0; i < 200; ++i)
+        CHECK(second.add_schema_column(table, "Column " + std::to_string(i)));
+    CHECK(second.history_bytes() - before > before);
+    CHECK(second.history_bytes() <= 32U * 1024U * 1024U);
+
+    // And a line given a long route costs what the route costs.
+    Editor third(ids);
+    const auto owner = std::get<EntityId>(*third.create_entity("Owner", {}).created);
+    const auto child = std::get<AttributeId>(
+        *third.create_attribute("Many", {}, AttributeOwner{ElementRef{owner}}).created);
+    const auto plain = third.history_bytes();
+    SchemaLine route;
+    for (std::size_t i = 0; i < 500; ++i) route.route.push_back(Point{double(i), double(i)});
+    CHECK(third.shape_schema_line(LinkSource{child}, route));
+    CHECK(third.history_bytes() - plain > 500 * sizeof(Point));
+}
+
+// A comment carries a persistent identity like everything else, and the guard
+// that refuses to reissue one can only refuse what it was told was issued.
+// Left out when a project is opened, a comment's identity was forgotten and
+// free to be handed to a new element.
+void comment_identities_survive_opening() {
+    TestIds ids;
+    Editor editor(ids);
+    const auto person = entity(editor, "Person");
+    CHECK(editor.create_comment("Check this", {CommentTarget{ElementRef{person}}}));
+    const auto saved = editor.project();
+    const auto remark = saved.comments.begin()->first;
+
+    Editor opened(ids);
+    CHECK(opened.replace_project(saved));
+    const auto reopened = opened.project();
+    ids.fixed = remark.value;
+    CHECK(!opened.create_entity("Course", {}));
+    CHECK(opened.project() == reopened);
+    ids.fixed.reset();
+}
+
+// A name typed on the schema is the name on the diagram. The two are views of
+// one model, so a rename travels to whatever the thing was made from rather
+// than being recorded as a difference beside it -- which would leave the two
+// levels disagreeing about what something is called. Only a key the conversion
+// invented has nothing behind it to rename, and is given a name of its own.
+// The primary key, set from the schema, reaches the diagram. Zain's rule is
+// that nothing on the schema is read-only because it was derived, and that a
+// change made there shows on the conceptual ERD; the key is the case that
+// proves it, because it is both a rule the table enforces and a shape the
+// diagram draws.
+void schema_keys_reach_the_diagram() {
+    TestIds ids;
+    Editor editor(ids);
+    const auto person = entity(editor, "Person");
+    const auto owner = AttributeOwner{ElementRef{person}};
+    const auto code = std::get<AttributeId>(*editor.create_attribute("Code", {}, owner).created);
+    const auto email = std::get<AttributeId>(*editor.create_attribute("Email", {}, owner).created);
+
+    const auto key_of = [&](const std::string& column) {
+        for (const auto& table : schema_preview(editor.project()).tables)
+            for (const auto& one : table.columns)
+                if (one.name == column) return one.primary_key;
+        return false;
+    };
+
+    // Nothing identifies the entity yet, so neither column is the key.
+    CHECK(!key_of("Code"));
+    CHECK(!key_of("Email"));
+
+    // Making one the key from the schema sets the rule the table enforces and
+    // draws the attribute as a key on the diagram, in one edit.
+    CHECK(editor.set_primary_key(code, true));
+    CHECK(key_of("Code"));
+    CHECK(editor.project().attributes.at(code).identifier);
+    CHECK(editor.project().attributes.at(code).kind == AttributeKind::Key);
+    // A key is never empty, so it was made required in the same edit.
+    CHECK(editor.project().attributes.at(code).required);
+
+    // One step of history takes the whole of it back, rather than leaving the
+    // oval drawn with the rule undone or the other way about.
+    CHECK(editor.undo());
+    CHECK(!key_of("Code"));
+    CHECK(!editor.project().attributes.at(code).identifier);
+    CHECK(editor.project().attributes.at(code).kind == AttributeKind::Normal);
+    CHECK(editor.redo());
+
+    // The key can be put out and put on another column, which is what moving
+    // it means: two deliberate acts rather than one that guesses.
+    CHECK(editor.set_primary_key(code, false));
+    CHECK(!key_of("Code"));
+    CHECK(editor.project().attributes.at(code).kind == AttributeKind::Normal);
+    CHECK(editor.set_primary_key(email, true));
+    CHECK(key_of("Email"));
+
+    // What cannot be a key says so rather than being quietly reshaped.
+    const auto address = std::get<AttributeId>(*editor.create_attribute("Address", {}, owner).created);
+    CHECK(editor.set_attribute_kind(address, AttributeKind::Composite));
+    CHECK(!editor.set_primary_key(address, true).ok);
+    CHECK(editor.project().attributes.at(address).kind == AttributeKind::Composite);
+}
+
+// The constraints a row carries, changed from the schema. Nullability on an
+// ordinary column is the attribute's own rule; on a foreign key it is not a
+// fact about the column at all but about the relationship's participation, so
+// changing it there changes the diagram.
+void schema_constraints_reach_the_diagram() {
+    TestIds ids;
+    Editor editor(ids);
+    const auto person = entity(editor, "Person");
+    const auto city = entity(editor, "City");
+    const auto owner = AttributeOwner{ElementRef{person}};
+    const auto email = std::get<AttributeId>(*editor.create_attribute("Email", {}, owner).created);
+    const auto made = editor.relate(person, city, {}, "lives in");
+    CHECK(made);
+    const auto lives_in = std::get<RelationshipId>(*made.created);
+    // Person many, City one, so the foreign key lands on Person and points at
+    // City. Its nullability is City's participation.
+    CHECK(editor.set_ratio(lives_in, Cardinality::Many, Cardinality::One));
+
+    const auto column_named = [&](const std::string& name) -> std::optional<PreviewColumn> {
+        for (const auto& table : schema_preview(editor.project()).tables)
+            for (const auto& one : table.columns)
+                if (one.name == name) return one;
+        return std::nullopt;
+    };
+
+    // An ordinary column's rules are the attribute's own, and setting them
+    // from the schema sets them on the attribute.
+    CHECK(!column_named("Email")->required);
+    CHECK(!column_named("Email")->unique);
+    CHECK(editor.set_attribute_rules(email, false, true, true));
+    CHECK(column_named("Email")->required);
+    CHECK(column_named("Email")->unique);
+    CHECK(editor.project().attributes.at(email).required);
+
+    // The foreign key on Person. The side it points at starts partial, so it
+    // may be empty, and it remembers which participant put it there.
+    const auto foreign_key_now = [&]() -> std::optional<PreviewColumn> {
+        for (const auto& table : schema_preview(editor.project()).tables)
+            for (const auto& one : table.columns) if (one.foreign_key) return one;
+        return std::nullopt;
+    };
+    const auto foreign = foreign_key_now();
+    CHECK(foreign.has_value());
+    CHECK(!foreign->required);
+    CHECK(foreign->link.has_value());
+    CHECK(std::holds_alternative<ParticipantId>(*foreign->link));
+
+    // Saying it may not be empty says the side it points at is total, and the
+    // diagram is where that fact lives.
+    const auto side = std::get<ParticipantId>(*foreign->link);
+    CHECK(editor.set_participation(side, Participation::Total));
+    const auto& sides = editor.project().relationships.at(lives_in).participants;
+    const auto found = std::find_if(sides.begin(), sides.end(),
+                                    [&](const auto& one) { return one.id == side; });
+    CHECK(found != sides.end());
+    CHECK(found->participation == Participation::Total);
+    // And it was answered, not merely left at a value that happens to match.
+    CHECK(found->participation_confirmed);
+    // The cardinality was not what was said, so it keeps what it had.
+    CHECK(found->maximum == Cardinality::One);
+
+    CHECK(foreign_key_now()->required);
+
+    // And back, in one step of history.
+    CHECK(editor.undo());
+    CHECK(!foreign_key_now()->required);
+}
+
+// Counting a column up. The one constraint with nothing on the diagram behind
+// it, and the one that refuses: a generated column of the wrong type is SQL
+// that will not run, so it is refused with a reason rather than accepted and
+// left to fail later.
+void columns_can_count_themselves_up() {
+    TestIds ids;
+    Editor editor(ids);
+    const auto person = entity(editor, "Person");
+    const auto owner = AttributeOwner{ElementRef{person}};
+    const auto id = std::get<AttributeId>(*editor.create_attribute("Id", {}, owner).created);
+    const auto name = std::get<AttributeId>(*editor.create_attribute("Name", {}, owner).created);
+
+    const auto counting = [&](const std::string& column) {
+        for (const auto& table : schema_preview(editor.project()).tables)
+            for (const auto& one : table.columns)
+                if (one.name == column) return one.auto_increment;
+        return false;
+    };
+
+    // A column with no type yet is asked for one first: there is no telling
+    // whether it could count up until somebody says what it holds.
+    CHECK(!editor.set_auto_increment(id, true).ok);
+
+    CHECK(editor.set_logical_type(id, LogicalType::BigInt));
+    CHECK(editor.set_auto_increment(id, true));
+    CHECK(counting("Id"));
+    // What the database fills in is never empty, so it was made required too.
+    CHECK(editor.project().attributes.at(id).required);
+
+    // Text cannot count up, and says so.
+    CHECK(editor.set_logical_type(name, LogicalType::NVarchar, 40));
+    const auto refused = editor.set_auto_increment(name, true);
+    CHECK(!refused.ok);
+    CHECK(!refused.error.empty());
+    CHECK(!counting("Name"));
+
+    // A decimal can, but only where it keeps no digits after the point.
+    const auto tally = std::get<AttributeId>(*editor.create_attribute("Tally", {}, owner).created);
+    CHECK(editor.set_logical_type(tally, LogicalType::Decimal));
+    CHECK(editor.set_type_size(tally, 10, 2));
+    CHECK(!editor.set_auto_increment(tally, true).ok);
+    CHECK(editor.set_type_size(tally, 10, 0));
+    CHECK(editor.set_auto_increment(tally, true));
+    CHECK(counting("Tally"));
+
+    // And it undoes like anything else.
+    CHECK(editor.undo());
+    CHECK(!counting("Tally"));
+}
+
+// A key the conversion invented can count itself up, and a one-to-one key
+// reads as unique. Both are columns with no attribute behind them, which is
+// exactly where pressing a constraint used to do nothing at all.
+void invented_keys_carry_constraints() {
+    TestIds ids;
+    Editor editor(ids);
+    const auto student = entity(editor, "Student");
+    const auto card = entity(editor, "Card");
+    const auto made = editor.relate(student, card, {}, "holds");
+    CHECK(made);
+    const auto holds = std::get<RelationshipId>(*made.created);
+
+    const auto column_named = [&](const std::string& name) -> std::optional<PreviewColumn> {
+        for (const auto& table : schema_preview(editor.project()).tables)
+            for (const auto& one : table.columns)
+                if (one.name == name) return one;
+        return std::nullopt;
+    };
+
+    // Nothing identifies either entity, so each table is given a key of its
+    // own. It has no attribute behind it and no identity of its own.
+    const auto key = column_named("StudentID");
+    CHECK(key.has_value());
+    CHECK(key->primary_key);
+    CHECK(key->origin_kind == ColumnOrigin::Generated);
+    CHECK(!key->origin.has_value());
+    CHECK(!key->added.has_value());
+    CHECK(!key->auto_increment);
+
+    // It is remembered against the table it belongs to, as its name is.
+    CHECK(editor.set_key_auto_increment(ElementRef{student}, true));
+    CHECK(column_named("StudentID")->auto_increment);
+    CHECK(editor.undo());
+    CHECK(!column_named("StudentID")->auto_increment);
+    CHECK(editor.redo());
+    CHECK(column_named("StudentID")->auto_increment);
+    // And it survives the key being renamed, being keyed by the table.
+    CHECK(editor.rename_schema_key(ElementRef{student}, "Matric"));
+    CHECK(column_named("Matric")->auto_increment);
+
+    // A one-to-one foreign key holds one row and no more, which is what
+    // unique says. It is read from the relationship's shape, not typed.
+    CHECK(editor.set_ratio(holds, Cardinality::One, Cardinality::One));
+    const auto foreign = [&]() -> std::optional<PreviewColumn> {
+        for (const auto& table : schema_preview(editor.project()).tables)
+            for (const auto& one : table.columns) if (one.foreign_key) return one;
+        return std::nullopt;
+    };
+    CHECK(foreign().has_value());
+    CHECK(foreign()->unique);
+    // Made one-to-many, and it is no longer unique.
+    CHECK(editor.set_ratio(holds, Cardinality::Many, Cardinality::One));
+    CHECK(!foreign()->unique);
+
+    // Which is the other way round too: saying the key is unique from the
+    // schema says the side carrying it sees one row, and that is the
+    // diagram's cardinality.
+    const auto side = *foreign()->link;
+    CHECK(std::holds_alternative<ParticipantId>(side));
+    const auto& sides = editor.project().relationships.at(holds).participants;
+    CHECK(sides.size() == 2);
+    const auto carrier = sides[0].id == std::get<ParticipantId>(side) ? sides[1].id : sides[0].id;
+    CHECK(editor.set_cardinality(carrier, Cardinality::One));
+    CHECK(foreign()->unique);
+    const auto& after = editor.project().relationships.at(holds).participants;
+    const auto found = std::find_if(after.begin(), after.end(),
+                                    [&](const auto& one) { return one.id == carrier; });
+    CHECK(found != after.end());
+    CHECK(found->maximum == Cardinality::One);
+    CHECK(found->cardinality_confirmed);
+}
+
+void schema_names_reach_the_diagram() {
+    TestIds ids;
+    Editor editor(ids);
+    const auto student = entity(editor, "Student");
+    const auto course = entity(editor, "Course");
+    const auto title = std::get<AttributeId>(
+        *editor.create_attribute("Title", {}, AttributeOwner{ElementRef{course}}).created);
+    CHECK(editor.relate(student, course, {}, "takes"));
+
+    const auto named = [&](const std::string& table, const std::string& column) {
+        for (const auto& one : schema_preview(editor.project()).tables) {
+            if (one.name != table) continue;
+            for (const auto& value : one.columns) if (value.name == column) return true;
+        }
+        return false;
+    };
+
+    // Nothing identifies the entity, so the conversion makes a key and names it
+    // after the table. The name is a guess and can be taken back, and every
+    // foreign key pointing at that table follows it.
+    CHECK(named("Students", "StudentID"));
+    CHECK(named("takes", "StudentID"));
+    CHECK(editor.rename_schema_key(ElementRef{student}, "MatricNo"));
+    CHECK(named("Students", "MatricNo"));
+    CHECK(named("takes", "MatricNo"));
+    CHECK(editor.rename_schema_key(ElementRef{student}, ""));
+    CHECK(named("Students", "StudentID"));
+    CHECK(editor.rename_schema_key(ElementRef{student}, "MatricNo"));
+
+    // Renaming the table renames the entity it came from.
+    CHECK(editor.rename_table(ElementRef{student}, "Pupil"));
+    CHECK(editor.project().entities.at(student).name == "Pupil");
+    CHECK(named("Pupils", "MatricNo"));
+
+    // Renaming a derived column renames its attribute.
+    CHECK(editor.rename(ElementRef{title}, "CourseTitle"));
+    CHECK(editor.project().attributes.at(title).name == "CourseTitle");
+    CHECK(named("Courses", "CourseTitle"));
+
+    // A name typed over the derived one is given up when the table is renamed,
+    // or it would go on masking the name just chosen.
+    CHECK(editor.set_table_name(ElementRef{course}, "Modules"));
+    CHECK(named("Modules", "CourseTitle"));
+    CHECK(editor.rename_table(ElementRef{course}, "Unit"));
+    CHECK(editor.project().decisions.table_name.empty());
+    CHECK(named("Units", "CourseTitle"));
+    CHECK(named("Units", "UnitID"));
+
+    // One undo takes back the rename and the name it gave up together.
+    CHECK(editor.undo());
+    CHECK(editor.project().entities.at(course).name == "Course");
+    CHECK(named("Modules", "CourseTitle"));
+
+    // A key name belongs to an element that is still there, and goes with it.
+    CHECK(editor.erase({ElementRef{student}}, {}, {}, {}));
+    CHECK(editor.project().schema.key_names.empty());
+    auto malformed = editor.project();
+    malformed.schema.key_names[ElementRef{EntityId{ids.next()}}] = "Orphan";
+    CHECK(has_issue(malformed, "schema.key_name.missing"));
+    malformed = editor.project();
+    malformed.schema.key_names[ElementRef{course}] = std::string(max_name_bytes + 1, 'x');
+    CHECK(has_issue(malformed, "schema.key_name.invalid"));
 }
 
 void limits_deep_ownership_and_compact_history() {
@@ -1253,9 +1744,9 @@ void comments_are_pinned_to_things() {
     CHECK(editor.project().comments.size() == counted);
 }
 
-// Convertible mode asks the same model what it will become. One model either
-// way: switching changes what is asked for, never what anything is.
-void convertible_mode_asks_what_it_becomes() {
+// One model, asked what it will become. There is no mode: the fields that
+// conversion needs are part of every model and are always there to be set.
+void the_model_says_what_it_becomes() {
     TestIds ids;
     Editor editor(ids);
     const auto made = editor.create_entity("Student", {0, 0, 160, 80});
@@ -1265,27 +1756,17 @@ void convertible_mode_asks_what_it_becomes() {
     CHECK(attribute);
     const auto id = std::get<AttributeId>(*attribute.created);
 
-    CHECK(editor.project().mode == ConceptualMode::Basic);
-    const auto before = editor.project();
-    CHECK(editor.set_conceptual_mode(ConceptualMode::Convertible));
-    CHECK(editor.project().mode == ConceptualMode::Convertible);
-    // Nothing was created, destroyed or re-identified by the switch, which is
-    // the whole of Phase 13's exit criteria.
-    CHECK(editor.project().entities == before.entities);
-    CHECK(editor.project().attributes == before.attributes);
-    CHECK(editor.project().relationships == before.relationships);
-    // And it is an edit like any other, so changing your mind costs one undo.
-    CHECK(editor.undo());
-    CHECK(editor.project() == before);
-    CHECK(editor.redo());
+    // An attribute starts with the question open rather than with an answer,
+    // and nothing has to be switched on before it can be answered.
+    CHECK(editor.project().attributes.at(id).logical_type == LogicalType::Unset);
 
     // A type, and a length only where the type takes one.
-    CHECK(editor.set_logical_type(id, LogicalType::Text, 100));
-    CHECK(editor.project().attributes.at(id).logical_type == LogicalType::Text);
+    CHECK(editor.set_logical_type(id, LogicalType::Varchar, 100));
+    CHECK(editor.project().attributes.at(id).logical_type == LogicalType::Varchar);
     CHECK(editor.project().attributes.at(id).length == 100);
     // Changed to a type that is not measured, the number goes rather than being
     // carried along to mean nothing later.
-    CHECK(editor.set_logical_type(id, LogicalType::Boolean, 100));
+    CHECK(editor.set_logical_type(id, LogicalType::Bit, 100));
     CHECK(editor.project().attributes.at(id).length == 0);
     CHECK(editor.set_logical_type(id, LogicalType::Decimal, 12));
     CHECK(editor.project().attributes.at(id).length == 12);
@@ -1305,28 +1786,525 @@ void convertible_mode_asks_what_it_becomes() {
     CHECK(note);
     CHECK(!editor.set_schema_comment(*note.created, "Nobody will ever read this."));
 
-    // An attribute with no type yet is a warning while the model is being asked,
-    // and nothing at all while it is not: a half-answered model is still a model.
+    // An attribute with no type yet has left a question open, and an open
+    // question is not a fault. validate() says whether the model is sound;
+    // whether it is ready to become tables is readiness()' question, and
+    // Phase 14 is where it gets asked.
     const auto unanswered = editor.create_attribute("Name", {200, -160, 150, 60}, ElementRef{student});
     CHECK(unanswered);
-    const auto asking = validate(editor.project());
-    CHECK(std::any_of(asking.begin(), asking.end(), [](const Issue& issue) {
-        return issue.code == "attribute.type.missing" && !issue.blocks_save;
-    }));
-    CHECK(editor.set_conceptual_mode(ConceptualMode::Basic));
-    const auto quiet = validate(editor.project());
-    CHECK(std::none_of(quiet.begin(), quiet.end(), [](const Issue& issue) {
+    const auto issues = validate(editor.project());
+    CHECK(std::none_of(issues.begin(), issues.end(), [](const Issue& issue) {
         return issue.code == "attribute.type.missing";
     }));
-    // And what it was told in Convertible mode is still there, so a model drawn
-    // in one mode and finished in the other loses nothing in between.
+    // A half-answered model is still a model, and still saveable.
+    CHECK(std::none_of(issues.begin(), issues.end(), [](const Issue& issue) { return issue.blocks_save; }));
+    // And everything the model was told is still there to be read.
     CHECK(editor.project().attributes.at(id).logical_type == LogicalType::Decimal);
     CHECK(editor.project().attributes.at(id).comment == "Permanent identifier.");
+}
+
+// The mapping. A Conceptual ERD read as tables, by the rules the course
+// material teaches -- including the ones where a textbook alternative exists
+// and ERDFlow deliberately follows this one.
+void the_diagram_becomes_tables() {
+    TestIds ids;
+    Editor editor(ids);
+
+    const auto student = std::get<EntityId>(*editor.create_entity("Student", {0, 0, 160, 80}).created);
+    const auto course = std::get<EntityId>(*editor.create_entity("Course", {400, 0, 160, 80}).created);
+
+    // A key, a composite with parts, one that is worked out, and one held more
+    // than once: between them every attribute rule.
+    const auto key = std::get<AttributeId>(*editor.create_attribute("StudentID", {}, ElementRef{student}).created);
+    CHECK(editor.set_attribute_kind(key, AttributeKind::Key));
+    CHECK(editor.set_attribute_rules(key, true, true, true));
+    CHECK(editor.set_logical_type(key, LogicalType::Int));
+    const auto full = std::get<AttributeId>(*editor.create_attribute("Name", {}, ElementRef{student}).created);
+    CHECK(editor.set_attribute_kind(full, AttributeKind::Composite));
+    CHECK(editor.create_attribute("First", {}, ElementRef{full}));
+    CHECK(editor.create_attribute("Last", {}, ElementRef{full}));
+    const auto age = std::get<AttributeId>(*editor.create_attribute("Age", {}, ElementRef{student}).created);
+    CHECK(editor.set_attribute_kind(age, AttributeKind::Derived));
+    const auto phone = std::get<AttributeId>(*editor.create_attribute("Phone", {}, ElementRef{student}).created);
+    CHECK(editor.set_attribute_kind(phone, AttributeKind::Multivalued));
+
+    const auto course_key = std::get<AttributeId>(*editor.create_attribute("CourseID", {}, ElementRef{course}).created);
+    CHECK(editor.set_attribute_kind(course_key, AttributeKind::Key));
+    CHECK(editor.set_attribute_rules(course_key, true, true, true));
+
+    // Many to many, which becomes a bridge.
+    const auto enrolled = std::get<RelationshipId>(*editor.create_relationship("Enrolled", {200, 200, 190, 110}).created);
+    const auto left = editor.connect(enrolled, student);
+    const auto right = editor.connect(enrolled, course);
+    CHECK(left && right);
+    CHECK(editor.update_participant(enrolled, *left.participant, Cardinality::Many, Participation::Partial, ""));
+    CHECK(editor.update_participant(enrolled, *right.participant, Cardinality::Many, Participation::Partial, ""));
+    CHECK(editor.create_attribute("Grade", {}, ElementRef{enrolled}));
+
+    const auto preview = schema_preview(editor.project());
+    const auto table_named = [&](const std::string& wanted) -> const PreviewTable* {
+        for (const auto& table : preview.tables) if (table.name == wanted) return &table;
+        return nullptr;
+    };
+    const auto column_named = [](const PreviewTable& table, const std::string& wanted) -> const PreviewColumn* {
+        for (const auto& column : table.columns) if (column.name == wanted) return &column;
+        return nullptr;
+    };
+
+    // A table for each entity, named for the many rows it holds.
+    const auto* students = table_named("Students");
+    const auto* courses = table_named("Courses");
+    CHECK(students && courses);
+
+    // The composite gives its roots and becomes no column itself; the derived
+    // attribute becomes nothing at all, and is listed saying so rather than
+    // quietly left out; the multivalued one becomes a table.
+    CHECK(column_named(*students, "First"));
+    CHECK(column_named(*students, "Last"));
+    CHECK(!column_named(*students, "Name"));
+    const auto* worked_out = column_named(*students, "Age");
+    CHECK(worked_out && worked_out->ignored);
+    CHECK(!worked_out->primary_key && !worked_out->required && !worked_out->unique);
+    CHECK(!column_named(*students, "Phone"));
+    const auto* phones = table_named("Phones");
+    CHECK(phones);
+    CHECK(phones->origin_kind == TableOrigin::Multivalued);
+    // Its own key, the value, and a foreign key back to the student.
+    CHECK(phones->columns.front().primary_key);
+    CHECK(column_named(*phones, "Phone"));
+    const auto* back = column_named(*phones, "StudentID");
+    CHECK(back && back->foreign_key && !back->primary_key);
+
+    // The key attribute is the primary key, and carries the type it was given.
+    const auto* identifier = column_named(*students, "StudentID");
+    CHECK(identifier && identifier->primary_key);
+    CHECK(identifier->type == LogicalType::Int);
+
+    // Many to many becomes a bridge with a key of its own beside the two
+    // foreign keys -- not a composite key made of the pair.
+    const auto* bridge = table_named("Enrolleds");
+    CHECK(bridge);
+    CHECK(bridge->origin_kind == TableOrigin::Bridge);
+    CHECK(bridge->columns.front().name == "EnrolledID");
+    CHECK(bridge->columns.front().primary_key);
+    const auto* to_student = column_named(*bridge, "StudentID");
+    const auto* to_course = column_named(*bridge, "CourseID");
+    CHECK(to_student && to_student->foreign_key && !to_student->primary_key);
+    CHECK(to_course && to_course->foreign_key && !to_course->primary_key);
+    CHECK(column_named(*bridge, "Grade"));
+
+    // A composite kept whole gives one column and no parts.
+    CHECK(editor.set_composite_mode(full, CompositeMode::Whole));
+    const auto whole = schema_preview(editor.project());
+    for (const auto& table : whole.tables) {
+        if (table.name != "Students") continue;
+        CHECK(column_named(table, "Name"));
+        CHECK(!column_named(table, "First"));
+    }
+
+    // And named as drawn, a table keeps the entity's own name.
+    CHECK(editor.set_table_naming(TableNaming::AsDrawn));
+    const auto drawn = schema_preview(editor.project());
+    bool singular = false;
+    for (const auto& table : drawn.tables) if (table.name == "Student") singular = true;
+    CHECK(singular);
+
+    // A name typed over it wins over both.
+    CHECK(editor.set_table_name(ElementRef{student}, "Pupils"));
+    const auto renamed = schema_preview(editor.project());
+    bool typed = false;
+    for (const auto& table : renamed.tables) if (table.name == "Pupils") typed = true;
+    CHECK(typed);
+}
+
+// An answer about an element, and a column the schema added to it, are as much
+// part of that element's story as a remark pinned to it. Deleting the element
+// used to leave them behind: validate() refuses a decision that points at
+// nothing, so the deletion itself was refused, and the schema -- which nothing
+// validates -- simply kept columns under a table that was no longer there.
+void deletion_carries_away_answers_and_schema_edits() {
+    TestIds ids;
+    Editor editor(ids);
+
+    // A table renamed in the schema does not prevent deleting what it came from.
+    const auto student = entity(editor, "Student");
+    CHECK(editor.set_table_name(ElementRef{student}, "Pupils"));
+    CHECK(editor.erase({ElementRef{student}}, {}, {}, {}));
+    CHECK(editor.project().decisions.table_name.empty());
+    CHECK(editor.undo());
+    CHECK(editor.project().entities.contains(student));
+    CHECK(editor.project().decisions.table_name.at(ElementRef{student}) == "Pupils");
+
+    // Nor does the attribute an entity was told to identify itself by.
+    const auto code = std::get<AttributeId>(
+        *editor.create_attribute("Code", {}, AttributeOwner{ElementRef{student}}).created);
+    CHECK(editor.set_entity_identifier(student, code));
+    CHECK(editor.erase({ElementRef{code}}, {}, {}, {}));
+    CHECK(editor.project().decisions.identifier.empty());
+
+    // Nor the side of a relationship that was named as carrying the key.
+    const auto desk = entity(editor, "Desk");
+    const auto uses = std::get<RelationshipId>(*editor.relate(student, desk, {}, "uses").created);
+    const auto side = editor.project().relationships.at(uses).participants.front().id;
+    CHECK(editor.set_one_to_one_key(uses, side));
+    CHECK(editor.erase({}, {{uses, side}}, {}, {}));
+    CHECK(editor.project().decisions.one_to_one_key.empty());
+
+    // A column the schema added, an attribute it was told to hide, and the
+    // arrangement a hand gave the table all go with the element as well.
+    const auto course = entity(editor, "Course");
+    CHECK(editor.add_schema_column(ElementRef{course}, "Credits"));
+    const auto draft = std::get<AttributeId>(
+        *editor.create_attribute("Draft", {}, AttributeOwner{ElementRef{course}}).created);
+    CHECK(editor.hide_in_schema(draft, true));
+    CHECK(editor.move_schema_tables({{ElementRef{course}, Point{120, 80}}}));
+    CHECK(editor.project().schema_layout.tables.size() == 1);
+    CHECK(editor.erase({ElementRef{course}}, {}, {}, {}));
+    CHECK(editor.project().schema.added.empty());
+    CHECK(editor.project().schema.hidden.empty());
+    CHECK(editor.project().schema_layout.tables.empty());
+
+    // And one undo brings the table, its column, its hidden attribute and its
+    // place back together, because all of it was one edit.
+    CHECK(editor.undo());
+    CHECK(editor.project().entities.contains(course));
+    CHECK(editor.project().schema.added.size() == 1);
+    CHECK(editor.project().schema.hidden.contains(draft));
+    CHECK(editor.project().schema_layout.tables.size() == 1);
+}
+
+// The schema may be edited away from the diagram it came from. ADR-010 allows
+// the two levels to differ, so a column added here only, or an attribute
+// hidden from here only, is recorded rather than refused -- and the diagram is
+// left exactly as it was.
+void the_schema_may_differ_from_the_diagram() {
+    TestIds ids;
+    Editor editor(ids);
+    const auto student = std::get<EntityId>(*editor.create_entity("Student", {0, 0, 160, 80}).created);
+    const auto key = std::get<AttributeId>(*editor.create_attribute("StudentID", {}, ElementRef{student}).created);
+    CHECK(editor.set_attribute_rules(key, true, true, true));
+    const auto name = std::get<AttributeId>(*editor.create_attribute("Name", {}, ElementRef{student}).created);
+
+    const auto columns_of = [&](const std::string& table) {
+        std::vector<std::string> names;
+        for (const auto& one : schema_preview(editor.project()).tables)
+            if (one.name == table)
+                for (const auto& column : one.columns) names.push_back(column.name);
+        return names;
+    };
+    CHECK(columns_of("Students") == std::vector<std::string>({"StudentID", "Name"}));
+    CHECK(editor.project().schema.empty());
+
+    // A column added on the schema alone. The diagram gains nothing: no
+    // attribute is created, and nothing it draws changes.
+    const auto before = editor.project().attributes;
+    CHECK(editor.add_schema_column(ElementRef{student}, "Nickname"));
+    CHECK(editor.project().attributes == before);
+    CHECK(columns_of("Students") == std::vector<std::string>({"StudentID", "Name", "Nickname"}));
+    CHECK(editor.project().schema.added.at(ElementRef{student}).size() == 1);
+
+    // It has an identity of its own, so it can be renamed and removed by it.
+    const auto added = editor.project().schema.added.at(ElementRef{student}).front().id;
+    CHECK(editor.rename_schema_column(added, "AlsoKnownAs"));
+    CHECK(columns_of("Students") == std::vector<std::string>({"StudentID", "Name", "AlsoKnownAs"}));
+
+    // An attribute hidden from the schema. Again the diagram keeps it: this is
+    // a difference between the levels, not a deletion.
+    CHECK(editor.hide_in_schema(name, true));
+    CHECK(editor.project().attributes.contains(name));
+    CHECK(editor.project().attributes.at(name).name == "Name");
+    CHECK(columns_of("Students") == std::vector<std::string>({"StudentID", "AlsoKnownAs"}));
+
+    // Every one of these is an ordinary edit, so every one of them undoes.
+    CHECK(editor.undo());
+    CHECK(columns_of("Students") == std::vector<std::string>({"StudentID", "Name", "AlsoKnownAs"}));
+    CHECK(editor.undo());
+    CHECK(columns_of("Students") == std::vector<std::string>({"StudentID", "Name", "Nickname"}));
+    CHECK(editor.undo());
+    CHECK(columns_of("Students") == std::vector<std::string>({"StudentID", "Name"}));
+    CHECK(editor.project().schema.empty());
+    CHECK(editor.redo());
+    CHECK(columns_of("Students") == std::vector<std::string>({"StudentID", "Name", "Nickname"}));
+
+    // Showing it again is the way back, and leaves nothing behind.
+    CHECK(editor.erase_schema_column(added));
+    CHECK(editor.project().schema.added.empty());
+    CHECK(editor.hide_in_schema(name, true));
+    CHECK(editor.hide_in_schema(name, false));
+    CHECK(editor.project().schema.empty());
+    CHECK(columns_of("Students") == std::vector<std::string>({"StudentID", "Name"}));
+
+    // Reflecting a change instead needs none of this. It is an edit to the
+    // model, and the schema follows because it is derived from it.
+    CHECK(editor.create_attribute("Email", {}, ElementRef{student}));
+    CHECK(columns_of("Students") == std::vector<std::string>({"StudentID", "Name", "Email"}));
+    CHECK(editor.project().schema.empty());
+
+    // A column cannot be added to something that is not there any more.
+    CHECK(!editor.add_schema_column(ElementRef{EntityId{}}, "Nowhere"));
+    CHECK(!editor.add_schema_column(ElementRef{student}, ""));
+}
+
+// The three ways a hierarchy becomes tables. All three are offered, so all
+// three have to produce a schema somebody could build, not only the default.
+void a_hierarchy_maps_three_ways() {
+    TestIds ids;
+    Editor editor(ids);
+    const auto person = std::get<EntityId>(*editor.create_entity("Person", {0, 0, 160, 80}).created);
+    const auto key = std::get<AttributeId>(*editor.create_attribute("PersonID", {}, ElementRef{person}).created);
+    CHECK(editor.set_attribute_rules(key, true, true, true));
+    CHECK(editor.create_attribute("BirthDate", {}, ElementRef{person}));
+    const auto student = std::get<EntityId>(*editor.create_entity("Student", {0, 200, 160, 80}).created);
+    CHECK(editor.create_attribute("Intake", {}, ElementRef{student}));
+    const auto isa = std::get<SpecializationId>(
+        *editor.create_specialization("IS A", {0, 120, 96, 74}, Inheritance::Generalization).created);
+    CHECK(editor.set_supertype(isa, person));
+    CHECK(editor.attach_subtype(isa, student));
+
+    const auto tables_of = [&] {
+        std::vector<std::string> names;
+        for (const auto& table : schema_preview(editor.project()).tables) names.push_back(table.name);
+        std::sort(names.begin(), names.end());
+        return names;
+    };
+    const auto columns_of = [&](const std::string& wanted) {
+        std::vector<std::string> names;
+        for (const auto& table : schema_preview(editor.project()).tables)
+            if (table.name == wanted)
+                for (const auto& column : table.columns) names.push_back(column.name);
+        return names;
+    };
+
+    // A table each, and the child takes the parent's key as a foreign key.
+    CHECK(editor.set_isa_strategy(isa, IsaStrategy::PerSubclass));
+    CHECK(tables_of() == std::vector<std::string>({"Persons", "Students"}));
+    const auto per_subclass = schema_preview(editor.project());
+    const auto child = std::find_if(per_subclass.tables.begin(), per_subclass.tables.end(),
+                                    [](const PreviewTable& table) { return table.name == "Students"; });
+    CHECK(child != per_subclass.tables.end());
+    CHECK(child->origin_kind == TableOrigin::Subtype);
+    CHECK(child->derives_from && *child->derives_from == ElementRef{person});
+
+    // One table for the lot: the children stop being tables, their columns
+    // move into the parent, and a discriminator says which kind a row is.
+    CHECK(editor.set_isa_strategy(isa, IsaStrategy::SingleTable));
+    CHECK(tables_of() == std::vector<std::string>({"Persons"}));
+    const auto single = columns_of("Persons");
+    CHECK(std::find(single.begin(), single.end(), "Intake") != single.end());
+    CHECK(std::find(single.begin(), single.end(), "Type") != single.end());
+    for (const auto& table : schema_preview(editor.project()).tables)
+        for (const auto& column : table.columns)
+            if (column.name == "Intake")
+                CHECK(!column.required);   // only some rows have one
+
+    // A table per concrete class: no parent table, and each child carries the
+    // parent's columns itself.
+    CHECK(editor.set_isa_strategy(isa, IsaStrategy::PerConcrete));
+    CHECK(tables_of() == std::vector<std::string>({"Students"}));
+    const auto concrete = columns_of("Students");
+    CHECK(std::find(concrete.begin(), concrete.end(), "PersonID") != concrete.end());
+    CHECK(std::find(concrete.begin(), concrete.end(), "BirthDate") != concrete.end());
+    CHECK(std::find(concrete.begin(), concrete.end(), "Intake") != concrete.end());
+
+    // Whichever strategy is in force, the question is still asked somewhere,
+    // or the answer that removed a table could not be taken back.
+    for (const auto strategy : {IsaStrategy::PerSubclass, IsaStrategy::SingleTable, IsaStrategy::PerConcrete}) {
+        CHECK(editor.set_isa_strategy(isa, strategy));
+        bool asked = false;
+        for (const auto& table : schema_preview(editor.project()).tables)
+            for (const auto& decision : table.decisions)
+                if (decision.kind == DecisionKind::IsaStrategy && decision.about == ElementRef{isa})
+                    asked = true;
+        CHECK(asked);
+    }
+
+    // No foreign key is left pointing at a table that is no longer there.
+    for (const auto strategy : {IsaStrategy::PerSubclass, IsaStrategy::SingleTable, IsaStrategy::PerConcrete}) {
+        CHECK(editor.set_isa_strategy(isa, strategy));
+        const auto preview = schema_preview(editor.project());
+        for (const auto& table : preview.tables)
+            for (const auto& column : table.columns)
+                CHECK(!column.references || *column.references < preview.tables.size());
+    }
+}
+
+// A name repeated across the schema is almost always one question asked over
+// and over, so the repeats are gathered to be answered once.
+void repeated_names_are_gathered() {
+    TestIds ids;
+    Editor editor(ids);
+    const auto person = std::get<EntityId>(*editor.create_entity("Person", {0, 0, 160, 80}).created);
+    const auto course = std::get<EntityId>(*editor.create_entity("Course", {400, 0, 160, 80}).created);
+    const auto one = std::get<AttributeId>(*editor.create_attribute("Code", {}, ElementRef{person}).created);
+    const auto two = std::get<AttributeId>(*editor.create_attribute("Code", {}, ElementRef{course}).created);
+    CHECK(editor.create_attribute("Alone", {}, ElementRef{person}));
+
+    auto groups = shared_names(schema_preview(editor.project()));
+    CHECK(groups.size() == 1);
+    CHECK(groups.front().name == "Code");
+    CHECK(groups.front().columns == 2);
+    CHECK(groups.front().attributes.size() == 2);
+
+    // Answered once for all of them, in one edit, so one undo takes it back.
+    CHECK(editor.set_logical_types(groups.front().attributes, LogicalType::Varchar));
+    CHECK(editor.project().attributes.at(one).logical_type == LogicalType::Varchar);
+    CHECK(editor.project().attributes.at(two).logical_type == LogicalType::Varchar);
+    CHECK(shared_names(schema_preview(editor.project())).empty());
+    CHECK(editor.undo());
+    CHECK(editor.project().attributes.at(one).logical_type == LogicalType::Unset);
+    CHECK(editor.project().attributes.at(two).logical_type == LogicalType::Unset);
+    CHECK(shared_names(schema_preview(editor.project())).size() == 1);
+}
+
+// Two links to the same table are told apart by the roles they were given,
+// which is the only thing that can tell them apart.
+void roles_name_the_keys_they_carry() {
+    TestIds ids;
+    Editor editor(ids);
+    const auto airport = std::get<EntityId>(*editor.create_entity("Airport", {0, 0, 160, 80}).created);
+    const auto flight = std::get<EntityId>(*editor.create_entity("Flight", {400, 0, 160, 80}).created);
+    const auto key = std::get<AttributeId>(*editor.create_attribute("AirportID", {}, ElementRef{airport}).created);
+    CHECK(editor.set_attribute_rules(key, true, true, true));
+
+    const auto leaves = std::get<RelationshipId>(*editor.create_relationship("Departs", {200, 100, 190, 110}).created);
+    const auto from_side = editor.connect(leaves, flight);
+    const auto to_side = editor.connect(leaves, airport);
+    CHECK(from_side && to_side);
+    CHECK(editor.update_participant(leaves, *from_side.participant, Cardinality::Many, Participation::Total, ""));
+    CHECK(editor.update_participant(leaves, *to_side.participant, Cardinality::One, Participation::Total, "Departure"));
+
+    const auto arrives = std::get<RelationshipId>(*editor.create_relationship("Arrives", {200, 260, 190, 110}).created);
+    const auto back_side = editor.connect(arrives, flight);
+    const auto at_side = editor.connect(arrives, airport);
+    CHECK(back_side && at_side);
+    CHECK(editor.update_participant(arrives, *back_side.participant, Cardinality::Many, Participation::Total, ""));
+    CHECK(editor.update_participant(arrives, *at_side.participant, Cardinality::One, Participation::Total, "Arrival"));
+
+    std::vector<std::string> names;
+    for (const auto& table : schema_preview(editor.project()).tables)
+        if (table.name == "Flights")
+            for (const auto& column : table.columns)
+                if (column.foreign_key) names.push_back(column.name);
+    std::sort(names.begin(), names.end());
+    CHECK(names == std::vector<std::string>({"ArrivalAirportID", "DepartureAirportID"}));
+}
+
+// English is irregular, so the plural a table is named by needs rules and a
+// word list, and has to leave alone the words that have no plural.
+void tables_are_named_for_many_rows() {
+    CHECK(plural_of("Student") == "Students");
+    CHECK(plural_of("Course") == "Courses");
+    CHECK(plural_of("Company") == "Companies");
+    CHECK(plural_of("Address") == "Addresses");
+    CHECK(plural_of("Box") == "Boxes");
+    CHECK(plural_of("Knife") == "Knives");
+    CHECK(plural_of("Hero") == "Heroes");
+    CHECK(plural_of("Analysis") == "Analyses");
+    CHECK(plural_of("Child") == "Children");
+    CHECK(plural_of("AccessCard") == "AccessCards");
+    CHECK(plural_of("Person") == "Persons");
+    // Already plural, or no plural at all.
+    CHECK(plural_of("Employees") == "Employees");
+    CHECK(plural_of("Media") == "Media");
+    CHECK(plural_of("JSON") == "JSON");
+    CHECK(plural_of("Series") == "Series");
+}
+
+// A box is pulled by whichever edge the hand reaches for, on the diagram and
+// on the schema alike: the side that is pulled moves and the side opposite it
+// stays where it was, which is why a pull on the left carries a place with it.
+void boxes_are_pulled_by_any_of_their_edges() {
+    TestIds ids;
+    Editor editor(ids);
+    const auto student = entity(editor, "Student");
+    const ElementRef ref{student};
+    CHECK(editor.move({{ref, {100, 100, 160, 80}}}));
+
+    // The right edge: wider, and standing where it always stood.
+    CHECK(editor.resize_entities({{ref, {100, 100, 260, 80}}}));
+    CHECK(editor.undo_label() == "Resize entity");
+    CHECK((editor.project().layout.at(ref) == Rect{100, 100, 260, 80}));
+    // The left edge: the right-hand side stays put and the box reaches left.
+    CHECK(editor.resize_entities({{ref, {40, 100, 320, 80}}}));
+    CHECK((editor.project().layout.at(ref) == Rect{40, 100, 320, 80}));
+    // The top edge, which moves the corner in the other direction.
+    CHECK(editor.resize_entities({{ref, {40, 60, 320, 120}}}));
+    CHECK((editor.project().layout.at(ref) == Rect{40, 60, 320, 120}));
+    // Undo walks back one pull at a time, and redo puts it out again.
+    CHECK(editor.undo());
+    CHECK((editor.project().layout.at(ref) == Rect{40, 100, 320, 80}));
+    CHECK(editor.redo());
+    CHECK((editor.project().layout.at(ref) == Rect{40, 60, 320, 120}));
+
+    // A pull that runs past what a box may be asks for the end of the range
+    // rather than for nothing to happen.
+    CHECK(editor.resize_entities({{ref, {40, 60, 4, 4}}}));
+    CHECK(editor.project().layout.at(ref).width == min_entity_width);
+    CHECK(editor.project().layout.at(ref).height == min_entity_height);
+    CHECK(editor.resize_entities({{ref, {40, 60, 90000, 90000}}}));
+    CHECK(editor.project().layout.at(ref).width == max_entity_width);
+    CHECK(editor.project().layout.at(ref).height == max_entity_height);
+
+    // And nothing else on the diagram is pulled about this way.
+    const auto note = editor.create_note("Note", {0, 0, 200, 120}, "");
+    CHECK(note && note.created);
+    CHECK(!editor.resize_entities({{*note.created, {0, 0, 300, 200}}}));
+    CHECK((editor.project().layout.at(*note.created) == Rect{0, 0, 200, 120}));
+}
+
+// A schema table is pulled the same way, and its arrangement is part of the
+// document: the size it was given and the place a left or top edge moved it to
+// are one edit, so one undo takes both back together.
+void schema_tables_are_pulled_by_any_of_their_edges() {
+    TestIds ids;
+    Editor editor(ids);
+    const auto student = entity(editor, "Student");
+    const ElementRef ref{student};
+
+    // The right edge alone: a width, and no place at all, so the table still
+    // follows the automatic arrangement.
+    CHECK(editor.resize_schema_tables({{ref, SchemaTableBox{300, 0, std::nullopt}}}));
+    CHECK(editor.undo_label() == "Resize on the schema");
+    CHECK(editor.project().schema_layout.widths.at(ref) == 300);
+    CHECK(editor.project().schema_layout.heights.empty());
+    CHECK(editor.project().schema_layout.tables.empty());
+
+    // The bottom edge: a height beside the width, and still no place.
+    CHECK(editor.resize_schema_tables({{ref, SchemaTableBox{300, 240, std::nullopt}}}));
+    CHECK(editor.project().schema_layout.heights.at(ref) == 240);
+    CHECK(editor.project().schema_layout.tables.empty());
+
+    // The left edge, which moves the table as it sizes it. Both arrive in one
+    // edit, so one undo takes the size and the place back together.
+    CHECK(editor.resize_schema_tables({{ref, SchemaTableBox{380, 240, Point{60, 40}}}}));
+    CHECK(editor.project().schema_layout.widths.at(ref) == 380);
+    CHECK((editor.project().schema_layout.tables.at(ref) == Point{60, 40}));
+    CHECK(editor.undo());
+    CHECK(editor.project().schema_layout.widths.at(ref) == 300);
+    CHECK(editor.project().schema_layout.tables.empty());
+    CHECK(editor.redo());
+    CHECK((editor.project().schema_layout.tables.at(ref) == Point{60, 40}));
+
+    // Pulled past what a table may be, it stops at the end of the range.
+    CHECK(editor.resize_schema_tables({{ref, SchemaTableBox{9000, 9000, std::nullopt}}}));
+    CHECK(editor.project().schema_layout.widths.at(ref) == max_table_width);
+    CHECK(editor.project().schema_layout.heights.at(ref) == max_table_height);
+    CHECK(editor.resize_schema_tables({{ref, SchemaTableBox{1, 1, std::nullopt}}}));
+    CHECK(editor.project().schema_layout.widths.at(ref) == min_table_width);
+    CHECK(editor.project().schema_layout.heights.at(ref) == min_table_height);
+
+    // Nothing said about a size is the same as never having been pulled that
+    // way, so the entry goes rather than holding a figure that means nothing.
+    CHECK(editor.resize_schema_tables({{ref, SchemaTableBox{0, 0, std::nullopt}}}));
+    CHECK(editor.project().schema_layout.widths.empty());
+    CHECK(editor.project().schema_layout.heights.empty());
 }
 
 int main() {
     const std::pair<const char*, std::function<void()>> tests[] = {
         {"identity and work in progress", identity_and_work_in_progress},
+        {"the diagram becomes tables", the_diagram_becomes_tables},
+        {"tables are named for many rows", tables_are_named_for_many_rows},
         {"commands and stable undo", commands_and_stable_undo},
         {"clean states, branching and revisions", clean_state_branching_and_revisions},
         {"atomic command rejection", rejection_is_atomic},
@@ -1335,6 +2313,15 @@ int main() {
         {"complete deletion undo", deletion_restores_complete_graph},
         {"selected subgraph duplication", duplicate_remaps_selected_subgraph},
         {"hostile model validation", hostile_models_are_rejected},
+        {"hostile schema state validation", hostile_schema_state_is_rejected},
+        {"schema column identities are guarded", schema_column_identities_are_guarded},
+        {"whole-object edits cost the budget", whole_object_edits_cost_the_budget},
+        {"comment identities survive opening", comment_identities_survive_opening},
+        {"schema names reach the diagram", schema_names_reach_the_diagram},
+        {"schema keys reach the diagram", schema_keys_reach_the_diagram},
+        {"schema constraints reach the diagram", schema_constraints_reach_the_diagram},
+        {"columns can count themselves up", columns_can_count_themselves_up},
+        {"invented keys carry constraints", invented_keys_carry_constraints},
         {"limits, deep ownership and compact history", limits_deep_ownership_and_compact_history},
         {"connector shapes follow their link", connector_shapes_follow_their_link},
         {"connections can be pinned as they are made", connections_can_be_pinned_as_they_are_made},
@@ -1350,7 +2337,14 @@ int main() {
         {"specializations carry inheritance rules", specializations_carry_inheritance_rules},
         {"binary ratios and reversal", binary_ratios_and_reversal},
         {"comments are pinned to things", comments_are_pinned_to_things},
-        {"convertible mode asks what it becomes", convertible_mode_asks_what_it_becomes},
+        {"convertible mode asks what it becomes", the_model_says_what_it_becomes},
+        {"the schema may differ from the diagram", the_schema_may_differ_from_the_diagram},
+        {"a hierarchy maps three ways", a_hierarchy_maps_three_ways},
+        {"repeated names are gathered", repeated_names_are_gathered},
+        {"boxes are pulled by any of their edges", boxes_are_pulled_by_any_of_their_edges},
+        {"schema tables are pulled by any of their edges", schema_tables_are_pulled_by_any_of_their_edges},
+        {"roles name the keys they carry", roles_name_the_keys_they_carry},
+        {"deletion carries away answers and schema edits", deletion_carries_away_answers_and_schema_edits},
     };
     std::size_t failures = 0;
     for (const auto& [name, test] : tests) {

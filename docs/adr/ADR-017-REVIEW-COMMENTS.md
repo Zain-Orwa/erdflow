@@ -11,8 +11,9 @@ conflating them would damage both.
 - A **description** documents the model. Every element already carries one. It
   says what a Student *is*, it is part of the model's meaning, and it travels
   forward into the Relational Schema and out into generated SQL as a column or
-  table comment. Product section 22 describes this, and Convertible mode adds a
-  structured `Comment` field beside the logical type for the same purpose.
+  table comment. Product section 22 describes this, and the "For the schema"
+  panel section adds a structured `Comment` field beside the logical type for
+  the same purpose.
 - A **review remark** is about the work rather than part of it. "Should this be
   weak?", "check the cardinality with Dana". It is written while reading a
   diagram, it is addressed to a person, and it must never reach the schema.

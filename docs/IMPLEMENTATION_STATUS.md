@@ -1,6 +1,6 @@
 # Implementation status
 
-**Updated:** 2026-09-17
+**Updated:** 2026-09-20
 
 **Scope:** Part 1 — a single-page Conceptual ERD editor foundation.
 
@@ -152,8 +152,9 @@ not been built yet. Their presence in those documents is not a completion claim.
   through one named edit, "Resize symbol", so any of them undoes in a step.
   Sizes are held between 16 and 4000 units, a drag in progress is previewed on
   the diagram and written only when the grip is let go, and Escape abandons it.
-  These act only when everything selected is a symbol: an entity's box is sized
-  by the name it has to hold, so the commands stay disabled for one. It lands
+  These act only when everything selected is a symbol: an entity is pulled
+  about by its edges instead, under an edit of its own, so the commands stay
+  disabled for one. It lands
   where the pointer last was over the diagram rather than in the middle of the
   view, and is left unchosen, so picking several in a row does not keep
   swapping the properties panel over to them; one that would land exactly on
@@ -319,6 +320,18 @@ not been built yet. Their presence in those documents is not a completion claim.
   what keeps it distinguishable from a solid entity. It may then take
   part in further relationships, as an entity does. Adopting or dropping the
   shape resizes it in the same undoable edit.
+- An entity is pulled about by its own edges. Choosing one draws eight handles
+  just inside its outline — its four corners and the middle of each of its four
+  sides — and hauling any of them moves that side while the side opposite it
+  stays exactly where it was; a corner moves the two that meet at it. The
+  handles sit inside the outline rather than straddling it, so the box the
+  shape draws is still the box it occupies and nothing measured from that box
+  moves. Its relationships and its attributes follow the edge while it is being
+  pulled. A box is held between 70 and 2000 units wide and 44 and 1400 tall, a
+  pull runs through one named edit, "Resize entity", so it undoes in a step,
+  and Escape abandons one in progress. A selected line answers the pointer
+  first where the two overlap, since an end grip lies on the outline of the
+  entity it joins.
 - Names can be edited in two places: double-click an element to type its name on
   the canvas itself, or use the Properties panel. Return or clicking away commits
   as one undoable rename; Escape keeps the previous name.
@@ -343,21 +356,30 @@ not been built yet. Their presence in those documents is not a completion claim.
   the surface from solid to outline-only over whatever colour it has, the
   theme's own included, for one element or the whole selection. Colour
   changes are undoable and saved with the project.
-- **Basic and Convertible modes** — one model asked for two different amounts.
-  Basic is the diagram as it is drawn and taught. Convertible is the same model
-  asked what it will become, and the switch is beside the **CONCEPTUAL** badge
-  that says which workspace this is.
-- Switching changes what is shown and what is asked for, and **nothing else**:
-  nothing is created, destroyed or re-identified, which is Phase 13's exit
-  criterion. It is an edit like any other, so changing your mind costs one undo,
-  and it travels with the document because what a model was told is part of the
-  model.
-- In Convertible mode an attribute carries a **logical type** — Text, Integer,
+- **One conceptual model, no modes.** ERDFlow had a Basic mode and a
+  Convertible mode; it does not any more. The data was stored identically in
+  both, so the mode only ever governed which fields the Properties panel drew,
+  and a preference belonging to a person was being kept in the document. A
+  project file no longer records a mode, there is no switch beside the
+  **CONCEPTUAL** badge, and nothing is created, destroyed or re-identified by
+  the removal.
+- An attribute carries a **logical type** — Text, Integer,
   Decimal, Boolean, Date, DateTime, Binary, UUID — with a **length** where the
   type is measured. Choosing a type that is not measured drops the number rather
   than carrying one that would mean nothing later. No database is named: the
   choice between `VARCHAR(100)` and `NVARCHAR(100)` belongs to the physical
   stage.
+- The fields conversion needs — logical type, length, the identifier/required/
+  unique rules, and the schema comment — sit together in a **For the schema**
+  section of the Properties panel that folds away. It is shut until somebody
+  opens it, which is how the diagram was drawn before the fields had a section
+  of their own, and it is opened and closed by the same fold mark the Explorer
+  uses, drawn by the style so it follows the theme. Whether it is open is a
+  **user preference**: it is kept with the application's settings, never in the
+  project, it survives being applied to whatever element is looked at next, and
+  folding it is not an edit — it costs no revision and cannot be undone or
+  saved. Folding hides questions and never answers: everything inside stays in
+  the model and stays visible to validation, readiness and conversion.
 - It also carries the **rules a table will enforce** — identifier, required,
   unique — kept deliberately apart from its Chen kind. A key oval says how the
   diagram draws it; these say what the database will insist on, and the two are
@@ -367,13 +389,41 @@ not been built yet. Their presence in those documents is not a completion claim.
   description, which says what the thing means to a reader, and it is not a
   review comment, which is a remark about the work. Anything that becomes
   nothing — a triangle, a picture, a note — is refused one.
-- An attribute with no type yet is a **warning** while the model is being asked
-  and nothing at all while it is not, because a half-answered model is still a
-  model. Making that a gate is Phase 14's job.
-- What Convertible mode was told is **kept in Basic**, so a model drawn in one
-  mode and finished in the other loses nothing in between.
-- Versioned `.erdx` JSON save/load, currently format version 17. Versions 1 to
-  16 still open and upgrade on save. Incomplete but structurally valid diagrams
+- An attribute with no type yet leaves a question open, and `validate` does not
+  treat that as a fault: a half-answered model is still a model, and still
+  saveable. Whether a model is *ready to be converted* is a separate question
+  that `readiness` will answer, which is Phase 14's job and is not built.
+- A relationship side records **whether it was answered**, beside what it says.
+  A side that has only been drawn reads Many and Partial, which is also exactly
+  what a deliberate M:M looks like, so without this a conversion could not tell
+  a decision from a silence and would build junction tables out of questions
+  nobody was asked. Answering a side through the Properties panel confirms it,
+  whatever values are chosen. An unconfirmed side is a readiness question rather
+  than a fault: the model stays valid and the diagram draws it the same.
+- An attribute's type is chosen from the **whole SQL data type catalogue**,
+  grouped as SQL Server groups it — exact and approximate numerics, character
+  and Unicode strings, binary strings, dates and times, and the rest — with the
+  ones reached for most at the top of the list. A type that takes a size carries
+  one: a length for the string and binary types, a precision with a scale for
+  `decimal` and `numeric`. The three SQL Server is removing — `text`, `ntext`
+  and `image` — still read and still save, and say so when offered.
+- **Conversion decisions** travel with the project: the table naming convention,
+  each hierarchy's mapping strategy, what each composite attribute becomes,
+  which side of a one-to-one carries the key, a bridge table's name, an entity's
+  chosen identifier, and any table name typed over the derived one. Each is
+  keyed by stable identity, so an answer survives renaming and is never asked
+  twice; each is an ordinary edit, so it undoes; and taking an answer back
+  returns that question to its default rather than recording a different answer.
+- Versioned `.erdx` JSON save/load, currently format version 20. Versions 1 to
+  19 still open and upgrade on save. A file written before version 20 names its
+  types from the small portable set that preceded the catalogue — those are read
+  as the SQL types they always meant, so a portable `text` becomes `varchar` and
+  a `boolean` becomes `bit` — and records no conversion decisions at all. A version 17 file names a conceptual mode;
+  it still opens, everything it says about what it becomes is kept, and only the
+  mode itself is discarded. A file written before version 19 has no record of
+  which sides were answered, so every side in it is read as answered — the
+  alternative would greet a finished diagram with a readiness question about
+  every line on it. Incomplete but structurally valid diagrams
   can be saved. Invalid/unsupported files leave the open project intact.
 - Safe file replacement, Save/Discard/Cancel protection, focused text committed
   before save, clean-state tracking, and reopening the file saved at the prompt.
@@ -564,12 +614,252 @@ geometry changes use **Apply position and size**.
 | 8 — Participation | Implemented partial/total and one/many combinations on the same participant, including a min–max notation option. |
 | 9 — Advanced attributes | Partial: composite, multivalued, derived and partial keys (on weak entities) implemented. Combined kind semantics remain open. |
 | 10–12 — Weak/ISA/associative | Implemented: weak entities with identifying relationships, associative entities, and ISA generalization/specialization including nesting and the disjoint/total rules, drawn on the triangle. |
-| 13 — Modes | Implemented: Basic and Convertible modes over one model, logical types with a length, the identifier/required/unique rules, and the schema comment. Switching changes what is asked for and nothing else. |
-| 14 — Readiness | Not implemented. Structural checks exist and Convertible mode warns about an attribute with no type, but the structured readiness policy of ADR-009 — Blocking, Warning, Information, Unresolved Decision — is what conversion will gate on, and key groups are part of it. |
+| 13 — One model | Complete. One conceptual model with no modes; logical types with a length, the identifier/required/unique rules and the schema comment, all always present and gathered in a collapsible "For the schema" section whose state is a user preference rather than project data. The earlier Basic/Convertible mode design is withdrawn and removed; files that recorded a mode still open. |
+| 14 — Readiness | Partial. A relationship side records whether it was answered, so a default can no longer be read as a choice; the full SQL type catalogue is offered with sizes and scales; and the conversion decisions persist against stable identities. Not implemented: `readiness` itself, and the structured policy of ADR-009 — Domain Invariant Violation, Blocking Error, Warning, Information, Unresolved Decision — that conversion will gate on. |
 | 15 — Project files | Single-page native format foundation delivered early to protect the current editor's work. No historical migration or recovery system. |
 | 16–17 — Pages/editor milestone | Not complete; multiple pages, the remaining conceptual semantics, and the start screen, templates and project folders of ADR-016 are required. |
-| 18 onward | Import, schema generation, provenance, physical design, SQL, data, and later production/ecosystem features remain planned. |
+| 18 onward | Import, provenance, physical design, SQL, data, and later production/ecosystem features remain planned. Schema generation has a preview ahead of them — see below. |
+| 24 — Schema workspace | Not started as a workspace. What exists is a **preview** of it: the conversion read as tables, drawn beside the diagram, with the questions it cannot settle asked on the tables they concern. It owns no relational objects, has no identities of its own, and is worked out afresh from the project every time. See the section below. |
 | 35 — Export | Partial, and pulled forward the way Phase 15 was, because ADR-015 splits export into halves with different prerequisites and neither the pictures nor the listings need anything later. Implemented: the pictures, their options, the project carried inside SVG and PNG, and all four documentation listings, offered together under Export. Not implemented: a multi-page PDF of a project, which waits for the multiple pages of Phase 16; the published JSON Schema for `.erdx`; the outline-text option for a pixel-exact handoff; and the whole schema half — `.sql`, Mermaid ER and DBML — which cannot precede the Phase 24 workspace it would read from. |
+
+## The schema preview
+
+A picture of what the Conceptual model becomes, raised over the diagram. It is
+derived: `schema_preview(project)` is a pure function with no identity and no
+storage, worked out again on every change, so it cannot drift from the model.
+The Relational Schema workspace of Phase 24 — relations with identities of
+their own and a history of their own — is still a later and separate thing.
+
+**Implemented.**
+
+- **The mapping**, by the course rules: an entity becomes a table; a composite
+  gives its roots, its whole, or both; a derived attribute is listed as
+  `ignored` rather than silently dropped; a multivalued attribute becomes its
+  own table; one-to-many puts the key on the many side; many-to-many becomes a
+  bridge with a key of its own; an associative relationship the same, plus the
+  associated key; a self reference points at its own table; and a hierarchy
+  maps all **three** ways — table per subclass, single table with a
+  discriminator, and table per concrete class.
+- **Conversion decisions**, asked on the tables they concern rather than in a
+  dialog, and kept in the project against stable identities: the ISA strategy,
+  what a composite becomes, and which side of a 1:1 carries the key. An answer
+  in force is filled in; one that is only the default is filled faintly.
+- **Types and sizes**, answered where the column is. An unanswered type is
+  drawn as a dashed blank; pressing it opens the whole SQL Server catalogue in
+  one searchable run, most used first. A measured type grows a second cell for
+  its size, asked in the terms that type is measured in. Columns sharing a
+  name are gathered so one answer serves all of them, in a single edit.
+- **Editing the schema away from the diagram** (ADR-010 §39–48): a column
+  added here only, or an attribute hidden from here only. Every such change is
+  put to the user before the diagram is touched, and declining records the
+  difference rather than refusing it. The panel says how far the two levels
+  have come apart.
+- **Connectors under the hand.** Orthogonal and row-exact, routed around the
+  tables or straight through, kept apart in lanes and fanned where several
+  land on one row. Any straight run can be pushed sideways; either end can be
+  moved around its table's outline or pulled off it and left hanging, which is
+  reported and not refused. A line always keeps enough straight length at each
+  end for its cardinality symbols.
+- **Looking at it**: pressing a table rings it and everything it is joined to
+  and fades the rest; chips narrow by where a table came from; a search of its
+  own picks out names; headers say what each table came from.
+- **Arrangement is part of the document.** Table positions, table sizes,
+  line routes and end anchors live in the project, so they undo, they redo,
+  and they save. A drag is one step of history, written when the hand lets go,
+  and moving or resizing one table never moves another: the packing is worked
+  out from the size each table would have had anyway. Every edge and every
+  corner of a table is a handle; the side that is pulled moves and the side
+  opposite it stays put, so a left or top edge carries the table's corner with
+  it and writes the place in the same edit as the size. Room given to a
+  table's height is shared out between its rows, and a table is never pulled
+  shorter than the rows and questions it holds.
+
+- **A row is ruled into columns, and they are named.** Under the table's own
+  header a second row says what each column holds -- Column, Type,
+  Constraints -- and rules run between them down as far as the rows go. They
+  stop at the last row, so the empty slot that adds a column stays the clear
+  place to press that it is and the footer's questions are not ruled into
+  columns they have nothing to do with. The three constraints share the one
+  heading, because between them they are the single question of what the
+  table enforces, and keep their own ruled columns underneath where telling
+  them apart is what matters. The type column is as wide as the widest type
+  in that table, held between a floor and a ceiling and worked out once for
+  the table, because a column whose edge moved from row to row could not be
+  ruled off at all. Every column is measured from what it holds -- the
+  longest name, the widest type, the longest list of constraints -- and a
+  table's own width follows from the sum of them, so nothing is cut off by
+  the rule beside it before a hand has chosen a width. Tables are therefore
+  no longer all one width, and the automatic packing steps by the widest of
+  them so the arrangement stays a regular grid rather than a pile in which a
+  wide table lands on its neighbour. That step is measured from the width each
+  table would have had anyway, never from one a hand gave it -- the same rule
+  the packing already followed for heights, and for the same reason: a table
+  pulled wider must not push its neighbours across.
+- **Narrowing a table folds its columns away from the right, one at a time.**
+  The constraints give way first, then the type, and a table at its narrowest
+  is left with the gutter holding its keys and the names beside it -- the
+  least a table can be and still be a table, since a name and whether it is
+  the key are the two things no other column can stand in for. Every column
+  comes back, in the reverse order, as the table is widened again. Nothing
+  springs back and nothing is hidden at a width the table chose for itself: a
+  name column is never measured below a floor, so a table left alone always
+  has room for everything it holds.
+- **A type and its length are one column, written the way SQL writes it**:
+  `varchar(50)`, `decimal(10,2)`. One word to read and two things to press --
+  the name asks what type it is, the brackets ask how long -- and a length
+  nobody has given yet shows what it wants, `varchar(n)`, rather than a
+  number. Neither half wears a box except under the pointer, since the rules
+  either side are what say where the column is.
+- **The constraints a column carries, all of them in one column**, written
+  the way the generated SQL will write them: `PK, NOT NULL, IDENTITY`. One
+  column rather than one each, because between them they are the single
+  question of what the table enforces and a list reads as the one answer to
+  it -- and because a column that already says what the DDL says can become
+  that DDL rather than having to be translated into it. A key is not also
+  said to be unique: it is unique by being the key. Nullability always says
+  which way it went, `NOT NULL` or `NULL`, because a column that may be empty
+  and one nobody has decided about become different SQL.
+- **Pressing it opens the list of what can be said about that column**, with
+  what is already true ticked. A list rather than switches because several
+  apply at once and a few cannot apply together. Nothing in it is greyed out:
+  every entry can be chosen, and one that cannot take says why in the status
+  bar, which tells a reader learning the rules something a dead menu entry
+  does not. The outermost pixels of a row are left to the edge that pulls the
+  table, or the right edge could never be taken hold of.
+- **Every column has somewhere to put them.** A key the conversion invented
+  has no attribute behind it and no identity of its own, so whether it counts
+  itself up is remembered against the element whose table it belongs to, as
+  its name already was (`SchemaOverrides::counting_keys`) -- and that is the
+  commonest place of all to want it, a surrogate key being what `IDENTITY` is
+  for. A unique foreign key says the side carrying it sees one row and no
+  more, so it is read from the relationship's shape and setting it sets that
+  side's cardinality on the diagram. A primary key answers that it is unique
+  already, and a foreign key that it takes its value from what it points at,
+  rather than doing nothing when pressed.
+- **Nothing on the schema is read-only because it was derived.** Pressing a
+  mark changes what the table enforces, and where the fact lives on the
+  diagram the diagram is what changes: a foreign key is `NOT NULL` because the
+  side it points at is total, so pressing its nullability sets that
+  participation and the ERD follows. Where a mark cannot change -- a primary
+  key can never be empty -- it is pressed like any other and says what would
+  have to happen first, in the status bar rather than by being made dead under
+  the pointer. An edit that will not take reports there too, rather than in a
+  box that has to be dismissed: too much ceremony for a mark the hand is still
+  resting on, and it would stop the next press dead.
+- **The primary key, set from the schema.** On the row's menu: making a column
+  the key sets the identifier rule and draws the attribute as a key attribute
+  on the diagram, in one edit and so in one step of history, and makes it
+  required since a key is never empty. Taking the key off is the same command,
+  which is what moving a key between columns is made of. A composite,
+  multivalued or derived attribute is refused with a reason rather than
+  quietly reshaped.
+- **Auto increment**, the one constraint with nothing on the diagram behind
+  it: a Chen ERD has no way of saying a value is generated rather than
+  recorded, so it is a fact about the table alone. Only a whole-number type
+  can carry it, and a Decimal or Numeric only with no digits after the point;
+  anything else is refused with a reason, since a generated column of the
+  wrong type is SQL that will not run. New `Attribute::auto_increment` and
+  `SchemaColumn::auto_increment`, format version 25.
+
+**Not implemented.** `readiness()` itself and the gate it feeds (Phase 14);
+relational objects with identities of their own, and editing them as such
+(Phase 24); the generation baseline and three-way reconciliation (Phase 25);
+and `.sql`, Mermaid ER and DBML export, which cannot precede the workspace
+they would read from.
+
+- **Renaming, and which way it travels.** A table's name and a column's are
+  opened for typing by double-clicking them. Where the thing came from the
+  diagram, the rename goes there: renaming a table renames the entity,
+  relationship or attribute it was made from, and renaming a derived column
+  renames its attribute, so the two levels never come to disagree about what
+  something is called. A name is not the kind of difference ADR-010 records --
+  that is for structure, a column the schema has and the diagram does not. A
+  column added on the schema is renamed in place, having nothing behind it. A
+  name previously typed over a derived one is given up when the table is
+  renamed, in the same edit, or it would go on masking the name just chosen.
+- **A key the conversion invented can be renamed too.** Where nothing
+  identifies a table, a key is made for it and named after the table. That is a
+  guess, so it can be taken back: the name is remembered against the element the
+  table came from, and every foreign key pointing at that table follows it,
+  since a foreign key is named for the key it points at. Emptying the name hands
+  it back to the rule.
+- **The schema says what it did.** Hovering a row says whether renaming it will
+  reach the diagram, and a key the conversion invented says that it is the
+  primary key, why it exists and that the name can be changed. Generating a key
+  is right; doing it silently left the user with a name they did not choose and
+  no sign that choosing another was allowed.
+- **A primary key is marked twice**, with the letters `PK` and a solid golden
+  key beside them, upright with its teeth pointing down. The key is artwork in
+  the icon set (`key.svg`) rather than a shape drawn in code, so it is a key
+  rather than an approximation of one, with a painted fallback for the sets that
+  have no file for it. It is filled rather than outlined for the reason the
+  diagram's padlock is: it is read at a glance in a small space, where a
+  hairline reads as a smudge. The gold keeps
+  the theme's warning hue and is raised in saturation and brightness until it
+  looks like a key, since an ink chosen to be read as words is a bronze on light
+  paper. The glyph comes from the icon set in use rather than being drawn into
+  the schema, so it follows the chosen artwork like every other icon, and the
+  key gutter is wide enough to hold both marks rather than the mark being shrunk
+  to fit.
+- **A misplaced line end is told what is wrong and why.** An end still goes
+  exactly where the hand puts it, including where the schema cannot mean it:
+  nothing springs back. But a line on the schema joins two rows rather than two
+  tables — the foreign key it draws and the key that key points at — so an end
+  left elsewhere makes the drawing read as a schema it is not. On release, such
+  an end is named: the row it belongs on, the row it was left on, and why that
+  row cannot serve — an ordinary column, because a key can only run to a key; a
+  foreign key of its own, running somewhere else; a column the conversion left
+  out, which nothing can point at; a key of that table, but not the one this
+  points at; or off the table, joining nothing. Said once when the hand lets go,
+  not while it is still moving.
+- **Another column is added where it will be read.** The table under the
+  pointer shows an empty slot beneath its last row, which lights when the
+  pointer is on it; pressing it makes the row and opens its name for typing in
+  the row itself. Nothing is asked first. A dialog wanting a name before the
+  column exists puts a question in front of the thing it is about, and the two
+  it used to ask — the name, and whether the diagram should follow — are
+  answered by the row appearing and by reflecting. Reflecting is the default
+  because the schema and the diagram are two views of one model: the column is
+  an attribute on the model and the schema follows from it. A column meant for
+  the schema alone is the departure, and is asked for by name on the menu.
+
+**Held to the diagram's own rules.** The schema half of a project is state
+like any other, and it is now asked the same questions the diagram half is.
+
+- **Deleting an element takes its answers and its schema edits with it**, in
+  the same edit, so one undo brings them all back together. This is what a
+  remark pinned to an element has always done. Before it, an answer left
+  pointing at nothing made the deletion itself impossible — `validate()`
+  refuses such an answer, and refusing it refused the whole edit — and a column
+  added to a table whose element was gone simply stayed and was written to the
+  file. Three separate refusals were reachable by two ordinary actions in
+  order: renaming a table and then deleting it, deleting the attribute an
+  entity was told to identify itself by, and disconnecting the side of a
+  relationship that was named as carrying the key.
+- **`validate()` reads the schema.** A column added to a missing element, a
+  hidden attribute that no longer exists, a table placed off the canvas or
+  pulled to a negative size, and a line shaped from a link that is gone are all
+  refused, and refused on load as well as on edit. Added columns are held to
+  the name, identity, comment and type rules a drawn attribute is held to,
+  including the rule that a scale cannot exceed its precision. Nothing asked
+  any of this before.
+- **A schema column's identity comes from the guarded generator**, and both it
+  and a comment's are handed back to that guard when a project is opened.
+  Forgotten on open, either could be issued a second time and given to a new
+  element, leaving two things sharing one identity with nothing to say so.
+- **The undo budget counts what it retains.** The conversion answers, the
+  schema's edits and its arrangement are swapped whole rather than key by key,
+  so one answer stores a copy of every answer beside it. They were the only
+  fields costing the 32 MiB budget nothing, which a history of them could pass
+  unnoticed; four hundred typed table names were accounted 389 KiB and in fact
+  retained 17.7 MiB.
+
+**Format.** Version 25 records whether a column counts itself up; version 24
+records what a key the conversion invented has been
+renamed to; version 21 records where the schema differs from the diagram;
+version 22 records how it has been arranged; version 23 records how tall a
+table has been pulled as well as how wide. Older files open, and read correctly
+as having none of these.
 
 The Part 1 checklist is a coverage inventory, not a replacement for semantic
 prerequisites. Persistence was deliberately pulled into this usable slice so
@@ -612,7 +902,16 @@ opens again as the project it carries; identity-preserving undo/redo; atomic rej
 without losing the redo branch; owned-graph deletion/duplication; participant
 roles; hostile file inputs; preserving existing files on failed saves; cancelling
 open; saving an active property field; save-then-reopen; Shift group selection;
-group align-to-grid/bounds; stale gesture cancellation; and incident-only live connector updates.
+group align-to-grid/bounds; stale gesture cancellation; incident-only live connector updates;
+the schema half — that deleting an element takes the answers about it and the
+columns the schema added to it in one undoable edit, that a column added to a
+missing element, a hidden attribute that is gone, an arrangement off the canvas
+and a line shaped from a vanished link are each refused, that a column's and a
+remark's identities are remembered when a project is opened so neither can be
+issued twice, and that an edit swapping a whole field costs the undo budget what
+it retains; and lining up — that a dragged element still meets the edge and the
+middle of one far away across the diagram, and is left exactly where it was put
+when nothing is within reach.
 
 ## Still to build in Part 1
 

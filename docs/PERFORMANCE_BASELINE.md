@@ -47,6 +47,53 @@ choice without implying that full-scale production engineering is complete.
 rows in the table are from the original run and were not re-recorded, so they
 are not mixed with later measurements.
 
+## Dragging on a large diagram
+
+**Measured:** 2026-09-21, macOS 26.6.2 arm64, Apple Clang 21.0.0, Qt 6.11.1,
+CMake 4.3.4, Release, Qt offscreen platform.
+
+The drag row in the table above was recorded before the canvas drew cardinality
+and role labels on its connectors, and before a dragged element lined itself up
+with its neighbours. Both arrived afterwards on the path a pointer move takes,
+and neither was free:
+
+| Dispatch/process 100 offscreen drag events | Observed |
+| --- | ---: |
+| As recorded 2026-09-14, before either feature | 13.24 ms |
+| With both, before the changes below | 379 ms |
+| With both, after them | 87 ms |
+
+Two things cost the time, found by sampling rather than by reading:
+
+- **Every visible connector reshaped its labels on every repaint.** Laying text
+  out means shaping it, and `EdgeItem::paint` asked for that work again for each
+  label each frame; it was 37% of the samples. A label says the same handful of
+  characters frame after frame, so what was shaped is now kept until the text or
+  the room it has changes. This alone took 379 ms to 138 ms.
+- **An alignment guide asked for the whole viewport back whenever it appeared,
+  moved or went away.** A guide is a hairline, but repainting it repainted every
+  shape behind it. Only the strip a guide was or now is in is asked for now,
+  which took 138 ms to 87 ms. Gathering what a drag can line up against once
+  when it begins, rather than asking every shape for its rectangle again on
+  every pointer move, is part of the same change and is what makes the narrowed
+  repaint safe to rely on.
+
+What remains is drawing the diagram itself, which is what the 2026-09-14 figure
+measured when the canvas drew less. The other rows of the table above have not
+been brought back to their recorded values and are not regressions in the same
+sense: the model has grown since it was recorded, which the same fixture shows
+directly — its encoded file went from 744,851 to 970,503 bytes and its retained
+history from 1,255,692 to 2,563,148. Creating a thousand entities validates the
+whole project a thousand times, and there is more of each entity to validate
+than there was. Current figures on the host above, for the record rather than as
+a target: create 1,000 entities 280 ms, initial projection 168 ms, rename and
+synchronize 5.8 ms, encode/decode roundtrip 22.4 ms.
+
+Both suites pass in Debug and Release after these changes, including the canvas
+tests that check a dragged element still meets its neighbour's edge and middle
+exactly, and a new one that checks it still meets an element far away across the
+diagram -- which is the case a search that only looked nearby would have lost.
+
 ## Untrusted input rejection
 
 **Measured:** 2026-09-14, same host, Release, after the table above.

@@ -19,6 +19,7 @@
 #include <QLabel>
 #include <QScrollBar>
 #include <QSlider>
+#include <QStaticText>
 #include <QStyleOptionGraphicsItem>
 #include <QWheelEvent>
 #include <QWidgetAction>
@@ -312,9 +313,9 @@ public:
     }
 
     // A symbol's corner grips straddle its corners and so reach further out
-    // than the box itself. Only a symbol carries them, and the margin stays
-    // where it was for everything else: a body's bounding rect is read as the
-    // shape it draws, and padding it would move every join on the diagram.
+    // than the box itself. Only a symbol's do, and the margin stays where it
+    // was for everything else: a body's bounding rect is read as the shape it
+    // draws, and padding it would move every join on the diagram.
     QRectF boundingRect() const override {
         const auto margin = plain ? grip : 4;
         return bounds_.adjusted(-margin, -margin, margin, margin);
@@ -365,37 +366,81 @@ public:
             path.setFillRule(Qt::WindingFill);
             path.addRect(bounds_);
         }
-        // A grip hangs half outside the box, so the half that does would miss
-        // the item entirely and the pointer would fall through to the canvas.
+        // A symbol's grip hangs half outside the box, so the half that does
+        // would miss the item entirely and the pointer would fall through to
+        // the canvas. An entity's sit inside it and are covered already, but
+        // they are added the same way so that one rule covers both.
         if (sizeable()) {
             path.setFillRule(Qt::WindingFill);
-            for (const auto& corner : grips()) path.addRect(corner);
+            const auto squares = grips();
+            for (int i = 0; i < handle_count(); ++i) path.addRect(squares[static_cast<std::size_t>(i)]);
         }
         return path;
     }
     // A symbol is drawn as its character grown to fill its box, so the box is
     // how big the character is, and hauling a corner is how it is made bigger.
-    // Nothing else on the diagram is sized by hand: an entity's box is sized
-    // by the name it has to hold, so only a symbol carries grips.
+    // An entity is a box holding a name, and how wide and how tall it is are
+    // two separate questions, so it answers to each of its four edges as well:
+    // the side that is pulled moves, and the side opposite it stays where it
+    // was. Nothing else on the diagram is sized by hand.
     static constexpr qreal grip = 9;
-    [[nodiscard]] bool sizeable() const { return plain && isSelected(); }
-    // Clockwise from the top left, which is the order the corners are named in
-    // everywhere below, so a corner's number says which one it is.
-    [[nodiscard]] std::array<QRectF, 4> grips() const {
-        const std::array<QPointF, 4> corners{bounds_.topLeft(), bounds_.topRight(),
-                                             bounds_.bottomRight(), bounds_.bottomLeft()};
-        std::array<QRectF, 4> rects{};
-        for (std::size_t i = 0; i < corners.size(); ++i)
-            rects[i] = QRectF(corners[i] - QPointF(grip / 2, grip / 2), QSizeF(grip, grip));
+    [[nodiscard]] bool boxed() const { return std::holds_alternative<EntityId>(ref); }
+    [[nodiscard]] bool sizeable() const { return (plain || boxed()) && isSelected(); }
+    [[nodiscard]] int handle_count() const { return boxed() ? 8 : 4; }
+    // Which sides of the box each handle lies on. The four corners come first,
+    // clockwise from the top left, so a corner's number still says which one
+    // it is; then the four edges, in the same order round the box.
+    struct Side { bool left, right, top, bottom; };
+    static constexpr std::array<Side, 8> handle_sides{
+        Side{true, false, true, false},  Side{false, true, true, false},
+        Side{false, true, false, true},  Side{true, false, false, true},
+        Side{false, false, true, false}, Side{false, true, false, false},
+        Side{false, false, false, true}, Side{true, false, false, false}};
+    // What the pointer says a handle would do, whether it is resting on one or
+    // already hauling it.
+    [[nodiscard]] static Qt::CursorShape cursor_for(int handle) {
+        switch (handle) {
+        case 0: case 2: return Qt::SizeFDiagCursor;
+        case 1: case 3: return Qt::SizeBDiagCursor;
+        case 4: case 6: return Qt::SizeVerCursor;
+        default: return Qt::SizeHorCursor;
+        }
+    }
+    [[nodiscard]] std::array<QRectF, 8> grips() const {
+        std::array<QRectF, 8> rects{};
+        for (std::size_t i = 0; i < handle_sides.size(); ++i) {
+            const auto& side = handle_sides[i];
+            const QPointF at(side.left ? bounds_.left() : side.right ? bounds_.right() : bounds_.center().x(),
+                             side.top ? bounds_.top() : side.bottom ? bounds_.bottom() : bounds_.center().y());
+            // An entity's handles sit just inside its outline instead of
+            // straddling it, so the box a shape draws stays the box it
+            // occupies: the rename editor, the ring drawn round a connection
+            // target and everything else that reaches for a body measures that
+            // box, and padding it would move all of them. A symbol has no such
+            // furniture, and keeps the grips that straddle its corners.
+            const QPointF inward(!boxed() ? 0.0 : side.left ? grip / 2 : side.right ? -grip / 2 : 0.0,
+                                 !boxed() ? 0.0 : side.top ? grip / 2 : side.bottom ? -grip / 2 : 0.0);
+            rects[i] = QRectF(at - QPointF(grip / 2, grip / 2) + inward, QSizeF(grip, grip));
+        }
         return rects;
     }
-    // Which grip is under a point given in this item's own coordinates, or -1.
+    // Which handle is under a point given in this item's own coordinates, or -1.
     [[nodiscard]] int grip_at(const QPointF& point) const {
         if (!sizeable()) return -1;
-        const auto corners = grips();
-        for (std::size_t i = 0; i < corners.size(); ++i)
-            if (corners[i].contains(point)) return static_cast<int>(i);
+        const auto squares = grips();
+        for (int i = 0; i < handle_count(); ++i)
+            if (squares[static_cast<std::size_t>(i)].contains(point)) return i;
         return -1;
+    }
+    // Drawn filled with the paper rather than the selection colour: a solid
+    // square on each corner would read as part of what is inside the box.
+    void paint_grips(QPainter* painter) const {
+        if (!sizeable() || !colors_) return;
+        painter->setPen(QPen(selection_, 1.0));
+        painter->setBrush(colors_->canvas);
+        const auto squares = grips();
+        for (int i = 0; i < handle_count(); ++i) painter->drawRect(squares[static_cast<std::size_t>(i)]);
+        painter->setBrush(Qt::NoBrush);
     }
     // prepareGeometryChange is the scene's business and is protected, so the
     // projection that changes what an item is asks for it by name.
@@ -510,12 +555,8 @@ public:
             painter->setBrush(Qt::NoBrush);
             painter->drawRoundedRect(bounds_.adjusted(-2, -2, 2, 2), 4, 4);
             // The corners are drawn as grips so that a symbol says it can be
-            // made bigger. Filled with the paper rather than the selection
-            // colour: a solid square on each corner would read as part of the
-            // character when the character is small.
-            painter->setPen(QPen(selection_, 1.0));
-            painter->setBrush(colors_->canvas);
-            for (const auto& corner : grips()) painter->drawRect(corner);
+            // made bigger.
+            paint_grips(painter);
         }
         if (label.isEmpty()) return;
         auto font = painter->font();
@@ -715,6 +756,9 @@ public:
         }
         paint_comment_badge(painter);
         paint_found_ring(painter);
+        // Last, so that a handle in the corner is never hidden under the mark
+        // for a remark that happens to sit there.
+        paint_grips(painter);
     }
     // Drawn outside the shape rather than over it, so nothing a search found is
     // harder to read for having been found.
@@ -811,7 +855,10 @@ public:
     QString plain_tooltip;
     NodeItem* source;
     NodeItem* target;
-    Notation notation = Notation::Chen;
+    // Crow's foot is what ERDFlow draws unless somebody says otherwise. It is
+    // the notation the work is done in, so it is the one a diagram should be
+    // in before anyone has been asked.
+    Notation notation = Notation::CrowsFoot;
     LineStyle style = LineStyle::Elbow;
 
     // Every notation reads the same two values: the minimum from participation
@@ -1273,20 +1320,31 @@ public:
         auto font = painter->font();
         font.setPointSizeF(10);
         painter->setFont(font);
-        auto draw_label = [&](const QRectF& rect, const QString& text) {
+        auto draw_label = [&](const QRectF& rect, const QString& text, ShapedLabel& shaped) {
             painter->setPen(Qt::NoPen);
             painter->setBrush(canvas_);
             painter->drawRoundedRect(rect, 3, 3);
             painter->setPen(isSelected() ? selection_ : text_);
-            painter->drawText(rect, Qt::AlignCenter, QFontMetricsF(font).elidedText(text, Qt::ElideRight, rect.width() - 6));
+            if (shaped.source != text || shaped.room != rect.width()) {
+                shaped.source = text;
+                shaped.room = rect.width();
+                shaped.ready.setText(QFontMetricsF(font).elidedText(text, Qt::ElideRight, rect.width() - 6));
+                shaped.ready.setPerformanceHint(QStaticText::AggressiveCaching);
+                shaped.ready.prepare(QTransform(), font);
+            }
+            // Centred as the rectangle centred it, from the size the shaping
+            // already worked out rather than measuring the text a second time.
+            const auto size = shaped.ready.size();
+            painter->drawStaticText(QPointF(rect.center().x() - size.width() / 2,
+                                            rect.center().y() - size.height() / 2), shaped.ready);
         };
         // A side asked to be drawn bare shows neither its symbols nor the
         // number beside them. Its role is still drawn: a role names the side,
         // it does not constrain it.
         if (descriptor.show_constraints) {
-            if (const auto label = end_label(); !label.isEmpty()) draw_label(cardinality_rect_, label);
+            if (const auto label = end_label(); !label.isEmpty()) draw_label(cardinality_rect_, label, cardinality_label_);
         }
-        if (!descriptor.role.isEmpty()) draw_label(role_rect_, descriptor.role);
+        if (!descriptor.role.isEmpty()) draw_label(role_rect_, descriptor.role, role_label_);
         if (descriptor.show_constraints) paint_end_symbols(painter, ink, canvas_);
         if (isSelected() && shapeable()) {
             painter->setPen(QPen(selection_, 1.4));
@@ -1315,6 +1373,18 @@ public:
         painter->drawRoundedRect(body, 1.5, 1.5);
     }
 private:
+    // A label says the same handful of characters frame after frame, and
+    // laying text out means shaping it. Repainting reshaped every visible
+    // line's labels on every pointer move, which is most of what a drag across
+    // a large diagram was spending its time on. What was shaped is kept until
+    // what it says, or the room it has to say it in, changes.
+    struct ShapedLabel {
+        QString source;
+        qreal room = -1;
+        QStaticText ready;
+    };
+    mutable ShapedLabel cardinality_label_;
+    mutable ShapedLabel role_label_;
     QPainterPath path_;
     QRectF bounds_;
     QRectF cardinality_rect_;
@@ -1347,7 +1417,7 @@ struct DiagramView::Impl {
     std::map<ElementRef, std::set<EdgeItem*>> incident;
     Tool active_tool = Tool::Select;
     ThemeId theme_id = ThemeId::OfficeLight;
-    Notation notation = Notation::Chen;
+    Notation notation = Notation::CrowsFoot;
     LineStyle style = LineStyle::Elbow;
     JoinMode join_mode = JoinMode::WhereClicked;
     bool tool_locked = false;
@@ -1523,6 +1593,13 @@ struct DiagramView::Impl {
     std::optional<QPointF> connect_pointer;
     std::optional<ElementRef> connect_hover;
     std::map<ElementRef, Rect> drag_start;
+    // What a drag can line up against, gathered once when it begins. Nothing
+    // that is not being dragged moves while it lasts, so asking every shape on
+    // the canvas for its rectangle again on every pointer move was asking the
+    // same question of the same shapes a hundred times over. Kept in the order
+    // the nodes are held in, so which of two equally close shapes wins a guide
+    // is decided exactly as it was before.
+    std::vector<QRectF> guide_candidates;
     QPointF drag_anchor;
     // The element the drag was begun on. Everything selected moves by one
     // translation, and it is this one's edges that are lined up with the rest
@@ -1552,13 +1629,17 @@ struct DiagramView::Impl {
         bool placed = false;
     };
     std::optional<EndDrag> rejoining;
-    // A symbol's corner being hauled to make its character bigger or smaller.
-    // The box it started at is kept so that the size follows the pointer from
-    // where the grip was grabbed, and so that Escape can put it back.
+    // A handle being hauled to resize the shape it belongs to: a symbol's
+    // corner, or any of an entity's edges and corners. The box it started at
+    // is kept so that the size follows the pointer from where the handle was
+    // grabbed, and so that Escape can put it back; where on the scene it was
+    // grabbed is kept for the same reason, so that the edge travels with the
+    // hand rather than jumping to it.
     struct SizeDrag {
         ElementRef ref;
         Rect start;
         int corner = 0;
+        QPointF grab;
     };
     std::optional<SizeDrag> sizing;
     // The box a hauled grip asks for: the corner opposite the one being
@@ -1587,6 +1668,37 @@ struct DiagramView::Impl {
         width = std::clamp(height * aspect, min_symbol_size, max_symbol_size);
         return Rect{horizontal > 0 ? anchor.x() : anchor.x() - width,
                     vertical > 0 ? anchor.y() : anchor.y() - height, width, height};
+    }
+    // The box an entity's handle asks for: the sides it lies on travel with
+    // the pointer and the sides it does not stay exactly where they were, so
+    // pulling the left edge leaves the right one alone. Free in both
+    // directions, unlike a symbol's corner: a name has a width and a height,
+    // and the two are not one question. Nothing is snapped while the edge is
+    // held, for the same reason a shape being moved is only snapped through
+    // its own guides: an edge that jumps under the hand cannot be aimed.
+    [[nodiscard]] static Rect pulled_body(const SizeDrag& drag, const QPointF& pointer) {
+        const auto& side = NodeItem::handle_sides[static_cast<std::size_t>(
+            std::clamp(drag.corner, 0, static_cast<int>(NodeItem::handle_sides.size()) - 1))];
+        const QRectF start(drag.start.x, drag.start.y, drag.start.width, drag.start.height);
+        const auto travelled = pointer - drag.grab;
+        auto left = start.left();
+        auto right = start.right();
+        auto top = start.top();
+        auto bottom = start.bottom();
+        if (side.left)
+            left = std::clamp(start.left() + travelled.x(), right - max_entity_width, right - min_entity_width);
+        else if (side.right)
+            right = std::clamp(start.right() + travelled.x(), left + min_entity_width, left + max_entity_width);
+        if (side.top)
+            top = std::clamp(start.top() + travelled.y(), bottom - max_entity_height, bottom - min_entity_height);
+        else if (side.bottom)
+            bottom = std::clamp(start.bottom() + travelled.y(), top + min_entity_height, top + max_entity_height);
+        return Rect{left, top, right - left, bottom - top};
+    }
+    // Which of the two the shape under the hand is pulled by.
+    [[nodiscard]] static Rect hauled_box(const SizeDrag& drag, const QPointF& pointer) {
+        return std::holds_alternative<EntityId>(drag.ref) ? pulled_body(drag, pointer)
+                                                          : sized_box(drag, pointer);
     }
     QPointF minimum_drag;
     QPointF maximum_drag;
@@ -1727,7 +1839,20 @@ struct DiagramView::Impl {
     [[nodiscard]] std::optional<QPointF> aligned_delta(const QPointF& delta) {
         const auto previous = guides;
         guides.clear();
-        const auto redraw = [&] { if (guides != previous) view.viewport()->update(); };
+        // Only where a guide was, or now is. A guide is a hairline, and asking
+        // for the whole viewport back meant repainting every shape behind it
+        // each time one appeared or moved -- which, on a diagram of any size,
+        // was most of what dragging one element was spending its time on.
+        const auto redraw = [&] {
+            if (guides == previous) return;
+            QRectF touched;
+            const std::vector<QLineF>* sets[]{&previous, &guides};
+            for (const auto* set : sets)
+                for (const auto& guide : *set)
+                    touched = touched.united(QRectF(guide.p1(), guide.p2()).normalized());
+            if (touched.isNull()) { view.viewport()->update(); return; }
+            view.viewport()->update(view.mapFromScene(touched.adjusted(-2, -2, 2, 2)).boundingRect());
+        };
         if (!drag_anchor_ref || !drag_start.contains(*drag_anchor_ref)) { redraw(); return std::nullopt; }
         const auto& origin = drag_start.at(*drag_anchor_ref);
         const QRectF moving(origin.x + delta.x(), origin.y + delta.y(), origin.width, origin.height);
@@ -1747,9 +1872,14 @@ struct DiagramView::Impl {
             if (std::abs(gap) > reach || (best.found && std::abs(gap) >= std::abs(best.shift))) return;
             best = Match{true, gap, theirs, from, to};
         };
-        for (const auto& [ref, item] : nodes) {
-            if (drag_start.contains(ref)) continue;
-            const QRectF other = item->body_rect().translated(item->scenePos());
+        for (const auto& other : guide_candidates) {
+            // A shape can only line up across if its own span comes within
+            // reach of the moving one's, and down if the same is true the other
+            // way. Failing both, none of its eighteen comparisons can match, so
+            // it is passed over without making them.
+            const bool across_possible = other.left() <= moving.right() + reach && moving.left() <= other.right() + reach;
+            const bool down_possible = other.top() <= moving.bottom() + reach && moving.top() <= other.bottom() + reach;
+            if (!across_possible && !down_possible) continue;
             const auto top = std::min(moving.top(), other.top());
             const auto bottom = std::max(moving.bottom(), other.bottom());
             const auto left = std::min(moving.left(), other.left());
@@ -2887,6 +3017,9 @@ void DiagramView::cancel_interaction() {
             found->second->setPos(impl_->sizing->start.x, impl_->sizing->start.y);
             found->second->set_size(impl_->sizing->start.width, impl_->sizing->start.height);
             impl_->synchronizing = false;
+            // An entity's lines followed its edge while it was being pulled,
+            // so they are drawn again from the outline it has gone back to.
+            impl_->refresh_incident(found->second);
         }
         impl_->sizing.reset();
     }
@@ -3256,16 +3389,23 @@ void DiagramView::mousePressEvent(QMouseEvent* event) {
     // Grabbing a selected connector's handle reshapes it instead of starting a
     // rubber band. The bend is previewed on the item and committed on release.
     if (impl_->active_tool == Tool::Select) {
-        // A grip on a selected symbol's corner resizes it rather than moving
-        // it. Tested before anything else here: the grips are drawn on top of
-        // everything the symbol sits over, so that is what they are clicked on.
+        // A handle on a selected symbol or entity resizes it rather than
+        // moving it. Tested before the shape itself: the handles are drawn on
+        // top of everything it sits over, so that is what they are clicked on.
+        // A selected line's own grips come first, though: an end grip lies on
+        // the outline of the shape it joins, which is exactly where that
+        // shape's edge handles are, and a line that could not be taken hold of
+        // where it meets its entity could not be aimed at all.
         if (event->button() == Qt::LeftButton) {
-            if (auto* node = impl_->node_at(event->position().toPoint()); node && node->sizeable()) {
-                const auto scene_press = mapToScene(event->position().toPoint());
+            const auto at = event->position().toPoint();
+            bool owner_end = false;
+            const bool on_a_line = impl_->lock_at(at) || impl_->handle_at(at) || impl_->end_at(at, owner_end);
+            if (auto* node = impl_->node_at(at); node && node->sizeable() && !on_a_line) {
+                const auto scene_press = mapToScene(at);
                 const auto corner = node->grip_at(node->mapFromScene(scene_press));
                 const auto& layout = impl_->editor.project().layout;
                 if (const auto found = layout.find(node->ref); corner >= 0 && found != layout.end()) {
-                    impl_->sizing = Impl::SizeDrag{node->ref, found->second, corner};
+                    impl_->sizing = Impl::SizeDrag{node->ref, found->second, corner, scene_press};
                     event->accept();
                     return;
                 }
@@ -3337,6 +3477,12 @@ void DiagramView::mousePressEvent(QMouseEvent* event) {
                 impl_->maximum_drag.setX(std::min(impl_->maximum_drag.x(), max_coordinate - rect.x - rect.width));
                 impl_->maximum_drag.setY(std::min(impl_->maximum_drag.y(), max_coordinate - rect.y - rect.height));
             }
+        }
+        impl_->guide_candidates.clear();
+        impl_->guide_candidates.reserve(impl_->nodes.size());
+        for (const auto& [ref, item] : impl_->nodes) {
+            if (impl_->drag_start.contains(ref)) continue;
+            impl_->guide_candidates.push_back(item->body_rect().translated(item->scenePos()));
         }
     }
 }
@@ -3480,14 +3626,19 @@ void DiagramView::mouseMoveEvent(QMouseEvent* event) {
         return;
     }
     if (impl_->sizing) {
-        // Previewed on the item as the grip is hauled, and written once when
+        // Previewed on the item as the handle is hauled, and written once when
         // it is let go, the way a bend and a move are.
-        const auto box = Impl::sized_box(*impl_->sizing, mapToScene(event->position().toPoint()));
+        const auto box = Impl::hauled_box(*impl_->sizing, mapToScene(event->position().toPoint()));
         if (const auto found = impl_->nodes.find(impl_->sizing->ref); found != impl_->nodes.end()) {
             impl_->synchronizing = true;
             found->second->setPos(box.x, box.y);
             found->second->set_size(box.width, box.height);
             impl_->synchronizing = false;
+            // An entity carries its relationships and its attributes, and each
+            // of those lines is drawn from its outline, so they follow the
+            // edge while it is being pulled rather than snapping into place
+            // when it is let go.
+            impl_->refresh_incident(found->second);
         }
         event->accept();
         return;
@@ -3575,16 +3726,20 @@ void DiagramView::mouseMoveEvent(QMouseEvent* event) {
         return;
     }
     // Nothing is being dragged, so the pointer's job is to say what the thing
-    // under it would do. A corner grip resizes along its own diagonal, and the
-    // arrow comes back only from one of those two shapes, so this never argues
-    // with the hand that pans or the cross that draws.
+    // under it would do. A corner resizes along its own diagonal and an edge
+    // along its own axis, and the arrow comes back only from one of those four
+    // shapes, so this never argues with the hand that pans or the cross that
+    // draws.
     if (impl_->active_tool == Tool::Select && event->buttons() == Qt::NoButton) {
         auto* node = impl_->node_at(event->position().toPoint());
-        const auto corner = node && node->sizeable()
+        const auto handle = node && node->sizeable()
             ? node->grip_at(node->mapFromScene(mapToScene(event->position().toPoint()))) : -1;
-        if (corner >= 0) setCursor(corner == 0 || corner == 2 ? Qt::SizeFDiagCursor : Qt::SizeBDiagCursor);
-        else if (cursor().shape() == Qt::SizeFDiagCursor || cursor().shape() == Qt::SizeBDiagCursor)
-            setCursor(Qt::ArrowCursor);
+        const auto sizing_cursor = cursor().shape() == Qt::SizeFDiagCursor
+                                || cursor().shape() == Qt::SizeBDiagCursor
+                                || cursor().shape() == Qt::SizeHorCursor
+                                || cursor().shape() == Qt::SizeVerCursor;
+        if (handle >= 0) setCursor(NodeItem::cursor_for(handle));
+        else if (sizing_cursor) setCursor(Qt::ArrowCursor);
     }
     QGraphicsView::mouseMoveEvent(event);
 }
@@ -3596,10 +3751,12 @@ void DiagramView::mouseReleaseEvent(QMouseEvent* event) {
         if (found == impl_->nodes.end()) { event->accept(); return; }
         const Rect box{found->second->pos().x(), found->second->pos().y(),
                        found->second->body_rect().width(), found->second->body_rect().height()};
-        // A grip clicked and let go without travelling asks for nothing, so
+        // A handle clicked and let go without travelling asks for nothing, so
         // nothing is written and the history stays clear of empty steps.
         if (box != drag.start) {
-            const auto result = impl_->editor.resize_symbols({{drag.ref, box}});
+            const auto result = std::holds_alternative<EntityId>(drag.ref)
+                ? impl_->editor.resize_entities({{drag.ref, box}})
+                : impl_->editor.resize_symbols({{drag.ref, box}});
             if (!result) impl_->displayed_revision.reset(); // Put the stored size back after a refusal.
             impl_->publish(result);
         }

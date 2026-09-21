@@ -66,6 +66,48 @@ std::size_t payload(const Comment& value) {
     return value.text.capacity() + value.targets.capacity() * sizeof(CommentTarget);
 }
 
+// The three fields history swaps whole rather than key by key. They are the
+// most expensive kind of delta there is -- a single answer stores a copy of
+// every answer alongside it -- and until now they were the only fields that
+// cost the undo budget nothing at all, so a history of them could grow past
+// the 32 MiB it is allowed without the budget noticing.
+std::size_t entries(std::size_t count, std::size_t each) { return count * (each + 4 * sizeof(void*)); }
+std::size_t payload(const ConversionDecisions& value) {
+    std::size_t result =
+        entries(value.isa.size(), sizeof(std::pair<const SpecializationId, IsaStrategy>))
+        + entries(value.composite.size(), sizeof(std::pair<const AttributeId, CompositeMode>))
+        + entries(value.one_to_one_key.size(), sizeof(std::pair<const RelationshipId, ParticipantId>))
+        + entries(value.junction_name.size(), sizeof(std::pair<const RelationshipId, std::string>))
+        + entries(value.identifier.size(), sizeof(std::pair<const EntityId, AttributeId>))
+        + entries(value.table_name.size(), sizeof(std::pair<const ElementRef, std::string>));
+    // A typed name is the only thing here that is on the heap.
+    for (const auto& [id, chosen] : value.junction_name) { (void)id; result += chosen.capacity(); }
+    for (const auto& [ref, chosen] : value.table_name) { (void)ref; result += chosen.capacity(); }
+    return result;
+}
+std::size_t payload(const SchemaColumn& value) { return value.name.capacity() + value.comment.capacity(); }
+std::size_t payload(const SchemaOverrides& value) {
+    std::size_t result = entries(value.added.size(), sizeof(std::pair<const ElementRef, std::vector<SchemaColumn>>))
+        + entries(value.hidden.size(), sizeof(AttributeId))
+        + entries(value.key_names.size(), sizeof(std::pair<const ElementRef, std::string>));
+    for (const auto& [table, chosen] : value.key_names) { (void)table; result += chosen.capacity(); }
+    for (const auto& [table, columns] : value.added) {
+        (void)table;
+        result += columns.capacity() * sizeof(SchemaColumn);
+        for (const auto& column : columns) result += payload(column);
+    }
+    return result;
+}
+std::size_t payload(const SchemaLayout& value) {
+    std::size_t result = entries(value.tables.size(), sizeof(std::pair<const ElementRef, Point>))
+        + entries(value.widths.size() + value.heights.size(), sizeof(std::pair<const ElementRef, double>))
+        + entries(value.lines.size(), sizeof(std::pair<const LinkSource, SchemaLine>));
+    // A route is the one thing here that grows without bound: a line carries as
+    // many corners as a hand cares to put in it.
+    for (const auto& [link, line] : value.lines) { (void)link; result += line.route.capacity() * sizeof(Point); }
+    return result;
+}
+
 template<class Key, class Value>
 std::size_t cost(const Changes<Key, Value>& changes, const std::map<Key, Value>& live) {
     std::size_t result = changes.keys.size() * (sizeof(Key) + 4 * sizeof(void*));
@@ -84,7 +126,9 @@ struct Delta {
     std::string label;
     std::optional<std::string> project_name;
     std::optional<Background> background;
-    std::optional<ConceptualMode> mode;
+    std::optional<ConversionDecisions> decisions;
+    std::optional<SchemaOverrides> schema;
+    std::optional<SchemaLayout> schema_layout;
     Changes<EntityId, Entity> entities;
     Changes<AttributeId, Attribute> attributes;
     Changes<RelationshipId, Relationship> relationships;
@@ -101,7 +145,8 @@ struct Delta {
     std::uint64_t after_state = 0;
 
     [[nodiscard]] bool empty() const {
-        return !project_name && !background && !mode && entities.keys.empty() && attributes.keys.empty()
+        return !project_name && !background && !decisions && !schema && !schema_layout
+            && entities.keys.empty() && attributes.keys.empty()
             && relationships.keys.empty() && specializations.keys.empty()
             && pictures.keys.empty() && notes.keys.empty() && comments.keys.empty()
             && layout.keys.empty() && connectors.keys.empty() && colours.keys.empty()
@@ -110,7 +155,9 @@ struct Delta {
     void toggle(Project& project) {
         if (project_name) project.name.swap(*project_name);
         if (background) std::swap(project.background, *background);
-        if (mode) std::swap(project.mode, *mode);
+        if (decisions) std::swap(project.decisions, *decisions);
+        if (schema) std::swap(project.schema, *schema);
+        if (schema_layout) std::swap(project.schema_layout, *schema_layout);
         entities.toggle(project.entities);
         attributes.toggle(project.attributes);
         relationships.toggle(project.relationships);
@@ -127,6 +174,11 @@ struct Delta {
         return sizeof(Delta) + sizeof(std::unique_ptr<Delta>) + label.capacity()
             + (project_name ? project_name->capacity() + project.name.capacity() : 0)
             + (background ? background->image.capacity() + project.background.image.capacity() : 0)
+            // Both directions, because toggle() exchanges the delta's copy with
+            // the project's and history retains whichever is not in use.
+            + (decisions ? payload(*decisions) + payload(project.decisions) : 0)
+            + (schema ? payload(*schema) + payload(project.schema) : 0)
+            + (schema_layout ? payload(*schema_layout) + payload(project.schema_layout) : 0)
             + cost(entities, project.entities) + cost(attributes, project.attributes)
             + cost(relationships, project.relationships) + cost(specializations, project.specializations)
             + cost(pictures, project.pictures) + cost(notes, project.notes)
@@ -263,6 +315,16 @@ EditResult Editor::replace_project(Project project) {
         for (const auto& [id, specialization] : project.specializations) { (void)specialization; identities.insert(id.value); }
         for (const auto& [id, picture] : project.pictures) { (void)picture; identities.insert(id.value); }
         for (const auto& [id, note] : project.notes) { (void)note; identities.insert(id.value); }
+        for (const auto& [id, comment] : project.comments) { (void)comment; identities.insert(id.value); }
+        // A column the schema added carries an identity like everything else,
+        // and the guard above can only refuse to reissue what it is told was
+        // issued. Left out here, a column's identity was forgotten the moment
+        // its project was opened, and the generator was free to hand it out
+        // again to something else.
+        for (const auto& [table, columns] : project.schema.added) {
+            (void)table;
+            for (const auto& column : columns) identities.insert(column.id.value);
+        }
         impl_->project = std::move(project);
         impl_->issued.swap(identities);
         impl_->history.clear();
@@ -663,11 +725,349 @@ EditResult Editor::set_schema_comment(ElementRef ref, std::string comment) {
     });
 }
 
-EditResult Editor::set_conceptual_mode(ConceptualMode mode) {
-    return impl_->edit(mode == ConceptualMode::Convertible ? "Switch to Convertible mode"
-                                                           : "Switch to Basic mode", [&](Delta& delta) {
-        if (project().mode == mode) return EditResult{};
-        delta.mode = mode;
+namespace {
+// Every decision command is the same shape: take a copy, change one answer,
+// and keep it only if it actually changed anything.
+template<class Change>
+ConversionDecisions decided_with(const ConversionDecisions& from, Change&& change) {
+    auto copy = from;
+    change(copy);
+    return copy;
+}
+} // namespace
+
+EditResult Editor::set_table_naming(TableNaming naming) {
+    return impl_->edit("Set table naming", [&](Delta& delta) {
+        auto value = decided_with(project().decisions, [&](ConversionDecisions& d) { d.naming = naming; });
+        if (value == project().decisions) return EditResult{};
+        delta.decisions = std::move(value);
+        return EditResult{};
+    });
+}
+
+EditResult Editor::set_isa_strategy(SpecializationId id, std::optional<IsaStrategy> strategy) {
+    return impl_->edit("Set mapping strategy", [&](Delta& delta) {
+        if (!project().specializations.contains(id)) return failure("The hierarchy no longer exists.");
+        auto value = decided_with(project().decisions, [&](ConversionDecisions& d) {
+            if (strategy) d.isa[id] = *strategy; else d.isa.erase(id);
+        });
+        if (value == project().decisions) return EditResult{};
+        delta.decisions = std::move(value);
+        return EditResult{};
+    });
+}
+
+EditResult Editor::set_composite_mode(AttributeId id, std::optional<CompositeMode> mode) {
+    return impl_->edit("Set composite mapping", [&](Delta& delta) {
+        const auto found = project().attributes.find(id);
+        if (found == project().attributes.end()) return failure("The attribute no longer exists.");
+        if (found->second.kind != AttributeKind::Composite)
+            return failure("Only a composite attribute is asked what it becomes.");
+        auto value = decided_with(project().decisions, [&](ConversionDecisions& d) {
+            if (mode) d.composite[id] = *mode; else d.composite.erase(id);
+        });
+        if (value == project().decisions) return EditResult{};
+        delta.decisions = std::move(value);
+        return EditResult{};
+    });
+}
+
+EditResult Editor::set_one_to_one_key(RelationshipId id, std::optional<ParticipantId> side) {
+    return impl_->edit("Choose which side keeps the key", [&](Delta& delta) {
+        const auto found = project().relationships.find(id);
+        if (found == project().relationships.end()) return failure("The relationship no longer exists.");
+        if (side) {
+            const auto& sides = found->second.participants;
+            if (std::none_of(sides.begin(), sides.end(),
+                             [&](const Participant& one) { return one.id == *side; }))
+                return failure("That side does not belong to this relationship.");
+        }
+        auto value = decided_with(project().decisions, [&](ConversionDecisions& d) {
+            if (side) d.one_to_one_key[id] = *side; else d.one_to_one_key.erase(id);
+        });
+        if (value == project().decisions) return EditResult{};
+        delta.decisions = std::move(value);
+        return EditResult{};
+    });
+}
+
+EditResult Editor::set_junction_name(RelationshipId id, std::string chosen) {
+    return impl_->edit("Name the bridge table", [&](Delta& delta) {
+        if (!project().relationships.contains(id)) return failure("The relationship no longer exists.");
+        auto value = decided_with(project().decisions, [&](ConversionDecisions& d) {
+            if (chosen.empty()) d.junction_name.erase(id); else d.junction_name[id] = chosen;
+        });
+        if (value == project().decisions) return EditResult{};
+        delta.decisions = std::move(value);
+        return EditResult{};
+    });
+}
+
+EditResult Editor::set_entity_identifier(EntityId id, std::optional<AttributeId> chosen) {
+    return impl_->edit("Choose the identifier", [&](Delta& delta) {
+        if (!project().entities.contains(id)) return failure("The entity no longer exists.");
+        if (chosen) {
+            const auto found = project().attributes.find(*chosen);
+            if (found == project().attributes.end() || found->second.owner != AttributeOwner{ElementRef{id}})
+                return failure("That attribute does not belong to this entity.");
+        }
+        auto value = decided_with(project().decisions, [&](ConversionDecisions& d) {
+            if (chosen) d.identifier[id] = *chosen; else d.identifier.erase(id);
+        });
+        if (value == project().decisions) return EditResult{};
+        delta.decisions = std::move(value);
+        return EditResult{};
+    });
+}
+
+EditResult Editor::set_table_name(ElementRef ref, std::string chosen) {
+    return impl_->edit("Rename the table", [&](Delta& delta) {
+        if (!exists(project(), ref)) return failure("The element no longer exists.");
+        auto value = decided_with(project().decisions, [&](ConversionDecisions& d) {
+            if (chosen.empty()) d.table_name.erase(ref); else d.table_name[ref] = chosen;
+        });
+        if (value == project().decisions) return EditResult{};
+        delta.decisions = std::move(value);
+        return EditResult{};
+    });
+}
+
+namespace {
+// The overrides with one change made to them, in the same shape as the helper
+// the conversion decisions use, so the two read alike.
+template<class Change>
+SchemaOverrides schema_with(const SchemaOverrides& from, Change&& change) {
+    auto value = from;
+    change(value);
+    return value;
+}
+
+// Where a schema-only column lives, since it is held under the table it was
+// added to rather than in a list of its own.
+const SchemaColumn* find_schema_column(const SchemaOverrides& schema, SchemaColumnId id) {
+    for (const auto& [table, columns] : schema.added) {
+        (void)table;
+        for (const auto& column : columns)
+            if (column.id == id) return &column;
+    }
+    return nullptr;
+}
+} // namespace
+
+EditResult Editor::add_schema_column(ElementRef table, std::string name) {
+    return impl_->edit("Add a column", [&](Delta& delta) {
+        if (!exists(project(), table)) return failure("The element no longer exists.");
+        if (name.empty()) return failure("A column needs a name.");
+        SchemaColumn column;
+        column.id = SchemaColumnId{impl_->next_id()};
+        column.name = std::move(name);
+        auto value = schema_with(project().schema, [&](SchemaOverrides& s) {
+            s.added[table].push_back(std::move(column));
+        });
+        delta.schema = std::move(value);
+        return EditResult{};
+    });
+}
+
+// Renaming a table renames the element it came from.
+//
+// The schema and the diagram are two views of one model, so a name typed in
+// one of them is the name in both. This is not the kind of difference ADR-010
+// is about: recording a column the schema has and the diagram does not is a
+// fact about structure, while two names for one thing is only a disagreement.
+// Any name previously typed over the derived one is given up in the same edit,
+// since it would otherwise go on masking the name just chosen.
+EditResult Editor::rename_table(ElementRef ref, std::string name) {
+    return impl_->edit("Rename table", [&](Delta& delta) {
+        const auto characters = character_count(name);
+        auto result = edit_element(project(), delta, ref, [&](auto& value) { value.name = std::move(name); });
+        if (!result) return result;
+        hold_anchors(project(), delta, ref, TextField::Name, characters);
+        if (project().decisions.table_name.contains(ref)) {
+            auto decided = project().decisions;
+            decided.table_name.erase(ref);
+            delta.decisions = std::move(decided);
+        }
+        return result;
+    });
+}
+
+// What a key the conversion invented is called. Generating the key is right --
+// a table with nothing to identify it still needs one -- but the name is a
+// guess from the table's own name, and a guess is something the user may take
+// back. Empty hands the name to the rule again, as an empty table name does.
+EditResult Editor::rename_schema_key(ElementRef table, std::string chosen) {
+    return impl_->edit("Rename the key", [&](Delta& delta) {
+        if (!exists(project(), table)) return failure("The element no longer exists.");
+        auto value = schema_with(project().schema, [&](SchemaOverrides& s) {
+            if (chosen.empty()) s.key_names.erase(table); else s.key_names[table] = chosen;
+        });
+        if (value == project().schema) return EditResult{};
+        delta.schema = std::move(value);
+        return EditResult{};
+    });
+}
+
+EditResult Editor::rename_schema_column(SchemaColumnId id, std::string name) {
+    return impl_->edit("Rename the column", [&](Delta& delta) {
+        if (!find_schema_column(project().schema, id)) return failure("The column no longer exists.");
+        if (name.empty()) return failure("A column needs a name.");
+        auto value = schema_with(project().schema, [&](SchemaOverrides& s) {
+            for (auto& [table, columns] : s.added) {
+                (void)table;
+                for (auto& column : columns)
+                    if (column.id == id) column.name = name;
+            }
+        });
+        if (value == project().schema) return EditResult{};
+        delta.schema = std::move(value);
+        return EditResult{};
+    });
+}
+
+EditResult Editor::set_schema_column_type(SchemaColumnId id, LogicalType type) {
+    return impl_->edit("Set logical type", [&](Delta& delta) {
+        if (!find_schema_column(project().schema, id)) return failure("The column no longer exists.");
+        if (!known_type(type)) return failure("That is not a logical type.");
+        auto value = schema_with(project().schema, [&](SchemaOverrides& s) {
+            for (auto& [table, columns] : s.added) {
+                (void)table;
+                for (auto& column : columns) {
+                    if (column.id != id) continue;
+                    column.logical_type = type;
+                    if (size_of(type) == TypeSize::None) { column.length = 0; column.scale = 0; }
+                    if (size_of(type) != TypeSize::Precision) column.scale = 0;
+                }
+            }
+        });
+        if (value == project().schema) return EditResult{};
+        delta.schema = std::move(value);
+        return EditResult{};
+    });
+}
+
+EditResult Editor::erase_schema_column(SchemaColumnId id) {
+    return impl_->edit("Remove the column", [&](Delta& delta) {
+        if (!find_schema_column(project().schema, id)) return failure("The column no longer exists.");
+        auto value = schema_with(project().schema, [&](SchemaOverrides& s) {
+            for (auto& [table, columns] : s.added) {
+                (void)table;
+                std::erase_if(columns, [&](const SchemaColumn& column) { return column.id == id; });
+            }
+            // A table that has none of its own left holds no entry at all, so
+            // an empty list never counts as a difference from the diagram.
+            std::erase_if(s.added, [](const auto& entry) { return entry.second.empty(); });
+        });
+        delta.schema = std::move(value);
+        return EditResult{};
+    });
+}
+
+EditResult Editor::hide_in_schema(AttributeId id, bool hidden) {
+    return impl_->edit(hidden ? "Remove the column" : "Show the column", [&](Delta& delta) {
+        if (!project().attributes.contains(id)) return failure("The attribute no longer exists.");
+        auto value = schema_with(project().schema, [&](SchemaOverrides& s) {
+            if (hidden) s.hidden.insert(id); else s.hidden.erase(id);
+        });
+        if (value == project().schema) return EditResult{};
+        delta.schema = std::move(value);
+        return EditResult{};
+    });
+}
+
+namespace {
+template<class Change>
+SchemaLayout arranged_with(const SchemaLayout& from, Change&& change) {
+    auto value = from;
+    change(value);
+    return value;
+}
+} // namespace
+
+EditResult Editor::move_schema_tables(const std::map<ElementRef, Point>& places,
+                                      const std::vector<LinkSource>& give_way) {
+    return impl_->edit("Move on the schema", [&](Delta& delta) {
+        auto value = arranged_with(project().schema_layout, [&](SchemaLayout& layout) {
+            for (const auto& [table, at] : places) layout.tables[table] = at;
+            for (const auto& link : give_way) layout.lines.erase(link);
+        });
+        if (value == project().schema_layout) return EditResult{};
+        delta.schema_layout = std::move(value);
+        return EditResult{};
+    });
+}
+
+EditResult Editor::resize_schema_tables(const std::map<ElementRef, SchemaTableBox>& boxes) {
+    return impl_->edit("Resize on the schema", [&](Delta& delta) {
+        auto value = arranged_with(project().schema_layout, [&](SchemaLayout& layout) {
+            for (const auto& [table, box] : boxes) {
+                // Back at the size it would have had anyway is the same as
+                // never having been pulled, so it holds no entry rather than
+                // one that matches.
+                if (box.width <= 0) layout.widths.erase(table);
+                else layout.widths[table] = std::clamp(box.width, min_table_width, max_table_width);
+                if (box.height <= 0) layout.heights.erase(table);
+                else layout.heights[table] = std::clamp(box.height, min_table_height, max_table_height);
+                // A left or top edge takes the table with it, so where it now
+                // stands is written in this same edit. A right or bottom edge
+                // carries no place and leaves the table's own entry alone,
+                // which is what keeps a table that has only been pulled wider
+                // following the automatic arrangement.
+                if (box.at) layout.tables[table] = *box.at;
+            }
+        });
+        if (value == project().schema_layout) return EditResult{};
+        delta.schema_layout = std::move(value);
+        return EditResult{};
+    });
+}
+
+EditResult Editor::shape_schema_line(LinkSource link, SchemaLine shape) {
+    return impl_->edit("Shape a line", [&](Delta& delta) {
+        auto value = arranged_with(project().schema_layout, [&](SchemaLayout& layout) {
+            // A line with nothing said about it holds no entry at all, so
+            // giving one back to the router is the same as never shaping it.
+            if (shape.empty()) layout.lines.erase(link);
+            else layout.lines[link] = std::move(shape);
+        });
+        if (value == project().schema_layout) return EditResult{};
+        delta.schema_layout = std::move(value);
+        return EditResult{};
+    });
+}
+
+EditResult Editor::release_schema_lines() {
+    return impl_->edit("Release the lines", [&](Delta& delta) {
+        if (project().schema_layout.lines.empty()) return EditResult{};
+        auto value = project().schema_layout;
+        value.lines.clear();
+        delta.schema_layout = std::move(value);
+        return EditResult{};
+    });
+}
+
+EditResult Editor::tidy_schema() {
+    return impl_->edit("Tidy the schema", [&](Delta& delta) {
+        if (project().schema_layout.empty()) return EditResult{};
+        delta.schema_layout = SchemaLayout{};
+        return EditResult{};
+    });
+}
+
+EditResult Editor::set_logical_types(const std::vector<AttributeId>& ids, LogicalType type) {
+    return impl_->edit("Set logical type", [&](Delta& delta) {
+        if (!known_type(type)) return failure("That is not a logical type.");
+        for (const auto& id : ids) {
+            const auto found = project().attributes.find(id);
+            if (found == project().attributes.end()) continue;   // gone since it was listed
+            auto value = found->second;
+            value.logical_type = type;
+            // A length belongs to the type that takes one, and the old type's
+            // length means nothing to the new one.
+            if (size_of(type) == TypeSize::None) { value.length = 0; value.scale = 0; }
+            if (size_of(type) != TypeSize::Precision) value.scale = 0;
+            if (value != found->second) delta.attributes.put(id, std::move(value));
+        }
         return EditResult{};
     });
 }
@@ -678,11 +1078,57 @@ EditResult Editor::set_logical_type(AttributeId id, LogicalType type, std::uint3
         if (found == project().attributes.end()) return failure("The attribute no longer exists.");
         auto value = found->second;
         value.logical_type = type;
-        // Only Text and Decimal are measured, so anything else is given no
-        // number rather than keeping one it cannot use.
-        value.length = (type == LogicalType::Text || type == LogicalType::Decimal) ? length : 0;
+        // Only a sized type is measured, so anything else is given no number
+        // rather than keeping one it cannot use. A scale belongs to a
+        // precision alone, so it goes the same way.
+        const auto takes = size_of(type);
+        value.length = takes == TypeSize::None ? 0 : length;
+        if (takes != TypeSize::Precision) value.scale = 0;
         if (value == found->second) return EditResult{};
         delta.attributes.put(id, std::move(value));
+        return EditResult{};
+    });
+}
+
+EditResult Editor::set_type_size(AttributeId id, std::uint32_t length, std::uint32_t scale) {
+    return impl_->edit("Set the size", [&](Delta& delta) {
+        const auto found = project().attributes.find(id);
+        if (found == project().attributes.end()) return failure("The attribute no longer exists.");
+        const auto takes = size_of(found->second.logical_type);
+        if (takes == TypeSize::None) return failure("That type is not measured.");
+        if (length > max_logical_length) return failure("That is longer than a column can be.");
+        if (takes == TypeSize::Precision && scale > length)
+            return failure("A scale cannot be longer than the precision it sits in.");
+        auto value = found->second;
+        value.length = length;
+        value.scale = takes == TypeSize::Precision ? scale : 0;
+        if (value == found->second) return EditResult{};
+        delta.attributes.put(id, std::move(value));
+        return EditResult{};
+    });
+}
+
+EditResult Editor::set_schema_column_size(SchemaColumnId id, std::uint32_t length, std::uint32_t scale) {
+    return impl_->edit("Set the size", [&](Delta& delta) {
+        const auto* column = find_schema_column(project().schema, id);
+        if (!column) return failure("The column no longer exists.");
+        const auto takes = size_of(column->logical_type);
+        if (takes == TypeSize::None) return failure("That type is not measured.");
+        if (length > max_logical_length) return failure("That is longer than a column can be.");
+        if (takes == TypeSize::Precision && scale > length)
+            return failure("A scale cannot be longer than the precision it sits in.");
+        auto value = schema_with(project().schema, [&](SchemaOverrides& s) {
+            for (auto& [table, columns] : s.added) {
+                (void)table;
+                for (auto& one : columns) {
+                    if (one.id != id) continue;
+                    one.length = length;
+                    one.scale = takes == TypeSize::Precision ? scale : 0;
+                }
+            }
+        });
+        if (value == project().schema) return EditResult{};
+        delta.schema = std::move(value);
         return EditResult{};
     });
 }
@@ -698,6 +1144,166 @@ EditResult Editor::set_attribute_rules(AttributeId id, bool identifier, bool req
         if (value == found->second) return EditResult{};
         delta.attributes.put(id, std::move(value));
         return EditResult{};
+    });
+}
+
+EditResult Editor::set_primary_key(AttributeId id, bool key) {
+    return impl_->edit(key ? "Make it the primary key" : "Take off the primary key", [&](Delta& delta) {
+        const auto found = project().attributes.find(id);
+        if (found == project().attributes.end()) return failure("The attribute no longer exists.");
+        if (key && found->second.kind != AttributeKind::Normal && found->second.kind != AttributeKind::Key)
+            return failure("A composite, multivalued or derived attribute cannot be the primary key.");
+        auto value = found->second;
+        value.identifier = key;
+        // A key is what identifies a row, so it always has to be there. Taking
+        // the key off says nothing about whether the column may now be empty,
+        // so what it required is left as it was for somebody to decide.
+        if (key) value.required = true;
+        value.kind = key ? AttributeKind::Key
+                         : (found->second.kind == AttributeKind::Key ? AttributeKind::Normal
+                                                                     : found->second.kind);
+        if (value == found->second) return EditResult{};
+        delta.attributes.put(id, std::move(value));
+        return EditResult{};
+    });
+}
+
+EditResult Editor::set_participation(ParticipantId participant, Participation participation) {
+    return impl_->edit(participation == Participation::Total ? "Make the side total"
+                                                             : "Make the side partial",
+                       [&](Delta& delta) {
+        for (const auto& [id, relationship] : project().relationships) {
+            const auto item = std::find_if(relationship.participants.begin(),
+                                           relationship.participants.end(),
+                                           [&](const auto& entry) { return entry.id == participant; });
+            if (item == relationship.participants.end()) continue;
+            auto value = relationship;
+            auto& side = value.participants[static_cast<std::size_t>(
+                std::distance(relationship.participants.begin(), item))];
+            side.participation = participation;
+            // Answered now. Somebody said which way it goes, and a side that
+            // was told is a different fact from one that was never asked --
+            // which is what the conversion reads. The cardinality was not
+            // part of what was said and keeps whatever it had.
+            side.participation_confirmed = true;
+            if (value == relationship) return EditResult{};
+            delta.relationships.put(id, std::move(value));
+            return EditResult{};
+        }
+        return failure("That side of the relationship no longer exists.");
+    });
+}
+
+EditResult Editor::set_schema_column_rules(SchemaColumnId id, bool identifier, bool required, bool unique) {
+    return impl_->edit("Change column rules", [&](Delta& delta) {
+        if (!find_schema_column(project().schema, id)) return failure("The column no longer exists.");
+        auto value = schema_with(project().schema, [&](SchemaOverrides& s) {
+            for (auto& [table, columns] : s.added) {
+                (void)table;
+                for (auto& column : columns) {
+                    if (column.id != id) continue;
+                    column.identifier = identifier;
+                    column.required = required || identifier;
+                    column.unique = unique;
+                }
+            }
+        });
+        if (value == project().schema) return EditResult{};
+        delta.schema = std::move(value);
+        return EditResult{};
+    });
+}
+
+namespace {
+// Why this column cannot count itself up, or nothing where it can. The same
+// question for an attribute and for a schema-only column, so it is asked once.
+std::string not_countable(LogicalType type, std::uint32_t scale) {
+    if (type == LogicalType::Unset) return "Give the column a type before saying it counts itself up.";
+    if (!countable(type)) return "Only a whole-number column can count itself up.";
+    if ((type == LogicalType::Decimal || type == LogicalType::Numeric) && scale != 0)
+        return "A column that counts itself up can keep no digits after the point.";
+    return {};
+}
+} // namespace
+
+EditResult Editor::set_auto_increment(AttributeId id, bool counting) {
+    return impl_->edit(counting ? "Count the column up" : "Stop counting the column up",
+                       [&](Delta& delta) {
+        const auto found = project().attributes.find(id);
+        if (found == project().attributes.end()) return failure("The attribute no longer exists.");
+        if (counting) {
+            const auto why = not_countable(found->second.logical_type, found->second.scale);
+            if (!why.empty()) return failure(why);
+        }
+        auto value = found->second;
+        value.auto_increment = counting;
+        // A column the database fills in is never empty, so it is required in
+        // the same edit. Stopping says nothing about whether it may be empty
+        // now, so what it required is left for somebody to decide.
+        if (counting) value.required = true;
+        if (value == found->second) return EditResult{};
+        delta.attributes.put(id, std::move(value));
+        return EditResult{};
+    });
+}
+
+EditResult Editor::set_schema_column_auto_increment(SchemaColumnId id, bool counting) {
+    return impl_->edit(counting ? "Count the column up" : "Stop counting the column up",
+                       [&](Delta& delta) {
+        const auto* current = find_schema_column(project().schema, id);
+        if (!current) return failure("The column no longer exists.");
+        if (counting) {
+            const auto why = not_countable(current->logical_type, current->scale);
+            if (!why.empty()) return failure(why);
+        }
+        auto value = schema_with(project().schema, [&](SchemaOverrides& s) {
+            for (auto& [table, columns] : s.added) {
+                (void)table;
+                for (auto& column : columns) {
+                    if (column.id != id) continue;
+                    column.auto_increment = counting;
+                    if (counting) column.required = true;
+                }
+            }
+        });
+        if (value == project().schema) return EditResult{};
+        delta.schema = std::move(value);
+        return EditResult{};
+    });
+}
+
+EditResult Editor::set_key_auto_increment(ElementRef table, bool counting) {
+    return impl_->edit(counting ? "Count the key up" : "Stop counting the key up", [&](Delta& delta) {
+        if (!exists(project(), table)) return failure("The element no longer exists.");
+        auto value = schema_with(project().schema, [&](SchemaOverrides& s) {
+            if (counting) s.counting_keys.insert(table); else s.counting_keys.erase(table);
+        });
+        if (value == project().schema) return EditResult{};
+        delta.schema = std::move(value);
+        return EditResult{};
+    });
+}
+
+EditResult Editor::set_cardinality(ParticipantId participant, Cardinality maximum) {
+    return impl_->edit(maximum == Cardinality::One ? "Make the side one" : "Make the side many",
+                       [&](Delta& delta) {
+        for (const auto& [id, relationship] : project().relationships) {
+            const auto item = std::find_if(relationship.participants.begin(),
+                                           relationship.participants.end(),
+                                           [&](const auto& entry) { return entry.id == participant; });
+            if (item == relationship.participants.end()) continue;
+            auto value = relationship;
+            auto& side = value.participants[static_cast<std::size_t>(
+                std::distance(relationship.participants.begin(), item))];
+            side.maximum = maximum;
+            // Answered now. The participation was not part of what was said
+            // and keeps whatever it had, answered or not.
+            side.cardinality_confirmed = true;
+            if (value == relationship) return EditResult{};
+            delta.relationships.put(id, std::move(value));
+            return EditResult{};
+        }
+        return failure("That side of the relationship no longer exists.");
     });
 }
 
@@ -810,6 +1416,12 @@ EditResult Editor::update_participant(RelationshipId relationship, ParticipantId
         if (item == value.participants.end()) return failure("The participant does not belong to this relationship.");
         item->maximum = maximum;
         item->participation = participation;
+        // Answered now, whatever the values are. Choosing Many deliberately is
+        // a different fact from a side that was never asked, and this is the
+        // moment the difference is made: conversion reads these to tell a
+        // decided M:M from two untouched defaults.
+        item->cardinality_confirmed = true;
+        item->participation_confirmed = true;
         item->role = std::move(role);
         if (value != found->second) delta.relationships.put(relationship, std::move(value));
         return EditResult{};
@@ -893,6 +1505,25 @@ EditResult Editor::resize_symbols(const std::map<ElementRef, Rect>& boxes) {
             auto sized = box;
             sized.width = std::clamp(sized.width, min_symbol_size, max_symbol_size);
             sized.height = std::clamp(sized.height, min_symbol_size, max_symbol_size);
+            sized.x = std::clamp(sized.x, -max_coordinate, max_coordinate - sized.width);
+            sized.y = std::clamp(sized.y, -max_coordinate, max_coordinate - sized.height);
+            const auto found = project().layout.find(ref);
+            if (found == project().layout.end() || found->second != sized) delta.layout.put(ref, sized);
+        }
+        return EditResult{};
+    });
+}
+EditResult Editor::resize_entities(const std::map<ElementRef, Rect>& boxes) {
+    return impl_->edit("Resize entity", [&](Delta& delta) {
+        for (const auto& [ref, box] : boxes) {
+            if (!std::holds_alternative<EntityId>(ref)) return failure("Only an entity can be resized here.");
+            if (!exists(project(), ref)) return failure("The entity no longer exists.");
+            // Clamped rather than refused: a size comes from an edge being
+            // dragged, and a drag that runs past the end is asking for the
+            // end, not for nothing to happen.
+            auto sized = box;
+            sized.width = std::clamp(sized.width, min_entity_width, max_entity_width);
+            sized.height = std::clamp(sized.height, min_entity_height, max_entity_height);
             sized.x = std::clamp(sized.x, -max_coordinate, max_coordinate - sized.width);
             sized.y = std::clamp(sized.y, -max_coordinate, max_coordinate - sized.height);
             const auto found = project().layout.find(ref);
@@ -1154,6 +1785,55 @@ EditResult Editor::erase(const std::vector<ElementRef>& elements,
             if (value.targets.empty()) delta.comments.remove(id);
             else delta.comments.put(id, std::move(value));
         }
+        // An answer about an element outlives it no more than a remark does.
+        // A decision left pointing at something deleted is not merely stale:
+        // validate() refuses it, and refusing it here refuses the whole
+        // deletion, so the element could not be deleted at all while an answer
+        // about it survived. The schema is the same story told the other way --
+        // nothing validates it yet, so a column added to a table whose element
+        // is gone simply stayed, and was written to the file. Both go in this
+        // same edit, so one undo brings the element, its answers and its
+        // columns back together.
+        const auto cut = [&](const ConnectorRef& ref) { return cut_connectors.contains(ref); };
+        auto decided = project().decisions;
+        std::erase_if(decided.isa, [&](const auto& entry) { return gone.contains(ElementRef{entry.first}); });
+        std::erase_if(decided.composite, [&](const auto& entry) { return gone.contains(ElementRef{entry.first}); });
+        // A key side can be lost without its relationship: the participant it
+        // names may be the one that was disconnected.
+        std::erase_if(decided.one_to_one_key, [&](const auto& entry) {
+            return gone.contains(ElementRef{entry.first}) || cut(ConnectorRef{entry.second});
+        });
+        std::erase_if(decided.junction_name, [&](const auto& entry) { return gone.contains(ElementRef{entry.first}); });
+        // An identifier names an attribute of an entity, so it falls with
+        // either of them, and also when the attribute is merely detached --
+        // an attribute that no longer belongs to the entity cannot identify it.
+        std::erase_if(decided.identifier, [&](const auto& entry) {
+            return gone.contains(ElementRef{entry.first}) || gone.contains(ElementRef{entry.second})
+                || cut(ConnectorRef{entry.second});
+        });
+        std::erase_if(decided.table_name, [&](const auto& entry) { return gone.contains(entry.first); });
+        if (decided != project().decisions) delta.decisions = std::move(decided);
+
+        auto overrides = project().schema;
+        std::erase_if(overrides.added, [&](const auto& entry) { return gone.contains(entry.first); });
+        std::erase_if(overrides.hidden, [&](const AttributeId& id) { return gone.contains(ElementRef{id}); });
+        std::erase_if(overrides.key_names, [&](const auto& entry) { return gone.contains(entry.first); });
+        if (overrides != project().schema) delta.schema = std::move(overrides);
+
+        // The schema's own arrangement is presentation, exactly as the diagram's
+        // layout is, and it is dropped here for the same reason the diagram's is.
+        auto arranged = project().schema_layout;
+        std::erase_if(arranged.tables, [&](const auto& entry) { return gone.contains(entry.first); });
+        std::erase_if(arranged.widths, [&](const auto& entry) { return gone.contains(entry.first); });
+        std::erase_if(arranged.heights, [&](const auto& entry) { return gone.contains(entry.first); });
+        std::erase_if(arranged.lines, [&](const auto& entry) {
+            return std::visit([&](const auto& id) {
+                using T = std::decay_t<decltype(id)>;
+                if constexpr (std::is_same_v<T, EntityId>) return gone.contains(ElementRef{id});
+                else return cut(ConnectorRef{id});
+            }, entry.first);
+        });
+        if (arranged != project().schema_layout) delta.schema_layout = std::move(arranged);
         return EditResult{};
     });
 }

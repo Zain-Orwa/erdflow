@@ -98,17 +98,132 @@ public:
     // become tables and columns. Refused for anything else, so a note or a
     // picture never carries a comment nothing will ever read.
     EditResult set_schema_comment(domain::ElementRef ref, std::string comment);
-    // How much the model is being asked to say about itself. One model either
-    // way: nothing is created, destroyed or re-identified by the switch.
-    EditResult set_conceptual_mode(domain::ConceptualMode mode);
     // What an attribute becomes: a portable type, and the length where the type
     // takes one. A type that takes no length is given none, whatever it was
     // told before, so a Text(100) changed to a Boolean does not keep the 100.
     EditResult set_logical_type(domain::AttributeId id, domain::LogicalType type, std::uint32_t length = 0);
+    // The same answer given to several attributes in one edit, which is how a
+    // name repeated across a schema is answered once. One edit, so one undo
+    // takes all of it back rather than unpicking it column by column.
+    EditResult set_logical_types(const std::vector<domain::AttributeId>& ids, domain::LogicalType type);
+    // How long, or how precise, without touching the type itself. A number is
+    // only kept where the type takes one: a scale belongs to a precision, a
+    // length to a measured type, and a type that takes neither keeps neither.
+    EditResult set_type_size(domain::AttributeId id, std::uint32_t length, std::uint32_t scale);
+    EditResult set_schema_column_size(domain::SchemaColumnId id, std::uint32_t length,
+                                      std::uint32_t scale);
     // What the table will enforce: part of the identity, must be filled in, no
     // two rows alike. Set together, because they are read together.
     EditResult set_attribute_rules(domain::AttributeId id, bool identifier, bool required, bool unique);
     EditResult set_attribute_kind(domain::AttributeId id, domain::AttributeKind kind);
+    // Making a column the primary key, or taking the key off it, as asked for
+    // from the Relational Schema.
+    //
+    // This is both halves at once on purpose. The identifier rule and the Chen
+    // key oval are kept apart everywhere else, because on the diagram they are
+    // set at different stages by different people; but somebody working on the
+    // schema who says "this is the key" means it about the model, and a change
+    // made there is meant to show on the diagram. So the rule is set and the
+    // attribute is drawn as a key, in one edit and so in one step of history.
+    //
+    // A key is also never empty, so it is made required in the same edit. A
+    // composite or multivalued attribute cannot be a key and is refused with a
+    // reason rather than quietly reshaped.
+    EditResult set_primary_key(domain::AttributeId id, bool key);
+    // Whether a foreign key may be empty, said from the Relational Schema.
+    //
+    // A foreign key is NOT NULL because the side it points at is total, so
+    // this is not a fact about the column at all: it is a fact about the
+    // relationship, and changing it here changes the diagram. The participant
+    // is found by its own identity, because that is all the schema has -- a
+    // foreign key remembers which of the model's links put it there.
+    //
+    // Only the participation is confirmed. The cardinality was not asked
+    // about and is left as it was, answered or not.
+    EditResult set_participation(domain::ParticipantId participant,
+                                 domain::Participation participation);
+    // The same rules as an attribute's, for a column that lives on the schema
+    // alone and so has no attribute behind it to carry them.
+    EditResult set_schema_column_rules(domain::SchemaColumnId id, bool identifier,
+                                       bool required, bool unique);
+    // Whether the database counts the column up for itself.
+    //
+    // This one answers to nothing on the diagram: a Chen ERD has no way of
+    // saying that a value is generated rather than recorded, so there is no
+    // conceptual fact behind it to reach. It is a statement about the table,
+    // and it exists because the schema is what the SQL is generated from.
+    //
+    // Only a whole-number type can count up, and a Decimal or Numeric only
+    // where it keeps no digits after the point. Anything else is refused with
+    // a reason, since a generated column of the wrong type is SQL that will
+    // not run.
+    EditResult set_auto_increment(domain::AttributeId id, bool counting);
+    EditResult set_schema_column_auto_increment(domain::SchemaColumnId id, bool counting);
+    // The same, for a key the conversion invented. It has no attribute behind
+    // it and no identity of its own, so it is remembered against the element
+    // whose table it belongs to, exactly as its name is. This is the commonest
+    // place of all to want it: a surrogate key is what IDENTITY is for.
+    EditResult set_key_auto_increment(domain::ElementRef table, bool counting);
+    // A side's maximum, on its own. Setting a foreign key unique from the
+    // schema is a statement that the side carrying it sees one row, which is
+    // the relationship's cardinality and therefore the diagram's business.
+    // Only the maximum is confirmed; the participation was not asked about.
+    EditResult set_cardinality(domain::ParticipantId participant, domain::Cardinality maximum);
+    // The answers to what a conversion cannot decide for itself. Each is an
+    // edit like any other, so a decision undoes and travels with the document;
+    // and each is keyed by a stable identity, so it survives renaming and is
+    // never asked a second time. Passing no value takes the answer back, which
+    // returns that question to its default rather than deleting anything.
+    EditResult set_table_naming(domain::TableNaming naming);
+    EditResult set_isa_strategy(domain::SpecializationId id, std::optional<domain::IsaStrategy> strategy);
+    EditResult set_composite_mode(domain::AttributeId id, std::optional<domain::CompositeMode> mode);
+    EditResult set_one_to_one_key(domain::RelationshipId id, std::optional<domain::ParticipantId> side);
+    EditResult set_junction_name(domain::RelationshipId id, std::string chosen);
+    EditResult set_entity_identifier(domain::EntityId id, std::optional<domain::AttributeId> chosen);
+    // A table name typed over the one that was derived. Empty hands it back to
+    // the rules, because a derived name is a suggestion and a typed one is not.
+    EditResult set_table_name(domain::ElementRef ref, std::string chosen);
+
+    // Editing the schema away from the diagram it came from. ADR-010 allows
+    // the two levels to differ, and these are how a difference is recorded:
+    // a column the schema has and the diagram does not, and an attribute the
+    // diagram has that the schema does not show. Neither touches the diagram.
+    //
+    // Reflecting a change instead -- the usual answer -- needs none of these:
+    // it is create_attribute or erase on the model itself, and the schema
+    // follows because it is derived from it.
+    EditResult add_schema_column(domain::ElementRef table, std::string name);
+    // Renaming from the schema. A table's name is the name of the element it
+    // came from, and a derived column's is its attribute's, so both are renamed
+    // through the model rather than recorded as a difference beside it. Only a
+    // key the conversion invented has nothing behind it to rename, so it is
+    // given a name of its own, remembered against the table it belongs to.
+    EditResult rename_table(domain::ElementRef ref, std::string name);
+    EditResult rename_schema_key(domain::ElementRef table, std::string chosen);
+    EditResult rename_schema_column(domain::SchemaColumnId id, std::string name);
+    EditResult set_schema_column_type(domain::SchemaColumnId id, domain::LogicalType type);
+    EditResult erase_schema_column(domain::SchemaColumnId id);
+    EditResult hide_in_schema(domain::AttributeId id, bool hidden);
+
+    // Arranging the schema by hand. Presentation, like moving a shape on the
+    // diagram, and edits for the same reason: somebody did the work, so it
+    // undoes and it saves. A drag makes one of these when it is let go, not
+    // one per frame, or undo would walk back through every pixel of it.
+    // Moving tables, and giving back any lines the move displaced. The two
+    // travel together because they are one thing the user did: a line handed
+    // back in an edit of its own would leave undo taking them apart.
+    EditResult move_schema_tables(const std::map<domain::ElementRef, domain::Point>& places,
+                                  const std::vector<domain::LinkSource>& give_way = {});
+    // Pulling tables by their edges. A table answers to all four of them and
+    // to its corners, so a pull carries a width, a height, and -- where the
+    // edge that was pulled is one that moves the table's top-left corner --
+    // the place it has moved to. All of it arrives as one edit, or undoing a
+    // pull on the left edge would put the width back and leave the table
+    // standing somewhere it was never put.
+    EditResult resize_schema_tables(const std::map<domain::ElementRef, domain::SchemaTableBox>& boxes);
+    EditResult shape_schema_line(domain::LinkSource link, domain::SchemaLine shape);
+    EditResult release_schema_lines();
+    EditResult tidy_schema();
     // Either link can be given a shape as it is made, so a connection drawn
     // by clicking two points is pinned to those points in the same edit
     // rather than joined automatically and pinned afterwards. An automatic
@@ -165,6 +280,12 @@ public:
     // symbols is enlarged together, and it refuses anything that is not a
     // symbol so the command cannot quietly reshape the rest of the diagram.
     EditResult resize_symbols(const std::map<domain::ElementRef, domain::Rect>& boxes);
+    // An entity's box is pulled by its own edges and corners, each of which
+    // moves one side and leaves the opposite one where it was. Its own named
+    // edit rather than a move that happens to change a size, so the history
+    // says which was done; and it refuses anything that is not an entity, so
+    // the command cannot quietly reshape the rest of the diagram.
+    EditResult resize_entities(const std::map<domain::ElementRef, domain::Rect>& boxes);
     // A connector carries one signed perpendicular bend. Passing no offset
     // restores automatic routing rather than storing a zero-length bend.
     EditResult bend_connector(domain::ConnectorRef ref, std::optional<double> offset);

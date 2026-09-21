@@ -5,6 +5,7 @@
 #include "symbol_picker.hpp"
 #include "symbols.hpp"
 
+#include <QAbstractButton>
 #include <QAction>
 #include <QActionGroup>
 #include <QAbstractItemView>
@@ -30,15 +31,22 @@
 #include <QIcon>
 #include <QImageReader>
 #include <QLabel>
+#include <QFrame>
+#include <QKeyEvent>
 #include <QLineEdit>
+#include <QIntValidator>
+#include <QListWidget>
+#include <QScreen>
 #include <QMenuBar>
 #include <QMenu>
 #include <QMessageBox>
 #include <QMimeData>
 #include <QPaintEvent>
+#include <QPainter>
 #include <QPlainTextEdit>
 #include <QRegularExpression>
 #include <QPushButton>
+#include <QScopeGuard>
 #include <QScrollArea>
 #include <QSettings>
 #include <QSignalBlocker>
@@ -51,6 +59,8 @@
 #include <QToolBar>
 #include <QToolButton>
 #include <QTreeView>
+#include <QVariantAnimation>
+#include <QEasingCurve>
 #include <QVBoxLayout>
 #include <QWidgetAction>
 
@@ -397,12 +407,286 @@ std::optional<std::vector<std::uint8_t>> encoded_image(const QString& path, QStr
     return std::vector<std::uint8_t>(encoded.begin(), encoded.end());
 }
 
+// The type catalogue as it is offered: grouped by family, and led by the ones
+// a designer reaches for constantly, so the common answer is never more than a
+// glance away while the whole list is still there.
+struct TypeFamily { const char* name; std::vector<domain::LogicalType> types; };
+
+const std::vector<TypeFamily>& type_families() {
+    using T = domain::LogicalType;
+    static const std::vector<TypeFamily> families{
+        {"Most used", {T::Int, T::Varchar, T::NVarchar, T::Bit, T::Date, T::DateTime2,
+                       T::Decimal, T::BigInt, T::UniqueIdentifier}},
+        {"Exact numerics", {T::Int, T::BigInt, T::SmallInt, T::TinyInt, T::Bit, T::Decimal,
+                            T::Numeric, T::Money, T::SmallMoney}},
+        {"Approximate numerics", {T::Float, T::Real}},
+        {"Character strings", {T::Varchar, T::VarcharMax, T::Char, T::Text}},
+        {"Unicode character strings", {T::NVarchar, T::NVarcharMax, T::NChar, T::NText}},
+        {"Binary strings", {T::Varbinary, T::VarbinaryMax, T::Binary, T::Image}},
+        {"Date and time", {T::Date, T::Time, T::DateTime2, T::DateTimeOffset,
+                           T::DateTime, T::SmallDateTime}},
+        {"Others", {T::UniqueIdentifier, T::Xml, T::RowVersion, T::HierarchyId,
+                    T::SqlVariant, T::Cursor, T::Table, T::Geometry, T::Geography}}};
+    return families;
+}
+
+// Every type there is, in one run from the one reached for constantly to the
+// one hardly reached for at all. Not grouped: a reader looking for a type is
+// looking for a name, and families only put headings between them and it. The
+// order is the list's whole argument, so it is written out rather than sorted
+// from anything.
+const std::vector<domain::LogicalType>& types_by_use() {
+    using T = domain::LogicalType;
+    static const std::vector<domain::LogicalType> order{
+        T::Int, T::Varchar, T::NVarchar, T::Bit, T::DateTime2, T::Date, T::Decimal,
+        T::BigInt, T::UniqueIdentifier, T::NVarcharMax, T::VarcharMax, T::Char,
+        T::NChar, T::SmallInt, T::Money, T::Float, T::TinyInt, T::Time,
+        T::DateTimeOffset, T::DateTime, T::Numeric, T::Varbinary, T::VarbinaryMax,
+        T::Real, T::SmallDateTime, T::SmallMoney, T::Binary, T::Xml, T::RowVersion,
+        T::Text, T::NText, T::Image, T::HierarchyId, T::SqlVariant, T::Geography,
+        T::Geometry, T::Cursor, T::Table};
+    return order;
+}
+
+// What a measured type is usually measured in. A length means different
+// things to different types -- characters to a varchar, fractional-second
+// digits to a datetime2, mantissa bits to a float -- so what is offered
+// follows the type rather than being one list for all of them.
+struct SizeAdvice {
+    QString what;
+    QString hint;
+    std::vector<int> common;
+};
+
+SizeAdvice size_advice(domain::LogicalType type) {
+    using T = domain::LogicalType;
+    switch (type) {
+    case T::Char: case T::Varchar: case T::NChar: case T::NVarchar:
+        return {"Characters", "How many characters it holds.",
+                {1, 2, 3, 5, 10, 16, 20, 25, 30, 32, 50, 64, 100, 128, 200, 255, 256,
+                 500, 512, 1000, 2000, 4000}};
+    case T::Binary: case T::Varbinary:
+        return {"Bytes", "How many bytes it holds.",
+                {1, 8, 16, 20, 32, 50, 64, 100, 128, 256, 512, 1000, 2000, 4000, 8000}};
+    case T::Time: case T::DateTime2: case T::DateTimeOffset:
+        return {"Fractional seconds", "Digits after the second, 0 to 7.", {0, 1, 2, 3, 4, 5, 6, 7}};
+    case T::Float:
+        return {"Mantissa bits", "1 to 24 stores a real; 25 to 53 stores a float.", {24, 53}};
+    case T::Decimal: case T::Numeric:
+        return {"Precision", "Digits in all, and how many of them sit after the point.",
+                {5, 9, 10, 15, 18, 19, 28, 38}};
+    default:
+        return {};
+    }
+}
+
+QString type_label(domain::LogicalType type) {
+    using T = domain::LogicalType;
+    switch (type) {
+    case T::Unset: return "Not chosen yet";
+    case T::Int: return "int";
+    case T::BigInt: return "bigint";
+    case T::SmallInt: return "smallint";
+    case T::TinyInt: return "tinyint";
+    case T::Bit: return "bit";
+    case T::Decimal: return "decimal";
+    case T::Numeric: return "numeric";
+    case T::Money: return "money";
+    case T::SmallMoney: return "smallmoney";
+    case T::Float: return "float";
+    case T::Real: return "real";
+    case T::Char: return "char";
+    case T::Varchar: return "varchar";
+    case T::VarcharMax: return "varchar(max)";
+    case T::Text: return "text";
+    case T::NChar: return "nchar";
+    case T::NVarchar: return "nvarchar";
+    case T::NVarcharMax: return "nvarchar(max)";
+    case T::NText: return "ntext";
+    case T::Binary: return "binary";
+    case T::Varbinary: return "varbinary";
+    case T::VarbinaryMax: return "varbinary(max)";
+    case T::Image: return "image";
+    case T::Date: return "date";
+    case T::Time: return "time";
+    case T::DateTime: return "datetime";
+    case T::DateTime2: return "datetime2";
+    case T::DateTimeOffset: return "datetimeoffset";
+    case T::SmallDateTime: return "smalldatetime";
+    case T::UniqueIdentifier: return "uniqueidentifier";
+    case T::Xml: return "xml";
+    case T::RowVersion: return "rowversion";
+    case T::HierarchyId: return "hierarchyid";
+    case T::SqlVariant: return "sql_variant";
+    case T::Cursor: return "cursor";
+    case T::Table: return "table";
+    case T::Geometry: return "geometry";
+    case T::Geography: return "geography";
+    }
+    return "Not chosen yet";
+}
+
+// The bar a panel is resized by. It draws a short handle, takes the vertical
+// resize cursor, and reports every movement while it is held: the panel must
+// follow the hand exactly, so nothing here is eased or stepped.
+class ResizeGrip final : public QWidget {
+public:
+    explicit ResizeGrip(QWidget* parent) : QWidget(parent) {
+        setObjectName("schemaGrip");
+        setCursor(Qt::SizeVerCursor);
+        setFixedHeight(11);
+        setFocusPolicy(Qt::StrongFocus);
+        setAccessibleName("Resize the schema preview");
+        setToolTip("Drag to make the schema taller or shorter. Double-click for half or full.");
+    }
+    // Told how far the pointer has moved since the drag began, in pixels.
+    std::function<void(int)> dragged;
+    std::function<void()> began;
+    std::function<void()> toggled;
+    // Told which way an arrow key was pressed, so the panel is not mouse-only.
+    std::function<void(int)> nudged;
+
+protected:
+    void paintEvent(QPaintEvent*) override {
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(palette().color(held_ || underMouse() ? QPalette::Highlight : QPalette::Mid));
+        const auto bar = QRectF((width() - 46) / 2.0, (height() - 4) / 2.0, 46, 4);
+        painter.drawRoundedRect(bar, 2, 2);
+    }
+    void mousePressEvent(QMouseEvent* event) override {
+        if (event->button() != Qt::LeftButton) return;
+        held_ = true;
+        from_ = event->globalPosition().y();
+        if (began) began();
+        update();
+    }
+    void mouseMoveEvent(QMouseEvent* event) override {
+        if (!held_ || !dragged) return;
+        // Up is taller, which is the direction the panel opened in.
+        dragged(static_cast<int>(from_ - event->globalPosition().y()));
+    }
+    void mouseReleaseEvent(QMouseEvent*) override { held_ = false; update(); }
+    void mouseDoubleClickEvent(QMouseEvent*) override { if (toggled) toggled(); }
+    void enterEvent(QEnterEvent*) override { update(); }
+    void leaveEvent(QEvent*) override { update(); }
+    void keyPressEvent(QKeyEvent* event) override {
+        if (!nudged) { QWidget::keyPressEvent(event); return; }
+        if (event->key() == Qt::Key_Up) nudged(1);
+        else if (event->key() == Qt::Key_Down) nudged(-1);
+        else QWidget::keyPressEvent(event);
+    }
+
+private:
+    bool held_ = false;
+    double from_ = 0;
+};
+
 QLabel* hint(const QString& value, QWidget* parent) {
     auto* label = new QLabel(value, parent);
     label->setWordWrap(true);
     label->setObjectName("hint");
     return label;
 }
+// A panel section that folds away, opened and closed by the same mark the
+// Explorer folds its groups by. The mark is drawn by the style rather than by
+// hand, so it is the one the rest of the window already uses, it follows
+// whatever theme is on, and it stays a mark on the platforms where a stylesheet
+// arrow does not survive.
+//
+// What is inside is part of the model and is kept whether it is on screen or
+// not: folding a section away hides questions, never answers. Whether it is on
+// screen is a matter of who is looking -- a diagram being taught wants it shut,
+// a schema being prepared wants it open -- so the state is the user's own and
+// never travels in the document.
+class FoldingSection final : public QWidget {
+public:
+    FoldingSection(const QString& title, const QColor& ink, bool open, QWidget* parent)
+        : QWidget(parent), header_(new Header(title, ink, this)), body_(new QWidget(this)) {
+        auto* column = new QVBoxLayout(this);
+        // Room above the rule the header draws, so the section reads as a
+        // boundary rather than as the next field down.
+        column->setContentsMargins(0, 6, 0, 0);
+        column->setSpacing(8);
+        column->addWidget(header_);
+        column->addWidget(body_);
+        // Set before anything is listening, so opening the panel is not itself
+        // reported as the user having folded something.
+        header_->setChecked(open);
+        body_->setVisible(open);
+        QObject::connect(header_, &QAbstractButton::toggled, body_, [this](bool shown) {
+            body_->setVisible(shown);
+            if (folded) folded(shown);
+        });
+    }
+    // Where the fields go: the caller gives this a layout and fills it.
+    [[nodiscard]] QWidget* body() const { return body_; }
+    // Told the new state whenever the user folds or unfolds the section.
+    std::function<void(bool)> folded;
+
+private:
+    class Header final : public QAbstractButton {
+    public:
+        Header(const QString& title, const QColor& ink, QWidget* parent)
+            : QAbstractButton(parent), ink_(ink) {
+            setText(title);
+            setCheckable(true);
+            setObjectName("sectionHeader");
+            setCursor(Qt::PointingHandCursor);
+            // Reachable by keyboard, and operated by the space bar like any
+            // other button, so the fields inside are not mouse-only.
+            setFocusPolicy(Qt::StrongFocus);
+            setToolTip("Fold this section away, or open it again. What is inside is kept either way.");
+        }
+        [[nodiscard]] QSize sizeHint() const override {
+            const QFontMetrics metrics(heading());
+            return {mark + gap + metrics.horizontalAdvance(text()),
+                    std::max(mark, metrics.height()) + rule + 10};
+        }
+
+    protected:
+        void paintEvent(QPaintEvent*) override {
+            QPainter painter(this);
+            // A hairline across the top, in the theme's own divider colour, so
+            // the section is seen to begin somewhere. Taken from the palette
+            // rather than from a stylesheet, so it follows every theme and
+            // cannot be dropped by a stricter parser.
+            painter.setPen(palette().color(QPalette::Mid));
+            painter.drawLine(0, 0, width(), 0);
+            const auto middle = (height() + rule) / 2;
+            QStyleOptionViewItem branch;
+            branch.initFrom(this);
+            branch.rect = QRect(0, middle - mark / 2, mark, mark);
+            branch.state |= QStyle::State_Children;
+            if (isChecked()) branch.state |= QStyle::State_Open;
+            else branch.state &= ~QStyle::State_Open;
+            style()->drawPrimitive(QStyle::PE_IndicatorBranch, &branch, &painter, this);
+            painter.setFont(heading());
+            painter.setPen(ink_);
+            painter.drawText(QRect(mark + gap, rule, width() - mark - gap, height() - rule),
+                             Qt::AlignLeft | Qt::AlignVCenter, text());
+        }
+
+    private:
+        static constexpr int mark = 14;
+        static constexpr int gap = 4;
+        // The height the hairline and the space beneath it take.
+        static constexpr int rule = 7;
+        // Heavier and a size larger than a field label, because this names a
+        // group of fields rather than one of them, and the difference has to be
+        // visible at a glance or the fold reads as a stray mark beside a label.
+        [[nodiscard]] QFont heading() const {
+            auto weighted = font();
+            weighted.setBold(true);
+            weighted.setPointSizeF(weighted.pointSizeF() + 1.0);
+            return weighted;
+        }
+        QColor ink_;
+    };
+    Header* header_;
+    QWidget* body_;
+};
 // Descriptions commit through the same command path on focus loss.
 // The Explorer's fold marks sit against its right-hand edge rather than in
 // front of each row.
@@ -644,6 +928,10 @@ MainWindow::MainWindow(application::Editor& editor, application::ProjectStore& s
                        application::IdGenerator& ids, QWidget* parent)
     : QMainWindow(parent), ids_(ids), editor_(editor), store_(store) {
     setObjectName("mainWindow");
+    // Shut until somebody opens it, which is how the diagram was drawn before
+    // the fields had a section of their own: someone learning the notation is
+    // not asked what a Student becomes until they go looking.
+    schema_section_open_ = QSettings().value("schemaSectionOpen", false).toBool();
     wheel_guard_ = new WheelGuard(this);
     resize(1440, 920);
     // Small enough to be useful on a narrow screen. What the window cannot do
@@ -698,6 +986,350 @@ MainWindow::~MainWindow() {
     delete takeCentralWidget();
 }
 
+namespace {
+// Defined further down with the rest of the toolbar's furniture; the schema
+// panel is built before it and offers the same four notations, which have to
+// be worded the same way in both places or they would be two lists.
+const std::array<std::pair<Notation, QString>, 4>& notation_styles();
+// A heading inside a menu, likewise defined below and wanted here. A style
+// section is not used, because some styles draw one as a bare line and throw
+// the words away -- which is what left the schema's own menus as two runs of
+// unlabelled choices.
+QAction* menu_heading(QMenu* menu, const QString& words, const char* named);
+} // namespace
+
+// How both pickers are dressed. They are their own windows, so they inherit
+// nothing and are told; and they are the same idea twice, so they are told
+// the same thing.
+QString picker_sheet(const Theme& colors) {
+    const auto rgba = [](QColor colour, double alpha) {
+        return QString("rgba(%1,%2,%3,%4)").arg(colour.red()).arg(colour.green())
+                   .arg(colour.blue()).arg(alpha, 0, 'f', 3);
+    };
+    const auto solid = [](QColor colour) { return colour.name(QColor::HexRgb); };
+    return QString(R"(
+        #typePicker, #sizePicker { background: %1; border: 1px solid %2; border-radius: 10px; }
+        #typePickerSearch, #sizePickerLength, #sizePickerScale {
+            background: %3; border: 1px solid %2; border-radius: 8px;
+            padding: 7px 10px; color: %4; selection-background-color: %5;
+        }
+        #typePickerSearch:focus, #sizePickerLength:focus, #sizePickerScale:focus {
+            border: 1px solid %5;
+        }
+        #sizePickerWhat { color: %7; padding: 1px 2px; }
+        #typePickerList, #sizePickerCommon {
+            background: transparent; border: none; outline: none; color: %4;
+        }
+        #typePickerList::item, #sizePickerCommon::item {
+            padding: 4px 10px; border-radius: 6px; margin: 1px 0px; border: none;
+        }
+        #typePickerList::item:selected, #sizePickerCommon::item:selected {
+            background: %5; color: %6;
+        }
+        #typePickerList::item:disabled { color: %7; background: transparent; }
+        QScrollBar:vertical { background: transparent; width: 9px; margin: 2px 0px; }
+        QScrollBar::handle:vertical { background: %8; border-radius: 4px; min-height: 28px; }
+        QScrollBar::handle:vertical:hover { background: %9; }
+        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
+        QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
+    )").arg(solid(colors.panel), solid(colors.border), solid(colors.base), solid(colors.text),
+            solid(colors.accent), solid(readable_on(colors.accent)), solid(colors.muted),
+            rgba(colors.muted, 0.35), rgba(colors.muted, 0.6));
+}
+
+// What opens on a column's size: a field to type the number into, the common
+// answers for that particular type under it, and a second field where the type
+// carries a scale as well. It is dressed and behaves like the type list, so
+// the two read as one idea.
+class SizePicker final : public QFrame {
+public:
+    explicit SizePicker(QWidget* parent) : QFrame(parent, Qt::Popup) {
+        setObjectName("sizePicker");
+        setFrameShape(QFrame::NoFrame);
+        setAttribute(Qt::WA_StyledBackground, true);
+        auto* layout = new QVBoxLayout(this);
+        layout->setContentsMargins(8, 8, 8, 8);
+        layout->setSpacing(6);
+        what_ = new QLabel(this);
+        what_->setObjectName("sizePickerWhat");
+        what_->setWordWrap(true);
+        layout->addWidget(what_);
+        auto* fields = new QWidget(this);
+        auto* across = new QHBoxLayout(fields);
+        across->setContentsMargins(0, 0, 0, 0);
+        across->setSpacing(6);
+        length_ = new QLineEdit(fields);
+        length_->setObjectName("sizePickerLength");
+        length_->setValidator(new QIntValidator(0, static_cast<int>(domain::max_logical_length), this));
+        across->addWidget(length_, 1);
+        scale_ = new QLineEdit(fields);
+        scale_->setObjectName("sizePickerScale");
+        scale_->setPlaceholderText("scale");
+        scale_->setValidator(new QIntValidator(0, 38, this));
+        across->addWidget(scale_, 1);
+        layout->addWidget(fields);
+        common_ = new QListWidget(this);
+        common_->setObjectName("sizePickerCommon");
+        common_->setFrameShape(QFrame::NoFrame);
+        common_->setUniformItemSizes(true);
+        common_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        common_->setMouseTracking(true);
+        common_->viewport()->setMouseTracking(true);
+        common_->viewport()->installEventFilter(this);
+        layout->addWidget(common_);
+        setMinimumWidth(248);
+        connect(common_, &QListWidget::itemClicked, this, [this](QListWidgetItem* item) { take(item); });
+        connect(common_, &QListWidget::itemActivated, this, [this](QListWidgetItem* item) { take(item); });
+        length_->installEventFilter(this);
+        scale_->installEventFilter(this);
+    }
+
+    std::function<void(std::uint32_t length, std::uint32_t scale)> chose;
+    std::function<void()> closed;
+
+    void wear(const Theme& colors, const QString& sheet) {
+        auto ground = palette();
+        ground.setColor(QPalette::Window, colors.panel);
+        setPalette(ground);
+        setAutoFillBackground(true);
+        setStyleSheet(sheet);
+    }
+
+    void open_at(QPoint at, const domain::PreviewColumn& column) {
+        const auto advice = size_advice(column.type);
+        const auto precise = domain::size_of(column.type) == domain::TypeSize::Precision;
+        what_->setText(advice.hint);
+        length_->setPlaceholderText(advice.what.toLower());
+        length_->setText(column.length ? QString::number(column.length) : QString());
+        scale_->setVisible(precise);
+        scale_->setText(precise && column.scale ? QString::number(column.scale) : QString());
+        common_->clear();
+        for (const auto value : advice.common) {
+            auto* item = new QListWidgetItem(QString::number(value), common_);
+            item->setData(Qt::UserRole, value);
+        }
+        common_->setVisible(!advice.common.empty());
+        common_->setFixedHeight(advice.common.empty() ? 0 : 180);
+        adjustSize();
+        const auto space = screen() ? screen()->availableGeometry() : QRect(0, 0, 1920, 1080);
+        auto where = at;
+        if (where.x() + width() > space.right()) where.setX(space.right() - width());
+        if (where.y() + height() > space.bottom()) where.setY(at.y() - height() - 24);
+        move(where);
+        opened_with_ = length_->text();
+        opened_scale_ = scale_->text();
+        taken_ = false;
+        show();
+        // A popup is not an active window, so on some platforms nothing in it
+        // receives a keystroke until it is asked for. Without this the field
+        // can be looked at and not typed into, and the list becomes the only
+        // way to answer -- which is not what a field is for.
+        raise();
+        activateWindow();
+        length_->setFocus(Qt::OtherFocusReason);
+        length_->selectAll();
+    }
+
+protected:
+    // Typed and then clicked away from still counts. A number written into
+    // the field is an answer whether or not it was finished with Return.
+    void hideEvent(QHideEvent* event) override {
+        QFrame::hideEvent(event);
+        if (closed) closed();
+        if (taken_) return;
+        if (length_->text() == opened_with_ && scale_->text() == opened_scale_) return;
+        apply(length_->text().toUInt(), scale_->text().toUInt());
+    }
+
+    bool eventFilter(QObject* watched, QEvent* event) override {
+        if (watched == common_->viewport() && event->type() == QEvent::MouseMove) {
+            if (auto* under = common_->itemAt(static_cast<QMouseEvent*>(event)->pos()))
+                common_->setCurrentItem(under);
+        }
+        if ((watched == length_ || watched == scale_) && event->type() == QEvent::KeyPress) {
+            const auto* key = static_cast<QKeyEvent*>(event);
+            if (key->key() == Qt::Key_Return || key->key() == Qt::Key_Enter) {
+                apply(length_->text().toUInt(), scale_->text().toUInt());
+                return true;
+            }
+        }
+        return QFrame::eventFilter(watched, event);
+    }
+
+private:
+    void take(QListWidgetItem* item) {
+        if (!item || !item->data(Qt::UserRole).isValid()) return;
+        // Chosen from the common answers, the scale is whatever is in the
+        // field beside it -- picking a precision should not quietly undo it.
+        apply(item->data(Qt::UserRole).toUInt(), scale_->text().toUInt());
+    }
+
+    void apply(std::uint32_t length, std::uint32_t scale) {
+        taken_ = true;
+        hide();
+        if (chose) chose(length, scale);
+    }
+
+    QString opened_with_;
+    QString opened_scale_;
+    bool taken_ = false;
+    QLabel* what_ = nullptr;
+    QLineEdit* length_ = nullptr;
+    QLineEdit* scale_ = nullptr;
+    QListWidget* common_ = nullptr;
+};
+
+// The list that opens on a column waiting for a type: a line to search by and
+// every type under it, in the order above. It is a popup, so it closes when
+// the pointer goes elsewhere and needs no dismissing.
+class TypePicker final : public QFrame {
+public:
+    explicit TypePicker(QWidget* parent) : QFrame(parent, Qt::Popup) {
+        setObjectName("typePicker");
+        setFrameShape(QFrame::NoFrame);
+        setAttribute(Qt::WA_StyledBackground, true);
+        // The corners are rounded by the stylesheet, which leaves the pixels
+        // outside the curve unpainted. A see-through window would be the tidy
+        // answer, but text drawn onto one loses its crispness, and a list of
+        // type names has to be read. So the window keeps its own ground in the
+        // same colour instead, and the corners are rounded against a match.
+        auto* layout = new QVBoxLayout(this);
+        layout->setContentsMargins(8, 8, 8, 8);
+        layout->setSpacing(6);
+        looking_ = new QLineEdit(this);
+        looking_->setObjectName("typePickerSearch");
+        looking_->setPlaceholderText("Search types");
+        looking_->setClearButtonEnabled(true);
+        layout->addWidget(looking_);
+        list_ = new QListWidget(this);
+        list_->setObjectName("typePickerList");
+        list_->setUniformItemSizes(true);
+        list_->setFrameShape(QFrame::NoFrame);
+        list_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        list_->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+        // The highlight follows the pointer rather than staying where the
+        // keyboard left it. One highlight serves both, so what a click will
+        // take and what Return will take are never two different things.
+        list_->setMouseTracking(true);
+        list_->viewport()->setMouseTracking(true);
+        list_->viewport()->installEventFilter(this);
+        layout->addWidget(list_);
+        setMinimumWidth(248);
+        // Tall enough to read a dozen at a glance. A list that shows seven of
+        // thirty-eight is a list that has to be scrolled before it can be
+        // judged, and the order is the whole point of it.
+        list_->setMinimumHeight(330);
+        connect(looking_, &QLineEdit::textChanged, this, [this](const QString& text) { narrow(text); });
+        connect(list_, &QListWidget::itemActivated, this, [this](QListWidgetItem* item) { take(item); });
+        connect(list_, &QListWidget::itemClicked, this, [this](QListWidgetItem* item) { take(item); });
+        // Typing runs the search whatever has focus, and the arrows walk the
+        // list from the search line, so a type can be chosen without the hand
+        // leaving the keyboard.
+        looking_->installEventFilter(this);
+    }
+
+    std::function<void(domain::LogicalType)> chose;
+    // Said when it goes away, however it goes away, so whatever was drawn as
+    // waiting for it can stop waiting.
+    std::function<void()> closed;
+
+    // Dressed in the theme the window is wearing. The picker is its own
+    // window, so it inherits nothing and has to be told.
+    void wear(const Theme& colors) {
+        auto ground = palette();
+        ground.setColor(QPalette::Window, colors.panel);
+        setPalette(ground);
+        setAutoFillBackground(true);
+        setStyleSheet(picker_sheet(colors));
+        if (!searching_with_) {
+            searching_with_ = looking_->addAction(glyph_icon(Glyph::Search, colors, 14),
+                                                  QLineEdit::LeadingPosition);
+            searching_with_->setEnabled(false);   // a mark, not a button
+        } else {
+            searching_with_->setIcon(glyph_icon(Glyph::Search, colors, 14));
+        }
+    }
+
+    void open_at(QPoint at, std::optional<domain::LogicalType> current) {
+        current_ = current;
+        looking_->clear();
+        narrow({});
+        // Nudged back on screen where the row it came from is near an edge.
+        const auto space = screen() ? screen()->availableGeometry() : QRect(0, 0, 1920, 1080);
+        auto where = at;
+        if (where.x() + width() > space.right()) where.setX(space.right() - width());
+        if (where.y() + height() > space.bottom()) where.setY(at.y() - height() - 24);
+        move(where);
+        show();
+        raise();
+        activateWindow();
+        looking_->setFocus(Qt::OtherFocusReason);
+    }
+
+protected:
+    void hideEvent(QHideEvent* event) override {
+        QFrame::hideEvent(event);
+        if (closed) closed();
+    }
+
+    bool eventFilter(QObject* watched, QEvent* event) override {
+        if (watched == list_->viewport() && event->type() == QEvent::MouseMove) {
+            if (auto* under = list_->itemAt(static_cast<QMouseEvent*>(event)->pos());
+                under && under->flags() & Qt::ItemIsEnabled)
+                list_->setCurrentItem(under);
+        }
+        if (watched == looking_ && event->type() == QEvent::KeyPress) {
+            const auto* key = static_cast<QKeyEvent*>(event);
+            if (key->key() == Qt::Key_Down || key->key() == Qt::Key_Up) {
+                const auto step = key->key() == Qt::Key_Down ? 1 : -1;
+                const auto next = std::clamp(list_->currentRow() + step, 0, list_->count() - 1);
+                list_->setCurrentRow(next);
+                return true;
+            }
+            if (key->key() == Qt::Key_Return || key->key() == Qt::Key_Enter) {
+                take(list_->currentItem());
+                return true;
+            }
+        }
+        return QFrame::eventFilter(watched, event);
+    }
+
+private:
+    void narrow(const QString& looking_for) {
+        list_->clear();
+        const auto wanted = looking_for.trimmed();
+        for (const auto type : types_by_use()) {
+            const auto label = type_label(type);
+            if (!wanted.isEmpty() && !label.contains(wanted, Qt::CaseInsensitive)) continue;
+            auto* item = new QListWidgetItem(label, list_);
+            item->setData(Qt::UserRole, static_cast<int>(type));
+            if (domain::deprecated_type(type))
+                item->setToolTip(QString("%1 is being removed from SQL Server. Prefer the (max) form.")
+                                     .arg(label));
+            if (current_ && *current_ == type) item->setSelected(true);
+        }
+        // Nothing found is said, rather than leaving an empty box that looks
+        // as though the list failed to load.
+        if (list_->count() == 0) {
+            auto* nothing = new QListWidgetItem("No type of that name", list_);
+            nothing->setFlags(Qt::NoItemFlags);
+        }
+        if (list_->count() > 0) list_->setCurrentRow(0);
+    }
+
+    void take(QListWidgetItem* item) {
+        if (!item || !item->data(Qt::UserRole).isValid()) return;
+        const auto type = static_cast<domain::LogicalType>(item->data(Qt::UserRole).toInt());
+        hide();
+        if (chose) chose(type);
+    }
+
+    QLineEdit* looking_ = nullptr;
+    QListWidget* list_ = nullptr;
+    QAction* searching_with_ = nullptr;
+    std::optional<domain::LogicalType> current_;
+};
+
 void MainWindow::build_shell() {
     auto* workspace = new QWidget(this);
     auto* layout = new QVBoxLayout(workspace);
@@ -721,19 +1353,58 @@ void MainWindow::build_shell() {
     // tools, because it is about looking at the document rather than adding to
     // it, and because that row is already tight enough to start dropping the
     // names its tools are known by.
-    // What the model is being asked to say about itself, beside the badge that
-    // says what workspace it is. It belongs here because it is a fact about the
-    // document rather than a way of looking at it, and this is where the
-    // document announces itself.
-    mode_button_ = new QToolButton(header);
-    mode_button_->setObjectName("conceptualMode");
-    mode_button_->setToolButtonStyle(Qt::ToolButtonTextOnly);
-    mode_button_->setPopupMode(QToolButton::InstantPopup);
-    header_layout->addWidget(mode_button_);
+    // What the model becomes, beside the badge that says what workspace this
+    // is. It belongs here rather than among the drawing tools: it is about
+    // what is being looked at, not something to draw with.
+    auto* preview = new QPushButton("Preview schema", header);
+    preview->setObjectName("previewSchema");
+    preview->setCheckable(true);
+    preview->setToolTip("The schema this diagram would become, raised over the lower half of the "
+                        "canvas. It is a preview: nothing is converted, and nothing is written.");
+    connect(preview, &QPushButton::clicked, this, [this] { show_schema(!schema_open_); });
+    header_layout->addWidget(preview);
     search_button_ = new QToolButton(header);
     search_button_->setObjectName("searchButton");
     search_button_->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     header_layout->addWidget(search_button_);
+    // Undo, a search of the schema, and the theme. While the schema has the
+    // whole window the drawing tools are put away with the diagram they draw
+    // on, and these three are what is still worth having: two of them undo
+    // work that has just been done on the schema, and the other two are about
+    // looking at it. Hidden until then, because the toolbar already has them.
+    schema_header_tools_ = new QWidget(header);
+    schema_header_tools_->setObjectName("schemaHeaderTools");
+    auto* header_tools = new QHBoxLayout(schema_header_tools_);
+    header_tools->setContentsMargins(0, 0, 0, 0);
+    header_tools->setSpacing(6);
+    // The actions themselves do not exist yet -- the shell is built before
+    // them -- so the buttons are made here and given their actions at the end
+    // of build_actions, where there is something to give them.
+    for (const auto* named : {"schemaUndo", "schemaRedo"}) {
+        auto* button = new QToolButton(schema_header_tools_);
+        button->setObjectName(QLatin1String(named));
+        button->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+        header_tools->addWidget(button);
+    }
+    schema_search_ = new QLineEdit(schema_header_tools_);
+    schema_search_->setObjectName("schemaSearch");
+    schema_search_->setPlaceholderText("Search the schema");
+    schema_search_->setClearButtonEnabled(true);
+    schema_search_->setFixedWidth(190);
+    schema_search_->setToolTip("Pick out the tables and columns whose names contain this.");
+    connect(schema_search_, &QLineEdit::textChanged, this, [this](const QString& looking_for) {
+        if (schema_) schema_->set_looking_for(looking_for);
+    });
+    header_tools->addWidget(schema_search_);
+    schema_theme_ = new QToolButton(schema_header_tools_);
+    schema_theme_->setObjectName("schemaTheme");
+    schema_theme_->setText("Theme");
+    schema_theme_->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    schema_theme_->setPopupMode(QToolButton::InstantPopup);
+    header_tools->addWidget(schema_theme_);
+    schema_header_tools_->hide();
+    header_layout->addWidget(schema_header_tools_);
+
     auto* example = new QPushButton("Open example", header);
     example->setObjectName("openExample");
     connect(example, &QPushButton::clicked, this, &MainWindow::load_example);
@@ -744,13 +1415,327 @@ void MainWindow::build_shell() {
     search_bar_ = new SearchBar(workspace);
     search_bar_->hide();
     layout->addWidget(search_bar_);
-    canvas_ = new DiagramView(editor_, workspace);
+    // The canvas and the schema share one area: the schema rises over the
+    // lower part of the diagram rather than replacing it or opening a window
+    // of its own, so the model and what it becomes are read together.
+    auto* stage = new QWidget(workspace);
+    stage->setObjectName("workspaceStage");
+    auto* stage_layout = new QVBoxLayout(stage);
+    stage_layout->setContentsMargins(0, 0, 0, 0);
+    stage_layout->setSpacing(0);
+    canvas_ = new DiagramView(editor_, stage);
     canvas_->setObjectName("diagramCanvas");
     canvas_->setAccessibleName("Conceptual ERD canvas");
-    layout->addWidget(canvas_, 1);
+    stage_layout->addWidget(canvas_, 1);
+    layout->addWidget(stage, 1);
+
+    // The curtain. It is a child of the stage rather than a row in the layout,
+    // so it can be raised over the diagram and animated into place.
+    schema_panel_ = new QWidget(stage);
+    schema_panel_->setObjectName("schemaPanel");
+    schema_panel_->setAutoFillBackground(true);
+    auto* panel_layout = new QVBoxLayout(schema_panel_);
+    panel_layout->setContentsMargins(0, 0, 0, 0);
+    panel_layout->setSpacing(0);
+    auto* grip = new ResizeGrip(schema_panel_);
+    panel_layout->addWidget(grip);
+    auto* schema_bar = new QWidget(schema_panel_);
+    schema_bar->setObjectName("schemaBar");
+    auto* bar_layout = new QHBoxLayout(schema_bar);
+    bar_layout->setContentsMargins(12, 7, 12, 7);
+    bar_layout->setSpacing(9);
+    auto* schema_title = new QLabel("Schema preview", schema_bar);
+    schema_title->setObjectName("schemaTitle");
+    bar_layout->addWidget(schema_title);
+    schema_state_ = new QLabel(schema_bar);
+    schema_state_->setObjectName("schemaState");
+    bar_layout->addWidget(schema_state_);
+    bar_layout->addStretch();
+    // Everything that shapes the whole schema, in two menus rather than a
+    // row of eight controls. They are grouped by the question they answer:
+    // Arrange is about where things are put, Appearance is about how they are
+    // written. A row that names every setting at once is a row nobody reads.
+    auto* arrange = new QToolButton(schema_bar);
+    arrange->setObjectName("schemaArrange");
+    arrange->setText("Arrange");
+    arrange->setPopupMode(QToolButton::InstantPopup);
+    arrange->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    auto* arranging = new QMenu(arrange);
+    arranging->setObjectName("schemaArrangeMenu");
+    menu_heading(arranging, "Where the tables sit", "schemaTablesHeading");
+    auto* align_tables = arranging->addAction("Align to the grid");
+    align_tables->setObjectName("schemaAlign");
+    align_tables->setToolTip("Round every table's position to the grid, once.");
+    connect(align_tables, &QAction::triggered, this, [this] { schema_->align(); });
+    menu_heading(arranging, "How the lines run", "schemaLinesHeading");
+    schema_lines_ = new QActionGroup(this);
+    static const std::array<std::pair<SchemaRouting, const char*>, 2> routings{{
+        {SchemaRouting::AroundTables, "Around the tables"},
+        {SchemaRouting::Straight, "Straight there"}}};
+    for (const auto& [which, label] : routings) {
+        auto* choice = arranging->addAction(QLatin1String(label));
+        choice->setObjectName(which == SchemaRouting::Straight ? "schemaLinesStraight"
+                                                               : "schemaLinesAround");
+        choice->setCheckable(true);
+        choice->setChecked(which == SchemaRouting::AroundTables);
+        choice->setActionGroup(schema_lines_);
+        connect(choice, &QAction::triggered, this, [this, which] {
+            if (schema_) schema_->set_routing(which);
+        });
+    }
+    // Whether a table may be pulled about by its edges. Its own heading,
+    // because it is a question about the tables rather than about the lines
+    // above it.
+    menu_heading(arranging, "Table size", "schemaWidthHeading");
+    schema_sizing_ = new QActionGroup(this);
+    static const std::array<std::pair<bool, const char*>, 2> sizing{{
+        {true, "Resizable"}, {false, "Fixed"}}};
+    const auto resizable_now = QSettings().value("schemaTablesResizable", true).toBool();
+    for (const auto& [on, label] : sizing) {
+        auto* choice = arranging->addAction(QLatin1String(label));
+        choice->setObjectName(on ? "schemaResizable" : "schemaFixed");
+        choice->setCheckable(true);
+        choice->setChecked(on == resizable_now);
+        choice->setActionGroup(schema_sizing_);
+        choice->setToolTip(on ? "Pull any edge or corner of a table to resize it. The side you pull "
+                                "moves and the opposite one stays where it is."
+                              : "Leave every table at the size it has, so an edge cannot be "
+                                "caught while moving one.");
+        connect(choice, &QAction::triggered, this, [this, on] {
+            QSettings().setValue("schemaTablesResizable", on);
+            if (schema_) schema_->set_tables_resizable(on);
+        });
+    }
+
+    menu_heading(arranging, "When a table lands on a line", "schemaGiveWayHeading");
+    auto* give_way = arranging->addAction("Move out of the way of tables");
+    give_way->setObjectName("schemaGiveWay");
+    give_way->setCheckable(true);
+    give_way->setToolTip("When a table is moved onto a line that was shaped by hand, hand that "
+                         "line back to the router so it goes around. Off, the line stays where "
+                         "it was put.");
+    // Off unless it has been asked for. A shape somebody made is theirs, and a
+    // line that undid itself because a table drifted over it would be undoing
+    // their work for a reason they never asked about. Remembered with the
+    // application rather than in the project: it is how somebody likes to
+    // work, not something the document says.
+    give_way->setChecked(QSettings().value("schemaLinesGiveWay", false).toBool());
+    connect(give_way, &QAction::toggled, this, [this](bool on) {
+        QSettings().setValue("schemaLinesGiveWay", on);
+        if (schema_) schema_->set_lines_give_way(on);
+    });
+
+    // Putting back what was moved by hand is its own kind of thing, and the
+    // two entries differ in how much they undo: one gives the lines back and
+    // leaves the tables, the other gives back both.
+    menu_heading(arranging, "Put back", "schemaPutBackHeading");
+    auto* release = arranging->addAction("Release the lines");
+    release->setObjectName("schemaRelease");
+    release->setToolTip("Give every line back to the router, leaving the tables where they are.");
+    connect(release, &QAction::triggered, this, [this] { schema_->release_lines(); });
+    auto* tidy_tables = arranging->addAction("Tidy everything");
+    tidy_tables->setObjectName("schemaTidy");
+    tidy_tables->setToolTip("Put every table and every line back to the automatic arrangement.");
+    connect(tidy_tables, &QAction::triggered, this, [this] { schema_->tidy(); });
+    arrange->setMenu(arranging);
+    bar_layout->addWidget(arrange);
+
+    auto* appearance = new QToolButton(schema_bar);
+    appearance->setObjectName("schemaAppearance");
+    appearance->setText("Appearance");
+    appearance->setPopupMode(QToolButton::InstantPopup);
+    appearance->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    auto* appearing = new QMenu(appearance);
+    appearing->setObjectName("schemaAppearanceMenu");
+    menu_heading(appearing, "Notation", "schemaNotationHeading");
+    schema_notation_ = new QActionGroup(this);
+    for (const auto& [style, label] : notation_styles()) {
+        auto* choice = appearing->addAction(label);
+        choice->setObjectName("schemaNotation" + QString(label).remove(QRegularExpression("[^A-Za-z]")));
+        choice->setCheckable(true);
+        choice->setActionGroup(schema_notation_);
+        choice->setData(static_cast<int>(style));
+        connect(choice, &QAction::triggered, this, [this, style] {
+            if (refreshing_) return;
+            choose_notation(style);
+        });
+    }
+    menu_heading(appearing, "Table names", "schemaNamesHeading");
+    schema_names_ = new QActionGroup(this);
+    static const std::array<std::pair<domain::TableNaming, const char*>, 2> namings{{
+        {domain::TableNaming::Plural, "Plural"},
+        {domain::TableNaming::AsDrawn, "As the diagram draws them"}}};
+    for (const auto& [which, label] : namings) {
+        auto* choice = appearing->addAction(QLatin1String(label));
+        choice->setObjectName(which == domain::TableNaming::Plural ? "schemaNamesPlural"
+                                                                   : "schemaNamesAsDrawn");
+        choice->setCheckable(true);
+        choice->setActionGroup(schema_names_);
+        choice->setData(static_cast<int>(which));
+        connect(choice, &QAction::triggered, this, [this, which] {
+            if (refreshing_) return;
+            show_result(editor_.set_table_naming(which), false);
+        });
+    }
+    appearance->setMenu(appearing);
+    bar_layout->addWidget(appearance);
+
+    auto* full_schema = new QPushButton("Full", schema_bar);
+    full_schema->setObjectName("schemaFull");
+    full_schema->setCheckable(true);
+    full_schema->setToolTip("Give the whole window to the schema: the panels go away and the "
+                            "diagram behind it is covered. Press again to bring everything back.");
+    bar_layout->addWidget(full_schema);
+    auto* close_schema = new QPushButton("Close", schema_bar);
+    close_schema->setObjectName("schemaClose");
+    bar_layout->addWidget(close_schema);
+    panel_layout->addWidget(schema_bar);
+
+    // Which tables the schema is being asked about, by where they came from.
+    // The same four questions the diagram's own search asks, so a reader who
+    // has learned one has learned the other.
+    auto* narrowing = new QWidget(schema_panel_);
+    narrowing->setObjectName("schemaNarrowing");
+    auto* narrow_layout = new QHBoxLayout(narrowing);
+    narrow_layout->setContentsMargins(10, 2, 10, 4);
+    narrow_layout->setSpacing(6);
+    static const std::array<std::pair<SchemaShowing, const char*>, 4> chips{{
+        {SchemaShowing::Everything, "Everything"},
+        {SchemaShowing::FromEntities, "From entities"},
+        {SchemaShowing::FromRelationships, "From relationships"},
+        {SchemaShowing::FromAttributes, "From attributes"}}};
+    for (const auto& [which, label] : chips) {
+        auto* chip = new QPushButton(QLatin1String(label), narrowing);
+        chip->setObjectName(QString("schemaShow") + QString(label).remove(' '));
+        chip->setCheckable(true);
+        chip->setChecked(which == SchemaShowing::Everything);
+        chip->setProperty("chip", true);
+        schema_chips_.push_back(chip);
+        narrow_layout->addWidget(chip);
+        connect(chip, &QPushButton::clicked, this, [this, which] {
+            if (schema_) schema_->set_showing(which);
+            for (std::size_t i = 0; i < schema_chips_.size(); ++i)
+                schema_chips_[i]->setChecked(static_cast<SchemaShowing>(i) == which);
+            // Asking about a kind of table is a different question from asking
+            // about one table, so it puts any selection down first.
+            if (schema_) schema_->select(std::nullopt);
+        });
+    }
+    narrow_layout->addStretch(1);
+    panel_layout->addWidget(narrowing);
+
+    schema_scroll_ = new QScrollArea(schema_panel_);
+    schema_scroll_->setObjectName("schemaScroll");
+    schema_scroll_->setWidgetResizable(true);
+    schema_scroll_->setFrameShape(QFrame::NoFrame);
+    // A scroll area that resizes its widget asks for as much height as that
+    // widget's minimum, and the schema's minimum is however tall the tables
+    // happen to reach. Left at that, the panel cannot give room to anything
+    // below the scroll area and pushes it off the bottom of the window. The
+    // area is told it may be small; what it holds can still be any size, which
+    // is what the scrollbars are for.
+    schema_scroll_->setMinimumHeight(60);
+    schema_ = new SchemaView(editor_, schema_scroll_);
+    // Shaping a line is not an edit, so it does not pass through the Editor and
+    // nothing else hears about it. The panel still has to be told, because the
+    // count of ends left hanging is part of what it reports.
+    schema_->shaped = [this] { refresh_schema_state(); };
+    // Arranging the schema is an edit like any other, so its result goes the
+    // same way every other edit's does: reported if it failed, and the window
+    // refreshed either way, which is what makes undo show up here.
+    schema_->arranged = [this](const application::EditResult& result) { show_result(result, false); };
+    schema_->set_lines_give_way(QSettings().value("schemaLinesGiveWay", false).toBool());
+    schema_->set_tables_resizable(QSettings().value("schemaTablesResizable", true).toBool());
+    schema_->asked = [this](const SchemaView::Spot& spot) { offer_schema_actions(spot); };
+    schema_->rules_asked = [this](const SchemaView::Constrained& hit, QPoint at) {
+        offer_schema_rules(hit, at);
+    };
+    schema_->renamed = [this](const SchemaView::Spot& spot, const QString& typed) {
+        rename_from_schema(spot, typed);
+    };
+    // What is wrong with where a line's end was put. The end stays there: it is
+    // reported, not refused, because a line that sprang back would be arguing
+    // with the person drawing it. Said for long enough to be read, since it
+    // explains something rather than confirming it.
+    schema_->warned = [this](const QString& warning) {
+        if (!warning.isEmpty()) statusBar()->showMessage(warning, 12000);
+    };
+    schema_->add_column = [this](std::size_t which) {
+        if (!schema_ || which >= schema_->preview().tables.size()) return;
+        const auto& table = schema_->preview().tables[which];
+        if (table.origin) add_schema_column(*table.origin);
+    };
+    schema_->decided = [this](const domain::OpenDecision& decision, std::size_t choice) {
+        answer_decision(decision, choice);
+    };
+    schema_->chose = [this] { refresh_schema_state(); };
+    schema_->asked_type = [this](const domain::PreviewColumn& column, QPoint at) {
+        ask_column_type(column, at);
+    };
+    schema_->asked_size = [this](const domain::PreviewColumn& column, QPoint at) {
+        ask_column_size(column, at);
+    };
+    schema_scroll_->setWidget(schema_);
+    panel_layout->addWidget(schema_scroll_, 1);
+    // Columns that share a name, gathered up. Seventeen types open is almost
+    // never seventeen questions: it is ID asked six times, Name asked five,
+    // and a few of their own. Answering the repeats once is the difference
+    // between a schema that can be finished and one that cannot.
+    shared_names_ = new QWidget(schema_panel_);
+    shared_names_->setObjectName("schemaSharedNames");
+    auto* shared_layout = new QVBoxLayout(shared_names_);
+    shared_layout->setContentsMargins(0, 0, 0, 0);
+    shared_layout->setSpacing(0);
+    shared_names_head_ = new QPushButton(shared_names_);
+    shared_names_head_->setObjectName("schemaSharedNamesHead");
+    shared_names_head_->setFlat(true);
+    shared_names_head_->setCursor(Qt::PointingHandCursor);
+    shared_layout->addWidget(shared_names_head_);
+    shared_names_body_ = new QWidget(shared_names_);
+    shared_names_body_->setObjectName("schemaSharedNamesBody");
+    auto* body_layout = new QVBoxLayout(shared_names_body_);
+    body_layout->setContentsMargins(14, 2, 14, 8);
+    body_layout->setSpacing(4);
+    shared_layout->addWidget(shared_names_body_);
+    shared_names_body_->hide();
+    connect(shared_names_head_, &QPushButton::clicked, this, [this] {
+        shared_names_open_ = !shared_names_open_;
+        shared_names_body_->setVisible(shared_names_open_);
+        refresh_shared_names();
+    });
+    panel_layout->addWidget(shared_names_);
+
+    schema_panel_->hide();
+
+    // Resizing. The share is remembered, so the panel opens again at whatever
+    // height it was left at, and it is clamped so a panel can never be pulled
+    // out of reach: a sliver still shows its bar, and full still leaves the
+    // diagram's own header above it.
+    grip->began = [this] { schema_share_at_grab_ = schema_share_; };
+    grip->dragged = [this](int moved) {
+        auto* stage = schema_panel_->parentWidget();
+        if (!stage || stage->height() <= 0) return;
+        schema_share_ = std::clamp(schema_share_at_grab_
+                                       + static_cast<double>(moved) / stage->height(), 0.12, 1.0);
+        lay_out_schema();
+    };
+    grip->nudged = [this](int direction) {
+        schema_share_ = std::clamp(schema_share_ + direction * 0.06, 0.12, 1.0);
+        lay_out_schema();
+    };
+    // Half and full are the two heights anybody actually wants, so the grip
+    // swaps between them without having to be aimed.
+    grip->toggled = [this] {
+        schema_share_ = schema_share_ > 0.85 ? 0.5 : 1.0;
+        lay_out_schema();
+    };
+
+    connect(full_schema, &QPushButton::toggled, this, [this](bool on) { set_schema_full(on); });
+    connect(close_schema, &QPushButton::clicked, this, [this] { show_schema(false); });
     search_bar_->on_changed = [this] { search_diagram(search_bar_->search()); };
     search_bar_->on_closed = [this] { close_search(); };
     auto* instructions = hint("Choose a shape, then click the canvas. Connect links an attribute to its owner, or a relationship to an entity.", workspace);
+    instructions->setObjectName("canvasInstructions");
     instructions->setContentsMargins(18, 10, 18, 10);
     layout->addWidget(instructions);
     setCentralWidget(workspace);
@@ -907,28 +1892,6 @@ void MainWindow::build_actions() {
     //
     // Documents come first. Someone handing this work on is choosing between a
     // report and a picture before they are choosing between PNG and SVG.
-    // One model, two modes. The switch is an edit like any other -- it goes
-    // through the history, so changing your mind about it costs one undo.
-    auto* modes = new QMenu("Mode", this);
-    modes->setObjectName("modeMenu");
-    auto* mode_group = new QActionGroup(modes);
-    mode_group->setExclusive(true);
-    struct ModeEntry { domain::ConceptualMode mode; const char* label; const char* name; const char* tip; };
-    for (const auto& entry : {
-             ModeEntry{domain::ConceptualMode::Basic, "Basic", "modeBasic",
-                       "The diagram as it is drawn and taught: shapes, names and the notation."},
-             ModeEntry{domain::ConceptualMode::Convertible, "Convertible", "modeConvertible",
-                       "The same model, asked what it will become: logical types, the rules a table will "
-                       "enforce, and the comment the schema will read."}}) {
-        auto* item = modes->addAction(QString::fromLatin1(entry.label));
-        item->setObjectName(QString::fromLatin1(entry.name));
-        item->setCheckable(true);
-        item->setActionGroup(mode_group);
-        item->setToolTip(QString::fromUtf8(entry.tip));
-        connect(item, &QAction::triggered, this, [this, mode = entry.mode] { set_conceptual_mode(mode); });
-    }
-    if (mode_button_) mode_button_->setMenu(modes);
-
     auto* export_menu = new QMenu("Export", this);
     export_menu->setObjectName("exportMenu");
     // The project itself leads, because it is the only one of these that loses
@@ -1622,6 +2585,12 @@ void MainWindow::build_actions() {
         QMessageBox::about(this, "ERDFlow", "ERDFlow 0.1 · Conceptual editor foundation\n\n"
                            "Draw once, progressively refine.\nC++20 · Qt 6 · Local project files");
     });
+
+    // The header's undo and redo were built with the shell, before any of
+    // these actions existed. They are the same two actions, so they are
+    // handed over here rather than being made again.
+    if (auto* button = findChild<QToolButton*>("schemaUndo")) button->setDefaultAction(undo_);
+    if (auto* button = findChild<QToolButton*>("schemaRedo")) button->setDefaultAction(redo_);
 }
 
 void MainWindow::refresh() {
@@ -1642,7 +2611,7 @@ void MainWindow::refresh() {
     redo_->setToolTip(redo_->text() + "\t" + redo_->shortcut().toString(QKeySequence::NativeText));
     refresh_selection_commands();
     refresh_export_actions();
-    refresh_mode_button();
+    refresh_schema();
     auto title = text(editor_.project().name);
     document_label_->setText(title + (editor_.dirty() ? " · Unsaved" : ""));
     setWindowTitle(title + "[*] — ERDFlow");
@@ -1994,77 +2963,6 @@ void MainWindow::refresh_properties() {
         connect(kind, &QComboBox::activated, this, [this, attribute_id](int index) {
             show_result(editor_.set_attribute_kind(attribute_id, static_cast<AttributeKind>(index)));
         });
-        // What Convertible mode asks of an attribute. Shown only in that mode:
-        // in Basic these questions are not being asked, and the answers already
-        // given are kept rather than cleared, so a model can be drawn in one
-        // mode and finished in the other without losing what it was told.
-        if (project.mode == domain::ConceptualMode::Convertible) {
-            auto* type = narrowable(new QComboBox(panel));
-            type->setObjectName("attributeLogicalType");
-            for (const char* named : {"Not chosen yet", "Text", "Integer", "Decimal", "Boolean",
-                                      "Date", "DateTime", "Binary", "UUID"})
-                type->addItem(QString::fromLatin1(named));
-            type->setCurrentIndex(static_cast<int>(attribute.logical_type));
-            type->setToolTip("A portable type, chosen without naming a database. Text(100) becomes VARCHAR(100) "
-                             "on one engine and NVARCHAR(100) on another, and that is decided later.");
-            attr_form->addRow(field_label("Logical type", label_tone, panel), type);
-
-            // Only the two types that are measured offer a number, so nobody is
-            // asked how long a Boolean is.
-            auto* length = new QSpinBox(panel);
-            length->setObjectName("attributeLength");
-            length->setRange(0, static_cast<int>(domain::max_logical_length));
-            length->setSpecialValueText("Unspecified");
-            length->setValue(static_cast<int>(attribute.length));
-            length->installEventFilter(wheel_guard_);
-            const auto measured = [](domain::LogicalType kind) {
-                return kind == domain::LogicalType::Text || kind == domain::LogicalType::Decimal;
-            };
-            length->setEnabled(measured(attribute.logical_type));
-            attr_form->addRow(field_label("Length", label_tone, panel), length);
-            connect(type, &QComboBox::activated, this, [this, attribute_id, length](int index) {
-                show_result(editor_.set_logical_type(attribute_id, static_cast<domain::LogicalType>(index),
-                                                     static_cast<std::uint32_t>(length->value())));
-            });
-            connect(length, &QSpinBox::editingFinished, this, [this, attribute_id, type, length] {
-                if (refreshing_) return;
-                show_result(editor_.set_logical_type(attribute_id,
-                                                     static_cast<domain::LogicalType>(type->currentIndex()),
-                                                     static_cast<std::uint32_t>(length->value())));
-            });
-
-            // What the table will enforce, kept apart from the Chen kind above:
-            // the oval says how the diagram draws it, these say what the
-            // database will insist on.
-            auto* rules = new QWidget(panel);
-            auto* rules_row = new QHBoxLayout(rules);
-            rules_row->setContentsMargins(0, 0, 0, 0);
-            rules_row->setSpacing(10);
-            struct Rule { const char* label; const char* name; bool set; const char* tip; };
-            std::vector<QCheckBox*> boxes;
-            for (const auto& rule : {
-                     Rule{"Identifier", "attributeIdentifier", attribute.identifier,
-                          "Part of what identifies a row."},
-                     Rule{"Required", "attributeRequired", attribute.required,
-                          "Must be filled in: NOT NULL."},
-                     Rule{"Unique", "attributeUnique", attribute.unique,
-                          "No two rows may share it."}}) {
-                auto* box = new QCheckBox(QString::fromLatin1(rule.label), rules);
-                box->setObjectName(QString::fromLatin1(rule.name));
-                box->setChecked(rule.set);
-                box->setToolTip(QString::fromUtf8(rule.tip));
-                rules_row->addWidget(box);
-                boxes.push_back(box);
-            }
-            rules_row->addStretch();
-            attr_form->addRow(field_label("Rules", label_tone, panel), rules);
-            for (auto* box : boxes)
-                connect(box, &QCheckBox::toggled, this, [this, attribute_id, boxes] {
-                    if (refreshing_) return;
-                    show_result(editor_.set_attribute_rules(attribute_id, boxes[0]->isChecked(),
-                                                            boxes[1]->isChecked(), boxes[2]->isChecked()));
-                });
-        }
         auto* owner = narrowable(new QComboBox(panel));
         owner->setObjectName("attributeOwner");
         owner->addItem("Unassigned");
@@ -2296,16 +3194,142 @@ void MainWindow::refresh_properties() {
         if (value != description(editor_.project(), ref)) show_result(editor_.describe(ref, value));
     };
     layout->addWidget(description_edit);
-    // The comment the schema will read, for the three things that become tables
-    // and columns, and only while the model is being asked what it becomes. It
-    // sits beneath the description because the two are easily confused and the
-    // difference is worth stating where both are written: a description says
-    // what this means to a reader, a comment is written for the database.
+    // What this becomes in the schema, for the three things that become tables
+    // and columns: everything conversion will need, gathered in one place and
+    // behind one fold.
+    //
+    // It sits beneath the description because a description and a comment are
+    // easily confused, and the difference is worth stating where both are
+    // written: a description says what this means to a reader, a comment is
+    // written for the database.
+    //
+    // The section folds so that a diagram being drawn and taught is not
+    // crowded by questions it is not yet asking, while a model being prepared
+    // for conversion has the answers together. Nothing here is conditional on
+    // that fold: the fields are part of the model, they are always stored, and
+    // validation, readiness and conversion all see them whether the section is
+    // open or shut.
     const bool schema_bound = std::holds_alternative<EntityId>(ref)
         || std::holds_alternative<AttributeId>(ref) || std::holds_alternative<RelationshipId>(ref);
-    if (schema_bound && project.mode == domain::ConceptualMode::Convertible) {
-        layout->addWidget(field_label("Comment for the schema", label_tone, panel));
-        auto* schema_edit = new DescriptionEdit(panel);
+    if (schema_bound) {
+        auto* section = new FoldingSection("For the schema", label_tone, schema_section_open_, panel);
+        section->setObjectName("schemaSection");
+        // Remembered for the next element looked at and the next time the
+        // application is opened. It is the user's preference, so it is kept
+        // with the application's settings and never in the project.
+        section->folded = [this](bool open) {
+            schema_section_open_ = open;
+            QSettings().setValue("schemaSectionOpen", open);
+        };
+        auto* inside = section->body();
+        inside->setObjectName("schemaSectionBody");
+        auto* stacked = new QVBoxLayout(inside);
+        stacked->setContentsMargins(0, 0, 0, 0);
+        stacked->setSpacing(12);
+        if (const auto* schema_attribute = std::get_if<AttributeId>(&ref)) {
+            const auto attribute_id = *schema_attribute;
+            const auto attribute = project.attributes.at(attribute_id);
+            auto* schema_form = new QFormLayout;
+            schema_form->setRowWrapPolicy(QFormLayout::WrapAllRows);
+            auto* type = narrowable(new QComboBox(inside));
+            type->setObjectName("attributeLogicalType");
+            // The whole catalogue, grouped by family. A flat list of forty
+            // names is a list nobody reads; the families are how the types are
+            // actually thought about, and the ones reached for most come first.
+            type->addItem(type_label(domain::LogicalType::Unset),
+                          QVariant::fromValue(static_cast<int>(domain::LogicalType::Unset)));
+            for (const auto& family : type_families())
+                for (const auto entry : family.types) {
+                    // The family's name heads its first entry, so the list
+                    // reads as groups rather than as one long run of words.
+                    if (entry == family.types.front())
+                        type->addItem(QString("— %1 —").arg(QString::fromLatin1(family.name)),
+                                      QVariant());
+                    type->addItem(type_label(entry), QVariant::fromValue(static_cast<int>(entry)));
+                    if (domain::deprecated_type(entry))
+                        type->setItemData(type->count() - 1,
+                                          QString("%1 is being removed from SQL Server. Prefer the (max) form.")
+                                              .arg(type_label(entry)), Qt::ToolTipRole);
+                }
+            for (int row = 0; row < type->count(); ++row) {
+                if (!type->itemData(row).isValid()) {
+                    // A family heading is a label, not a choice.
+                    if (auto* model = qobject_cast<QStandardItemModel*>(type->model()))
+                        if (auto* item = model->item(row)) item->setFlags(Qt::NoItemFlags);
+                    continue;
+                }
+                if (type->itemData(row).toInt() == static_cast<int>(attribute.logical_type))
+                    type->setCurrentIndex(row);
+            }
+            type->setToolTip("What this column is. The SQL type catalogue, grouped the way SQL Server "
+                             "groups it, with the ones reached for most at the top.");
+            schema_form->addRow(field_label("Logical type", label_tone, inside), type);
+
+            // Only the two types that are measured offer a number, so nobody is
+            // asked how long a Boolean is.
+            auto* length = new QSpinBox(inside);
+            length->setObjectName("attributeLength");
+            length->setRange(0, static_cast<int>(domain::max_logical_length));
+            length->setSpecialValueText("Unspecified");
+            length->setValue(static_cast<int>(attribute.length));
+            length->installEventFilter(wheel_guard_);
+            length->setEnabled(domain::size_of(attribute.logical_type) != domain::TypeSize::None);
+            schema_form->addRow(field_label("Length", label_tone, inside), length);
+            connect(type, &QComboBox::activated, this, [this, attribute_id, type, length](int index) {
+                const auto chosen = type->itemData(index);
+                if (!chosen.isValid()) return;   // a family heading, not a type
+                show_result(editor_.set_logical_type(attribute_id,
+                                                     static_cast<domain::LogicalType>(chosen.toInt()),
+                                                     static_cast<std::uint32_t>(length->value())));
+            });
+            connect(length, &QSpinBox::editingFinished, this, [this, attribute_id, type, length] {
+                if (refreshing_) return;
+                const auto chosen = type->itemData(type->currentIndex());
+                if (!chosen.isValid()) return;
+                show_result(editor_.set_logical_type(attribute_id,
+                                                     static_cast<domain::LogicalType>(chosen.toInt()),
+                                                     static_cast<std::uint32_t>(length->value())));
+            });
+
+            // What the table will enforce, kept apart from the Chen kind above:
+            // the oval says how the diagram draws it, these say what the
+            // database will insist on.
+            // Stacked rather than in a row: three of these do not fit across a
+            // narrow panel, and a docked panel is narrow whenever the window is.
+            // A column fits whatever width it is given, so none is ever clipped.
+            auto* rules = new QWidget(inside);
+            auto* rules_column = new QVBoxLayout(rules);
+            rules_column->setContentsMargins(0, 0, 0, 0);
+            rules_column->setSpacing(2);
+            struct Rule { const char* label; const char* name; bool set; const char* tip; };
+            std::vector<QCheckBox*> boxes;
+            for (const auto& rule : {
+                     Rule{"Identifier", "attributeIdentifier", attribute.identifier,
+                          "Part of what identifies a row."},
+                     Rule{"Required", "attributeRequired", attribute.required,
+                          "Must be filled in: NOT NULL."},
+                     Rule{"Unique", "attributeUnique", attribute.unique,
+                          "No two rows may share it."}}) {
+                auto* box = new QCheckBox(QString::fromLatin1(rule.label), rules);
+                box->setObjectName(QString::fromLatin1(rule.name));
+                box->setChecked(rule.set);
+                box->setToolTip(QString::fromUtf8(rule.tip));
+                rules_column->addWidget(box);
+                boxes.push_back(box);
+            }
+            schema_form->addRow(field_label("Rules", label_tone, inside), rules);
+            for (auto* box : boxes)
+                connect(box, &QCheckBox::toggled, this, [this, attribute_id, boxes] {
+                    if (refreshing_) return;
+                    show_result(editor_.set_attribute_rules(attribute_id, boxes[0]->isChecked(),
+                                                            boxes[1]->isChecked(), boxes[2]->isChecked()));
+                });
+            stacked->addLayout(schema_form);
+        }
+        // The section already says these are for the schema, so the field is
+        // called what it is rather than repeating where it is.
+        stacked->addWidget(field_label("Comment", label_tone, inside));
+        auto* schema_edit = new DescriptionEdit(inside);
         schema_edit->setObjectName("elementSchemaComment");
         schema_edit->setPlainText(text(schema_comment_of(project, ref)));
         schema_edit->setPlaceholderText("What the generated table or column should say about itself…");
@@ -2317,7 +3341,8 @@ void MainWindow::refresh_properties() {
             if (value != schema_comment_of(editor_.project(), ref))
                 show_result(editor_.set_schema_comment(ref, value));
         };
-        layout->addWidget(schema_edit);
+        stacked->addWidget(schema_edit);
+        layout->addWidget(section);
     }
     layout->addWidget(hint("Text changes apply when you leave the field. Every applied change can be undone.", panel));
     auto* geometry = new QFormLayout;
@@ -2482,6 +3507,14 @@ void MainWindow::show_result(const application::EditResult& result, bool choose_
 // which notation is in use.
 void MainWindow::choose_notation(Notation notation) {
     canvas_->set_notation(notation);
+    // The schema draws its line ends in the same notation as the diagram, so it
+    // is told here rather than only when a theme changes. Without this the
+    // panel keeps whichever notation it was opened with, and a schema asked for
+    // crow's feet goes on drawing Chen's letters.
+    if (schema_) schema_->set_notation(notation);
+    if (schema_notation_)
+        for (auto* choice : schema_notation_->actions())
+            choice->setChecked(choice->data().toInt() == static_cast<int>(notation));
     const auto previous = refreshing_;
     refreshing_ = true;
     if (const auto found = notation_actions_.find(notation); found != notation_actions_.end())
@@ -2559,6 +3592,7 @@ int MainWindow::icon_pixels() const {
 void MainWindow::resizeEvent(QResizeEvent* event) {
     QMainWindow::resizeEvent(event);
     fit_toolbar();
+    lay_out_schema();
 }
 
 // A tool that has fallen off the end of the toolbar may as well not exist, so
@@ -2654,6 +3688,12 @@ void MainWindow::apply_appearance(ThemeId id) {
     if (auto* application = qobject_cast<QApplication*>(QCoreApplication::instance()))
         apply_theme(*application, id);
     canvas_->set_theme(id);
+    // The schema is drawn in the same palette as the diagram, so a table wears
+    // the colours of the thing it came from.
+    if (schema_) {
+        schema_->set_theme(theme(id));
+        schema_->set_notation(canvas_->notation());
+    }
     refresh_icons();
     refresh_explorer();
     // The panel's labels are written in the theme's own hues, so they are
@@ -2733,6 +3773,9 @@ QIcon MainWindow::line_style_icon(LineStyle style) const {
 // Icons are drawn from the theme, so they are rebuilt whenever it changes.
 void MainWindow::refresh_icons() {
     const auto& colors = theme(theme_);
+    // The schema marks a primary key with a key from the same set, so it
+    // follows the choice with everything else rather than keeping its own.
+    if (schema_) schema_->set_icon_mode(icon_mode_);
     for (const auto& [action, glyph] : action_glyphs_)
         action->setIcon(glyph_icon(glyph, colors, icon_pixels(), icon_mode_));
     if (theme_button_) theme_button_->setIcon(glyph_icon(Glyph::Theme, colors, icon_pixels(), icon_mode_));
@@ -3543,24 +4586,662 @@ bool MainWindow::import_project(const QString& path) {
     return true;
 }
 
-void MainWindow::set_conceptual_mode(domain::ConceptualMode mode) {
-    finish_field_edit();
-    show_result(editor_.set_conceptual_mode(mode), false);
+// The panel takes the lower part of the stage and slides up into it. It is a
+// child of the stage rather than a row in the layout, so the diagram keeps its
+// full height behind it and nothing is re-laid-out as it moves.
+void MainWindow::lay_out_schema() {
+    if (!schema_panel_ || !canvas_ || laying_out_schema_) return;
+    const QSignalBlocker quiet(schema_panel_);
+    laying_out_schema_ = true;
+    const auto done = qScopeGuard([this] { laying_out_schema_ = false; });
+    auto* stage = schema_panel_->parentWidget();
+    if (!stage) return;
+    const auto height = std::max(120, static_cast<int>(stage->height() * schema_share_));
+    const auto top = schema_open_ ? stage->height() - height : stage->height();
+    schema_panel_->setGeometry(0, top, stage->width(), height);
 }
 
-void MainWindow::refresh_mode_button() {
-    if (!mode_button_) return;
-    const bool convertible = editor_.project().mode == domain::ConceptualMode::Convertible;
-    mode_button_->setText(convertible ? "Convertible" : "Basic");
-    mode_button_->setToolTip(convertible
-        ? "Convertible mode. The model is being asked what it will become: attributes carry a logical type, "
-          "the rules a table will enforce, and the comment the schema will read."
-        : "Basic mode. The diagram as it is drawn and taught. Switch to Convertible to say what it becomes.");
-    if (auto* entry = findChild<QAction*>(convertible ? "modeConvertible" : "modeBasic"))
-        if (!entry->isChecked()) {
-            const QSignalBlocker quiet(entry);
-            entry->setChecked(true);
+void MainWindow::open_schema(bool full) {
+    show_schema(true);
+    // The panel rises over 280ms and is given a geometry on every frame of it.
+    // Asking for full height in the middle of that would be overwritten by the
+    // next frame, so it waits for the rise to land -- which is also what a
+    // person does, since they cannot click Full before the panel is there.
+    if (full) QTimer::singleShot(320, this, [this] { set_schema_full(true); });
+}
+
+void MainWindow::show_schema(bool shown) {
+    if (!schema_panel_ || schema_open_ == shown) return;
+    // A panel that is closing takes its full view with it, rather than leaving
+    // the window stripped with nothing in it.
+    if (!shown && schema_full_) set_schema_full(false);
+    schema_open_ = shown;
+    auto* stage = schema_panel_->parentWidget();
+    const auto height = std::max(120, static_cast<int>(stage->height() * schema_share_));
+    if (shown) {
+        schema_->set_theme(theme(theme_));
+        schema_->set_notation(canvas_->notation());
+        refresh_schema();
+        // Start it off the bottom edge at the size it will be, so the rise has
+        // somewhere to rise from: a panel that has never been laid out has no
+        // size at all, and animating from that moves nothing anywhere.
+        schema_panel_->setGeometry(0, stage->height(), stage->width(), height);
+        schema_panel_->show();
+        schema_panel_->raise();
+    }
+    auto* rise = new QVariantAnimation(this);
+    rise->setDuration(280);
+    rise->setEasingCurve(QEasingCurve::OutCubic);
+    rise->setStartValue(schema_panel_->y());
+    rise->setEndValue(shown ? stage->height() - height : stage->height());
+    connect(rise, &QVariantAnimation::valueChanged, this, [this, stage](const QVariant& at) {
+        // The height is read again each frame rather than captured, so a stage
+        // that changes size mid-rise is followed instead of ignored.
+        const auto tall = std::max(120, static_cast<int>(stage->height() * schema_share_));
+        schema_panel_->setGeometry(0, at.toInt(), stage->width(), tall);
+    });
+    connect(rise, &QVariantAnimation::finished, this, [this] {
+        if (!schema_open_) schema_panel_->hide();
+    });
+    rise->start(QAbstractAnimation::DeleteWhenStopped);
+    if (auto* button = findChild<QPushButton*>("previewSchema")) button->setChecked(shown);
+}
+
+// Nothing but the schema. The panel takes the whole stage and the surrounding
+// panels go away, so a schema being read is not read around the edges of
+// everything else. Leaving it puts back exactly what was put away -- and only
+// what this put away, so a panel the user had already closed stays closed.
+// The window's furniture for drawing: the ribbon of tabs and every tool row
+// under it. Gathered in one place because full view and the schema both want
+// to put the same things away.
+std::vector<QWidget*> MainWindow::chrome_for_drawing() const {
+    // The row of tabs and every row under it are toolbars, so one sweep finds
+    // all of them. The Ribbon itself is the thing that arranges them and has
+    // no surface of its own to hide.
+    std::vector<QWidget*> furniture;
+    for (auto* row : findChildren<QToolBar*>()) furniture.push_back(static_cast<QWidget*>(row));
+    return furniture;
+}
+
+void MainWindow::set_schema_full(bool full) {
+    if (schema_full_ == full) return;
+    schema_full_ = full;
+    if (full) {
+        schema_share_before_full_ = schema_share_;
+        // Full view is the window's own idea of putting the panels away, so it
+        // is borrowed rather than reimplemented. If it was already on, it is
+        // left exactly as it was on the way out.
+        schema_took_full_view_ = hidden_panels_.empty();
+        if (schema_took_full_view_) set_full_view(true);
+        // The diagram's own furniture goes too. A schema given the whole window
+        // should not be read around a search bar and a line of instructions
+        // about drawing shapes on a canvas nobody can currently see.
+        hidden_for_schema_.clear();
+        // The diagram's own search and the button that replaces the whole
+        // document go too: neither is about the schema, and the schema has a
+        // search of its own in the header.
+        for (auto* also : {static_cast<QWidget*>(search_bar_),
+                           static_cast<QWidget*>(findChild<QLabel*>("canvasInstructions")),
+                           static_cast<QWidget*>(search_button_),
+                           static_cast<QWidget*>(findChild<QPushButton*>("openExample"))})
+            if (also && also->isVisible()) {
+                hidden_for_schema_.push_back(also);
+                also->hide();
+            }
+        // And the tools for drawing go with the canvas they draw on. A row of
+        // shapes to place, above a diagram nobody can currently see, is a row
+        // of things that cannot be done -- so the ribbon and the tool rows are
+        // put away and the few things still worth reaching for come out in the
+        // header instead.
+        hidden_chrome_.clear();
+        for (auto* furniture : chrome_for_drawing())
+            if (furniture && furniture->isVisible()) {
+                hidden_chrome_.push_back(furniture);
+                furniture->hide();
+            }
+        if (schema_header_tools_) {
+            if (schema_theme_ && theme_button_) {
+                schema_theme_->setMenu(theme_button_->menu());
+                schema_theme_->setIcon(theme_button_->icon());
+            }
+            schema_header_tools_->show();
         }
+        schema_share_ = 1.0;
+    } else {
+        if (schema_took_full_view_) set_full_view(false);
+        schema_took_full_view_ = false;
+        for (const auto& also : hidden_for_schema_) if (also) also->show();
+        hidden_for_schema_.clear();
+        for (const auto& furniture : hidden_chrome_) if (furniture) furniture->show();
+        hidden_chrome_.clear();
+        if (schema_header_tools_) schema_header_tools_->hide();
+        schema_share_ = schema_share_before_full_;
+    }
+    lay_out_schema();
+    QTimer::singleShot(0, this, [this] { lay_out_schema(); });
+    if (auto* button = findChild<QPushButton*>("schemaFull")) {
+        const QSignalBlocker quiet(button);
+        button->setChecked(full);
+        button->setText(full ? "Exit full" : "Full");
+    }
+    statusBar()->showMessage(full ? "The schema has the whole window. Press Full again to bring the rest back."
+                                  : "Everything is back.", 5000);
+}
+
+// What can be done to the table or column that was asked about.
+//
+// The offer is narrow on purpose. A column the conversion invented -- a
+// bridge's own key, a surrogate, a discriminator -- is there because the shape
+// of the model put it there, and taking it away would be arguing with the
+// conversion rather than editing the model. A foreign key is there because a
+// relationship is, and it goes when that relationship does.
+std::optional<domain::ParticipantId> MainWindow::carrying_side(
+        const domain::PreviewColumn& column) const {
+    if (!column.link || !std::holds_alternative<domain::ParticipantId>(*column.link))
+        return std::nullopt;
+    const auto target = std::get<domain::ParticipantId>(*column.link);
+    for (const auto& [id, relationship] : editor_.project().relationships) {
+        (void)id;
+        const auto& sides = relationship.participants;
+        if (std::none_of(sides.begin(), sides.end(),
+                         [&](const auto& one) { return one.id == target; }))
+            continue;
+        // Only a two-sided relationship has an other side. A bridge holds
+        // several keys, and no one of them is what would make it unique.
+        if (sides.size() != 2) return std::nullopt;
+        for (const auto& one : sides) if (one.id != target) return one.id;
+    }
+    return std::nullopt;
+}
+
+// The list of what a column can be made to enforce, opened under the cell
+// that says what it enforces now.
+//
+// A list rather than three switches because several of them apply at once and
+// a few of them cannot: a key is unique already, a key can never be empty, a
+// counted-up column has to hold whole numbers. Nothing here is greyed out --
+// every entry can be chosen, and one that cannot take says why in the status
+// bar, which tells a reader learning the rules something that a dead menu
+// entry does not.
+void MainWindow::offer_schema_rules(const SchemaView::Constrained& hit, QPoint at) {
+    if (!schema_ || hit.table >= schema_->preview().tables.size()) return;
+    const auto& table = schema_->preview().tables[hit.table];
+    if (hit.row >= table.columns.size()) return;
+    const auto& column = table.columns[hit.row];
+
+    QMenu menu(this);
+    menu.setObjectName("schemaRulesMenu");
+    const auto entry = [&](const QString& label, const char* name, bool on,
+                           SchemaView::Constraint which, const QString& why) {
+        auto* action = menu.addAction(label);
+        action->setObjectName(name);
+        action->setCheckable(true);
+        action->setChecked(on);
+        if (!why.isEmpty()) action->setToolTip(why);
+        connect(action, &QAction::triggered, this,
+                [this, hit, which] { toggle_schema_constraint(hit, which); });
+    };
+    // Nullability is the one that always says which way it went, so it reads
+    // as the state it is in rather than as a box that happens to be empty.
+    entry(column.required ? "NOT NULL" : "NULL — may be empty", "schemaRuleNotNull",
+          column.required, SchemaView::Constraint::Nullability,
+          column.primary_key ? "A primary key can never be empty."
+              : column.foreign_key ? "This says whether the side it points at is total."
+                                   : QString());
+    entry("UNIQUE", "schemaRuleUnique", column.unique, SchemaView::Constraint::Unique,
+          column.primary_key ? "A primary key is unique already."
+              : column.foreign_key ? "This says whether the side carrying it sees one row."
+                                   : QString());
+    entry("IDENTITY", "schemaRuleIdentity", column.auto_increment,
+          SchemaView::Constraint::AutoIncrement,
+          "The database fills this in, counting up. Whole numbers only.");
+    menu.exec(at);
+}
+
+// A constraint mark was pressed on the schema.
+//
+// Nothing here is refused by being made unpressable. Where a mark cannot
+// change, it is pressed like any other and says what would have to happen
+// first, in the status bar rather than in a box that has to be dismissed: a
+// reader learning why a key cannot be empty is better served by being told
+// than by finding the mark dead under the pointer.
+void MainWindow::toggle_schema_constraint(const SchemaView::Constrained& hit,
+                                          SchemaView::Constraint which) {
+    if (!schema_ || hit.table >= schema_->preview().tables.size()) return;
+    const auto& table = schema_->preview().tables[hit.table];
+    if (hit.row >= table.columns.size()) return;
+    const auto& column = table.columns[hit.row];
+    const auto say = [this](const QString& why) { statusBar()->showMessage(why, 12000); };
+    // A constraint that would not take reports in the status bar, like one
+    // that cannot change at all. A box that has to be dismissed is too much
+    // ceremony for a mark the hand is still resting on, and it would stop the
+    // next press dead.
+    const auto apply = [this, &say](const application::EditResult& result) {
+        refresh();
+        if (!result) say(text(result.error));
+    };
+
+    // What the column's rules are now, read from whatever holds them rather
+    // than from the preview: the preview reports a key as required whether or
+    // not the attribute says so, and writing that back would make the derived
+    // value permanent.
+    const auto* attribute = column.origin && editor_.project().attributes.contains(*column.origin)
+        ? &editor_.project().attributes.at(*column.origin) : nullptr;
+    const domain::SchemaColumn* added = nullptr;
+    if (column.added)
+        for (const auto& [where, columns] : editor_.project().schema.added) {
+            (void)where;
+            for (const auto& one : columns) if (one.id == *column.added) added = &one;
+        }
+
+    switch (which) {
+    case SchemaView::Constraint::Nullability: {
+        // A key is what identifies a row, so it can never be empty.
+        if (column.primary_key) {
+            say("A primary key can never be empty. Take the key off it first.");
+            return;
+        }
+        // A foreign key is NOT NULL because the side it points at is total.
+        // That is a fact about the relationship, so pressing this reaches the
+        // diagram and changes the participation there.
+        if (column.link && std::holds_alternative<domain::ParticipantId>(*column.link)) {
+            apply(editor_.set_participation(
+                std::get<domain::ParticipantId>(*column.link),
+                column.required ? domain::Participation::Partial : domain::Participation::Total));
+            return;
+        }
+        if (attribute) {
+            apply(editor_.set_attribute_rules(*column.origin, attribute->identifier,
+                                                    !attribute->required, attribute->unique));
+            return;
+        }
+        if (added) {
+            apply(editor_.set_schema_column_rules(*column.added, added->identifier,
+                                                        !added->required, added->unique));
+            return;
+        }
+        say(column.foreign_key
+                ? "This key points home and must always be filled in."
+                : "The conversion made this column, so there is nothing behind it to change.");
+        return;
+    }
+    case SchemaView::Constraint::Unique: {
+        if (attribute) {
+            apply(editor_.set_attribute_rules(*column.origin, attribute->identifier,
+                                                    attribute->required, !attribute->unique));
+            return;
+        }
+        if (added) {
+            apply(editor_.set_schema_column_rules(*column.added, added->identifier,
+                                                        added->required, !added->unique));
+            return;
+        }
+        // A key is unique by being the key. Saying so again on the same
+        // column would be a constraint the database already enforces.
+        if (column.primary_key) {
+            say("A primary key is unique already. Nothing more to say about it.");
+            return;
+        }
+        // A unique foreign key means the side carrying it sees one row and no
+        // more, which is that side's cardinality -- so this reaches the
+        // diagram, as its nullability does.
+        if (const auto side = carrying_side(column)) {
+            apply(editor_.set_cardinality(*side, column.unique ? domain::Cardinality::Many
+                                                               : domain::Cardinality::One));
+            return;
+        }
+        say("This key points home and is unique or not according to what it points at.");
+        return;
+    }
+    case SchemaView::Constraint::AutoIncrement: {
+        // The one constraint with nothing on the diagram behind it. A Chen ERD
+        // has no way of saying a value is generated rather than recorded, so
+        // this reaches the table and stops there.
+        if (attribute) {
+            apply(editor_.set_auto_increment(*column.origin, !attribute->auto_increment));
+            return;
+        }
+        if (added) {
+            apply(editor_.set_schema_column_auto_increment(*column.added,
+                                                                 !added->auto_increment));
+            return;
+        }
+        // A key the conversion invented is the commonest place of all to want
+        // this: a table with nothing to identify it is given a surrogate, and
+        // a surrogate is what a counted-up column is for. It has nothing
+        // behind it, so it is remembered against the table it belongs to.
+        if (column.origin_kind == domain::ColumnOrigin::Generated && table.origin) {
+            apply(editor_.set_key_auto_increment(*table.origin, !column.auto_increment));
+            return;
+        }
+        say(column.foreign_key
+                ? "A foreign key takes its value from the key it points at."
+                : "The conversion made this column, so there is nothing behind it to change.");
+        return;
+    }
+    }
+}
+
+void MainWindow::offer_schema_actions(const SchemaView::Spot& spot) {
+    if (!schema_ || spot.table >= schema_->preview().tables.size()) return;
+    const auto& table = schema_->preview().tables[spot.table];
+    if (!table.origin) return;
+    QMenu menu(this);
+    menu.setObjectName("schemaMenu");
+    auto* add = menu.addAction("Add column");
+    add->setObjectName("schemaAddColumn");
+    connect(add, &QAction::triggered, this, [this, origin = *table.origin] { add_schema_column(origin); });
+    // The same thing, kept off the diagram. It is the departure rather than the
+    // ordinary case, so it is asked for by name here and is not what the slot
+    // under the table does.
+    auto* aside = menu.addAction("Add column on the schema only");
+    aside->setObjectName("schemaAddColumnOnly");
+    connect(aside, &QAction::triggered, this,
+            [this, origin = *table.origin] { add_schema_column(origin, true); });
+    if (spot.column && *spot.column < table.columns.size()) {
+        const auto& column = table.columns[*spot.column];
+        // The primary key, put on a column or taken off it from here. It is
+        // one command because it is one thought, and it reaches the diagram:
+        // the attribute behind the column becomes a key attribute and is
+        // drawn as one. Offered only where there is an attribute behind the
+        // column -- a key the conversion invented is the table's key already,
+        // and a foreign key is a key somewhere else.
+        if (column.origin) {
+            auto* key = menu.addAction(column.primary_key
+                ? QString("Take the key off \"%1\"").arg(text(column.name))
+                : QString("Make \"%1\" the primary key").arg(text(column.name)));
+            key->setObjectName("schemaPrimaryKey");
+            key->setToolTip(column.primary_key
+                ? "It stops being a key on the diagram too."
+                : "It becomes a key on the diagram too, and is made required.");
+            connect(key, &QAction::triggered, this,
+                    [this, id = *column.origin, was = column.primary_key] {
+                        show_result(editor_.set_primary_key(id, !was), false);
+                    });
+            menu.addSeparator();
+        }
+        auto* remove = menu.addAction(QString("Remove \"%1\"").arg(text(column.name)));
+        remove->setObjectName("schemaRemoveColumn");
+        const bool removable = column.origin || column.added;
+        remove->setEnabled(removable);
+        if (!removable)
+            remove->setToolTip(column.foreign_key
+                ? "This column is the relationship's key. It goes when the relationship does."
+                : "The conversion made this column. It is not the model's to remove.");
+        connect(remove, &QAction::triggered, this,
+                [this, origin = *table.origin, column] { remove_schema_column(origin, column); });
+    }
+    menu.exec(spot.at);
+}
+
+// Adding a column. The usual answer is that the diagram should gain the
+// attribute too, so that is what the default button does; declining keeps the
+// column on the schema alone, which ADR-010 allows and which the panel then
+// reports as a difference between the two.
+void MainWindow::ask_column_type(const domain::PreviewColumn& column, QPoint at) {
+    if (!column.origin && !column.added) return;
+    if (!type_picker_) type_picker_ = new TypePicker(this);
+    // It is its own window, so it inherits none of the window's appearance
+    // and is dressed each time it opens -- which also keeps it right after
+    // the theme is changed behind it.
+    type_picker_->wear(theme(theme_));
+    const auto answering = column.origin;
+    const auto added = column.added;
+    type_picker_->chose = [this, answering, added](domain::LogicalType type) {
+        // The same answer either way, though what holds it differs: an
+        // attribute the diagram draws, or a column the schema has on its own.
+        if (answering) show_result(editor_.set_logical_type(*answering, type), false);
+        else if (added) show_result(editor_.set_schema_column_type(*added, type), false);
+    };
+    type_picker_->closed = [this] { if (schema_) schema_->set_answering({}, false); };
+    if (schema_) {
+        if (answering) schema_->set_answering(SchemaView::Answering{*answering}, false);
+        else if (added) schema_->set_answering(SchemaView::Answering{*added}, false);
+    }
+    type_picker_->open_at(at, column.type == domain::LogicalType::Unset
+                                  ? std::optional<domain::LogicalType>{}
+                                  : column.type);
+}
+
+void MainWindow::ask_column_size(const domain::PreviewColumn& column, QPoint at) {
+    if (!column.origin && !column.added) return;
+    if (domain::size_of(column.type) == domain::TypeSize::None) return;
+    if (!size_picker_) size_picker_ = new SizePicker(this);
+    size_picker_->wear(theme(theme_), picker_sheet(theme(theme_)));
+    const auto answering = column.origin;
+    const auto added = column.added;
+    size_picker_->chose = [this, answering, added](std::uint32_t length, std::uint32_t scale) {
+        if (answering) show_result(editor_.set_type_size(*answering, length, scale), false);
+        else if (added) show_result(editor_.set_schema_column_size(*added, length, scale), false);
+    };
+    size_picker_->closed = [this] { if (schema_) schema_->set_answering({}, true); };
+    if (schema_) {
+        if (answering) schema_->set_answering(SchemaView::Answering{*answering}, true);
+        else if (added) schema_->set_answering(SchemaView::Answering{*added}, true);
+    }
+    size_picker_->open_at(at, column);
+}
+
+void MainWindow::answer_decision(const domain::OpenDecision& decision, std::size_t choice) {
+    switch (decision.kind) {
+    case domain::DecisionKind::IsaStrategy: {
+        if (!std::holds_alternative<domain::SpecializationId>(decision.about)) return;
+        static constexpr std::array<domain::IsaStrategy, 3> strategies{
+            domain::IsaStrategy::PerSubclass, domain::IsaStrategy::SingleTable,
+            domain::IsaStrategy::PerConcrete};
+        if (choice >= strategies.size()) return;
+        show_result(editor_.set_isa_strategy(std::get<domain::SpecializationId>(decision.about),
+                                             strategies[choice]), false);
+        return;
+    }
+    case domain::DecisionKind::CompositeMode: {
+        if (!std::holds_alternative<domain::AttributeId>(decision.about)) return;
+        static constexpr std::array<domain::CompositeMode, 3> modes{
+            domain::CompositeMode::Parts, domain::CompositeMode::Whole, domain::CompositeMode::Both};
+        if (choice >= modes.size()) return;
+        show_result(editor_.set_composite_mode(std::get<domain::AttributeId>(decision.about),
+                                               modes[choice]), false);
+        return;
+    }
+    case domain::DecisionKind::OneToOneKey: {
+        if (!std::holds_alternative<domain::RelationshipId>(decision.about)) return;
+        if (choice >= decision.sides.size()) return;
+        show_result(editor_.set_one_to_one_key(std::get<domain::RelationshipId>(decision.about),
+                                               decision.sides[choice]), false);
+        return;
+    }
+    }
+}
+
+// A name typed over a table's or a column's on the schema.
+//
+// Which command that is depends on what the thing is made of, and this is the
+// only place that knows: a table and a derived column are named by the element
+// they came from, so renaming them renames that element and the diagram says
+// the new name too. A column added on the schema has an identity of its own and
+// is renamed by it. A key the conversion invented has nothing behind it at all,
+// so it is given a name of its own, remembered against its table.
+void MainWindow::rename_from_schema(const SchemaView::Spot& spot, const QString& typed) {
+    if (!schema_ || spot.table >= schema_->preview().tables.size()) return;
+    const auto& table = schema_->preview().tables[spot.table];
+    const auto chosen = typed.trimmed().toStdString();
+    if (!spot.column) {
+        if (!table.origin) {
+            statusBar()->showMessage(tr("This table has nothing on the diagram to rename."), 5000);
+            return;
+        }
+        show_result(editor_.rename_table(*table.origin, chosen), false);
+        return;
+    }
+    if (*spot.column >= table.columns.size()) return;
+    const auto& column = table.columns[*spot.column];
+    if (column.origin) { show_result(editor_.rename(domain::ElementRef{*column.origin}, chosen), false); return; }
+    if (column.added) { show_result(editor_.rename_schema_column(*column.added, chosen), false); return; }
+    if (column.origin_kind == domain::ColumnOrigin::Generated && column.primary_key && table.origin) {
+        show_result(editor_.rename_schema_key(*table.origin, chosen), false);
+        return;
+    }
+    statusBar()->showMessage(column.origin_kind == domain::ColumnOrigin::ForeignKey
+        ? tr("A foreign key is named for the key it points at. Rename that key and this follows.")
+        : tr("The conversion made this column. It is not the model's to rename."), 6000);
+}
+
+// Another column, made where it will be read.
+//
+// Nothing is asked first. A dialog wanting a name before the column exists puts
+// a question in front of the thing it is about; the row is made instead, with a
+// name that can be typed over the moment it appears. Reflecting is the default
+// and not a question either: the schema and the diagram are two views of one
+// model, so a column added here is an attribute on the model and the schema
+// follows from it. A column meant for the schema alone is a departure from that
+// and is asked for by name, on the menu.
+void MainWindow::add_schema_column(domain::ElementRef table, bool schema_only) {
+    if (schema_only) {
+        const auto made = editor_.add_schema_column(table, "Column");
+        show_result(made, false);
+        return;
+    }
+    const auto made = editor_.create_attribute("Column", {}, table);
+    show_result(made, false);
+    if (!made || !made.created || !schema_) return;
+    // The row is there now, so the name is opened for typing in it.
+    if (const auto* attribute = std::get_if<domain::AttributeId>(&*made.created))
+        schema_->open_column_for(*attribute);
+}
+
+// Removing a column. A column that only ever existed on the schema is simply
+// removed, with nothing to ask: the diagram never had it, so there is nothing
+// the diagram could be asked about.
+void MainWindow::remove_schema_column(domain::ElementRef table, const domain::PreviewColumn& column) {
+    (void)table;
+    if (column.added) {
+        show_result(editor_.erase_schema_column(*column.added), false);
+        return;
+    }
+    if (!column.origin) return;
+    QMessageBox ask(this);
+    ask.setObjectName("schemaReflectRemove");
+    ask.setIcon(QMessageBox::Question);
+    ask.setWindowTitle("Remove it from the diagram too?");
+    ask.setText(QString("Remove \"%1\" from the diagram as well?").arg(text(column.name)));
+    ask.setInformativeText("Removing it from both deletes the attribute, and can be undone. "
+                           "Removing it from the schema only leaves the attribute on the diagram "
+                           "and stops the schema showing it, which is allowed: the schema and the "
+                           "diagram describe different levels.");
+    auto* both = ask.addButton("Remove from both", QMessageBox::DestructiveRole);
+    auto* only = ask.addButton("Schema only", QMessageBox::AcceptRole);
+    ask.addButton(QMessageBox::Cancel);
+    ask.setDefaultButton(both);
+    ask.exec();
+    if (ask.clickedButton() == both)
+        show_result(editor_.erase({domain::ElementRef{*column.origin}}, {}, {}, {}), false);
+    else if (ask.clickedButton() == only)
+        show_result(editor_.hide_in_schema(*column.origin, true), false);
+}
+
+void MainWindow::refresh_schema() {
+    if (!schema_ || !schema_open_) return;
+    schema_->refresh();
+    // The naming convention is the project's, so the picker follows the model
+    // rather than remembering what was last clicked: undo moves it too.
+    if (schema_names_) {
+        const auto previous = refreshing_;
+        refreshing_ = true;
+        const auto naming = static_cast<int>(editor_.project().decisions.naming);
+        for (auto* choice : schema_names_->actions())
+            choice->setChecked(choice->data().toInt() == naming);
+        refreshing_ = previous;
+    }
+    refresh_schema_state();
+    refresh_shared_names();
+}
+
+// What still stands between this picture and a conversion. Counted in columns
+// rather than in complaints, because seventeen untyped columns are seventeen
+// answers owed, not one.
+//
+// A line end pulled off its table is counted here too. It changes nothing about
+// the model -- the foreign key is still the foreign key -- so it is not an
+// error and nothing is refused for it. It is said out loud because a reader who
+// has left a connection hanging should be told, rather than have the schema
+// quietly put it back or quietly pretend it is joined.
+void MainWindow::refresh_shared_names() {
+    if (!shared_names_ || !schema_ || !shared_names_body_) return;
+    const auto groups = domain::shared_names(schema_->preview());
+    shared_names_->setVisible(!groups.empty());
+    std::size_t repeats = 0;
+    for (const auto& group : groups) repeats += group.columns;
+    shared_names_head_->setText(
+        QString("%1  Columns that share a name — answer once for all of them  ·  %2 name%3, %4 column%5")
+            .arg(shared_names_open_ ? "▾" : "▸")
+            .arg(groups.size()).arg(groups.size() == 1 ? "" : "s")
+            .arg(repeats).arg(repeats == 1 ? "" : "s"));
+    if (!shared_names_open_) return;
+
+    auto* body = qobject_cast<QVBoxLayout*>(shared_names_body_->layout());
+    while (auto* stale = body->takeAt(0)) {
+        if (auto* widget = stale->widget()) widget->deleteLater();
+        delete stale;
+    }
+    for (const auto& group : groups) {
+        auto* row = new QWidget(shared_names_body_);
+        auto* row_layout = new QHBoxLayout(row);
+        row_layout->setContentsMargins(0, 0, 0, 0);
+        row_layout->setSpacing(8);
+        auto* named = new QLabel(text(group.name), row);
+        named->setObjectName("sharedName");
+        named->setMinimumWidth(150);
+        row_layout->addWidget(named);
+        auto* counted = new QLabel(QString("%1 columns").arg(group.columns), row);
+        counted->setObjectName("sharedNameCount");
+        row_layout->addWidget(counted);
+        auto* type = new QComboBox(row);
+        type->setObjectName("sharedNameType");
+        type->addItem("Give them all a type…", QVariant());
+        for (const auto& family : type_families())
+            for (const auto entry : family.types) {
+                if (entry == family.types.front())
+                    type->addItem(QString("— %1 —").arg(QString::fromLatin1(family.name)), QVariant());
+                type->addItem(type_label(entry), QVariant::fromValue(static_cast<int>(entry)));
+            }
+        type->installEventFilter(wheel_guard_);
+        row_layout->addWidget(type, 1);
+        const auto answering = group.attributes;
+        connect(type, &QComboBox::currentIndexChanged, this, [this, type, answering](int index) {
+            const auto chosen = type->itemData(index);
+            if (!chosen.isValid()) return;
+            // One edit for the lot, so one undo takes it back. Answering six
+            // columns and then undoing six times would be a worse bargain than
+            // answering them one at a time.
+            show_result(editor_.set_logical_types(answering,
+                                                  static_cast<domain::LogicalType>(chosen.toInt())), false);
+        });
+        body->addWidget(row);
+    }
+}
+
+void MainWindow::refresh_schema_state() {
+    if (!schema_ || !schema_state_) return;
+    std::size_t open = 0;
+    for (const auto& table : schema_->preview().tables)
+        for (const auto& column : table.columns)
+            if (column.type == domain::LogicalType::Unset) ++open;
+    // Where the schema has been edited away from the diagram. Reported for the
+    // same reason a loose end is: a reader who has made the two levels differ
+    // should be told they differ, since the whole point of allowing it is that
+    // it was meant.
+    std::size_t apart = editor_.project().schema.hidden.size();
+    for (const auto& [table, columns] : editor_.project().schema.added) {
+        (void)table;
+        apart += columns.size();
+    }
+    QStringList said{"not converted yet"};
+    if (open) said << QString("%1 type%2 open").arg(open).arg(open == 1 ? "" : "s");
+    if (apart)
+        said << QString("%1 change%2 not on the diagram").arg(apart).arg(apart == 1 ? "" : "s");
+    if (const auto loose = schema_->loose_ends())
+        said << QString("%1 end%2 not connected").arg(loose).arg(loose == 1 ? "" : "s");
+    schema_state_->setText(said.join(" · "));
 }
 
 void MainWindow::refresh_export_actions() {

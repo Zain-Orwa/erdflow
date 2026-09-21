@@ -49,6 +49,28 @@ QT_QPA_PLATFORM=offscreen ./build/erdflow --example --tab tabExport --screenshot
 QT_QPA_PLATFORM=offscreen ./build/release/editor_benchmark
 ```
 
+`--schema` raises the schema preview panel, and `--schema-full` raises it over
+the whole window. The panel is closed until somebody asks for it, so without one
+of these a screenshot cannot show the schema at all. `--notation` chooses how
+every line end is drawn — `chen`, `minmax`, `crowsfoot` or `bachman` — on the
+diagram and on the schema alike:
+
+```sh
+QT_QPA_PLATFORM=offscreen ./build/erdflow --example --schema-full \
+    --notation crowsfoot --screenshot /tmp/schema.png --smoke-test
+```
+
+`--theme` wears one appearance for that run without disturbing the remembered
+choice, which is how the same screen is photographed light and dark:
+
+```sh
+QT_QPA_PLATFORM=offscreen ./build/erdflow --example --schema-full \
+    --theme midnight --screenshot /tmp/dark.png --smoke-test
+```
+
+The panel takes a moment to rise and a moment more to reach full height, so a
+screenshot of it is taken after both.
+
 `--search` opens the search bar already looking for something, which is the
 quickest way to see what a search does to a diagram:
 
@@ -60,22 +82,14 @@ The bar is not shown until it is asked for, so without `--search` — or Ctrl+F,
 or **Edit → Search…** — it is not on screen at all. That is deliberate: it costs
 the window no room until it is wanted.
 
-`--mode` opens in `basic` or `convertible`, which is the quickest way to see
-what Convertible mode asks a model:
-
-```sh
-./build/erdflow --example --mode convertible
-```
-
 `--tab` brings a ribbon row to the front before the screenshot is taken, so a
 row other than Home can be looked at without a person clicking the tab first.
 The tabs are named `tabHome`, `tabInsert`, `tabDesign`, `tabExport`,
 `tabView` and `tabHelp`.
 
 `--smoke-test` marks the document saved before it quits. Some of the options
-above are real edits — opening in Convertible mode is one — and a window with
-unsaved work asks whether to save it on the way out, which nobody is there to
-answer.
+above are real edits — opening the example is one — and a window with unsaved
+work asks whether to save it on the way out, which nobody is there to answer.
 
 The screenshot option is development tooling: it grabs the window, chrome and
 all. **Export** is the real thing: it writes the diagram as a picture, or the
@@ -162,9 +176,18 @@ field through the same commands as anything else typed there.
 
 A placed symbol is resized through `Editor::resize_symbols`, which refuses
 anything that is not a symbol and clamps the box to `domain::min_symbol_size`
-and `max_symbol_size`. The canvas draws the grips in `NodeItem::paint_plain_note`
-and works out the hauled box in `Impl::sized_box`; the drag is previewed on the
-item and committed once on release, the way a move and a bend are. Number
+and `max_symbol_size`. An entity is resized through `Editor::resize_entities`,
+which refuses anything that is not an entity and clamps to the `min_entity_*`
+and `max_entity_*` bounds. Both are hauled by `NodeItem`'s handles: `grips()`
+gives a symbol its four corners, straddling them, and an entity those four plus
+the middle of each side, sitting just inside the outline so that the box the
+shape draws is still the box it occupies. `NodeItem::handle_sides` says which
+sides each handle moves, `Impl::sized_box` works out a symbol's box, keeping
+its proportions, and `Impl::pulled_body` an entity's, moving only the sides the
+handle lies on; the drag is previewed on the item and committed once on
+release, the way a move and a bend are. A selected line's own grips are tested
+before a shape's handles, because an end grip lies on the outline of the shape
+it joins. Number
 fields are not places a character can land: `text_target()` refuses a spin box's
 inner line edit, so a symbol picked while the Size field has the keyboard goes
 on the diagram rather than being typed into a figure.
