@@ -1,3 +1,9 @@
+// ERDFlow — settled work. Do not change, replace or re-style anything here to
+// suit something new you have been asked to build. If what you are building
+// genuinely contradicts what is here, stop and ask Zain, who owns this project:
+// say what you want to change, what the application will LOOK like afterwards,
+// and whether it is a gain or a loss. He decides. Fixing a real defect is not
+// covered by this — fix it and say what was wrong. Full rule: CLAUDE.md.
 #pragma once
 
 #include "domain/model.hpp"
@@ -30,8 +36,9 @@ namespace erdflow::domain {
 //                              many side
 //   one to one              -> the key goes into whichever side was chosen;
 //                              either is correct, which is why it is a decision
-//   many to many            -> a bridge table holding both foreign keys, and
-//                              given a primary key of its own
+//   many to many            -> preserve its conceptual key; otherwise generate
+//                              a separate key by default. Participant FKs form
+//                              a composite PK only by explicit strategy choice
 //   associative entity      -> as many to many, and the associated relation's
 //                              key goes into the bridge as well
 //   self reference          -> a foreign key in the same table, pointing at
@@ -86,6 +93,9 @@ struct PreviewColumn {
     // Which of the model's own links put this foreign key here, so the line
     // drawn for it keeps its identity across a fresh preview.
     std::optional<LinkSource> link;
+    // The key's own identity, derived from that link. What a line drawn by
+    // hand is remembered against, for the same reason a relation has one.
+    std::optional<ForeignKeyId> key_id;
     // Whether the row it points at need not exist, and whether the relationship
     // behind it is one to one. Together these decide how the line is drawn.
     bool optional_link = false;
@@ -100,7 +110,7 @@ struct PreviewColumn {
 // asked because a default is not a decision, and they are attached to a table
 // rather than gathered into a dialog because the model is edited where the
 // model is (ADR-009 §63).
-enum class DecisionKind { IsaStrategy, CompositeMode, OneToOneKey };
+enum class DecisionKind { IsaStrategy, CompositeMode, OneToOneKey, BridgeKey };
 
 struct OpenDecision {
     DecisionKind kind = DecisionKind::IsaStrategy;
@@ -120,6 +130,19 @@ struct OpenDecision {
 };
 
 struct PreviewTable {
+    // The relation's own identity, and where it came from.
+    //
+    // ADR-008 asks each level to identify its own objects rather than borrow
+    // the level above's, and this is that identity: everything kept about a
+    // relation -- where it sits, how wide it was pulled, the name typed over
+    // its own, the columns added to it -- is kept against this rather than
+    // against the entity it happens to have been made from.
+    //
+    // In this round every relation is generated, so every one has a
+    // provenance. A relation made by hand, which has none, is the next step
+    // and is not built yet.
+    RelationId id;
+    std::optional<Provenance> provenance;
     std::string name;
     TableOrigin origin_kind = TableOrigin::Entity;
     // The element the table came from: an entity, the relationship that became

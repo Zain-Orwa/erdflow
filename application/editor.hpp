@@ -1,3 +1,9 @@
+// ERDFlow — settled work. Do not change, replace or re-style anything here to
+// suit something new you have been asked to build. If what you are building
+// genuinely contradicts what is here, stop and ask Zain, who owns this project:
+// say what you want to change, what the application will LOOK like afterwards,
+// and whether it is a gain or a loss. He decides. Fixing a real defect is not
+// covered by this — fix it and say what was wrong. Full rule: CLAUDE.md.
 #pragma once
 
 #include "domain/model.hpp"
@@ -45,6 +51,7 @@ public:
     EditResult replace_project(domain::Project project);
     void mark_saved(std::uint64_t revision);
     EditResult rename_project(std::string name);
+    EditResult describe_project(std::string description);
     EditResult create_entity(std::string name, domain::Rect rect);
     EditResult create_attribute(std::string name, domain::Rect rect,
                                 std::optional<domain::AttributeOwner> owner = {});
@@ -178,6 +185,10 @@ public:
     EditResult set_isa_strategy(domain::SpecializationId id, std::optional<domain::IsaStrategy> strategy);
     EditResult set_composite_mode(domain::AttributeId id, std::optional<domain::CompositeMode> mode);
     EditResult set_one_to_one_key(domain::RelationshipId id, std::optional<domain::ParticipantId> side);
+    // What keys a many-to-many bridge: the pair of foreign keys, or a key of
+    // its own. Passing none hands it back to the default, a key of its own.
+    // A key drawn on the relationship outranks either answer (ADR-021 §5b).
+    EditResult set_bridge_key(domain::RelationshipId id, std::optional<domain::BridgeKey> keyed);
     EditResult set_junction_name(domain::RelationshipId id, std::string chosen);
     EditResult set_entity_identifier(domain::EntityId id, std::optional<domain::AttributeId> chosen);
     // A table name typed over the one that was derived. Empty hands it back to

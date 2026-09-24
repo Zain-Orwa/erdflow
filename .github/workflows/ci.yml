@@ -1,0 +1,61 @@
+name: Desktop CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: desktop-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows x86-64
+            runner: windows-2025
+            qt-arch: win64_msvc2022_64
+          - name: Linux x86-64
+            runner: ubuntu-24.04
+            qt-arch: linux_gcc_64
+          - name: macOS Apple Silicon
+            runner: macos-15
+            qt-arch: clang_64
+          - name: macOS Intel
+            runner: macos-15-intel
+            qt-arch: clang_64
+
+    steps:
+      - name: Check out the source
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730 # v4.3.1
+        with:
+          version: 6.11.2
+          arch: ${{ matrix.qt-arch }}
+          modules: qtsvg
+          cache: true
+
+      - name: Configure
+        run: >-
+          cmake -S . -B build/ci
+          -DCMAKE_BUILD_TYPE=Release
+          -DBUILD_TESTING=ON
+
+      - name: Build
+        run: cmake --build build/ci --config Release --parallel
+
+      - name: Test
+        run: ctest --test-dir build/ci --build-config Release --output-on-failure --timeout 120

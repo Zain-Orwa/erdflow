@@ -1,3 +1,9 @@
+// ERDFlow — settled work. Do not change, replace or re-style anything here to
+// suit something new you have been asked to build. If what you are building
+// genuinely contradicts what is here, stop and ask Zain, who owns this project:
+// say what you want to change, what the application will LOOK like afterwards,
+// and whether it is a gain or a loss. He decides. Fixing a real defect is not
+// covered by this — fix it and say what was wrong. Full rule: CLAUDE.md.
 #include "theme.hpp"
 
 #include <QApplication>
@@ -104,6 +110,22 @@ Theme legacy(ThemeId id, const char* key, const char* label,
 // panel shades falls below the 4.5:1 the theme tests require, so the family
 // uses its own base2 for text instead of base1. Every other palette is verbatim.
 const std::array<Theme, theme_count> theme_table{{
+    // ERDFlow Azure. White and soft cool grey, a calm medium blue, pale blue
+    // for what is hovered or chosen, and small warm gold and lavender accents
+    // used sparingly. The diagram colours are drawn from the same family so a
+    // model on the canvas belongs to the interface around it.
+    // The accent here is Azure's #1976D2 rather than its #1E88E5, and
+    // deliberately so. `accent` is what paints a selected row with
+    // `selected_text` over it, at ordinary text size, all through the
+    // application; white on #1E88E5 is 3.68:1, short of the 4.5 this project
+    // holds itself to. #1976D2 is Azure's own primary-hover and reaches 4.55.
+    // The token `primary` remains #1E88E5 exactly as specified, and is what
+    // paints the cards, the buttons and the brand. So this is an accessibility
+    // override derived from Azure, not a departure from it (ADR-022 §9.3).
+    legacy(ThemeId::Azure, "erdflow.azure", "ERDFlow Azure",
+           "#F6F9FC", "#F8FBFE", "#FFFFFF", "#0F172A", "#64748B", "#DCE6F2", "#1976D2", "#FFFFFF",
+           "#FFFFFF", "#E8EFF8", "#EAF4FF", "#3B82F6", "#F4F9FF", "#60A5FA", "#FFF4D8", "#F4B740",
+           "#0F172A", "#64748B", "#15803D", "#B45309", "#DC2626"),
     legacy(ThemeId::OfficeLight, "office-light", "Normal",
            "#F1F1F1", "#F6F6F6", "#FFFFFF", "#202020", "#595959", "#B7B7B7", "#006AA6", "#FFFFFF",
            "#FFFFFF", "#E0E0E0", "#FFB575", "#613714", "#FFF0DD", "#765034", "#FFE1BD", "#765034",
@@ -383,6 +405,13 @@ QColor readable_on(const QColor& surface) {
     return relative_luminance(surface) > 0.36 ? QColor(0x1a, 0x1a, 0x1a) : QColor(0xff, 0xff, 0xff);
 }
 
+bool colourless(ThemeId id) { return id == ThemeId::Plain; }
+
+QColor greyed(const QColor& colour) {
+    const auto level = qGray(colour.rgb());
+    return QColor(level, level, level, colour.alpha());
+}
+
 const std::array<Theme, theme_count>& themes() { return theme_table; }
 
 const Theme& theme(ThemeId id) {
@@ -397,7 +426,157 @@ ThemeId theme_from_key(const QString& key) {
     return found == theme_table.end() ? ThemeId::OfficeLight : found->id;
 }
 
+namespace {
+// A colour carried part of the way towards another. The whole derivation is
+// built out of this: a soft primary is the accent carried most of the way to
+// the surface, a medium border is a soft one carried a little towards the ink.
+QColor towards(const QColor& from, const QColor& to, double part) {
+    const auto mix = [part](int a, int b) {
+        return static_cast<int>(std::lround(a + (b - a) * part));
+    };
+    return QColor(mix(from.red(), to.red()), mix(from.green(), to.green()),
+                  mix(from.blue(), to.blue()));
+}
+
+// What ERDFlow Azure says about itself.
+//
+// The one theme that states its whole semantic set rather than deriving it,
+// because it is the one whose exact appearance is specified. Every value here
+// is from the canonical token file.
+Tokens azure_tokens() {
+    Tokens t;
+    t.primary = QColor("#1E88E5");
+    t.primary_hover = QColor("#1976D2");
+    t.primary_pressed = QColor("#1565C0");
+    t.primary_soft = QColor("#EAF4FF");
+    t.primary_faint = QColor("#F4F9FF");
+    t.window_background = QColor("#F6F9FC");
+    t.surface = QColor("#FFFFFF");
+    t.sidebar_surface = QColor("#F8FBFE");
+    t.learning_surface = QColor("#F7FBFF");
+    t.border_soft = QColor("#DCE6F2");
+    t.border_medium = QColor("#CBD5E1");
+    t.text_primary = QColor("#0F172A");
+    t.text_heading = QColor("#0B1F44");
+    t.text_secondary = QColor("#475569");
+    t.text_muted = QColor("#64748B");
+    t.text_disabled = QColor("#94A3B8");
+    t.gold = QColor("#F4B740");
+    t.gold_soft = QColor("#FFF4D8");
+    t.lavender = QColor("#8B7CF6");
+    t.green = QColor("#22C55E");
+    t.amber = QColor("#F59E0B");
+    t.red = QColor("#EF4444");
+    t.hover_surface = QColor("#EEF6FF");
+    t.selected_card_surface = QColor("#FAFDFF");
+    t.shadow_card = Shadow{0, 8, 24, QColor(15, 23, 42, 15)};
+    t.shadow_card_hover = Shadow{0, 10, 28, QColor(30, 136, 229, 26)};
+    t.shadow_primary_button = Shadow{0, 4, 12, QColor(30, 136, 229, 46)};
+    t.shadow_selected_nav = Shadow{0, 6, 14, QColor(30, 136, 229, 56)};
+    return t;
+}
+
+// What every other theme resolves to.
+//
+// Worked out from the handful of colours a Theme already carries, so nineteen
+// themes that were right before this are still right after it and none of them
+// had to be edited. A derived value will not always be as considered as a
+// chosen one -- that is the trade -- but it is always in the theme's own
+// family, which is what matters.
+Tokens derived_tokens(const Theme& colors) {
+    const bool dark = colors.base.lightness() < 128;
+    const auto& ink = colors.text;
+    Tokens t;
+    t.primary = colors.accent;
+    // Hover and pressed move the accent away from its own lightness, rather
+    // than simply darkening it. Darkening a black accent leaves it black, so a
+    // greyscale theme would have had a hover indistinguishable from a press;
+    // moving away from where the accent already is always shows.
+    const auto away = colors.accent.lightness() < 128 ? QColor(Qt::white) : QColor(Qt::black);
+    t.primary_hover = towards(colors.accent, away, 0.13);
+    t.primary_pressed = towards(colors.accent, away, 0.28);
+    t.primary_soft = towards(colors.base, colors.accent, dark ? 0.22 : 0.12);
+    t.primary_faint = towards(colors.base, colors.accent, dark ? 0.11 : 0.05);
+    t.window_background = colors.window;
+    t.surface = colors.base;
+    t.sidebar_surface = colors.panel;
+    t.learning_surface = towards(colors.panel, colors.base, 0.35);
+    t.border_soft = colors.border;
+    t.border_medium = towards(colors.border, ink, 0.22);
+    t.text_primary = ink;
+    // A heading is the ink taken a little further from the surface it sits on,
+    // which reads as weight without inventing a colour the theme never chose.
+    t.text_heading = towards(ink, dark ? QColor(Qt::white) : QColor(Qt::black), 0.18);
+    t.text_secondary = colors.muted;
+    t.text_muted = towards(colors.muted, colors.base, 0.18);
+    t.text_disabled = towards(colors.muted, colors.base, 0.42);
+    // Every palette already carries an amber, a green and a red for validity,
+    // so the accents are those rather than colours from nowhere.
+    t.gold = colors.warning;
+    t.gold_soft = towards(colors.base, colors.warning, dark ? 0.26 : 0.16);
+    // Lavender is the one accent no theme carries. Taken as the accent turned
+    // through the wheel, so it is a relative of the theme rather than a stranger.
+    t.lavender = QColor::fromHsv((colors.accent.hue() < 0 ? 250 : (colors.accent.hue() + 268) % 360),
+                                 std::max(90, colors.accent.saturation()),
+                                 dark ? 205 : 170);
+    t.green = colors.valid;
+    t.amber = colors.warning;
+    t.red = colors.error;
+    t.hover_surface = hover_surface(colors);
+    t.selected_card_surface = towards(colors.base, colors.accent, dark ? 0.14 : 0.05);
+    // A shadow in the theme's own ink, and lighter where the surface is dark,
+    // because a black shadow on a dark panel is a smudge rather than a lift.
+    const auto shade = [dark](int alpha) {
+        return dark ? QColor(0, 0, 0, alpha + 30) : QColor(15, 23, 42, alpha);
+    };
+    t.shadow_card = Shadow{0, 8, 24, shade(15)};
+    t.shadow_card_hover = Shadow{0, 10, 28, shade(26)};
+    t.shadow_primary_button = Shadow{0, 4, 12, shade(30)};
+    t.shadow_selected_nav = Shadow{0, 6, 14, shade(40)};
+    return t;
+}
+// The same tokens with every hue taken out, for a theme that shows no colour.
+// A derived theme's tokens are mostly its own greys already; the ones that are
+// not are the lavender, turned through the colour wheel from the accent, and
+// the faint blue cast in the shadows.
+Tokens without_colour(Tokens t) {
+    for (auto* colour : {&t.primary, &t.primary_hover, &t.primary_pressed, &t.primary_soft,
+                         &t.primary_faint, &t.window_background, &t.surface, &t.sidebar_surface,
+                         &t.learning_surface, &t.border_soft, &t.border_medium, &t.text_primary,
+                         &t.text_heading, &t.text_secondary, &t.text_muted, &t.text_disabled,
+                         &t.gold, &t.gold_soft, &t.lavender, &t.green, &t.amber, &t.red,
+                         &t.hover_surface, &t.selected_card_surface, &t.shadow_card.ink,
+                         &t.shadow_card_hover.ink, &t.shadow_primary_button.ink,
+                         &t.shadow_selected_nav.ink})
+        *colour = greyed(*colour);
+    return t;
+}
+} // namespace
+
+const Tokens& tokens(ThemeId id) {
+    // Resolved once for each theme and kept. Derivation is cheap but it is not
+    // free, and a hover surface worked out again on every repaint is a cost
+    // paid for nothing.
+    static std::array<std::optional<Tokens>, theme_count> resolved;
+    const auto at = static_cast<std::size_t>(id);
+    if (at >= resolved.size()) return *resolved.front();
+    if (!resolved[at]) {
+        auto made = id == ThemeId::Azure ? azure_tokens() : derived_tokens(theme(id));
+        // The face and the type sizes are the same question for every theme:
+        // they are about legibility rather than about a palette. A theme that
+        // wants its own may state them, as Azure could.
+        made.family = QStringList{"Inter", "Segoe UI", "SF Pro Text", "Helvetica Neue", "Arial"};
+        if (colourless(id)) made = without_colour(made);
+        resolved[at] = std::move(made);
+    }
+    return *resolved[at];
+}
+
+QString default_theme_key() { return QStringLiteral("erdflow.azure"); }
+
 void apply_theme(QApplication& app, ThemeId id) {
+    // Resolved here, once, so nothing downstream has to work it out again.
+    (void)tokens(id);
     const auto& colors = theme(id);
     QPalette palette;
     for (const auto group : {QPalette::Active, QPalette::Inactive, QPalette::Disabled}) {

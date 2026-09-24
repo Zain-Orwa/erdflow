@@ -1,5 +1,12 @@
 # Developing ERDFlow
 
+> **Settled work.** Do not change, replace or re-style anything in this
+> document to suit something new you have been asked to build. If what you are
+> building genuinely contradicts what is written here, stop and ask Zain, who
+> owns this project: say what you want to change, what the application will
+> look like afterwards, and whether it is a gain or a loss. He decides.
+> Full rule: [CLAUDE.md](../CLAUDE.md).
+
 ## Build and run
 
 Requirements: a C++20 compiler, CMake 3.21 or newer, and Qt 6.9 or newer with
@@ -87,6 +94,29 @@ row other than Home can be looked at without a person clicking the tab first.
 The tabs are named `tabHome`, `tabInsert`, `tabDesign`, `tabExport`,
 `tabView` and `tabHelp`.
 
+`--size` sets the window's size before the screenshot, so the Home screen
+can be looked at on a small window as well as the one it opens at, and at the
+1440 × 1080 reference the visual comparisons use (ADR-022 §9.6):
+
+```sh
+QT_QPA_PLATFORM=offscreen ./build/erdflow --size 1280x720 --screenshot /tmp/home.png --smoke-test
+```
+
+The `visual` suite draws the Home screen and both workspaces at the
+1440 × 1080 reference and compares them with the pictures kept under
+`tests/visual/<system>-<major version>` (for example `macos-26`). What it
+drew, and a map of where it differed, is left in `build/visual-output`. After
+a deliberate change to how something looks, look at those pictures, then keep
+them as the new reference:
+
+```sh
+ERDFLOW_UPDATE_BASELINES=1 QT_QPA_PLATFORM=offscreen ./build/visual_tests
+```
+
+A system and release with no pictures of its own runs the accessibility audit
+and reports each picture as not compared, rather than comparing another
+system's lettering.
+
 `--smoke-test` marks the document saved before it quits. Some of the options
 above are real edits — opening the example is one — and a window with unsaved
 work asks whether to save it on the way out, which nobody is there to answer.
@@ -160,7 +190,14 @@ CMake embeds all three sets with `qt_add_resources` and links Qt Svg.
 
 Nineteen of the outline files come from [Lucide](https://lucide.dev) v1.46.0,
 which is ISC licensed; the licence text travels with them in
-`assets/icons-outline/LICENSE-lucide.txt`. Lucide has no icons for the Chen
+`assets/icons-outline/LICENSE-lucide.txt`. The Home screen's fourteen --
+`house`, `recent`, `examples`, `templates`, `import`, `help`, `tutorials`,
+`conceptual`, `relational`, `sql`, `flow`, `chevron-right`, `chevron-down` and
+`appearance` -- are Lucide's designs too (house, history, book-open,
+layout-template, file-input, circle-help, graduation-cap, network, table,
+file-code, zap, chevron-right, chevron-down and contrast), under the same
+licence. Each file names the Lucide icon it is. They are not glyphs: nothing
+in the ribbon uses them, and `outline_pixmap` draws them by name. Lucide has no icons for the Chen
 shapes, so `entity`, `attribute`, `relationship`, `isa` and `connect` are
 ERDFlow's own, drawn on the same 24-unit grid at the same 2-unit stroke weight
 so the set reads as one family.
@@ -249,3 +286,13 @@ actual UI for integration changes, measure performance-sensitive work, update
 docs to reflect implemented limits, and keep commits focused. Do not mark a
 roadmap phase complete because interfaces or screenshots exist. Current work
 remains uncommitted until it is recorded in Git.
+
+Work reaches GitHub as **focused pull requests**, one concern each, never
+the whole working tree at once (ADR-022 §9.13). Two changes share a pull
+request only when a real technical dependency makes them inseparable. Before
+the first push of a batch, inventory every tracked and untracked change,
+assign each to a pull request, and state the dependencies between them.
+Confirm the tests pass in Debug and Release, that nothing secret is included,
+and that no untracked implementation file has been left out. Then have the
+split approved. Never use a destructive Git operation to make a split
+cleaner: keep a backup of the working tree first.

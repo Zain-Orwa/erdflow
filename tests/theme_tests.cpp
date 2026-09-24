@@ -1,3 +1,9 @@
+// ERDFlow — settled work. Do not change, replace or re-style anything here to
+// suit something new you have been asked to build. If what you are building
+// genuinely contradicts what is here, stop and ask Zain, who owns this project:
+// say what you want to change, what the application will LOOK like afterwards,
+// and whether it is a gain or a loss. He decides. Fixing a real defect is not
+// covered by this — fix it and say what was wrong. Full rule: CLAUDE.md.
 #include "app/desktop/theme.hpp"
 
 #include <QApplication>
@@ -47,9 +53,74 @@ void require_contrast(const Theme& candidate, const char* use, const QColor& for
             std::to_string(minimum));
 }
 
+// ERDFlow Azure, and the resolver that keeps every other theme working
+// without having been edited.
+void azure_and_token_tests() {
+    // Azure exists, is named as the specification names it, and is what a
+    // fresh profile is given.
+    const auto& azure = theme(ThemeId::Azure);
+    require(azure.key == "erdflow.azure", "Azure carries its specified id");
+    require(azure.label == "ERDFlow Azure", "And its specified display name");
+    require(default_theme_key() == azure.key, "A fresh profile is given Azure");
+    require(theme_from_key(default_theme_key()) == ThemeId::Azure,
+            "And that key resolves back to it");
+
+    // The nineteen that were here before are all still here, still selectable,
+    // and still carry the keys anybody's settings may already name.
+    for (const auto* key : {"office-light", "warm-light", "plain", "graphite", "midnight",
+                            "dracula-classic", "high-contrast", "forest", "mono", "dracula",
+                            "one-dark-pro", "tokyo-night", "catppuccin-mocha", "gruvbox",
+                            "solarized", "github-dark", "material-ocean", "nord", "monokai"}) {
+        const auto found = std::find_if(themes().begin(), themes().end(),
+                                        [&](const Theme& one) { return one.key == key; });
+        require(found != themes().end(), std::string("Theme still offered: ") + key);
+    }
+    require(themes().size() == theme_count, "Twenty themes, the nineteen and Azure");
+
+    // Azure states its tokens outright; these are the canonical values.
+    const auto& a = tokens(ThemeId::Azure);
+    require(a.primary == QColor("#1E88E5"), "Azure's primary is the specified blue");
+    require(a.primary_hover == QColor("#1976D2"), "And its hover");
+    require(a.primary_pressed == QColor("#1565C0"), "And its pressed");
+    require(a.hover_surface == QColor("#EEF6FF"), "And its hover surface");
+    require(a.selected_card_surface == QColor("#FAFDFF"), "And its selected card");
+    require(a.gold == QColor("#F4B740") && a.lavender == QColor("#8B7CF6"),
+            "And both small accents");
+    require(a.text_heading == QColor("#0B1F44"), "And its heading ink");
+    require(a.radius_large_card == 12 && a.radius_nav_item == 9 && a.radius_input == 8,
+            "And the specified radii");
+    require(a.hero_title.size == 38 && a.hero_title.weight == 800, "And the hero type");
+
+    // Every other theme resolves to a complete set without having been edited.
+    for (const auto& one : themes()) {
+        if (one.id == ThemeId::Azure) continue;
+        const auto& t = tokens(one.id);
+        const auto named = one.key.toStdString();
+        require(t.primary == one.accent, named + ": primary is the theme's own accent");
+        require(t.surface == one.base, named + ": surface is the theme's own base");
+        require(t.text_primary == one.text, named + ": ink is the theme's own");
+        require(t.green == one.valid && t.red == one.error,
+                named + ": validity colours are the theme's own");
+        // Derived values must be real colours in the theme's family, not
+        // defaults left at nothing.
+        for (const auto& derived : {t.primary_hover, t.primary_pressed, t.primary_soft,
+                                    t.border_medium, t.text_heading, t.text_disabled,
+                                    t.lavender, t.gold_soft, t.selected_card_surface})
+            require(derived.isValid(), named + ": every token resolves to a colour");
+        require(t.primary_hover != t.primary_pressed,
+                named + ": hover and pressed are told apart");
+        require(t.radius_large_card == 12, named + ": radii are shared");
+        require(!t.family.isEmpty(), named + ": a face is named");
+    }
+
+    // Resolved once and kept, rather than worked out again on every ask.
+    require(&tokens(ThemeId::Azure) == &tokens(ThemeId::Azure), "Tokens are resolved once");
+    require(&tokens(ThemeId::Nord) == &tokens(ThemeId::Nord), "For every theme, not only Azure");
+}
+
 void identity_tests() {
     require(themes().size() == theme_count, "Every palette family must be offered");
-    require(themes().front().id == ThemeId::OfficeLight,
+    require(themes().front().id == ThemeId::Azure,
             "The default appearance is offered first");
     std::set<QString> keys;
     std::set<QString> labels;
@@ -87,6 +158,25 @@ void plain_theme_tests() {
                 && plain.entity_fill != plain.relationship_fill,
             "Plain gives each kind of shape its own level of grey");
     require(plain.canvas.red() > plain.entity_fill.red(), "And the board is lighter than what sits on it");
+
+    // Nothing the interface is dressed in brings a hue back either: the tokens
+    // derived from Plain are greys too, the lavender and the shadows included.
+    const auto& dressed = tokens(ThemeId::Plain);
+    for (const auto& colour : {dressed.primary, dressed.primary_soft, dressed.primary_faint, dressed.gold,
+                               dressed.gold_soft, dressed.lavender, dressed.green, dressed.amber, dressed.red,
+                               dressed.hover_surface, dressed.selected_card_surface, dressed.learning_surface,
+                               dressed.shadow_card.ink, dressed.shadow_card_hover.ink,
+                               dressed.shadow_primary_button.ink, dressed.shadow_selected_nav.ink})
+        require(colour.red() == colour.green() && colour.green() == colour.blue(),
+                "Every token Plain resolves to is a grey");
+    require(colourless(ThemeId::Plain), "Plain is the theme that shows no colour");
+    for (const auto& other : themes())
+        if (other.id != ThemeId::Plain)
+            require(!colourless(other.id), "And no other theme is made colourless by it");
+    const auto faded = greyed(QColor(59, 130, 246, 90));
+    require(faded.red() == faded.green() && faded.green() == faded.blue() && faded.alpha() == 90
+                && faded.red() == qGray(59, 130, 246),
+            "A colour greyed keeps its brightness and its opacity");
 }
 
 void contrast_tests() {
@@ -194,6 +284,7 @@ int main(int argc, char* argv[]) {
     QApplication::setStyle("Fusion");
     try {
         identity_tests();
+        azure_and_token_tests();
         plain_theme_tests();
         contrast_tests();
         live_palette_tests(app);

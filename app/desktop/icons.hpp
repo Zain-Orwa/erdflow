@@ -1,3 +1,9 @@
+// ERDFlow — settled work. Do not change, replace or re-style anything here to
+// suit something new you have been asked to build. If what you are building
+// genuinely contradicts what is here, stop and ask Zain, who owns this project:
+// say what you want to change, what the application will LOOK like afterwards,
+// and whether it is a gain or a loss. He decides. Fixing a real defect is not
+// covered by this — fix it and say what was wrong. Full rule: CLAUDE.md.
 #pragma once
 
 #include "theme.hpp"
@@ -33,5 +39,12 @@ enum class IconMode { Normal, Modern, Outline };
 
 [[nodiscard]] QIcon glyph_icon(Glyph glyph, const Theme& colors, int size = 22,
                                IconMode mode = IconMode::Normal);
+
+// One named drawing from the line-art set, inked in one colour. For the places
+// that are not commands -- the Home screen's sidebar, its learning panel, its
+// bar -- and so have no Glyph of their own. The name is the file's, without
+// its extension. An empty pixmap means there is no such drawing; the caller
+// decides what stands in, since a row with words beside it can do without.
+[[nodiscard]] QPixmap outline_pixmap(const QString& name, const QColor& ink, int size);
 
 } // namespace erdflow::desktop

@@ -1,3 +1,9 @@
+// ERDFlow — settled work. Do not change, replace or re-style anything here to
+// suit something new you have been asked to build. If what you are building
+// genuinely contradicts what is here, stop and ask Zain, who owns this project:
+// say what you want to change, what the application will LOOK like afterwards,
+// and whether it is a gain or a loss. He decides. Fixing a real defect is not
+// covered by this — fix it and say what was wrong. Full rule: CLAUDE.md.
 #include "diagram_view.hpp"
 
 #include <QApplication>
@@ -37,6 +43,13 @@ namespace {
 using namespace domain;
 
 constexpr qreal grid_spacing = 20;
+// The paper the diagram is drawn on before anything has been drawn beyond it.
+// It grew with the bodies -- a canvas that stayed the size it was would hold
+// proportionally less of a diagram drawn at the new scale, and a view fitted
+// to a diagram wider than its own paper cannot scroll, which leaves anything
+// found by a search stuck wherever the paper happens to put it.
+constexpr QRectF default_paper{-3000 * diagram_scale, -2200 * diagram_scale,
+                               6000 * diagram_scale, 4400 * diagram_scale};
 // A body of the given size centred on a point.
 Rect centred(const QPointF& centre, const BodySize& size) {
     return {centre.x() - size.width / 2, centre.y() - size.height / 2, size.width, size.height};
@@ -70,7 +83,7 @@ QString comment_tooltip(const Project& project, const std::vector<CommentId>& id
 // is meant to quiet the diagram, not to lose what a reviewer said. It is solid
 // when pointing at it would say something and hollow when every remark here has
 // been put away or the whole lot switched off.
-constexpr qreal comment_badge_size = 13;
+constexpr qreal comment_badge_size = 13 * connector_scale;
 void draw_comment_badge(QPainter* painter, const QPointF& corner, const QColor& ink, bool solid) {
     painter->save();
     painter->setRenderHint(QPainter::Antialiasing);
@@ -92,10 +105,16 @@ void draw_comment_badge(QPainter* painter, const QPointF& corner, const QColor& 
 }
 
 
+} // namespace
+
 // The palette offered on the canvas. These are surface colours rather than ink,
 // so each is light enough to write on and distinct from its neighbours at the
 // size an element is actually drawn. The names are what the menu reads out, so
 // they say what the eye sees rather than naming a hex value.
+//
+// Shared with the Relational Schema rather than copied into it: a table there
+// and the entity it came from are one element wearing one colour, so they must
+// be offered one set of colours to wear. Two palettes would drift apart.
 const std::array<std::pair<const char*, QColor>, 10>& swatches() {
     static const std::array<std::pair<const char*, QColor>, 10> palette{{
         {"Butter", QColor(0xFF, 0xE0, 0x8A)}, {"Apricot", QColor(0xFF, 0xC2, 0x8A)},
@@ -121,6 +140,8 @@ QIcon swatch_icon(const QColor& colour) {
     return QIcon(pixmap);
 }
 
+namespace {
+
 // The shape a new link is given when its ends are pinned where the user
 // clicked. Either end may be left to route itself.
 Connector joined(std::optional<double> owner, std::optional<double> child) {
@@ -135,14 +156,55 @@ QPointF normal(const QPointF& delta) {
     return length > 0.001 ? QPointF(-delta.y() / length, delta.x() / length) : QPointF(0, 1);
 }
 
+// The face the diagram is lettered in, at a size given in the units everything
+// else on the diagram is measured in.
+//
+// Chosen for legibility rather than for character: a tall x-height and open
+// apertures, so a name stays readable when the view is zoomed out and an
+// uppercase I, a lowercase l and a figure 1 cannot be taken for one another --
+// which matters more on a diagram than it does elsewhere, because a name read
+// wrongly is a model read wrongly.
+//
+// Named as a list rather than as one family, because no one face is on every
+// machine. Each is a humanist sans of much the same proportions, so a diagram
+// keeps its shape wherever it is opened, and the platform's own interface face
+// closes the list. Everything asked of the face beyond its family and its size
+// -- its weight, whether it is underlined -- is whatever the caller had
+// already decided.
+QFont lettered(const QFont& base, double points) {
+    QFont face = base;
+    face.setFamilies({"Inter", "Source Sans 3", "IBM Plex Sans", "Segoe UI Variable",
+                      "Segoe UI", "SF Pro Text", "Helvetica Neue", "Arial"});
+    face.setStyleHint(QFont::SansSerif, QFont::PreferAntialias);
+    face.setPointSizeF(points * lettering_scale);
+    return face;
+}
+
+// The marks at the end of a line, in the units the bodies are sized in. They
+// grew with the bodies: a foot that stayed the size it was would read as
+// smaller beside a larger entity, and "a bigger diagram" means the whole of it
+// bigger rather than the shapes alone.
+constexpr qreal foot_reach = 15 * connector_scale;   // how far back a crow's foot spreads
+constexpr qreal foot_spread = 7 * connector_scale;   // half the width of a foot, bar or minimum
+constexpr qreal one_bar_at = 13 * connector_scale;   // where the single bar crosses the line
+constexpr qreal minimum_at = 25 * connector_scale;   // the minimum mark, inboard of the maximum
+constexpr qreal ring_radius = 4.5 * connector_scale; // the ring that says a side is optional
+constexpr qreal head_reach = 13 * connector_scale;   // Bachman's arrowhead, and how wide it opens
+constexpr qreal head_spread = 5 * connector_scale;
+constexpr qreal head_ring_at = 20 * connector_scale;
+constexpr qreal head_dot_at = 9 * connector_scale;
+constexpr qreal dot_radius = 5 * connector_scale;
+
 // One definition of how a participant end is drawn, used both by the canvas and
 // by the previews in the notation picker, so a picker can never show something
-// the diagram does not draw. Crow's foot places the maximum against the entity
+// the diagram does not draw. The canvas draws the marks at their own size; a
+// sample in a menu asks for a fraction of it, so the one drawing serves both
+// without a mark grown for a diagram outgrowing the box a menu shows it in. Crow's foot places the maximum against the entity
 // and the minimum just inboard of it; Bachman uses an arrowhead for "many" and
 // a circle whose fill states whether the side is mandatory.
 void draw_participant_end(QPainter* painter, Notation notation, bool many, bool mandatory,
                           const QPointF& end, const QPointF& outward,
-                          const QColor& ink, const QColor& paper) {
+                          const QColor& ink, const QColor& paper, qreal marks) {
     if (notation != Notation::CrowsFoot && notation != Notation::Bachman) return;
     const QPointF u = outward;
     const QPointF n = normal(u);
@@ -151,34 +213,40 @@ void draw_participant_end(QPainter* painter, Notation notation, bool many, bool 
     pen.setCosmetic(true);
     painter->setPen(pen);
     painter->setBrush(Qt::NoBrush);
+    // Every measure below is in the units the bodies are sized in, taken at
+    // whatever fraction of them this drawing was asked for.
+    const auto out = [&](qreal along) { return end + u * (along * marks); };
+    const auto across = [&](QPointF at, qreal side) { return at + n * (side * marks); };
     if (notation == Notation::CrowsFoot) {
         if (many) {
-            const auto apex = end + u * 15;
-            painter->drawLine(apex, end + n * 7);
-            painter->drawLine(apex, end - n * 7);
+            const auto apex = out(foot_reach);
+            painter->drawLine(apex, across(end, foot_spread));
+            painter->drawLine(apex, across(end, -foot_spread));
             painter->drawLine(apex, end);
         } else {
-            const auto bar = end + u * 13;
-            painter->drawLine(bar + n * 7, bar - n * 7);
+            const auto bar = out(one_bar_at);
+            painter->drawLine(across(bar, foot_spread), across(bar, -foot_spread));
         }
-        const auto inner = end + u * 25;
+        const auto inner = out(minimum_at);
         if (mandatory) {
-            painter->drawLine(inner + n * 7, inner - n * 7);
+            painter->drawLine(across(inner, foot_spread), across(inner, -foot_spread));
         } else {
             painter->setBrush(paper);
-            painter->drawEllipse(inner, 4.5, 4.5);
+            painter->drawEllipse(inner, ring_radius * marks, ring_radius * marks);
         }
     } else {
         if (many) {
+            const auto back = out(head_reach);
             QPolygonF head;
-            head << end << end + u * 13 + n * 5 << end + u * 13 - n * 5;
+            head << end << across(back, head_spread) << across(back, -head_spread);
             painter->setBrush(ink);
             painter->setPen(Qt::NoPen);
             painter->drawPolygon(head);
-            if (mandatory) painter->drawEllipse(end + u * 20, 4.5, 4.5);
+            if (mandatory)
+                painter->drawEllipse(out(head_ring_at), ring_radius * marks, ring_radius * marks);
         } else {
             painter->setBrush(mandatory ? ink : paper);
-            painter->drawEllipse(end + u * 9, 5, 5);
+            painter->drawEllipse(out(head_dot_at), dot_radius * marks, dot_radius * marks);
         }
     }
     painter->restore();
@@ -379,12 +447,17 @@ public:
     }
     // A symbol is drawn as its character grown to fill its box, so the box is
     // how big the character is, and hauling a corner is how it is made bigger.
-    // An entity is a box holding a name, and how wide and how tall it is are
-    // two separate questions, so it answers to each of its four edges as well:
-    // the side that is pulled moves, and the side opposite it stays where it
-    // was. Nothing else on the diagram is sized by hand.
+    //
+    // An entity and an attribute both hold a name, and how wide and how tall
+    // each is are two separate questions: a long name wants width where a
+    // second line wants height. So both answer to each of their four edges as
+    // well as to their corners, the side that is pulled moving and the side
+    // opposite it staying where it was. A default is a starting size, not a
+    // ruling, and a name that will not fit one has to be able to be given room.
     static constexpr qreal grip = 9;
-    [[nodiscard]] bool boxed() const { return std::holds_alternative<EntityId>(ref); }
+    [[nodiscard]] bool boxed() const {
+        return std::holds_alternative<EntityId>(ref) || std::holds_alternative<AttributeId>(ref);
+    }
     [[nodiscard]] bool sizeable() const { return (plain || boxed()) && isSelected(); }
     [[nodiscard]] int handle_count() const { return boxed() ? 8 : 4; }
     // Which sides of the box each handle lies on. The four corners come first,
@@ -564,14 +637,14 @@ public:
         // character follows the box when the box is resized, as a picture does.
         // Emoji are square, so the height is what binds in practice; the width
         // is checked too, for a character that is wider than it is tall.
-        font.setPointSizeF(10);
+        font = lettered(font, 10);
         font.setWeight(QFont::Normal);
         const QFontMetricsF small(font);
         const auto tall = small.tightBoundingRect(label).height();
         const auto wide = small.horizontalAdvance(label);
         if (tall > 0.1 && wide > 0.1) {
             const auto room = std::min(bounds_.height() * 0.86 / tall, bounds_.width() * 0.86 / wide);
-            font.setPointSizeF(std::clamp(10 * room, 6.0, 260.0));
+            font = lettered(font, std::clamp(10 * room, 6.0, 260.0));
         }
         painter->setFont(font);
         // The character is drawn in whatever colour was chosen for it, and
@@ -599,7 +672,7 @@ public:
         auto font = painter->font();
         qreal used = 0;
         if (!label.isEmpty()) {
-            font.setPointSizeF(12.5);
+            font = lettered(font, 12.5);
             font.setWeight(QFont::Bold);
             painter->setFont(font);
             const QRectF title(inner.left(), inner.top(), inner.width(), QFontMetricsF(font).height() * 1.25);
@@ -607,7 +680,7 @@ public:
                               QFontMetricsF(font).elidedText(label, Qt::ElideRight, title.width()));
             used = title.height() + 3;
         }
-        font.setPointSizeF(11);
+        font = lettered(font, 11);
         font.setWeight(QFont::Normal);
         painter->setFont(font);
         painter->drawText(QRectF(inner.left(), inner.top() + used, inner.width(), inner.height() - used),
@@ -646,12 +719,12 @@ public:
             // would draw a card the diagram no longer has.
             const auto room = into_place.mapRect(bounds_);
             auto lettering = painter->font();
-            lettering.setPointSizeF(10);
+            lettering = lettered(lettering, 10);
             const QFontMetricsF small(lettering);
             const auto tall = small.tightBoundingRect(label).height();
             const auto wide = small.horizontalAdvance(label);
             if (!label.isEmpty() && tall > 0.1 && wide > 0.1) {
-                lettering.setPointSizeF(std::clamp(
+                lettering = lettered(lettering, std::clamp(
                     10 * std::min(room.height() * 0.86 / tall, room.width() * 0.86 / wide), 4.0, 260.0));
                 painter->setFont(lettering);
                 painter->setPen(chosen_ ? *chosen_ : colors_->node_text);
@@ -711,7 +784,7 @@ public:
         // zoom, so they sit a step above the interface's own type and never
         // below medium weight.
         auto font = painter->font();
-        font.setPointSizeF(12.5);
+        font = lettered(font, 12.5);
         font.setWeight(std::holds_alternative<EntityId>(ref) ? QFont::Bold : QFont::Medium);
         font.setUnderline(std::holds_alternative<AttributeId>(ref) && attribute_kind == AttributeKind::Key && !partial_key);
         painter->setFont(font);
@@ -742,11 +815,11 @@ public:
             const qreal radius = std::clamp(bounds_.height() * 0.15, 7.0, 10.0);
             const QPointF at(bounds_.right() - radius - 1,
                              generalising ? bounds_.top() + radius + 1 : bounds_.bottom() - radius - 1);
-            painter->setPen(QPen(isSelected() ? selection_ : border_, 1.2));
+            painter->setPen(QPen(isSelected() ? selection_ : border_, 1.2 * connector_scale));
             painter->setBrush(fill_);
             painter->drawEllipse(at, radius, radius);
             auto small = painter->font();
-            small.setPointSizeF(9.5);
+            small = lettered(small, 9.5);
             small.setWeight(QFont::DemiBold);
             small.setUnderline(false);
             painter->setFont(small);
@@ -874,7 +947,7 @@ public:
     }
     void paint_end_symbols(QPainter* painter, const QColor& ink, const QColor& paper) const {
         if (!descriptor.relationship) return;
-        draw_participant_end(painter, notation, many(), mandatory(), end_, outward_, ink, paper);
+        draw_participant_end(painter, notation, many(), mandatory(), end_, outward_, ink, paper, 1.0);
     }
     [[nodiscard]] QString end_label() const {
         if (!descriptor.relationship) return {};
@@ -1218,22 +1291,38 @@ public:
         // A routed line is shaped by its corners, so it shows a grip on each
         // instead of the single bend grip a plain one carries.
         corner_rects_.clear();
+        // Every control on a line is measured at the diagram's own scale. A
+        // grip or a padlock left at the size it was would be a speck beside
+        // shapes two and a half times larger, and these are things a hand has
+        // to hit and an eye has to read the state of.
+        constexpr qreal grip = 10 * connector_scale;
+        constexpr qreal lock_side = 12 * connector_scale;
+        constexpr qreal end_grip = 9 * connector_scale;
+        constexpr qreal aside = 16 * connector_scale;
         for (const auto& corner : descriptor.waypoints)
-            corner_rects_.push_back(QRectF(corner - QPointF(5, 5), QSizeF(10, 10)));
+            corner_rects_.push_back(QRectF(corner - QPointF(grip / 2, grip / 2), QSizeF(grip, grip)));
         handle_rect_ = descriptor.waypoints.empty() && computed_.empty()
-            ? QRectF(bend - QPointF(5, 5), QSizeF(10, 10)) : QRectF();
+            ? QRectF(bend - QPointF(grip / 2, grip / 2), QSizeF(grip, grip)) : QRectF();
         // The padlock sits off to one side of the bend grip rather than on it,
         // so the two controls on a selected link never overlap.
-        lock_rect_ = lockable() ? QRectF(bend + perpendicular_ * 16 - QPointF(6, 6), QSizeF(12, 12)) : QRectF();
+        lock_rect_ = lockable()
+            ? QRectF(bend + perpendicular_ * aside - QPointF(lock_side / 2, lock_side / 2),
+                     QSizeF(lock_side, lock_side))
+            : QRectF();
         // The remark mark takes the other side of the bend, so it never sits
         // under the padlock on a selected line. Unlike the padlock it is drawn
         // whether the line is selected or not, since it is how a remark on a
         // line is found at all.
-        comment_at_ = bend - perpendicular_ * 16 - QPointF(comment_badge_size / 2, comment_badge_size / 2);
+        comment_at_ = bend - perpendicular_ * aside
+                    - QPointF(comment_badge_size / 2, comment_badge_size / 2);
         // A grip on each end, where the line meets its shape. Squares, so they
         // are not mistaken for the round grips that bend and route the line.
-        owner_end_rect_ = shapeable() ? QRectF(owner_join_ - QPointF(4.5, 4.5), QSizeF(9, 9)) : QRectF();
-        child_end_rect_ = shapeable() ? QRectF(child_join_ - QPointF(4.5, 4.5), QSizeF(9, 9)) : QRectF();
+        owner_end_rect_ = shapeable()
+            ? QRectF(owner_join_ - QPointF(end_grip / 2, end_grip / 2), QSizeF(end_grip, end_grip))
+            : QRectF();
+        child_end_rect_ = shapeable()
+            ? QRectF(child_join_ - QPointF(end_grip / 2, end_grip / 2), QSizeF(end_grip, end_grip))
+            : QRectF();
         // An attribute's link and an inheritance link carry no labels, so the
         // bend serves them; everything else arrives from its own last corner.
         if (approach.isNull()) approach = bend;
@@ -1253,13 +1342,17 @@ public:
         outward_ = distance > 0.01 ? entity_direction / distance : QPointF(-1, 0);
         end_ = end;
         QFont label_font;
-        label_font.setPointSizeF(10);
+        label_font = lettered(label_font, 10);
         const auto label = end_label();
         const auto label_width = label.isEmpty()
             ? 22.0 : QFontMetricsF(label_font).horizontalAdvance(label) + 10;
         const auto label_center = end + outward_ * symbol_reach() + 20.0 * outward_
             + entity_normal * clearance(entity_normal, label_width / 2, 10);
-        cardinality_rect_ = QRectF(label_center - QPointF(label_width / 2, 10), QSizeF(label_width, 20));
+        // The box a cardinality is written in follows the type it holds, and
+        // the type is set at the diagram's scale.
+        constexpr qreal label_height = 20 * lettering_scale;
+        cardinality_rect_ = QRectF(label_center - QPointF(label_width / 2, label_height / 2),
+                                   QSizeF(label_width, label_height));
         // Size the role box to its text. A fixed-width box blanketed the area
         // around the entity end and hid the connector arriving there.
         const auto role_width = descriptor.role.isEmpty()
@@ -1299,8 +1392,10 @@ public:
         const QColor ink = isSelected() ? selection_ : highlighted ? text_ : connector_;
         // A connector is the thing a reader traces with their eye, so it is
         // drawn heavily enough to follow across a crowded diagram rather than
-        // as the hairline it used to be.
-        const qreal weight = isSelected() ? 4.0 : highlighted ? 3.4 : 2.2;
+        // as the hairline it used to be -- and at the diagram's own scale, or
+        // a line that kept its old weight beside shapes two and a half times
+        // larger would be back to being that hairline.
+        const qreal weight = (isSelected() ? 4.0 : highlighted ? 3.4 : 2.2) * connector_scale;
         painter->setPen(QPen(ink, weight));
         painter->setBrush(Qt::NoBrush);
         // A total participation in Chen, and a total specialization in every
@@ -1309,7 +1404,7 @@ public:
             || (std::holds_alternative<InheritanceKey>(descriptor.key) && descriptor.total);
         if (doubled) {
             painter->save();
-            painter->translate(perpendicular_ * 3);
+            painter->translate(perpendicular_ * (3 * connector_scale));
             painter->drawPath(path_);
             painter->translate(perpendicular_ * -6);
             painter->drawPath(path_);
@@ -1318,7 +1413,7 @@ public:
             painter->drawPath(path_);
         }
         auto font = painter->font();
-        font.setPointSizeF(10);
+        font = lettered(font, 10);
         painter->setFont(font);
         auto draw_label = [&](const QRectF& rect, const QString& text, ShapedLabel& shaped) {
             painter->setPen(Qt::NoPen);
@@ -1347,7 +1442,7 @@ public:
         if (!descriptor.role.isEmpty()) draw_label(role_rect_, descriptor.role, role_label_);
         if (descriptor.show_constraints) paint_end_symbols(painter, ink, canvas_);
         if (isSelected() && shapeable()) {
-            painter->setPen(QPen(selection_, 1.4));
+            painter->setPen(QPen(selection_, 1.4 * connector_scale));
             painter->setBrush(canvas_);
             if (!handle_rect_.isNull()) painter->drawEllipse(handle_rect_);
             for (const auto& corner : corner_rects_) painter->drawEllipse(corner);
@@ -1360,17 +1455,19 @@ public:
     // A padlock, filled when the joins are pinned and hollow when they are not,
     // so the control shows its own state rather than needing a legend.
     void paint_lock(QPainter* painter) const {
-        const auto body = QRectF(lock_rect_.left(), lock_rect_.center().y() - 1,
-                                 lock_rect_.width(), lock_rect_.height() / 2 + 1);
+        const auto body = QRectF(lock_rect_.left(), lock_rect_.center().y() - connector_scale,
+                                 lock_rect_.width(), lock_rect_.height() / 2 + connector_scale);
         const auto shackle = QRectF(lock_rect_.left() + lock_rect_.width() * 0.22, lock_rect_.top(),
                                     lock_rect_.width() * 0.56, lock_rect_.height() * 0.62);
-        painter->setPen(QPen(selection_, 1.4));
+        painter->setPen(QPen(selection_, 1.4 * connector_scale));
         painter->setBrush(Qt::NoBrush);
         // An open padlock is drawn with its shackle lifted clear on one side,
         // which reads as unlocked at this size where a tilted one does not.
-        painter->drawArc(locked() ? shackle : shackle.translated(2.5, -1.5), 0, 180 * 16);
+        painter->drawArc(locked() ? shackle
+                                  : shackle.translated(2.5 * connector_scale, -1.5 * connector_scale),
+                         0, 180 * 16);
         painter->setBrush(locked() ? selection_ : canvas_);
-        painter->drawRoundedRect(body, 1.5, 1.5);
+        painter->drawRoundedRect(body, 1.5 * connector_scale, 1.5 * connector_scale);
     }
 private:
     // A label says the same handful of characters frame after frame, and
@@ -2350,7 +2447,7 @@ DiagramView::DiagramView(application::Editor& editor, QWidget* parent)
     setFrameShape(QFrame::NoFrame);
     setFocusPolicy(Qt::StrongFocus);
     setMouseTracking(true);
-    impl_->scene->setSceneRect(-3000, -2200, 6000, 4400);
+    impl_->scene->setSceneRect(default_paper);
     connect(impl_->scene, &QGraphicsScene::selectionChanged, this, [this] { impl_->selection_changed(); });
     synchronize();
     centerOn(0, 0);
@@ -2573,7 +2670,7 @@ void DiagramView::synchronize() {
     impl_->refresh_search();
     // The workspace grows only at command boundaries, never during pointer movement.
     const auto content = impl_->scene->itemsBoundingRect().adjusted(-800, -800, 800, 800);
-    impl_->scene->setSceneRect(QRectF(-3000, -2200, 6000, 4400).united(content));
+    impl_->scene->setSceneRect(default_paper.united(content));
     for (const auto& [key, description] : desired_edges) {
         (void)key;
         if (!std::holds_alternative<AttributeId>(description.key)) continue;
@@ -2814,8 +2911,13 @@ QPixmap DiagramView::notation_preview(Notation notation, QSize size, std::option
     // The fill behind a solid end is the canvas the diagram is drawn on, unless
     // the sample has been given an ink of its own -- on a highlighted row the
     // canvas colour is not what lies behind it.
+    // Drawn to fit the box the sample is shown in rather than at the size the
+    // canvas uses: the marks are sized for a diagram, and a menu row is a good
+    // deal shorter than one. Taken from the height, which is what a foot runs
+    // out of first, and never grown beyond the size the canvas itself draws.
+    const auto marks = std::min(1.0, (size.height() - 4.0) / (foot_spread * 2));
     draw_participant_end(&painter, notation, true, true, end, QPointF(-1, 0), drawn,
-                         ink ? Qt::transparent : QColor(colors.canvas));
+                         ink ? Qt::transparent : QColor(colors.canvas), marks);
     if (!reading.isEmpty()) {
         // Written in the same ink as the line it belongs to, since the two say
         // one thing together.

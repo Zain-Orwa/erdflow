@@ -1,3 +1,9 @@
+// ERDFlow — settled work. Do not change, replace or re-style anything here to
+// suit something new you have been asked to build. If what you are building
+// genuinely contradicts what is here, stop and ask Zain, who owns this project:
+// say what you want to change, what the application will LOOK like afterwards,
+// and whether it is a gain or a loss. He decides. Fixing a real defect is not
+// covered by this — fix it and say what was wrong. Full rule: CLAUDE.md.
 #pragma once
 
 #include "application/editor.hpp"
@@ -7,6 +13,7 @@
 #include <QPixmap>
 #include <functional>
 #include <memory>
+#include <array>
 #include <optional>
 
 class QMenu;
@@ -26,6 +33,13 @@ enum class Tool { Select, Entity, Attribute, Relationship, Specialization, Gener
 // (1 or M), so every notation reads the same two values off each participant.
 enum class Notation { Chen, MinMax, CrowsFoot, Bachman };
 
+// The surface colours a hand may put on an element, and one of them drawn as
+// an icon for a menu. Given out rather than kept to the canvas: the Relational
+// Schema colours the same elements, and a table there and the entity it came
+// from must be offered the same colours to wear.
+[[nodiscard]] const std::array<std::pair<const char*, QColor>, 10>& swatches();
+[[nodiscard]] QIcon swatch_icon(const QColor& colour);
+
 // How connectors are drawn between elements. Elbow breaks a line at right
 // angles, which is how an ERD is drawn by hand and the only shape that reads
 // cleanly when both of its ends are pinned where they were clicked; the other
@@ -39,18 +53,56 @@ enum class LineStyle { Curved, Straight, Elbow };
 // somewhere else on the same shape.
 enum class JoinMode { Automatic, WhereClicked };
 
-// Default body sizes for newly created elements. An associative relationship
-// adopts the entity size, because that is what it behaves as on the diagram.
+// What a newly drawn element is, before any hand has touched it. An
+// associative relationship adopts the entity size, because that is what it
+// behaves as on the diagram.
+//
+// THESE ARE THE DEFAULTS AND ARE NOT TO BE CHANGED. They are the size an
+// element is *created* at, not a limit on it: every element is resized freely
+// by its corners and edges on the canvas, or by typing a width and a height
+// into the Properties panel, and a size given by hand is kept for that element
+// and stored with the document. So this decides what somebody meets when they
+// draw one, and nothing more.
+//
+// The entity's figures are the ones Zain settled on by drawing one and sizing
+// it until it looked right; everything else is proportioned to sit beside it.
 struct BodySize { double width, height; };
-inline constexpr BodySize entity_body{160, 80};
+inline constexpr BodySize entity_body{148, 86};
 inline constexpr BodySize attribute_body{150, 60};
 inline constexpr BodySize relationship_body{190, 110};
 inline constexpr BodySize isa_body{96, 74};
 inline constexpr BodySize note_body{200, 120};
-// The size a symbol is placed at, and the step Enlarge and Shrink move it by.
-// A quarter is enough to see at a glance and small enough that three or four
-// presses land on the size that was wanted, rather than overshooting it.
-inline constexpr BodySize symbol_body{56, 56};
+
+// What is drawn *on* the diagram rather than sized by it, at its own scale.
+//
+// The shapes turned out not to be what was hard to read -- a body large enough
+// to hold a name is large enough -- so these two carry what was actually
+// wrong, and each can be tuned without disturbing the other or the sizes
+// above.
+//
+// Lettering, because a shape only has to be recognised where a name has to be
+// read: text is the one part of a diagram that must resolve into letters
+// rather than into an outline, and it was set small enough that a reader had
+// to zoom in before the diagram read at all.
+inline constexpr double lettering_scale = 1.45;
+// The lines and everything carried on them -- their weight, the grips that
+// bend and route them, the padlock that pins their ends, the mark that says a
+// line has a remark on it. A connector is what a reader traces with their eye
+// across a crowded diagram, and a control they cannot see is a control they
+// do not know they have.
+inline constexpr double connector_scale = 1.6;
+// Kept under the old name for the paper, which is the one thing still measured
+// against how much diagram there is to put on it.
+inline constexpr double diagram_scale = 1.0;
+
+// A measure taken at the scale and rounded to a whole number, for the sizes a
+// panel reports as an integer. A fractional default would never agree with
+// what the panel says the thing is, which reads as the panel being wrong.
+inline constexpr double scaled_whole(double measure) {
+    return static_cast<double>(static_cast<long long>(measure * diagram_scale + 0.5));
+}
+
+inline constexpr BodySize symbol_body{scaled_whole(56), scaled_whole(56)};
 inline constexpr double symbol_step = 1.25;
 
 // What a search is looking for. Everything is the ordinary state, and the rest

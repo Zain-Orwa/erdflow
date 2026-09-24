@@ -1,10 +1,28 @@
+// ERDFlow — settled work. Do not change, replace or re-style anything here to
+// suit something new you have been asked to build. If what you are building
+// genuinely contradicts what is here, stop and ask Zain, who owns this project:
+// say what you want to change, what the application will LOOK like afterwards,
+// and whether it is a gain or a loss. He decides. Fixing a real defect is not
+// covered by this — fix it and say what was wrong. Full rule: CLAUDE.md.
 #include "app/desktop/icons.hpp"
 #include "app/desktop/symbols.hpp"
 #include "app/desktop/export_dialog.hpp"
+#include "app/desktop/home_page.hpp"
+#include "app/desktop/home_demo_canvas.hpp"
+#include "app/desktop/home_demo_scenes.hpp"
+#include "app/desktop/home_sidebar.hpp"
+#include "app/desktop/start_route_card.hpp"
+#include "app/desktop/welcome_flow_illustration.hpp"
 #include "app/desktop/main_window.hpp"
+#include "app/desktop/notice.hpp"
 #include "infrastructure/project_store.hpp"
 
 #include <QAction>
+#include <cmath>
+#include <QDebug>
+#include <QScrollArea>
+#include <QMenuBar>
+#include <QDir>
 #include <QApplication>
 #include <QStatusBar>
 #include <QElapsedTimer>
@@ -17,10 +35,12 @@
 #include <QGraphicsScene>
 #include <QDoubleSpinBox>
 #include <QClipboard>
+#include <QCursor>
 #include <QFile>
 #include <QFileInfo>
 #include <QMimeData>
 #include <QImage>
+#include <QPainter>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
@@ -85,6 +105,22 @@ void dismiss(QMessageBox::StandardButton choice) {
 }
 // A list's itemClicked only comes from real pointer work, so a test says what
 // it means directly: this item was chosen.
+// How many pixels of a picture carry any colour at all, rather than a grey.
+// A little allowance is left for rounding in anti-aliased edges.
+int coloured_pixels(const QImage& picture) {
+    const auto image = picture.convertToFormat(QImage::Format_ARGB32);
+    int found = 0;
+    for (int y = 0; y < image.height(); ++y)
+        for (int x = 0; x < image.width(); ++x) {
+            const auto pixel = image.pixel(x, y);
+            if (qAlpha(pixel) < 8) continue;
+            const auto high = std::max({qRed(pixel), qGreen(pixel), qBlue(pixel)});
+            const auto low = std::min({qRed(pixel), qGreen(pixel), qBlue(pixel)});
+            if (high - low > 12) ++found;
+        }
+    return found;
+}
+
 void QTest_activate(QListWidget* list, QListWidgetItem* item) {
     list->setCurrentItem(item);
     emit list->itemActivated(item);
@@ -111,6 +147,118 @@ int main(int argc, char** argv) {
     QSettings().clear();
     try {
         infrastructure::QtIdGenerator ids;
+        // Automatic ends follow column rows, including vertically stacked tables.
+        {
+            application::Editor model(ids);
+            const auto student = std::get<domain::EntityId>(*model.create_entity("Student", {}).created);
+            const auto course = std::get<domain::EntityId>(*model.create_entity("Course", {}).created);
+            const auto bridge = std::get<domain::RelationshipId>(*model.create_relationship("Enrolled", {}).created);
+            for (const auto entity : {student, course}) {
+                const auto joined = model.connect(bridge, entity);
+                require(joined.ok, "A bridge participant connects");
+                require(model.update_participant(bridge, *joined.participant, domain::Cardinality::Many,
+                                                domain::Participation::Partial, "").ok, "M:M participant");
+            }
+            desktop::SchemaView view(model);
+            view.set_theme(desktop::theme(desktop::ThemeId::Azure));
+            view.resize(1600, 1400);
+            for (const bool stacked : {false, true}) {
+                require(model.move_schema_tables({{domain::ElementRef{student}, {150, 100}},
+                    {domain::ElementRef{course}, {150, 850}},
+                    {domain::ElementRef{bridge}, {stacked ? 150.0 : 850.0, 450}}}).ok, "Place tables");
+                view.refresh();
+                const auto boxes = view.table_boxes();
+                const auto rows = view.row_boxes();
+                const auto lines = view.line_shapes();
+                const auto painted = view.grab().toImage();
+                require(lines.size() == 2, "One connector per participant");
+                for (std::size_t t = 0; t < view.preview().tables.size(); ++t) {
+                    const auto& table = view.preview().tables[t];
+                    for (std::size_t c = 0; c < table.columns.size(); ++c) {
+                        const auto& column = table.columns[c];
+                        if (!column.references) continue;
+                        require(column.foreign_key && !column.primary_key, "Bridge references are FK-only");
+                        bool green = false;
+                        bool orange = false;
+                        const auto& ink = desktop::theme(desktop::ThemeId::Azure);
+                        for (int y = static_cast<int>(rows[t][c].top()) + 1; y < rows[t][c].bottom(); ++y)
+                            for (int x = static_cast<int>(rows[t][c].left()) + 1; x < rows[t][c].left() + 42; ++x) {
+                                green = green || painted.pixelColor(x, y) == ink.valid;
+                                orange = orange || painted.pixelColor(x, y) == ink.warning;
+                            }
+                        require(green && !orange, "FK badges use green ink and never PK orange");
+
+                        const auto match = std::find_if(lines.begin(), lines.end(), [&](const auto& line) {
+                            return std::abs(line.front().y() - rows[t][c].center().y()) < 0.01
+                                && std::abs(line.back().y() - rows[*column.references][column.references_column].center().y()) < 0.01;
+                        });
+                        require(match != lines.end(), "The exact FK row connects to its referenced PK row");
+                        require(std::abs(match->front().x() - boxes[t].left()) < 0.01,
+                                "A clear left-side FK attachment is preferred");
+                    }
+                }
+            }
+            // Put an obstacle immediately left of the FK rows: the automatic
+            // attachment must use the right while retaining the same rows.
+            const auto obstacle = std::get<domain::EntityId>(*model.create_entity("Obstacle", {}).created);
+            for (int n = 0; n < 4; ++n)
+                require(model.create_attribute("Field" + std::to_string(n), {}, domain::ElementRef{obstacle}).ok,
+                        "The obstacle spans all FK rows");
+            view.refresh();
+            double obstacle_width = 0;
+            for (std::size_t t = 0; t < view.preview().tables.size(); ++t)
+                if (view.preview().tables[t].origin == domain::ElementRef{obstacle})
+                    obstacle_width = view.table_boxes()[t].width();
+            require(model.move_schema_tables({{domain::ElementRef{bridge}, {850, 450}},
+                {domain::ElementRef{obstacle}, {850 - obstacle_width - 2, 450}}}).ok, "Obstruct the left side");
+            view.refresh();
+            for (std::size_t t = 0; t < view.preview().tables.size(); ++t) {
+                if (view.preview().tables[t].origin != domain::ElementRef{bridge}) continue;
+                for (const auto& line : view.line_shapes()) {
+                    if (std::abs(line.front().x() - view.table_boxes()[t].right()) >= 0.01)
+                        std::cerr << "attachment " << line.front().x() << "," << line.front().y()
+                                  << " expected x " << view.table_boxes()[t].right() << "\n";
+                    require(std::abs(line.front().x() - view.table_boxes()[t].right()) < 0.01,
+                            "The FK uses its right side when the left end run is blocked");
+                }
+            }
+            const auto tables = view.preview().tables;
+            for (const auto& table : tables) {
+                for (const auto& column : table.columns) {
+                    if (!column.link) continue;
+                    domain::SchemaLine shape;
+                    shape.from = domain::SchemaEnd{true, {0.5, 0.0}};
+                    require(model.shape_schema_line(*column.link, shape).ok, "A manual top attachment is accepted");
+                    view.refresh();
+                    const auto boxes = view.table_boxes();
+                    const auto index = static_cast<std::size_t>(&table - tables.data());
+                    const auto lines = view.line_shapes();
+                    require(std::any_of(lines.begin(), lines.end(), [&](const auto& line) {
+                        return line.front() == QPointF(boxes[index].center().x(), boxes[index].top());
+                    }), "Manual top placement overrides automatic row attachment");
+                    break;
+                }
+                if (view.shaped_lines()) break;
+            }
+            infrastructure::ErdxProjectStore bridge_store;
+            desktop::MainWindow bridge_window(model, bridge_store, ids);
+            auto* bridge_view = static_cast<desktop::SchemaView*>(child<QWidget>(bridge_window, "schemaView"));
+            domain::OpenDecision strategy;
+            strategy.kind = domain::DecisionKind::BridgeKey;
+            strategy.about = domain::ElementRef{bridge};
+            bridge_view->decided(strategy, 1);
+            require(model.project().decisions.bridge_key.at(bridge) == domain::BridgeKey::Pair,
+                    "Choosing participant keys reaches the editor");
+            require(model.undo().ok, "The optional bridge strategy is undoable");
+            require(!model.project().decisions.bridge_key.contains(bridge), "Undo restores the default strategy");
+            bridge_view->decided(strategy, 0);
+            require(model.project().decisions.bridge_key.at(bridge) == domain::BridgeKey::Own,
+                    "Choosing a separate key reaches the editor");
+        }
+        if (app.arguments().contains("--schema-connections-only")) {
+            std::cout << "PASS schema row connections and manual endpoint overrides\n";
+            return 0;
+        }
         application::Editor editor(ids);
         infrastructure::ErdxProjectStore project_store;
         desktop::MainWindow window(editor, project_store, ids);
@@ -118,6 +266,1309 @@ int main(int argc, char** argv) {
         window.activateWindow();
         settle();
         require(window.editor().project().entities.empty(), "New window is an empty project");
+
+        // The application opens on the home screen, with the work's own
+        // furniture put away behind it.
+        {
+            require(window.showing_home(), "ERDFlow opens on the home screen");
+            auto* home = static_cast<desktop::HomePage*>(window.findChild<QWidget*>("homePage"));
+            require(home != nullptr, "Which is a page of its own");
+            require(home->isVisible(), "And is the page in front");
+            // The eight places it can send somebody. Import sits directly under
+            // Examples and Templates, in their group, as Zain settled it. There
+            // is no New Project row: the cards are where a project is started
+            // (Zain, 2026-09-24).
+            const QStringList wanted{"Home", "Open Project", "Recent",
+                                     "Examples", "Templates", "Import", "Settings", "Help"};
+            require(home->sidebar_labels() == wanted,
+                    "The sidebar offers exactly the eight named places, in order");
+            require(home->chosen_row() == 0, "And opens on Home");
+            auto* rail = home->sidebar();
+            const auto row_of = [&](desktop::HomeSection section) { return rail->button(section)->geometry(); };
+            require(row_of(desktop::HomeSection::Templates).top() == row_of(desktop::HomeSection::Examples).bottom() + 1,
+                    "Templates stands directly under Examples");
+            require(row_of(desktop::HomeSection::Import).top() > row_of(desktop::HomeSection::Templates).bottom() + 1,
+                    "And a rule parts Import from them, under them");
+            require(row_of(desktop::HomeSection::Examples).top() > row_of(desktop::HomeSection::Recent).bottom() + 1,
+                    "While a rule parts them from the rows that start or open a project");
+            require(row_of(desktop::HomeSection::Help).bottom() > rail->height() - 60
+                        && row_of(desktop::HomeSection::Settings).top()
+                               > row_of(desktop::HomeSection::Import).bottom() + 40,
+                    "Settings and Help stand at the foot of the rail");
+            for (const auto& row : desktop::home_navigation())
+                require(!desktop::outline_pixmap(QString::fromLatin1(row.icon), Qt::black, 20).isNull(),
+                        "Every row has its icon, from the one line-art family");
+            require(desktop::contrast_ratio(desktop::chosen_row_fill(desktop::tokens(desktop::ThemeId::Azure)),
+                                            Qt::white) >= 4.5,
+                    "A chosen row's white lettering reads at 4.5:1 or better");
+            // A row is a button: one press is one activation. The list it
+            // replaces lit a row on one press and acted only on two.
+            int heard_rows = 0;
+            desktop::HomeSection last_row = desktop::HomeSection::Help;
+            rail->activated = [&](desktop::HomeSection section) { ++heard_rows; last_row = section; };
+            rail->button(desktop::HomeSection::Home)->click();
+            settle();
+            require(heard_rows == 1 && last_row == desktop::HomeSection::Home,
+                    "A single press on a row activates it, once");
+            rail->activated = {};
+            require(rail->button(desktop::HomeSection::Recent)->focusPolicy() == Qt::StrongFocus,
+                    "And every row can be reached from the keyboard");
+
+            require(window.findChild<QWidget*>("homeLearningPanel") != nullptr,
+                    "The learning panel is present");
+            auto* learning = home->learning();
+            // Opening an example is the sidebar's Examples row, so the panel
+            // does not offer it twice (Zain, 2026-09-24).
+            require(learning->link_labels() == QStringList{"View tutorials"},
+                    "Its one link is there, and is a button rather than lettering");
+            require(learning->footer_phrase() == "Design today.\nBuild tomorrow.",
+                    "With the two decorative lines at its foot");
+            require(window.findChild<QWidget*>("homeCentre") != nullptr,
+                    "And the centre it sits beside");
+
+            // The ribbon gives way to Home's own slim bar; the menus never do.
+            auto* tools = window.findChild<QToolBar*>("modelTools");
+            require(tools != nullptr && !tools->isVisible(),
+                    "The model tools belong to the work, so they wait behind it");
+            for (auto* bar : window.findChildren<QToolBar*>())
+                require(!bar->isVisible(), "No ribbon row stands over the home screen");
+            require(window.menuBar()->isVisible() || window.menuBar()->isNativeMenuBar(),
+                    "The native menu bar stays, so Home is never without its menus");
+            auto* brand_bar = home->top_bar();
+            require(brand_bar->isVisible(), "Home's slim bar is in the ribbon's place");
+            require(brand_bar->theme_button()->menu() == window.findChild<QMenu*>("themeMenu"),
+                    "Its Theme opens the window's own theme menu, not a copy");
+            auto* settings = brand_bar->settings_button()->menu();
+            require(settings != nullptr && settings->actions().size() == 3
+                        && settings->actions()[0]->menu() == window.findChild<QMenu*>("themeMenu"),
+                    "Its Settings holds the application's own choices: theme, icons, notation");
+            // A panel somebody had closed must not be reopened merely because
+            // they passed through the home screen.
+            auto* checks = child<QDockWidget>(window, "validationDock");
+            require(!checks->isVisible(), "The findings were closed and stay closed");
+            window.show_home(false);
+            settle();
+            require(!window.showing_home(), "Leaving it puts the work in front");
+            require(!checks->isVisible(), "And still does not reopen what was closed");
+            require(tools->isVisible(), "The model tools come back with the work");
+            require(child<QToolBar>(window, "ribbonTabs")->isVisible(), "And the ribbon's tabs with them");
+            window.show_home(true);
+            settle();
+            require(window.showing_home(), "And it can be returned to");
+            window.show_home(true);
+            settle();
+
+            // Three ways to start, in the order the specification fixes, with
+            // the copy it fixes. Templates and Import are sidebar rows, not
+            // cards: Zain settled that on 2026-09-23.
+            const auto cards = home->cards();
+            require(cards.size() == 3, "Three ways to start, no more and no fewer");
+            const QStringList order{"startRouteConceptual", "startRouteRelational", "startRouteSql"};
+            for (int i = 0; i < order.size(); ++i)
+                require(cards[static_cast<std::size_t>(i)]->objectName() == order[i],
+                        "The cards are in the order the specification fixes");
+            require(window.findChild<QWidget*>("startRouteTemplate") == nullptr
+                        && window.findChild<QWidget*>("startRouteImport") == nullptr,
+                    "Neither Templates nor Import is a card");
+            // Zain's titles (2026-09-24, ADR-022 9.19).
+            require(cards[0]->accessibleName() == "Conceptual Design (ERD)"
+                        && cards[1]->accessibleName() == "Relational Schema"
+                        && cards[2]->accessibleName() == "SQL Script (DDL)",
+                    "And carry their exact titles");
+            require(cards[2]->accessibleDescription()
+                        == "Write, paste or import SQL to build the relational design.",
+                    "And their exact bodies");
+
+            // A card is a control, not a painted rectangle: it can be reached
+            // by keyboard and read out by the platform.
+            for (auto* card : cards)
+                require(card->focusPolicy() == Qt::StrongFocus, "Every card takes focus");
+
+            // Relational Schema and SQL Project are shown and deliberately
+            // not enabled, because the routes behind them are not built. They
+            // keep their places in the row rather than being left out.
+            for (const std::size_t unbuilt : {std::size_t{1}, std::size_t{2}}) {
+                require(!cards[unbuilt]->isEnabled(), "A route that is not built is not yet enabled");
+                require(cards[unbuilt]->isVisible(), "But it is shown, in its own place");
+                require(!cards[unbuilt]->toolTip().isEmpty(), "And says why it cannot be taken");
+            }
+            require(cards[1]->toolTip() != cards[2]->toolTip(), "Each in its own words");
+            require(cards[0]->isEnabled(), "The route that can be taken is enabled");
+
+            // The cards share one line and never wrap, at any width the window
+            // can have; each narrows to make room rather than one dropping.
+            const auto one_line = [&] {
+                for (auto* card : cards)
+                    if (card->y() != cards[0]->y() || card->width() != cards[0]->width()) return false;
+                return cards[2]->geometry().right() <= cards[0]->parentWidget()->width();
+            };
+            require(one_line(), "The cards stand on one line, equal in width");
+            const auto wide = cards[0]->width();
+            const auto opened_at = window.size();
+            window.resize(900, opened_at.height());
+            settle();
+            require(one_line(), "And stay on one line as the window narrows");
+            require(cards[0]->width() < wide, "Each narrowing rather than any of them moving down");
+            window.resize(opened_at);
+            settle();
+
+            // Every card is a little taller than wide, 1.10 to 1, however wide
+            // the window: on a wide one the cards stop growing and the group
+            // stands in the middle with room either side.
+            const auto door = [&] {
+                for (auto* card : cards) {
+                    const auto shape = static_cast<double>(card->height()) / card->width();
+                    if (shape < 1.08 || shape > 1.14) return false;
+                }
+                return true;
+            };
+            for (const auto size : {QSize(1440, 1080), QSize(1920, 1080), QSize(1179, 900)}) {
+                window.resize(size);
+                settle();
+                settle();
+                require(one_line(), "The cards stay on one line at every width");
+                require(cards[0]->height() == cards[1]->height() && cards[1]->height() == cards[2]->height(),
+                        "All cards share the height needed by the Conceptual demo");
+                require(cards[0]->width() <= 315, "No card grows past its widest");
+                if (size.width() == 1920) {
+                    auto* line = cards[0]->parentWidget();
+                    const auto left = cards.front()->x();
+                    const auto right = line->width() - cards.back()->geometry().right() - 1;
+                    require(cards[0]->width() == 315 && std::abs(left - right) <= 1,
+                            "On a wide window the cards stop at their widest and the group is centred");
+                }
+            }
+            window.resize(opened_at);
+            settle();
+
+            // One page. At the size ERDFlow opens at, and on the common
+            // smaller screens, nothing on Home is reached by scrolling.
+            for (const auto size : {opened_at, QSize(1440, 1080), QSize(1366, 740)}) {
+                window.resize(size);
+                settle();
+                if (home->centre_needs_scrolling())
+                    qWarning() << "Home needs" << home->findChild<QWidget*>("homeCentre")->minimumSizeHint()
+                               << "in" << home->findChild<QScrollArea*>("homeCentreScroll")->viewport()->size()
+                               << "at" << size << "cards" << cards[0]->size()
+                               << "content" << cards[1]->content_height_for(cards[1]->width(), true);
+                require(!home->centre_needs_scrolling(),
+                        "Home is one page: everything is on screen without scrolling");
+                require(cards[0]->height() >= cards[0]->width() * 1.08, "Cards retain their vertical proportion");
+            }
+            // A live demo under each card (ADR-022 9.21): three, in the cards'
+            // order, each exactly as wide as its card, directly under it and
+            // centred on it, all one height, never reaching into the next
+            // card's column -- and never taking anything from the cards. With
+            // the demos hidden the cards stand exactly where they stood.
+            {
+                const auto demos = home->demos();
+                require(demos.size() == 3, "Three live demos, one for each card");
+                require(demos[0]->kind() == desktop::HomeDemoKind::Conceptual
+                            && demos[1]->kind() == desktop::HomeDemoKind::Relational
+                            && demos[2]->kind() == desktop::HomeDemoKind::Sql,
+                        "In the cards' order");
+                auto* centre = home->findChild<QWidget*>("homeCentre");
+                const auto in_centre = [&](QWidget* one) {
+                    return QRect(one->mapTo(centre, QPoint()), one->size());
+                };
+                const auto card_boxes = [&] {
+                    std::vector<QRect> boxes;
+                    for (auto* card : cards) boxes.push_back(in_centre(card));
+                    return boxes;
+                };
+                for (const auto size : {opened_at, QSize(1440, 1080), QSize(1920, 1080),
+                                        QSize(1179, 900), QSize(1366, 740)}) {
+                    window.resize(size);
+                    settle();
+                    settle();
+                    const auto with = card_boxes();
+                    for (std::size_t i = 0; i < demos.size(); ++i) {
+                        const auto demo = in_centre(demos[i]);
+                        {
+                            // Every card holds its demo inside it (Zain, 2026-09-25).
+                            require(demos[i]->parentWidget() == cards[i] && with[i].contains(demo),
+                                    "The demo is contained inside its card");
+                            require(demos[i]->geometry().bottom() < cards[i]->create_button()->y(),
+                                    "The demo clears the Create button");
+                            require(std::abs(demos[i]->x() + demos[i]->stage().center().x()
+                                             - cards[i]->create_button()->geometry().center().x()) <= 1.0,
+                                    "The demo and Create share the card's center line");
+                            require(!cards[i]->accessibleDescription().isEmpty(),
+                                    "The description is no longer drawn, but is still read out");
+                            require(demos[i]->testAttribute(Qt::WA_TransparentForMouseEvents),
+                                    "Decorative demo preserves card clicks");
+                        }
+                        require(std::abs(demo.left() + demos[i]->stage().center().x()
+                                         - (with[i].left() + with[i].width() / 2.0)) <= 1.0,
+                                "Its miniature centred on the card");
+                        require(cards[i]->height() == cards[0]->height()
+                                    && cards[i]->create_button()->y() == cards[0]->create_button()->y(),
+                                "Card heights and Create baselines remain aligned");
+                        if (i + 1 < demos.size())
+                            require(demo.right() < with[i + 1].left(),
+                                    "And none reaches into the next card's column");
+                        require(demos[i]->focusPolicy() == Qt::NoFocus,
+                                "Decoration the keyboard never lands on");
+                    }
+                    for (auto* demo : demos) demo->hide();
+                    settle();
+                    settle();
+                    require(card_boxes() == with, "The demos never move or resize a card");
+                    for (auto* demo : demos) demo->show();
+                    settle();
+                    settle();
+                    require(card_boxes() == with, "Shown again, the cards are where they were");
+                }
+                window.resize(1440, 1080);
+                settle();
+                settle();
+                for (auto* demo : demos)
+                    require(demo->shown() && demo->rect().contains(demo->stage().toRect()),
+                            "At the reference size each is drawn within its bounds");
+                window.resize(opened_at);
+                settle();
+                settle();
+            }
+
+            // Stood still, as a picture that must come out the same needs
+            // them, the demos show their scenes finished.
+            home->set_demos_moving(false);
+            settle();
+
+            // The Conceptual demo (ADR-022 9.21, stage 2): Student and Course
+            // joined by Enrolled, drawn a piece at a time in the order the
+            // brief gives, in the Conceptual workspace's own shapes. Asked of
+            // the scene rather than of pixels, so nothing here depends on how
+            // text happens to fall.
+            {
+                using desktop::DemoShape;
+                const auto kind = desktop::HomeDemoKind::Conceptual;
+                const auto& steps = desktop::demo_steps(kind);
+                const auto& pieces = desktop::demo_elements(kind);
+                require(steps.size() == 14, "Fourteen steps, empty to faded");
+                require(desktop::demo_loop_seconds(kind) >= 10.0 && desktop::demo_loop_seconds(kind) <= 12.0,
+                        "A pass takes ten to twelve seconds");
+                const auto finished = desktop::demo_finished_step(kind);
+                require(QString::fromLatin1(steps[finished].name) == "Hold", "It is held once finished");
+                const auto at = [&](std::size_t step, double progress) {
+                    return desktop::DemoMoment{step, progress};
+                };
+                const auto showing = [&](desktop::DemoMoment moment, DemoShape shape) {
+                    QStringList seen;
+                    for (const auto& piece : pieces)
+                        if (piece.shape == shape && desktop::demo_arrival(piece, moment) >= 1.0)
+                            seen << (piece.label.isEmpty() ? QStringLiteral("line") : piece.label);
+                    return seen;
+                };
+                const auto done = at(finished, 0.0);
+                require(showing(done, DemoShape::Entity) == QStringList{"Student", "Course"},
+                        "Finished, it has the two entities");
+                require(showing(done, DemoShape::Relationship) == QStringList{"Enrolled"},
+                        "The relationship between them, as a diamond");
+                require(showing(done, DemoShape::Attribute)
+                            == QStringList{"ID", "Name", "ID", "Name", "Enrollment Date"},
+                        "Each side's ID and Name, and the relationship's Enrollment Date");
+                require(showing(done, DemoShape::KeyMark) == QStringList{"ID", "ID"},
+                        "With both IDs underlined as keys");
+                require(showing(done, DemoShape::Connector).size() == 7,
+                        "And a line for each of the two sides and each of the five attributes");
+
+                // Empty first, then entities, keyed attributes, the relationship,
+                // its connectors/cardinalities and its own attribute.
+                for (const auto& piece : pieces)
+                    require(desktop::demo_arrival(piece, at(0, 1.0)) == 0.0, "It starts empty");
+                const auto arrived_by = [&](const QString& label, DemoShape shape) {
+                    for (const auto& piece : pieces)
+                        if (piece.label == label && piece.shape == shape) return piece.step;
+                    return std::size_t{99};
+                };
+                require(arrived_by("Student", DemoShape::Entity) < arrived_by("Course", DemoShape::Entity)
+                            && arrived_by("Course", DemoShape::Entity)
+                                   < arrived_by("Enrolled", DemoShape::Relationship),
+                        "Student, then Course, then Enrolled");
+                std::vector<const desktop::DemoElement*> attributes, branches, keys, symbols;
+                for (const auto& piece : pieces) {
+                    if (piece.shape == DemoShape::Attribute) attributes.push_back(&piece);
+                    if (piece.shape == DemoShape::Connector && piece.route.size() == 2) branches.push_back(&piece);
+                    if (piece.shape == DemoShape::KeyMark) keys.push_back(&piece);
+                    if (piece.shape == DemoShape::OptionalMany) symbols.push_back(&piece);
+                }
+                require(attributes.size() == 5 && branches.size() == 4 && keys.size() == 2,
+                        "Only the specified attributes and their key marks");
+                const auto& student = pieces[0].box;
+                const auto& course = pieces[1].box;
+                const auto centered_relationship = std::find_if(pieces.begin(), pieces.end(), [](const auto& piece) {
+                    return piece.shape == DemoShape::Relationship;
+                });
+                require(centered_relationship != pieces.end() && student.center().y() == course.center().y()
+                            && centered_relationship->box.center() == QPointF(140, student.center().y())
+                            && student.center().x() < 140 && course.center().x() > 140
+                            && student.center().x() + course.center().x() == 280,
+                        "Horizontal entities are balanced around the centered centered_relationship");
+                for (std::size_t i = 0; i < 4; ++i) {
+                    const auto& branch = *branches[i];
+                    const auto& owner = i < 2 ? student : course;
+                    const QPointF anchor(owner.center().x(), owner.top());
+                    require(branch.from == anchor, "Attribute originates directly at its entity's central anchor");
+                    require(branch.to.x() == attributes[i]->box.center().x()
+                                && branch.to.y() == attributes[i]->box.bottom(),
+                            "Branch reaches its own attribute boundary");
+                    const auto path = desktop::demo_connector_path(branch);
+                    require(path.pointAtPercent(0) == anchor && path.pointAtPercent(1) == branch.to,
+                            "Painted curve preserves both anchors");
+                    if (i % 2 == 0) {
+                        require(branch.from == branches[i + 1]->from && branch.route[0] == branches[i + 1]->route[0],
+                                "ID and Name share the short trunk before branching");
+                        require(keys[i / 2]->box == attributes[i]->box
+                                    && keys[i / 2]->step == attributes[i]->step
+                                    && attributes[i]->step < attributes[i + 1]->step,
+                                "Underlined ID arrives before Name");
+                    }
+                }
+                require(symbols.size() == 2 && symbols[0]->from == QPointF(student.right(), student.center().y())
+                            && symbols[1]->from == QPointF(course.left(), course.center().y())
+                            && symbols[0]->to == QPointF(1, 0) && symbols[1]->to == QPointF(-1, 0),
+                        "Optional-many crow's feet sit at separate inward-facing relationship anchors");
+                for (const auto& piece : pieces) {
+                    if (piece.shape != DemoShape::Connector || !piece.route.empty()) continue;
+                    if (piece.label == "Enrollment Date") {
+                        const auto diamond = std::find_if(pieces.begin(), pieces.end(), [](const auto& item) {
+                            return item.shape == DemoShape::Relationship;
+                        });
+                        require(diamond != pieces.end() && piece.from == QPointF(diamond->box.center().x(), diamond->box.bottom())
+                                    && piece.to == QPointF(attributes.back()->box.center().x(), attributes.back()->box.top()),
+                                "Enrollment Date joins the diamond itself");
+                    } else {
+                        require(piece.from.y() == piece.to.y(), "Relationship connectors stay horizontal");
+                        require(piece.step > arrived_by("Enrolled", DemoShape::Relationship)
+                                    && piece.step < symbols[0]->step,
+                                "Relationship lines precede their cardinality symbols");
+                    }
+                }
+                // An attribute's line grows out before its oval appears.
+                for (std::size_t i = 0; i + 1 < pieces.size(); ++i)
+                    if (pieces[i].shape == DemoShape::Connector && pieces[i + 1].shape == DemoShape::Attribute)
+                        require(pieces[i].step == pieces[i + 1].step && pieces[i].starts < pieces[i + 1].starts,
+                                "An attribute's line grows out before the attribute appears");
+
+                // Only the last step fades it, and a pass goes round again.
+                require(desktop::demo_scene_opacity(kind, done) == 1.0
+                            && desktop::demo_scene_opacity(kind, at(steps.size() - 1, 1.0)) == 0.0,
+                        "It is whole until its last step fades it away");
+                const auto loop = desktop::demo_loop_seconds(kind);
+                require(desktop::demo_moment_at(kind, 0.0).step == 0
+                            && desktop::demo_moment_at(kind, loop + 0.1).step == 0,
+                        "And past its end it starts again");
+
+                // On Home, until the demos are played, it shows its model finished.
+                auto* conceptual = home->demos()[0];
+                require(conceptual->step() == finished, "Stood still, it shows its scene finished");
+                QImage empty(conceptual->size(), QImage::Format_ARGB32_Premultiplied);
+                QImage whole(conceptual->size(), QImage::Format_ARGB32_Premultiplied);
+                empty.fill(Qt::white);
+                whole.fill(Qt::white);
+                // Its painted scene is what plays when it moves; standing still
+                // on Home it shows the canvas itself instead, looked at below.
+                const bool real = conceptual->real_canvas();
+                conceptual->set_real_canvas(false);
+                conceptual->show_step(0, 0.0);
+                conceptual->render(&empty);
+                conceptual->show_step(finished, 0.0);
+                conceptual->render(&whole);
+                conceptual->set_real_canvas(real);
+                require(empty != whole, "And what it draws is the scene, not only its floor");
+            }
+
+            // The Relational Schema demo (ADR-022 9.21, stage 3): Students,
+            // Courses and the Enrollments bridge, filled in a row at a time,
+            // their keys marked, and each foreign key's line drawn from the
+            // key it references to the exact row that references it. No
+            // diamond: in a schema a relationship is its foreign keys.
+            {
+                using desktop::DemoShape;
+                const auto kind = desktop::HomeDemoKind::Relational;
+                const auto& steps = desktop::demo_steps(kind);
+                const auto& pieces = desktop::demo_elements(kind);
+                require(steps.size() == 15, "Fifteen steps, empty to faded");
+                require(desktop::demo_loop_seconds(kind) >= 10.0 && desktop::demo_loop_seconds(kind) <= 12.0,
+                        "A pass takes ten to twelve seconds");
+                const auto finished = desktop::demo_finished_step(kind);
+                require(QString::fromLatin1(steps[finished].name) == "Hold", "It is held once finished");
+                for (const auto& piece : pieces)
+                    require(piece.shape != DemoShape::Relationship && piece.shape != DemoShape::Entity
+                                && piece.shape != DemoShape::Attribute && piece.shape != DemoShape::Connector
+                                && piece.shape != DemoShape::KeyMark,
+                            "No diamond and no conceptual shape: only tables, keys and their lines");
+
+                std::vector<const desktop::DemoElement*> tables;
+                for (const auto& piece : pieces)
+                    if (piece.shape == DemoShape::Table) tables.push_back(&piece);
+                require(tables.size() == 3 && tables[0]->label == "Students" && tables[1]->label == "Courses"
+                            && tables[2]->label == "Enrollments",
+                        "Students, Courses and Enrollments");
+                require(!tables[0]->bridge && !tables[1]->bridge && tables[2]->bridge,
+                        "Enrollments drawn as the bridge it is");
+                const auto in_table = [&](const desktop::DemoElement& piece) -> const desktop::DemoElement* {
+                    for (const auto* table : tables)
+                        if (table->box.contains(piece.box.center())) return table;
+                    return nullptr;
+                };
+                const auto listed = [&](DemoShape shape, const QString& table) {
+                    QStringList seen;
+                    for (const auto& piece : pieces)
+                        if (piece.shape == shape && in_table(piece) && in_table(piece)->label == table)
+                            seen << piece.label;
+                    return seen;
+                };
+                require(listed(DemoShape::Column, "Students") == QStringList{"StudentID", "Name"}
+                            && listed(DemoShape::Column, "Courses") == QStringList{"CourseID", "Name"}
+                            && listed(DemoShape::Column, "Enrollments")
+                                   == QStringList{"StudentID", "CourseID", "EnrollmentDate"},
+                        "Each table with its own columns");
+                require(listed(DemoShape::PrimaryKey, "Students") == QStringList{"StudentID"}
+                            && listed(DemoShape::PrimaryKey, "Courses") == QStringList{"CourseID"}
+                            && listed(DemoShape::PrimaryKey, "Enrollments").isEmpty(),
+                        "StudentID and CourseID marked as the primary keys of their tables");
+                require(listed(DemoShape::ForeignKey, "Enrollments") == QStringList{"StudentID", "CourseID"}
+                            && listed(DemoShape::ForeignKey, "Students").isEmpty()
+                            && listed(DemoShape::ForeignKey, "Courses").isEmpty(),
+                        "And Enrollments' two columns marked as the foreign keys that point at them");
+
+                // Each line runs from the key's own row to the row that
+                // references it, square-cornered, never through a table.
+                std::vector<const desktop::DemoElement*> lines;
+                for (const auto& piece : pieces)
+                    if (piece.shape == DemoShape::Reference) lines.push_back(&piece);
+                require(lines.size() == 2, "Two lines, one for each foreign key");
+                const auto row_of = [&](const QString& table, const QString& column) {
+                    for (const auto& piece : pieces)
+                        if (piece.shape == DemoShape::Column && piece.label == column && in_table(piece)
+                            && in_table(piece)->label == table)
+                            return piece.box;
+                    return QRectF();
+                };
+                const std::array<std::pair<QString, QString>, 2> joins{
+                    std::pair<QString, QString>{"Students", "StudentID"}, {"Courses", "CourseID"}};
+                for (std::size_t i = 0; i < lines.size(); ++i) {
+                    const auto& route = lines[i]->route;
+                    const auto key = row_of(joins[i].first, joins[i].second);
+                    const auto foreign = row_of("Enrollments", joins[i].second);
+                    require(route.size() >= 2 && route.front() == QPointF(key.right(), key.center().y()),
+                            "A line starts on the referenced key's own row");
+                    require(route.back() == QPointF(foreign.left(), foreign.center().y()),
+                            "And ends on the exact row that references it");
+                    for (std::size_t p = 1; p < route.size(); ++p) {
+                        require(route[p].x() == route[p - 1].x() || route[p].y() == route[p - 1].y(),
+                                "Straight runs and right-angled turns only");
+                        // Every point along the run lies outside every table; its
+                        // ends sit on a table's edge, which is not inside it.
+                        for (int step = 1; step < 20; ++step) {
+                            const auto on = route[p - 1] + (route[p] - route[p - 1]) * (step / 20.0);
+                            for (const auto* table : tables)
+                                require(!table->box.adjusted(0.5, 0.5, -0.5, -0.5).contains(on),
+                                        "And never through a table");
+                        }
+                    }
+                }
+
+                // In order: each table, then its rows; the keys once every
+                // row is in; the lines once the keys are marked.
+                // In the order Zain gave (2026-09-25): each table and then
+                // each of its rows in its own step, a key marked in the step
+                // of its own row and after the row itself, then the Students
+                // line, then the Courses line, then held.
+                std::vector<std::pair<DemoShape, QString>> order;
+                std::vector<std::size_t> order_steps;
+                for (const auto& piece : pieces)
+                    if (piece.shape == DemoShape::Table || piece.shape == DemoShape::Column
+                        || piece.shape == DemoShape::Reference) {
+                        order.emplace_back(piece.shape, piece.label);
+                        order_steps.push_back(piece.step);
+                    }
+                const std::vector<std::pair<DemoShape, QString>> expected{
+                    {DemoShape::Table, "Students"}, {DemoShape::Column, "StudentID"}, {DemoShape::Column, "Name"},
+                    {DemoShape::Table, "Courses"}, {DemoShape::Column, "CourseID"}, {DemoShape::Column, "Name"},
+                    {DemoShape::Table, "Enrollments"}, {DemoShape::Column, "StudentID"},
+                    {DemoShape::Column, "CourseID"}, {DemoShape::Column, "EnrollmentDate"},
+                    {DemoShape::Reference, "StudentID"}, {DemoShape::Reference, "CourseID"}};
+                require(order == expected, "Tables, rows and lines in the order given");
+                for (std::size_t i = 1; i < order_steps.size(); ++i)
+                    require(order_steps[i] == order_steps[i - 1] + 1, "Each in a step of its own, one after another");
+                require(order_steps.front() == 1 && order_steps.back() + 1 == finished,
+                        "From the first step after the empty one, to the one before it is held");
+                for (const auto& piece : pieces)
+                    if (piece.shape == DemoShape::PrimaryKey || piece.shape == DemoShape::ForeignKey)
+                        for (const auto& row : pieces)
+                            if (row.shape == DemoShape::Column && row.box == piece.box)
+                                require(piece.step == row.step && piece.starts > row.starts,
+                                        "A key is marked as its own row arrives, just after it");
+
+                auto* relational = home->demos()[1];
+                require(relational->step() == finished, "Stood still, it shows its scene finished");
+                QImage empty(relational->size(), QImage::Format_ARGB32_Premultiplied);
+                QImage whole(relational->size(), QImage::Format_ARGB32_Premultiplied);
+                empty.fill(Qt::white);
+                whole.fill(Qt::white);
+                relational->show_step(0, 0.0);
+                relational->render(&empty);
+                relational->show_step(finished, 0.0);
+                relational->render(&whole);
+                require(empty != whole, "And what it draws is the schema, not only its floor");
+            }
+
+            // The SQL demo (ADR-022 9.21, stage 4): an editor comes up and the
+            // same three tables are typed into it as SQL, a character at a
+            // time at one steady speed, and a line at its foot says what
+            // running it made. Nothing is run.
+            {
+                using desktop::DemoShape;
+                const auto kind = desktop::HomeDemoKind::Sql;
+                const auto& steps = desktop::demo_steps(kind);
+                const auto& pieces = desktop::demo_elements(kind);
+                const auto loop = desktop::demo_loop_seconds(kind);
+                require(loop >= 9.0 && loop <= 11.0, "A pass takes about ten seconds");
+                const auto finished = desktop::demo_finished_step(kind);
+                require(QString::fromLatin1(steps[finished].name) == "Hold", "It is held once finished");
+                for (const auto& piece : pieces)
+                    require(piece.shape == DemoShape::Editor || piece.shape == DemoShape::Code
+                                || piece.shape == DemoShape::Result,
+                            "Only an editor, its script and the result: no diagram and no tables");
+
+                // The finished script: the script Zain gave (2026-09-25), set
+                // compactly enough to sit whole in the editor inside the card.
+                const auto script = desktop::demo_code_at(kind, desktop::DemoMoment{finished, 0.0});
+                require(script.count("CREATE TABLE") == 3 && script.contains("CREATE TABLE Students (")
+                            && script.contains("CREATE TABLE Courses (")
+                            && script.contains("CREATE TABLE Enrollments ("),
+                        "It writes Students, Courses and Enrollments");
+                require(script.count("PRIMARY KEY") == 2 && script.count("VARCHAR(100)") == 2
+                            && script.contains("StudentID INT,") && script.contains("CourseID INT,")
+                            && script.contains("EnrollmentDate DATE"),
+                        "With the columns Zain gave: two keys, two names, and the bridge's three");
+                require(!script.contains("REFERENCES"), "And, as he wrote it, no REFERENCES clauses");
+                require(script.split('\n').size() == 10, "Ten lines, which the editor holds whole");
+                for (const auto& line : script.split('\n'))
+                    require(line.size() <= 40, "And no line wider than the editor");
+                require(desktop::demo_code_at(kind, desktop::DemoMoment{0, 1.0}).isEmpty()
+                            && desktop::demo_code_at(kind, desktop::DemoMoment{1, 1.0}).isEmpty(),
+                        "Nothing is typed until the editor is up");
+
+                // Typed a character at a time, always the start of the script,
+                // at one steady speed: forty characters a second.
+                double typing_starts = 0;
+                for (std::size_t i = 0; i < steps.size(); ++i) {
+                    bool types = false;
+                    for (const auto& piece : pieces)
+                        if (piece.shape == DemoShape::Code && piece.step == i) types = true;
+                    if (types) break;
+                    typing_starts += steps[i].seconds;
+                }
+                qsizetype before = 0;
+                for (double t = typing_starts; t < typing_starts + script.size() / 40.0; t += 0.05) {
+                    const auto typed = desktop::demo_code_at(kind, desktop::demo_moment_at(kind, t));
+                    require(script.startsWith(typed), "What is typed is always the start of the script");
+                    require(typed.size() >= before, "And it only ever grows while it is typed");
+                    require(std::abs(static_cast<double>(typed.size()) - (t - typing_starts) * 40.0) <= 1.5,
+                            "At a steady forty characters a second");
+                    before = typed.size();
+                }
+
+                // Each table's head, then its columns, in Zain's order.
+                QStringList runs;
+                for (const auto& piece : pieces)
+                    if (piece.shape == DemoShape::Code) runs << piece.label.trimmed();
+                require(runs.size() == 6 && runs[0] == "CREATE TABLE Students (" && runs[1].startsWith("StudentID")
+                            && runs[2] == "CREATE TABLE Courses (" && runs[3].startsWith("CourseID")
+                            && runs[4] == "CREATE TABLE Enrollments (" && runs[5].startsWith("StudentID"),
+                        "Each table's head, then its columns, one table after another");
+
+                // In order: the editor, the three tables, then the result.
+                std::size_t editor_step = 99, result_step = 0, last_code = 0;
+                for (const auto& piece : pieces) {
+                    if (piece.shape == DemoShape::Editor) editor_step = piece.step;
+                    if (piece.shape == DemoShape::Result) result_step = piece.step;
+                    if (piece.shape == DemoShape::Code) {
+                        require(piece.step > editor_step, "Typed into the editor once it is up");
+                        last_code = std::max(last_code, piece.step);
+                    }
+                }
+                require(result_step > last_code && result_step < finished,
+                        "And the result once the script is written, before it is held");
+                for (const auto& piece : pieces)
+                    if (piece.shape == DemoShape::Result)
+                        require(piece.label == "3 tables created", "Saying the three tables were made");
+
+                auto* sql = home->demos()[2];
+                require(sql->step() == finished, "Stood still, it shows its scene finished");
+                QImage empty(sql->size(), QImage::Format_ARGB32_Premultiplied);
+                QImage whole(sql->size(), QImage::Format_ARGB32_Premultiplied);
+                empty.fill(Qt::white);
+                whole.fill(Qt::white);
+                sql->show_step(0, 0.0);
+                sql->render(&empty);
+                sql->show_step(finished, 0.0);
+                sql->render(&whole);
+                require(empty != whole, "And what it draws is the editor and its script");
+            }
+
+            // Each demo is shown on a small screen raised off its card, and the
+            // Conceptual card's is the Conceptual canvas itself, drawn small
+            // (Zain, 2026-09-25): an example made with the Editor's own
+            // commands and drawn by the workspace's own view, at the sizes
+            // every element is really made at.
+            {
+                for (auto* demo : home->demos()) {
+                    require(QRectF(demo->rect()).contains(demo->screen())
+                                && demo->screen().contains(demo->screen_inside()),
+                            "Each demo is shown on a screen inside its card");
+                }
+                require(home->demos()[0]->real_canvas() && !home->demos()[1]->real_canvas()
+                            && !home->demos()[2]->real_canvas(),
+                        "The Conceptual card shows the canvas itself; the others their pictures");
+                const auto& canvas = desktop::conceptual_canvas_picture(desktop::ThemeId::Azure);
+                require(!canvas.picture.isNull() && canvas.source.width() > canvas.source.height(),
+                        "Drawn by the canvas, wider than tall, as the model lies on one line");
+                application::Editor example(ids);
+                desktop::build_conceptual_example(example);
+                const auto& project = example.project();
+                QStringList entities;
+                for (const auto& [id, entity] : project.entities) entities << QString::fromStdString(entity.name);
+                entities.sort();
+                require(entities == QStringList{"Course", "Student"}, "Student and Course");
+                require(project.relationships.size() == 1
+                            && project.relationships.begin()->second.name == "Enrolled",
+                        "Joined by Enrolled");
+                for (const auto& side : project.relationships.begin()->second.participants)
+                    require(side.maximum == domain::Cardinality::Many, "Many to many");
+                int keys = 0;
+                QStringList attributes;
+                for (const auto& [id, attribute] : project.attributes) {
+                    attributes << QString::fromStdString(attribute.name);
+                    if (attribute.kind == domain::AttributeKind::Key) ++keys;
+                }
+                attributes.sort();
+                require(attributes == QStringList{"Enrollment Date", "ID", "ID", "Name", "Name"} && keys == 2,
+                        "Each with its ID as key and its Name, and Enrollment Date on the relationship");
+                for (const auto& [id, entity] : project.entities) {
+                    const auto& at = project.layout.at(domain::ElementRef{id});
+                    require(at.width == desktop::entity_body.width && at.height == desktop::entity_body.height,
+                            "Entities at the size the canvas makes them");
+                }
+            }
+
+            // The clock (ADR-022 9.21, stage 5): one clock plays all three,
+            // Conceptual first, Relational a second later and SQL a second
+            // after that, each going round again at its own length. Looked at
+            // by giving the clock moments rather than waiting for them.
+            {
+                auto* clock = home->demo_clock();
+                const auto demos = home->demos();
+                // Each demo's motion is kept, switched off on Home for now
+                // (Zain, 2026-09-25); switched on here to look at it.
+                for (auto* demo : demos) clock->set_playing(demo, true);
+                require(clock->delay_of(demos[0]) == 0.0 && clock->delay_of(demos[1]) == 1.0
+                            && clock->delay_of(demos[2]) == 2.0,
+                        "Conceptual starts first, Relational a second later, SQL a second after that");
+                const auto stands_at = [&](desktop::HomeLiveDemo* demo, double seconds) {
+                    const auto moment = desktop::demo_moment_at(demo->kind(), seconds);
+                    return demo->step() == moment.step && std::abs(demo->progress() - moment.progress) < 1e-9;
+                };
+                const auto waiting = [](desktop::HomeLiveDemo* demo) {
+                    return demo->step() == 0 && demo->progress() == 0.0;
+                };
+                clock->show_at(0.5);
+                require(stands_at(demos[0], 0.5) && waiting(demos[1]) && waiting(demos[2]),
+                        "At first only Conceptual plays; the others wait at their empty start");
+                clock->show_at(1.5);
+                require(stands_at(demos[0], 1.5) && stands_at(demos[1], 0.5) && waiting(demos[2]),
+                        "A second on, Relational has begun");
+                clock->show_at(2.5);
+                require(stands_at(demos[1], 1.5) && stands_at(demos[2], 0.5), "And a second after, SQL");
+                for (const double later : {12.0, 23.4, 61.7}) {
+                    clock->show_at(later);
+                    for (auto* demo : demos)
+                        require(stands_at(demo, later - clock->delay_of(demo)),
+                                "Each goes round at its own length, from its own start");
+                }
+                clock->show_at(desktop::demo_loop_seconds(desktop::HomeDemoKind::Conceptual) + 0.05);
+                require(demos[0]->step() == 0, "And starts again once it is through");
+                // Their first pieces arrive at different moments, so the three
+                // never begin moving at once.
+                std::vector<double> first_moves;
+                for (auto* demo : demos)
+                    first_moves.push_back(clock->delay_of(demo) + desktop::demo_steps(demo->kind())[0].seconds);
+                for (std::size_t i = 0; i < first_moves.size(); ++i)
+                    for (std::size_t j = i + 1; j < first_moves.size(); ++j)
+                        require(std::abs(first_moves[i] - first_moves[j]) >= 0.5,
+                                "No two begin moving within half a second of each other");
+
+                // And the clock really runs: started, it moves them along.
+                home->set_demos_moving(true);
+                require(clock->moving(), "Home plays its demos");
+                settle_for(400);
+                require(clock->seconds() > 0.2, "The clock runs");
+                require(demos[0]->step() > 0 || demos[0]->progress() > 0.0, "And moves the demos along");
+                home->set_demos_moving(false);
+                for (auto* demo : demos)
+                    require(demo->step() == desktop::demo_finished_step(demo->kind()),
+                            "Stopped, every demo stands finished");
+                home->set_demos_moving(true);
+            }
+
+            // Reduced motion and pausing (ADR-022 9.21, stage 6). Where motion
+            // is not welcome -- asked for through the one seam that says so
+            // (ADR-022 9.9) -- the demos never move and each shows its scene
+            // finished. And the clock ticks only while Home can be seen:
+            // hidden, it stops; shown again, every demo starts from the
+            // beginning, in step with the others.
+            {
+                qputenv("ERDFLOW_REDUCED_MOTION", "1");
+                desktop::HomePage still_home(nullptr);
+                qunsetenv("ERDFLOW_REDUCED_MOTION");
+                still_home.resize(1234, 1003);
+                // Shown beside the window without taking its keyboard, which
+                // the tests after this one rely on the window keeping.
+                still_home.setAttribute(Qt::WA_ShowWithoutActivating, true);
+                still_home.show();
+                settle_for(250);
+                require(!still_home.demo_clock()->moving() && !still_home.demo_clock()->running(),
+                        "Where reduced motion is asked for, the demos do not play");
+                for (auto* demo : still_home.demos())
+                    require(demo->step() == desktop::demo_finished_step(demo->kind()) && demo->shown(),
+                            "And each shows its scene finished, so Home still looks complete");
+                still_home.hide();
+                window.activateWindow();
+                settle();
+                // And by default, too, they stand still, each finished (Zain,
+                // 2026-09-25). The clock is kept for when they are played.
+                desktop::HomePage default_home(nullptr);
+                default_home.setAttribute(Qt::WA_ShowWithoutActivating, true);
+                default_home.show();
+                settle_for(150);
+                require(!default_home.demo_clock()->running(), "Home shows its demos standing still");
+                for (auto* demo : default_home.demos())
+                    require(!default_home.demo_clock()->playing(demo)
+                                && demo->step() == desktop::demo_finished_step(demo->kind()),
+                            "Each switched off, a still picture of its scene finished");
+                default_home.hide();
+                window.activateWindow();
+                settle();
+
+                // Played, the clock ticks only while Home can be seen.
+                auto* clock = home->demo_clock();
+                home->set_demos_moving(true);
+                settle();
+                require(window.showing_home() && clock->running(), "On Home, a played clock ticks");
+                window.show_home(false);
+                settle();
+                require(clock->moving() && !clock->running(),
+                        "Away from Home it stops ticking, while still meaning to play");
+                settle_for(300);
+                window.show_home(true);
+                settle();
+                require(clock->running() && clock->seconds() < 0.25,
+                        "Back on Home it starts again from the beginning");
+                const auto demos = home->demos();
+                require(demos[1]->step() == 0 && demos[2]->step() == 0,
+                        "With Relational and SQL waiting their turn, as at the very start");
+                home->set_demos_moving(false);
+                require(!clock->running(), "Stood still by hand, it stops ticking too");
+                home->set_demos_moving(true);
+                require(clock->running(), "And plays again when asked, Home being in front");
+
+                // Each demo is switched on or off by itself: switched on alone,
+                // one plays while the others stay still pictures, finished.
+                for (auto* demo : demos) clock->set_playing(demo, false);
+                require(!clock->running(), "With none switched on, nothing ticks");
+                clock->set_playing(demos[1], true);
+                require(clock->running(), "Switching one on starts the clock");
+                clock->show_at(3.0);
+                const auto relational_at = desktop::demo_moment_at(desktop::HomeDemoKind::Relational, 2.0);
+                require(demos[1]->step() == relational_at.step
+                            && std::abs(demos[1]->progress() - relational_at.progress) < 1e-9,
+                        "And that one plays");
+                require(demos[0]->step() == desktop::demo_finished_step(demos[0]->kind())
+                            && demos[2]->step() == desktop::demo_finished_step(demos[2]->kind()),
+                        "While the others stand still, finished");
+                clock->set_playing(demos[1], false);
+                require(!clock->running()
+                            && demos[1]->step() == desktop::demo_finished_step(demos[1]->kind()),
+                        "Switched off again, it is a still picture and the clock stops");
+            }
+            // Shorter still, the page would rather be scrolled than have its
+            // cards squashed out of shape (Zain, 2026-09-24).
+            window.resize(1280, 720);
+            settle();
+            settle();
+            require(door() || cards[0]->height() > cards[0]->width() * 1.14,
+                    "A short window never makes a card wider than its shape");
+            window.resize(opened_at);
+            settle();
+            settle();
+            window.resize(opened_at);
+            settle();
+
+            // Choosing one moves the choice, and a route that cannot be taken
+            // cannot be chosen.
+            require(cards[0]->isChecked(), "Conceptual is chosen to begin with");
+            desktop::StartRoute heard = desktop::StartRoute::Sql;
+            bool told = false;
+            // Borrowed, and given back: the window's own routing is what takes
+            // somebody to a workspace, and a later case depends on it.
+            home->route_selected = [&](desktop::StartRoute route) { heard = route; told = true; };
+            cards[2]->click();
+            settle();
+            require(!told && home->chosen_route() == desktop::StartRoute::Conceptual,
+                    "Pressing a route that is not built chooses nothing");
+            require(cards[0]->isChecked() && !cards[2]->isChecked(), "And the choice stays where it was");
+            cards[0]->click();
+            settle();
+            require(told && heard == desktop::StartRoute::Conceptual, "Choosing a card reports its route");
+            require(window.showing_home(),
+                    "But choosing is not starting: the home screen is still there");
+
+            // The illustration: drawn, not loaded, and told what to say rather
+            // than built around one caller.
+            {
+                auto* flow = home->hero();
+                require(flow != nullptr, "The home screen carries the illustration");
+                // Four decorative panels around the database -- not to be
+                // confused with the three start cards, which are controls.
+                require(flow->items().size() == 4, "It shows four panels around the database");
+                require(flow->items()[0].title == "Conceptual ERD"
+                            && flow->items()[1].title == "Relationships"
+                            && flow->items()[2].title == "Relational Design"
+                            && flow->items()[3].title == "SQL",
+                        "Named as the product names its levels");
+                require(flow->items()[0].icon == desktop::HeroIcon::Structure
+                            && flow->items()[1].icon == desktop::HeroIcon::Conceptual
+                            && flow->items()[2].icon == desktop::HeroIcon::Relational
+                            && flow->items()[3].icon == desktop::HeroIcon::Sql,
+                        "Each read by its mark: structure, relationship, table, SQL page");
+                for (const auto& item : flow->items()) {
+                    require(!item.labelled, "The product's panels are read by their marks, not labels");
+                    const auto shape = item.size.width() / item.size.height();
+                    require(shape >= 0.78 && shape <= 0.88, "Each panel is upright, a little taller than wide");
+                }
+                // A quarter-turn apart, so they never meet as they travel.
+                {
+                    std::vector<double> starts;
+                    for (const auto& item : flow->items()) starts.push_back(item.orbit_phase * 360.0);
+                    std::sort(starts.begin(), starts.end());
+                    for (std::size_t i = 0; i < starts.size(); ++i) {
+                        const auto next = i + 1 < starts.size() ? starts[i + 1] : starts[0] + 360.0;
+                        require(std::abs(next - starts[i] - 90.0) < 0.5,
+                                "The panels start a quarter of the way round from each other");
+                    }
+                }
+                // The same drawing says something else when asked to. This is
+                // what makes it a component rather than a picture of this one
+                // screen.
+                flow->show_items(desktop::WelcomeFlowIllustration::marketing_cards(
+                    desktop::tokens(desktop::ThemeId::Azure)));
+                require(flow->items()[0].title == "Design"
+                            && flow->items()[2].title == "Generate",
+                        "It can be given other words entirely");
+                // And anything a caller invents.
+                std::vector<desktop::HeroOrbitItem> mine;
+                desktop::HeroOrbitItem one;
+                one.id = "mine";
+                one.title = "Anything";
+                one.subtitle = "at all";
+                one.icon = desktop::HeroIcon::Relational;
+                mine.push_back(one);
+                flow->show_items(mine);
+                require(flow->items().size() == 1 && flow->items()[0].subtitle == "at all",
+                        "Including a caller's own, with a subtitle");
+                require(flow->orbit_radii(0).width() > 0,
+                        "Given no orbit of its own, a caller's panel travels the shared one");
+                // A panel can show anything a caller draws, and do something
+                // when pressed, without the orbit knowing what either is. The
+                // product's own panels do neither: they are decoration.
+                {
+                    for (const auto& item : desktop::WelcomeFlowIllustration::product_cards(
+                             desktop::tokens(desktop::ThemeId::Azure)))
+                        require(!item.draw && !item.on_press,
+                                "The product's panels draw their own marks and do nothing when pressed");
+                    QRectF given;
+                    int pressed = 0;
+                    desktop::HeroOrbitItem custom;
+                    custom.id = "custom";
+                    custom.title = "Something new";
+                    custom.size = {80, 100};
+                    custom.draw = [&](QPainter& painter, const QRectF& face) {
+                        given = face;
+                        painter.fillRect(face, QColor("#FF00FF"));
+                    };
+                    custom.on_press = [&] { ++pressed; };
+                    flow->show_items({custom});
+                    flow->set_moving(false);
+                    flow->resize(520, 280);
+                    QImage drawn(520, 280, QImage::Format_ARGB32);
+                    drawn.fill(Qt::transparent);
+                    flow->render(&drawn);
+                    require(given.size() == QSizeF(80, 100),
+                            "A caller's content is given the panel's own face, upright and unscaled");
+                    const auto middle = flow->card_centre(0).toPoint();
+                    require(drawn.pixelColor(middle).red() > 200 && drawn.pixelColor(middle).green() < 60,
+                            "And is drawn in place of the mark");
+                    // Just inside the square corner the fill was asked to
+                    // reach, but outside the panel's rounded one.
+                    const auto corner = flow->card_outline(0)[0];
+                    const auto inward = flow->card_centre(0) - corner;
+                    const auto probe = (corner + inward * (2.0 / std::hypot(inward.x(), inward.y()))).toPoint();
+                    const auto there = drawn.pixelColor(probe);
+                    require(!(there.red() > 200 && there.green() < 60 && there.blue() > 200),
+                            "Kept inside its panel's rounded shape");
+                    const auto at = flow->card_centre(0);
+                    QMouseEvent down(QEvent::MouseButtonPress, at, at, Qt::LeftButton, Qt::LeftButton,
+                                     Qt::NoModifier);
+                    QMouseEvent up(QEvent::MouseButtonRelease, at, at, Qt::LeftButton, Qt::NoButton,
+                                   Qt::NoModifier);
+                    QApplication::sendEvent(flow, &down);
+                    QApplication::sendEvent(flow, &up);
+                    require(pressed == 1, "Pressing a panel that has something to do does it");
+                    const QPointF empty(4, 4);
+                    QMouseEvent elsewhere(QEvent::MouseButtonPress, empty, empty, Qt::LeftButton,
+                                          Qt::LeftButton, Qt::NoModifier);
+                    QMouseEvent away(QEvent::MouseButtonRelease, empty, empty, Qt::LeftButton,
+                                     Qt::NoButton, Qt::NoModifier);
+                    QApplication::sendEvent(flow, &elsewhere);
+                    QApplication::sendEvent(flow, &away);
+                    require(pressed == 1, "And pressing beside it does nothing");
+                    flow->set_moving(true);
+                }
+                flow->show_items({});
+                require(flow->items().size() == 4 && flow->items()[0].title == "Conceptual ERD",
+                        "And asking for none puts the product's own back");
+                // Painted rather than fetched: it renders into whatever size
+                // it is given, which a bitmap of one size could not.
+                QImage small(160, 90, QImage::Format_ARGB32);
+                small.fill(Qt::transparent);
+                flow->resize(160, 90);
+                flow->render(&small);
+                QImage large(520, 280, QImage::Format_ARGB32);
+                large.fill(Qt::transparent);
+                flow->resize(520, 280);
+                flow->render(&large);
+                const auto inked = [](const QImage& of) {
+                    int count = 0;
+                    for (int y = 0; y < of.height(); ++y)
+                        for (int x = 0; x < of.width(); ++x)
+                            if (qAlpha(of.pixel(x, y)) > 8) ++count;
+                    return count;
+                };
+                require(inked(small) > 200 && inked(large) > inked(small) * 3,
+                        "It is drawn at whatever size it is given, not scaled from one");
+
+                // One scale on both axes: given room of another shape, the
+                // drawing keeps its own and the panels keep theirs.
+                {
+                    const auto panel_shape = [&](std::size_t which) {
+                        const auto outline = flow->card_outline(which);
+                        const auto across = std::abs(outline[1].x() - outline[0].x());
+                        const auto down = std::hypot(outline[3].x() - outline[0].x(),
+                                                     outline[3].y() - outline[0].y());
+                        return across / down;
+                    };
+                    flow->set_moving(false);
+                    std::vector<double> shapes;
+                    for (std::size_t i = 0; i < flow->items().size(); ++i) shapes.push_back(panel_shape(i));
+                    const auto scale_wide = flow->drawing_scale();
+                    flow->resize(900, 280);
+                    require(std::abs(flow->drawing_scale() - scale_wide) < 1e-9,
+                            "Wider room does not stretch the drawing: it keeps one scale for both axes");
+                    for (std::size_t i = 0; i < flow->items().size(); ++i) {
+                        require(std::abs(panel_shape(i) - shapes[i]) < 1e-6,
+                                "And every panel keeps its shape at any size");
+                        const auto& item = flow->items()[i];
+                        require(std::abs(shapes[i] - item.size.width() / item.size.height()) < 1e-6,
+                                "Which is its own shape, not one squeezed on either axis");
+                    }
+                    flow->resize(520, 280);
+                    flow->set_moving(true);
+                }
+
+                // A full revolution round the database: a quarter of the way
+                // every 4.5 seconds, the whole way in 18, at a constant speed,
+                // each panel on the one ellipse round the one centre, and the
+                // line to each fixed to it wherever it has got to.
+                {
+                    require(flow->moving(), "The illustration moves by default");
+                    const auto centre = flow->orbit_centre();
+                    const auto scale = flow->drawing_scale();
+                    const auto on_orbit = [&](std::size_t which) {
+                        const auto radii = flow->orbit_radii(which);
+                        const auto at = flow->card_centre(which) - centre;
+                        const auto x = at.x() / (radii.width() * scale);
+                        const auto y = at.y() / (radii.height() * scale);
+                        return std::abs(x * x + y * y - 1.0) < 0.002;
+                    };
+                    const auto attached = [&](std::size_t which) {
+                        const auto outline = flow->card_outline(which);
+                        const auto end = flow->connector_end(which);
+                        for (int corner = 0; corner < 4; ++corner) {
+                            const auto a = outline[corner];
+                            const auto b = outline[(corner + 1) % 4];
+                            const auto along = b - a;
+                            const auto length = std::hypot(along.x(), along.y());
+                            const auto cross = std::abs(along.x() * (end.y() - a.y())
+                                                        - along.y() * (end.x() - a.x()));
+                            const auto dot = QPointF::dotProduct(end - a, along);
+                            if (cross / length < 1.0 && dot >= -0.5 && dot <= length * length + 0.5)
+                                return true;
+                        }
+                        return false;
+                    };
+                    const auto shared = flow->orbit_radii(0);
+                    for (std::size_t i = 1; i < flow->items().size(); ++i)
+                        require(flow->orbit_radii(i) == shared, "The panels share one orbit");
+                    require(shared.width() > shared.height() * 1.8,
+                            "An ellipse, wider than tall, as the drawing is");
+                    const auto degrees_apart = [](double a, double b) {
+                        const auto d = std::fmod(std::abs(a - b), 360.0);
+                        return std::min(d, 360.0 - d);
+                    };
+                    std::vector<QPolygonF> earlier;
+                    for (const auto [seconds, quarter] : std::vector<std::pair<double, double>>{
+                             {0.0, 0.0}, {4.5, 90.0}, {9.0, 180.0}, {13.5, 270.0}, {18.0, 360.0}}) {
+                        flow->set_clock(seconds);
+                        for (std::size_t i = 0; i < flow->items().size(); ++i) {
+                            const auto expected = flow->items()[i].orbit_phase * 360.0 + quarter;
+                            require(degrees_apart(flow->angle_of_card(i), expected) < 0.01,
+                                    "Each panel is a quarter further round every 4.5 seconds");
+                            require(on_orbit(i), "And is always on the orbit");
+                            require(attached(i), "Its line is fixed to its edge wherever it is");
+                            const auto line = flow->connector(i);
+                            require(line.size() == 4 && line.front() == flow->connector_end(i)
+                                        && line.back() == flow->connector_start(i),
+                                    "Three straight segments and two bends, from the panel to the platform");
+                            // The two ends match: the same length, pointing
+                            // the same way, whichever panel and wherever it is.
+                            const auto leaving = line[1] - line[0];
+                            const auto arriving = line[3] - line[2];
+                            const auto leaving_length = std::hypot(leaving.x(), leaving.y());
+                            const auto arriving_length = std::hypot(arriving.x(), arriving.y());
+                            require(std::abs(leaving_length - arriving_length) < 0.01,
+                                    "The line leaves its panel and arrives by runs of the same length");
+                            require(std::abs(leaving.x() * arriving.y() - leaving.y() * arriving.x()) < 0.01
+                                        && QPointF::dotProduct(leaving, arriving) >= 0.0,
+                                    "Pointing the same way");
+                            // Out of the panel, never back across it.
+                            if (leaving_length > 0.5)
+                                require(!flow->card_outline(i).containsPoint(line[1], Qt::OddEvenFill),
+                                        "The first bend is outside the panel it leaves");
+                            // Beside or behind the database there is room, and
+                            // both bends are real ones: the middle slants away
+                            // from the runs either side of it.
+                            if (flow->card_behind(i)) {
+                                const auto middle = line[2] - line[1];
+                                const auto turn = std::abs(leaving.x() * middle.y() - leaving.y() * middle.x())
+                                                / (leaving_length * std::hypot(middle.x(), middle.y()));
+                                require(leaving_length > 8.0 * scale && turn > 0.3,
+                                        "A panel behind the database has two clear bends in its line");
+                            }
+                            const auto into = flow->connector_start(i) - centre;
+                            require(std::abs(into.x()) < 90 * scale && into.y() > 0
+                                        && into.y() < 80 * scale,
+                                    "Ending on the platform under the database");
+                            const auto behind = std::sin(flow->angle_of_card(i) * M_PI / 180.0) < 0;
+                            require(flow->card_behind(i) == behind,
+                                    "A panel behind the database is drawn behind it, one in front before it");
+                        }
+                        std::vector<QPolygonF> lines;
+                        for (std::size_t i = 0; i < flow->items().size(); ++i)
+                            lines.push_back(flow->connector(i));
+                        if (!earlier.empty() && seconds < 18.0)
+                            for (std::size_t i = 0; i < lines.size(); ++i)
+                                require(lines[i] != earlier[i],
+                                        "Each line is worked out again as its panel moves, never left behind");
+                        earlier = lines;
+                    }
+                    // No line ever jumps. All the way round, a hundredth of a
+                    // second moves every point of every line a little, as it
+                    // moves the panels, including where a run turns from
+                    // across to down and where a line goes behind the
+                    // database.
+                    {
+                        std::vector<QPolygonF> before;
+                        double worst = 0.0;
+                        for (int step = 0; step <= 1800; ++step) {
+                            flow->set_clock(step * 0.01);
+                            std::vector<QPolygonF> now;
+                            for (std::size_t i = 0; i < flow->items().size(); ++i)
+                                now.push_back(flow->connector(i));
+                            if (!before.empty())
+                                for (std::size_t i = 0; i < now.size(); ++i)
+                                    for (qsizetype k = 0; k < now[i].size(); ++k) {
+                                        const auto moved = now[i][k] - before[i][k];
+                                        worst = std::max(worst, std::hypot(moved.x(), moved.y()));
+                                    }
+                            before = now;
+                        }
+                        require(worst < 2.5 * scale,
+                                "A line never jumps: every moment of the orbit moves it only a little");
+                    }
+                    // Constant speed: twenty degrees a second, anywhere round.
+                    flow->set_clock(2.0);
+                    const auto at_two = flow->angle_of_card(0);
+                    flow->set_clock(3.0);
+                    const auto at_three = flow->angle_of_card(0);
+                    flow->set_clock(11.0);
+                    const auto at_eleven = flow->angle_of_card(0);
+                    flow->set_clock(12.0);
+                    require(std::abs(degrees_apart(at_three, at_two) - 20.0) < 0.01
+                                && std::abs(degrees_apart(flow->angle_of_card(0), at_eleven) - 20.0) < 0.01,
+                            "At a constant twenty degrees a second, with no easing");
+                    // Halfway round, a panel is on the far side of the database.
+                    flow->set_clock(0.0);
+                    const auto start = flow->card_centre(0) - centre;
+                    flow->set_clock(9.0);
+                    const auto half = flow->card_centre(0) - centre;
+                    require(std::hypot(start.x() + half.x(), start.y() + half.y()) < 0.01,
+                            "Halfway round, a panel is exactly opposite where it began");
+                    // Behind is further away: smaller and fainter.
+                    bool some_behind = false;
+                    for (std::size_t i = 0; i < flow->items().size(); ++i)
+                        if (flow->card_behind(i)) {
+                            some_behind = true;
+                            for (std::size_t j = 0; j < flow->items().size(); ++j)
+                                if (!flow->card_behind(j))
+                                    require(flow->card_depth(i) < flow->card_depth(j),
+                                            "A panel behind the database is further away than one in front");
+                        }
+                    require(some_behind, "Some panels are behind the database at any moment");
+                    require(flow->orbit_centre() == centre, "And the database stays where it is");
+
+                    // The real clock keeps it going, at about the same speed.
+                    flow->set_clock(0.0);
+                    settle_for(300);
+                    const auto went = flow->angle_of_card(0) - flow->items()[0].orbit_phase * 360.0;
+                    require(went > 2.0 && went < 14.0, "It travels on its own, twenty degrees a second");
+                }
+
+                // Pointing at a panel highlights it and stops nothing.
+                const auto over_first = flow->card_centre(0);
+                QMouseEvent hover(QEvent::MouseMove, over_first, over_first, Qt::NoButton,
+                                  Qt::NoButton, Qt::NoModifier);
+                QApplication::sendEvent(flow, &hover);
+                require(flow->hovered_card() == 0,
+                        "The pointer is found to be over the panel that sits there");
+                const auto held = flow->angle_of_card(0);
+                settle_for(160);
+                require(flow->angle_of_card(0) != held,
+                        "And the panel carries on round: nothing but stillness stops it");
+                QEvent gone(QEvent::Leave);
+                QApplication::sendEvent(flow, &gone);
+                require(flow->hovered_card() == -1, "Leaving takes the highlight away");
+
+                flow->set_moving(false);
+                require(!flow->moving(), "Motion can always be turned off");
+                for (std::size_t i = 0; i < flow->items().size(); ++i) {
+                    const auto& item = flow->items()[i];
+                    const auto radii = flow->orbit_radii(i);
+                    const auto angle = item.orbit_phase * 2.0 * M_PI;
+                    const auto rest = flow->orbit_centre()
+                        + QPointF(std::cos(angle) * radii.width(), std::sin(angle) * radii.height())
+                              * flow->drawing_scale();
+                    const auto off = flow->card_centre(i) - rest;
+                    require(std::hypot(off.x(), off.y()) < 0.01,
+                            "Turned off, every panel is back where it starts, not frozen mid-way");
+                    require(!flow->connector(i).isEmpty(), "And its line is still drawn to it");
+                }
+                QImage still_a(200, 108, QImage::Format_ARGB32);
+                still_a.fill(Qt::transparent);
+                flow->resize(200, 108);
+                flow->render(&still_a);
+                settle_for(120);
+                QImage still_b(200, 108, QImage::Format_ARGB32);
+                still_b.fill(Qt::transparent);
+                flow->render(&still_b);
+                require(still_a == still_b,
+                        "With motion off, nothing changes however long is waited");
+                flow->set_moving(true);
+                require(flow->moving(), "And it can be turned back on");
+
+                // What a platform asks for is read once, at the start, and
+                // an explicit call always outranks it afterwards.
+                qputenv("ERDFLOW_REDUCED_MOTION", "1");
+                desktop::WelcomeFlowIllustration asked_for_stillness(nullptr);
+                require(!asked_for_stillness.moving(),
+                        "A platform that asks for stillness is given it from the start");
+                qunsetenv("ERDFLOW_REDUCED_MOTION");
+                desktop::WelcomeFlowIllustration asked_for_nothing(nullptr);
+                require(asked_for_nothing.moving(), "And without that ask, it moves as usual");
+            }
+
+            // Each card carries its own + Create, and only that starts a
+            // project. Nothing is asked under the cards: the page ends with
+            // them (Zain, 2026-09-24, ADR-022 9.19).
+            for (const char* gone : {"projectDetailsForm", "projectName", "projectLocation",
+                                     "projectMoreOptions", "projectSavedTo", "projectCreate",
+                                     "projectCancel"})
+                require(home->findChild<QWidget*>(gone) == nullptr,
+                        (std::string("Nothing is asked under the cards, not even ") + gone).c_str());
+            for (auto* card : cards) {
+                auto* create = card->create_button();
+                require(create != nullptr && create->isVisible() && create->text() == "+ Create",
+                        "Every card has its own + Create");
+                require(QRect(QPoint(), card->size()).contains(create->geometry())
+                            && create->geometry().top() > card->height() * 0.75,
+                        "Inside the card, at its foot");
+                require(std::abs(create->geometry().center().x() - card->width() / 2) <= 1,
+                        "And centred on it");
+                require(create->isEnabled() == card->isEnabled(),
+                        "It can be pressed only where its card can be taken");
+            }
+            require(cards[0]->create_button()->accessibleName() == "Create Conceptual Design (ERD)",
+                    "It says what it makes to whatever reads the screen");
+            require(!cards[1]->create_button()->toolTip().isEmpty(),
+                    "And, where it cannot be pressed yet, why");
+
+            // Pressing it opens a new conceptual project, untitled, as New
+            // Project does, and leaves Home for it. Nothing is written yet:
+            // where the project is kept is asked elsewhere.
+            require(window.showing_home() && !window.editor().dirty(), "On Home, with nothing unsaved");
+            cards[0]->create_button()->click();
+            settle();
+            require(!window.showing_home(), "+ Create leaves Home for the new project");
+            require(window.editor().project().entities.empty() && !window.editor().dirty(),
+                    "Which is a new, empty conceptual project");
+            require(cards[0]->isChecked(), "And the card it came from is the one chosen");
+
+            // Plain shows no colour at all (Zain, 2026-09-24): not in any
+            // icon of any set -- the coloured artwork included -- and not in
+            // anything the home screen draws for itself.
+            {
+                const auto& plain = desktop::theme(desktop::ThemeId::Plain);
+                for (int glyph = 0; glyph <= static_cast<int>(desktop::Glyph::Key); ++glyph)
+                    for (const auto mode : {desktop::IconMode::Normal, desktop::IconMode::Modern,
+                                            desktop::IconMode::Outline}) {
+                        const auto icon = desktop::glyph_icon(static_cast<desktop::Glyph>(glyph), plain, 22, mode);
+                        for (const auto state : {QIcon::Off, QIcon::On})
+                            require(coloured_pixels(icon.pixmap(QSize(22, 22), 3.0, QIcon::Normal, state)
+                                                        .toImage()) == 0,
+                                    "Under Plain, every icon of every set is drawn without colour");
+                    }
+                const auto wearing = window.canvas()->theme_id();
+                window.set_theme(desktop::ThemeId::Plain);
+                settle();
+                require(coloured_pixels(window.grab().toImage()) == 0,
+                        "And the home screen has no colour anywhere: cards, badges, drawing, decoration");
+                window.set_theme(wearing);
+                settle();
+                // Under any other theme the coloured artwork keeps its colours.
+                require(coloured_pixels(desktop::glyph_icon(desktop::Glyph::Relationship,
+                                                            desktop::theme(desktop::ThemeId::Azure), 22,
+                                                            desktop::IconMode::Modern)
+                                            .pixmap(QSize(22, 22), 3.0)
+                                            .toImage()) > 0,
+                        "While elsewhere the coloured icons keep their colour");
+            }
+
+            window.show_home(false);
+            settle();
+        }
         window.load_example();
         settle();
         const auto original = window.editor().project();
@@ -1871,8 +3322,12 @@ int main(int argc, char** argv) {
             require(found.size() == 1, "A name finds the one thing carrying it");
             const auto middle = window.canvas()->mapToScene(window.canvas()->viewport()->rect().center());
             const auto where = window.editor().project().layout.at(found.front());
-            require(std::abs(middle.x() - (where.x + where.width / 2)) < 160
-                        && std::abs(middle.y() - (where.y + where.height / 2)) < 160,
+            // Within a body's width of the centre. Said that way rather than
+            // as a number, so it still means "near the middle" whatever size
+            // the bodies are drawn at.
+            const auto near_enough = desktop::entity_body.width;
+            require(std::abs(middle.x() - (where.x + where.width / 2)) < near_enough
+                        && std::abs(middle.y() - (where.y + where.height / 2)) < near_enough,
                     "And the diagram brings it to the middle rather than leaving it to be hunted for");
 
             // Nothing about the document moved.
@@ -2137,8 +3592,35 @@ int main(int argc, char** argv) {
                     "Undo among them, the same action the menu has");
             require(!child<QToolButton>(window, "searchButton")->isVisible(),
                     "The diagram's own search goes: it is not what is on screen");
+            // Relational Design is the workspace in front, and offers none of
+            // the conceptual workspace's tools (ADR-022 section 9.12).
+            require(child<QLabel>(window, "workspaceBadge")->text() == "RELATIONAL DESIGN",
+                    "The header names the workspace in front");
+            for (const char* conceptual : {"toolEntity", "toolAttribute", "toolRelationship"}) {
+                auto* tool = child<QAction>(window, conceptual);
+                bool reachable = false;
+                for (auto* where : tool->associatedObjects())
+                    if (auto* widget = qobject_cast<QWidget*>(where); widget && widget->isVisible())
+                        reachable = true;
+                require(!reachable, "No conceptual drawing tool is on screen in Relational Design");
+            }
+            require(!child<QAction>(window, "insertPicture")->isVisible(),
+                    "Nor Insert's picture, which is placed on the hidden diagram");
+            require(child<QWidget>(window, "schemaArrange")->isVisible()
+                        && child<QWidget>(window, "schemaAppearance")->isVisible(),
+                    "Its own Arrange and Appearance are there instead");
             full->click();
             settle();
+            require(child<QLabel>(window, "workspaceBadge")->text() == "CONCEPTUAL",
+                    "Leaving it names the conceptual workspace again");
+            require(child<QAction>(window, "insertPicture")->isVisible(), "And gives Insert its picture back");
+            // The conceptual workspace's own family, as the specification
+            // names it, on the row it opens on.
+            for (const char* conceptual : {"toolSelect", "toolEntity", "toolAttribute", "toolRelationship",
+                                           "toolIsa", "toolConnect", "toolNote"})
+                require(window.findChild<QAction*>(conceptual) != nullptr,
+                        "The conceptual workspace offers Select, Entity, Attribute, Relationship, "
+                        "Specialization, Connect and Note");
             require(explorer_dock->isVisible(), "Leaving it brings them back");
             require(child<QToolBar>(window, "modelTools")->isVisible(), "The drawing tools with them");
             require(!kept->isVisible(), "And the header gives its own back");
@@ -2230,9 +3712,9 @@ int main(int argc, char** argv) {
                 if (!shapes.empty()) {
                     QString heard;
                     auto reported = schema->warned;
-                    schema->warned = [&](const QString& words) {
+                    schema->warned = [&](const QString& words, QPoint at) {
                         heard = words;
-                        if (reported) reported(words);
+                        if (reported) reported(words, at);
                     };
                     const auto tables = schema->table_boxes();
                     const auto& where = tables.front();
@@ -2262,6 +3744,98 @@ int main(int argc, char** argv) {
                             || heard.contains("points at"),
                             "And why where it was left cannot serve");
                     require(schema->loose_ends() > 0, "And it is left exactly where it was put");
+                    // And it is said where the hand is looking, not only along
+                    // the bottom of the window.
+                    {
+                        auto* notice = static_cast<desktop::Notice*>(
+                            window.findChild<QWidget*>("notice"));
+                        require(notice != nullptr, "The window has a notice to say it in");
+                        require(notice->isVisible(), "A warning comes up over the work");
+                        require(notice->saying().contains("belongs on"),
+                                "Saying the same thing the status bar was given");
+                        // And it stands where the hand let go, not at the
+                        // bottom of the window: a warning about a connection
+                        // belongs where the connection was attempted, which
+                        // is where the person is looking.
+                        const auto let_go = schema->mapTo(&window, adrift.toPoint());
+                        require(notice->geometry().adjusted(-40, -40, 40, 40).contains(let_go),
+                                "And it comes up beside the point the hand let go of");
+                        require(!notice->geometry().contains(let_go),
+                                "Standing clear of it, so what it is about is not covered");
+                        // It is not on a clock. Something has gone wrong under
+                        // the pointer, the pointer stops while it is read, and
+                        // moving on again is what says it has been.
+                        settle_for(900);
+                        require(notice->isVisible(),
+                                "It waits for the hand rather than going on a clock");
+                        const auto hand = QCursor::pos();
+                        QCursor::setPos(hand + QPoint(90, 90));
+                        settle_for(120);
+                        require(notice->isVisible(),
+                                "And it fades rather than vanishing: still there part way through");
+                        settle_for(700);
+                        require(!notice->isVisible(), "Gone once the fade is done");
+                        QCursor::setPos(hand);
+                        settle();
+                    }
+                    // The two ends are wrong in different ways, and are told
+                    // apart. Dropping an end onto a primary key used to be
+                    // reported as landing on "an ordinary column", which a
+                    // primary key plainly is not.
+                    //
+                    // Which corner belongs to which end is not knowable from
+                    // outside, so every end is tried against the key rows of
+                    // its own table until one of them complains.
+                    {
+                        // The capture was handed back after the drag above, so
+                        // it is put on again for these.
+                        schema->warned = [&](const QString& words, QPoint at) {
+                            heard = words;
+                            if (reported) reported(words, at);
+                        };
+                        bool checked = false;
+                        const auto send = [&](QEvent::Type kind, QPointF at, Qt::MouseButton button,
+                                              Qt::MouseButtons held) {
+                            QMouseEvent event(kind, at, schema->mapToGlobal(at.toPoint()),
+                                              button, held, Qt::NoModifier);
+                            QApplication::sendEvent(schema, &event);
+                        };
+                        for (const auto& shape : schema->line_shapes()) {
+                            if (checked) break;
+                            for (const auto& corner : {shape.front(), shape.back()}) {
+                                if (checked) break;
+                                const auto rows = schema->row_boxes();
+                                for (std::size_t t = 0; t < rows.size() && !checked; ++t) {
+                                    const auto& columns = schema->preview().tables[t].columns;
+                                    for (std::size_t row = 0; row < rows[t].size() && row < columns.size(); ++row) {
+                                        if (!columns[row].primary_key) continue;
+                                        const auto onto = QPointF(corner.x(), rows[t][row].center().y());
+                                        if (std::abs(onto.y() - corner.y()) < 2) continue;
+                                        heard.clear();
+                                        send(QEvent::MouseButtonPress, corner, Qt::LeftButton, Qt::LeftButton);
+                                        send(QEvent::MouseMove, onto, Qt::NoButton, Qt::LeftButton);
+                                        send(QEvent::MouseButtonRelease, onto, Qt::LeftButton, Qt::NoButton);
+                                        settle();
+                                        const bool landed_on_key = heard.contains("belongs on")
+                                            && (heard.contains("identified by") || heard.contains("not the one"));
+                                        if (landed_on_key) {
+                                            require(!heard.contains("ordinary column"),
+                                                    "A primary key is never called an ordinary column");
+                                            checked = true;
+                                        }
+                                        if (!heard.isEmpty()) {
+                                            child<QAction>(window, "undoCommand")->trigger();
+                                            settle();
+                                        }
+                                        if (checked) break;
+                                    }
+                                }
+                            }
+                        }
+                        require(checked,
+                                "An end dropped on a primary key is told it is a key, and which one");
+                        schema->warned = reported;
+                    }
                     // Put back, so what follows finds the schema as it was: the
                     // end was moved by an edit like any other, so one undo
                     // takes it back.
@@ -2295,6 +3869,18 @@ int main(int argc, char** argv) {
             require(schema != nullptr, "The panel holds the schema itself");
             const auto drawn = schema->line_shapes();
             require(!drawn.empty(), "The example's schema is drawn with lines between its tables");
+            // Under Plain the schema has no colour either. Each line keeps a
+            // grey of its own, so crossing lines can still be told apart, and
+            // the key beside PK is drawn in the letters' grey.
+            {
+                const auto wearing = window.canvas()->theme_id();
+                window.set_theme(desktop::ThemeId::Plain);
+                settle_for(200);
+                require(coloured_pixels(schema->grab().toImage()) == 0,
+                        "Under Plain the schema's lines, keys and tables have no colour");
+                window.set_theme(wearing);
+                settle_for(200);
+            }
             require(schema->shaped_lines() == 0, "None of them has been shaped by hand yet");
 
             // The longest straight run there is: certainly part of a line and
@@ -2897,14 +4483,14 @@ int main(int argc, char** argv) {
                     if (invented) break;
                 }
                 require(invented.has_value(), "The example has a key the conversion invented");
-                require(!window.editor().project().schema.counting_keys.contains(*whose),
+                require(!window.editor().project().schema.counting_keys.contains(relation_from(*whose)),
                         "Which does not count itself up to begin with");
                 choose(*invented, "schemaRuleIdentity");
-                require(window.editor().project().schema.counting_keys.contains(*whose),
+                require(window.editor().project().schema.counting_keys.contains(relation_from(*whose)),
                         "Choosing IDENTITY makes it count itself up");
                 child<QAction>(window, "undoCommand")->trigger();
                 settle();
-                require(!window.editor().project().schema.counting_keys.contains(*whose),
+                require(!window.editor().project().schema.counting_keys.contains(relation_from(*whose)),
                         "And that undoes like anything else");
             }
 
@@ -2975,6 +4561,188 @@ int main(int argc, char** argv) {
                     child<QAction>(window, "undoCommand")->trigger();
                     settle();
                 }
+            }
+
+            // Several tables are gathered by drawing a band round them, and
+            // coloured together. The colour goes on the element itself, so a
+            // table coloured here and the entity it came from are one thing
+            // wearing one colour.
+            {
+                const auto boxes = schema->table_boxes();
+                require(boxes.size() >= 2, "The example has tables to gather");
+                const auto drag = [&](QEvent::Type kind, QPointF at, Qt::MouseButton button,
+                                      Qt::MouseButtons held) {
+                    QMouseEvent event(kind, at, schema->mapToGlobal(at.toPoint()), button, held,
+                                      Qt::NoModifier);
+                    QApplication::sendEvent(schema, &event);
+                };
+                const QPointF from(boxes[0].left() - 20, boxes[0].top() - 14);
+                const QPointF to(boxes[1].right() + 10, boxes[1].bottom() + 6);
+                drag(QEvent::MouseButtonPress, from, Qt::LeftButton, Qt::LeftButton);
+                drag(QEvent::MouseMove, QPointF((from.x() + to.x()) / 2, (from.y() + to.y()) / 2),
+                     Qt::NoButton, Qt::LeftButton);
+                settle();
+                drag(QEvent::MouseMove, to, Qt::NoButton, Qt::LeftButton);
+                drag(QEvent::MouseButtonRelease, to, Qt::LeftButton, Qt::NoButton);
+                settle();
+                require(schema->selection().size() >= 2,
+                        "A band drawn across tables gathers every one it touches");
+                require(!schema->selected().has_value(),
+                        "Several gathered is a different question from one asked about");
+                const auto gathered = schema->selection();
+
+                // Coloured as one edit, and the colour is on the elements the
+                // diagram draws rather than on anything the schema keeps.
+                require(editor.recolour(gathered, domain::Colour{0x9A, 0xDC, 0xFF}).ok,
+                        "The gathered tables are coloured together");
+                schema->refresh();
+                settle();
+                for (const auto& ref : gathered) {
+                    const auto worn = window.editor().project().colours.find(ref);
+                    require(worn != window.editor().project().colours.end(),
+                            "Each of them now wears a colour");
+                    require(worn->second.blue == 0xFF, "And it is the one that was chosen");
+                }
+                child<QAction>(window, "undoCommand")->trigger();
+                settle();
+                for (const auto& ref : gathered)
+                    require(!window.editor().project().colours.contains(ref),
+                            "And one undo takes the colour off all of them");
+
+                // Taking hold of any one of a gathered group moves the whole
+                // group, every table the same distance, so it keeps its
+                // arrangement. The tables left out of it stay where they are,
+                // and one undo puts the group back.
+                {
+                    require(schema->selection() == gathered, "The group is still gathered");
+                    const auto& tables = schema->preview().tables;
+                    const auto in_group = [&](std::size_t i) {
+                        return tables[i].origin
+                            && std::find(gathered.begin(), gathered.end(), *tables[i].origin) != gathered.end();
+                    };
+                    const auto before = schema->table_boxes();
+                    std::size_t held = tables.size();
+                    for (std::size_t i = 0; i < tables.size(); ++i)
+                        if (in_group(i)) { held = i; break; }
+                    require(held < tables.size(), "One of the group to take hold of");
+                    const QPointF grip(before[held].center().x(), before[held].top() + 12);
+                    const QPointF moved(70, 45);
+                    drag(QEvent::MouseButtonPress, grip, Qt::LeftButton, Qt::LeftButton);
+                    drag(QEvent::MouseMove, grip + moved / 2, Qt::NoButton, Qt::LeftButton);
+                    drag(QEvent::MouseMove, grip + moved, Qt::NoButton, Qt::LeftButton);
+                    drag(QEvent::MouseButtonRelease, grip + moved, Qt::LeftButton, Qt::NoButton);
+                    settle();
+                    const auto after = schema->table_boxes();
+                    require(after.size() == before.size(), "The same tables throughout");
+                    int carried = 0;
+                    for (std::size_t i = 0; i < before.size(); ++i) {
+                        const auto shift = after[i].topLeft() - before[i].topLeft();
+                        if (in_group(i)) {
+                            ++carried;
+                            require(std::abs(shift.x() - moved.x()) < 0.5 && std::abs(shift.y() - moved.y()) < 0.5,
+                                    "Every table of the group moves with the one taken hold of, as far");
+                        } else {
+                            require(shift.isNull(), "And a table outside the group stays where it was");
+                        }
+                    }
+                    require(carried >= 2, "More than one table was carried");
+                    require(schema->selection() == gathered, "Moving the group leaves it gathered");
+                    child<QAction>(window, "undoCommand")->trigger();
+                    settle();
+                    const auto undone = schema->table_boxes();
+                    for (std::size_t i = 0; i < before.size(); ++i)
+                        require(undone[i].topLeft() == before[i].topLeft(),
+                                "And one undo puts the whole group back");
+                }
+
+                // As on the diagram: a press on the schema gives it the
+                // keyboard, Select All then gathers every table, and taking
+                // hold of any one of them carries the whole schema.
+                {
+                    const auto before = schema->table_boxes();
+                    const QPointF empty(before[0].left(), before.back().bottom() + 400);
+                    drag(QEvent::MouseButtonPress, empty, Qt::LeftButton, Qt::LeftButton);
+                    drag(QEvent::MouseButtonRelease, empty, Qt::LeftButton, Qt::NoButton);
+                    settle();
+                    require(window.focusWidget() == schema, "A press on the schema gives it the keyboard");
+                    QKeyEvent all(QEvent::KeyPress, Qt::Key_A, Qt::ControlModifier);
+                    QApplication::sendEvent(window.focusWidget(), &all);
+                    settle();
+                    require(schema->selection().size() == schema->preview().tables.size(),
+                            "Select All in the schema gathers every table");
+                    const QPointF grip(before[0].center().x(), before[0].top() + 12);
+                    const QPointF moved(40, 30);
+                    drag(QEvent::MouseButtonPress, grip, Qt::LeftButton, Qt::LeftButton);
+                    drag(QEvent::MouseMove, grip + moved, Qt::NoButton, Qt::LeftButton);
+                    drag(QEvent::MouseButtonRelease, grip + moved, Qt::LeftButton, Qt::NoButton);
+                    settle();
+                    const auto after = schema->table_boxes();
+                    for (std::size_t i = 0; i < before.size(); ++i) {
+                        const auto shift = after[i].topLeft() - before[i].topLeft();
+                        require(std::abs(shift.x() - moved.x()) < 0.5 && std::abs(shift.y() - moved.y()) < 0.5,
+                                "And dragging one of them moves every table in the schema together");
+                    }
+                    child<QAction>(window, "undoCommand")->trigger();
+                    settle();
+                    require(schema->table_boxes() == before, "One undo puts the whole schema back");
+                }
+
+                // The example's entities all have a key drawn, and each table
+                // uses it: nothing is invented and nothing is announced. An
+                // entity with no key is given one, and that is said once, in a
+                // notice, rather than left to be found by hovering.
+                {
+                    std::vector<QString> heard;
+                    auto reported = schema->warned;
+                    schema->warned = [&](const QString& words, QPoint at) {
+                        heard.push_back(words);
+                        if (reported) reported(words, at);
+                    };
+                    schema->refresh();
+                    require(heard.empty(), "Where every entity has a key drawn, nothing is announced");
+                    const auto made = editor.create_entity("Locker", {900, 900, 148, 86});
+                    require(made.ok, "An entity with no attributes at all");
+                    schema->refresh();
+                    require(heard.size() == 1 && heard.front().contains("Locker has no key attribute")
+                                && heard.front().contains("LockerID was made its primary key"),
+                            "An entity with no key is given one, and told so by name");
+                    require(editor.rename(*made.created, "Locker").ok, "An unrelated edit");
+                    schema->refresh();
+                    require(heard.size() == 1, "And it is said once, not again on every change");
+                    schema->warned = reported;
+                    child<QAction>(window, "undoCommand")->trigger();
+                    settle();
+                }
+
+                // Pressing the bare canvas puts the whole schema back.
+                const QPointF nowhere(boxes[0].left(), boxes.back().bottom() + 400);
+                drag(QEvent::MouseButtonPress, nowhere, Qt::LeftButton, Qt::LeftButton);
+                drag(QEvent::MouseButtonRelease, nowhere, Qt::LeftButton, Qt::NoButton);
+                settle();
+                require(schema->selection().empty(), "Pressing the bare canvas gathers nothing");
+            }
+
+            // An attribute is pulled about by its own edges and corners, as an
+            // entity is. A default is a starting size, not a ruling.
+            {
+                const auto named = std::find_if(
+                    window.editor().project().attributes.begin(),
+                    window.editor().project().attributes.end(),
+                    [](const auto& entry) { return entry.second.name == "Credit Hours"; });
+                require(named != window.editor().project().attributes.end(),
+                        "The example has an attribute to pull about");
+                const domain::ElementRef ref{named->first};
+                const auto before = window.editor().project().layout.at(ref);
+                auto wider = before;
+                wider.width = before.width + 90;
+                require(editor.move({{ref, wider}}).ok, "An attribute takes a size given to it");
+                settle();
+                require(window.editor().project().layout.at(ref).width > before.width + 80,
+                        "And keeps it");
+                child<QAction>(window, "undoCommand")->trigger();
+                settle();
+                require(std::abs(window.editor().project().layout.at(ref).width - before.width) < 0.01,
+                        "And it undoes like any other edit");
             }
 
             // A search of the schema, which is not the diagram's search: it
@@ -3346,11 +5114,23 @@ int main(int argc, char** argv) {
                     // The bottom two first, since the schema is packed from
                     // the top left and a table near the top has nowhere to
                     // grow upwards into.
+                    // Nor a corner lying on a neighbour's edge: the table was
+                    // widened by hand above, and a width given by hand never
+                    // moves the table beside it, so the two may overlap.
+                    const auto clear_of_tables = [&](QPointF at) {
+                        const auto boxes = schema->table_boxes();
+                        return std::none_of(boxes.begin() + 1, boxes.end(), [&](const QRectF& other) {
+                            return other.adjusted(-8, -8, 8, 8).contains(at);
+                        });
+                    };
                     std::size_t which = 2;
                     for (const std::size_t i : {2u, 3u, 1u, 0u}) {
                         const auto room = (corners[i].y() > before.center().y() || before.top() > 80)
                                        && (corners[i].x() > before.center().x() || before.left() > 80);
-                        if (room && clear_of_lines(corners[i])) { which = i; break; }
+                        if (room && clear_of_lines(corners[i]) && clear_of_tables(corners[i])) {
+                            which = i;
+                            break;
+                        }
                     }
                     const auto corner = corners[which];
                     // Outwards from the middle of the table, whichever corner

@@ -1,3 +1,9 @@
+// ERDFlow — settled work. Do not change, replace or re-style anything here to
+// suit something new you have been asked to build. If what you are building
+// genuinely contradicts what is here, stop and ask Zain, who owns this project:
+// say what you want to change, what the application will LOOK like afterwards,
+// and whether it is a gain or a loss. He decides. Fixing a real defect is not
+// covered by this — fix it and say what was wrong. Full rule: CLAUDE.md.
 #include "app/desktop/diagram_view.hpp"
 #include "app/desktop/document_export.hpp"
 #include "app/desktop/picture_export.hpp"
@@ -2097,6 +2103,10 @@ void notation_tests() {
     view.fit_diagram();
     QApplication::processEvents();
     require(view.notation() == desktop::Notation::CrowsFoot, "Crow's foot is the default notation");
+    // An attribute is sized by hand as an entity is: a name that will not fit
+    // the default has to be able to be given room.
+    require(desktop::entity_body.width == 148 && desktop::entity_body.height == 86,
+            "The entity's default is the one that was settled on");
 
     const auto render = [&] {
         QApplication::processEvents();

@@ -1,3 +1,9 @@
+// ERDFlow — settled work. Do not change, replace or re-style anything here to
+// suit something new you have been asked to build. If what you are building
+// genuinely contradicts what is here, stop and ask Zain, who owns this project:
+// say what you want to change, what the application will LOOK like afterwards,
+// and whether it is a gain or a loss. He decides. Fixing a real defect is not
+// covered by this — fix it and say what was wrong. Full rule: CLAUDE.md.
 #include "main_window.hpp"
 #include "ribbon.hpp"
 #include "theme.hpp"
@@ -17,7 +23,11 @@ int main(int argc, char* argv[]) {
     // remembered choice is applied before any window is built.
     QApplication::setStyle("Fusion");
     const QSettings settings;
-    const auto chosen = erdflow::desktop::theme_from_key(settings.value("theme", "office-light").toString());
+    // A profile that has chosen keeps its choice; only one that never has is
+    // given the new default. Somebody who settled on a theme must not find it
+    // swapped out from under them because the shipped default moved.
+    const auto chosen = erdflow::desktop::theme_from_key(
+        settings.value("theme", erdflow::desktop::default_theme_key()).toString());
     erdflow::desktop::apply_theme(app, chosen);
     QCommandLineParser parser;
     parser.setApplicationDescription("ERDFlow conceptual ERD editor");
@@ -38,7 +48,7 @@ int main(int argc, char* argv[]) {
     // Raises the schema panel, which is otherwise closed until somebody asks
     // for it. Development tooling beside the three above: it is the only way
     // to photograph the schema without a person clicking Preview first.
-    parser.addOption({"schema", "Raise the schema preview panel."});
+    parser.addOption({"schema", "Raise the Relational Design panel."});
     // Which of the four notations the ends are drawn in, so each can be
     // photographed without a person working the picker. Development tooling
     // beside the options above.
@@ -47,7 +57,11 @@ int main(int argc, char* argv[]) {
     // without disturbing the remembered choice. Development tooling like the
     // options above it.
     parser.addOption({"theme", "Wear this theme, such as midnight, for this run only.", "key"});
-    parser.addOption({"schema-full", "Raise the schema preview panel at full height."});
+    parser.addOption({"schema-full", "Raise Relational Design at full height."});
+    // The window's size for a screenshot, such as 1440x1080 -- the reference
+    // viewport the visual comparisons are made at (ADR-022 section 9.6).
+    // Development tooling like the options above it.
+    parser.addOption({"size", "Resize the window to WIDTHxHEIGHT, such as 1440x1080.", "size"});
     parser.addPositionalArgument("project", "An .erdx project to open.", "[project]");
     parser.process(app);
     const auto wearing = parser.isSet("theme")
@@ -61,6 +75,10 @@ int main(int argc, char* argv[]) {
     window.set_icon_mode(erdflow::desktop::icon_mode_from_key(
         settings.value("iconMode", "outline").toString()));
     window.set_theme(wearing);
+    if (parser.isSet("size")) {
+        const auto parts = parser.value("size").toLower().split('x');
+        if (parts.size() == 2) window.resize(parts[0].toInt(), parts[1].toInt());
+    }
     window.show();
     QTimer::singleShot(0, &window, [&] {
         if (!parser.positionalArguments().isEmpty()) window.open_path(parser.positionalArguments().front());

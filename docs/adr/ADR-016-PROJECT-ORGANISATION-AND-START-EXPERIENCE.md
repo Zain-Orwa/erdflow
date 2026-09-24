@@ -1,5 +1,30 @@
 # ADR-016 — Project Organisation and Start Experience
 
+> **Settled work.** Do not change, replace or re-style anything in this
+> document to suit something new you have been asked to build. If what you are
+> building genuinely contradicts what is written here, stop and ask Zain, who
+> owns this project: say what you want to change, what the application will
+> look like afterwards, and whether it is a gain or a loss. He decides.
+> Full rule: [CLAUDE.md](../../CLAUDE.md).
+
+> **Amended by [ADR-022](ADR-022-FOUR-VISIBLE-WORKSPACES-AND-AZURE-THEME.md), 2026-09-23.**
+> The Home screen offers **five** ways to start, not three: Conceptual Model
+> First, Relational Design First, SQL First, From Template / Example, and
+> Import Existing. `Relational Design First` is visible but disabled until
+> ADR-021 Step B is built, and `SQL First` likewise until SQL can be parsed
+> into Relational Design and round-tripped (ADR-022 §9.2). Five routes above
+> four levels is deliberate — Import Existing is an action, not a modelling
+> level.
+>
+> **Confirmed 2026-09-23 (ADR-022 §9.10).** The Home screen's Create Project
+> takes a name, a location, a description and *Create project folder*, and
+> all four must take effect. With the folder ticked the project is written to
+> `<location>/<name>/<name>.erdx`; the description is kept in the project's
+> metadata once the format has a place for it. The recent projects,
+> templates, project folders and thumbnails this ADR describes remain
+> intended and are not yet built.
+
+
 **Status:** Accepted  
 **Date:** 2026-09-17
 

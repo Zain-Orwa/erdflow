@@ -1,6 +1,13 @@
 # Implementation status
 
-**Updated:** 2026-09-20
+> **Settled work.** Do not change, replace or re-style anything in this
+> document to suit something new you have been asked to build. If what you are
+> building genuinely contradicts what is written here, stop and ask Zain, who
+> owns this project: say what you want to change, what the application will
+> look like afterwards, and whether it is a gain or a loss. He decides.
+> Full rule: [CLAUDE.md](../CLAUDE.md).
+
+**Updated:** 2026-09-23
 
 **Scope:** Part 1 — a single-page Conceptual ERD editor foundation.
 
@@ -189,6 +196,18 @@ not been built yet. Their presence in those documents is not a completion claim.
   The outline set is Lucide (ISC) for the ordinary commands and ERDFlow's own
   drawings, on the same grid and stroke weight, for the Chen shapes Lucide has
   no icon for.
+- **Plain shows no colour at all** (Zain, 2026-09-24). Under Plain, everything
+  ERDFlow itself inks is grey: every icon of every set, the Modern artwork
+  included (shown as the greys of its own brightness), the painted
+  check-model tick, the Home start cards' drawings and their "Coming soon"
+  badges, the learning panel's wave, and the Relational Schema's key marks and
+  relationship lines. Each schema line keeps a grey of its own, so crossing
+  lines can still be told apart. The primary-key mark takes the grey of the
+  PK letters. Plain's derived tokens are all greys too. The one exception is a
+  person's own content: a colour chosen for an element is kept, and the Colour
+  menu still shows real colours. Under every other theme the Modern artwork
+  keeps its colours as before. Tests check every icon of every set, the Home
+  screen and the schema for any coloured pixel under Plain.
 - Entity rectangles, attribute ovals, relationship diamonds, names and descriptions.
 - Stable typed UUIDv7 IDs for projects, entities, attributes, relationships, and
   each relationship participant. Rename and undo preserve identity.
@@ -314,6 +333,49 @@ not been built yet. Their presence in those documents is not a completion claim.
   relationship, or the reverse, is a warning, not a fault. The ISA triangle
   wears **d** or **o** for disjoint or overlapping, and a total specialization
   draws its link to the supertype as a double line. Project files are version 13.
+- **A default is a starting size, not a ruling.** A newly drawn entity is
+  148 by 86, and every other body is proportioned to sit beside it. The
+  figures are marked in the source as defaults that are not to be changed:
+  they decide what somebody meets when they draw an element and nothing more,
+  since every element is then pulled about by its corners and edges or given
+  a width and a height in the Properties panel, and a size given by hand is
+  kept for that element and stored with the document.
+- **An attribute is sized by hand, as an entity is.** Both hold a name, and
+  how wide and how tall each is are two separate questions — a long name
+  wants width where a second line wants height — so both answer to each of
+  their four edges as well as to their corners, the side that is pulled
+  moving and the side opposite it staying where it was. An attribute whose
+  name does not fit the default can now be given room rather than eliding.
+- **What is drawn on the diagram is scaled apart from what is sized by it.**
+  Two figures, each tunable without disturbing the other or the defaults
+  above. `lettering_scale` carries the type, because a shape only has to be
+  recognised where a name has to be read: text is the one part of a diagram
+  that must resolve into letters rather than into an outline, and it had been
+  set small enough that a reader zoomed in before the diagram read at all.
+  `connector_scale` carries the lines and everything on them — their weight,
+  the crow's feet, the grips that bend and route them, the padlock that pins
+  their ends, the mark that says a line carries a remark. A connector is what
+  a reader traces across a crowded diagram, and a control they cannot see is
+  a control they do not know they have.
+
+  The shapes turned out not to be what was hard to read; enlarging them was
+  the wrong answer twice before the lettering and the connectors were
+  separated out. This is the conceptual canvas only — the Relational Schema
+  sizes its own tables from what they hold and refers to neither figure.
+- **The diagram is lettered for legibility.** One `lettered()` helper gives
+  every name on the canvas its face and its size, so nothing on the diagram
+  can drift out of step with the rest of it. The face is asked for as a list
+  — Inter, Source Sans 3, IBM Plex Sans, Segoe UI, SF Pro Text, and the
+  platform's own interface face last — because no one face is on every
+  machine, and each is a humanist sans of much the same proportions, chosen
+  for a tall x-height and open apertures. An uppercase I, a lowercase l and a
+  figure 1 that cannot be taken for one another matter more on a diagram than
+  they do elsewhere, because a name read wrongly is a model read wrongly.
+  Weight and underlining are left to whoever asked, so a key attribute is
+  still underlined and an entity still bold. Two places are deliberately left
+  out: the overlay that already compensates for the zoom, and the notation
+  samples, which are drawn into a pixmap of their own rather than in diagram
+  units.
 - Associative entities: choose Associative as a relationship's kind in Properties and it
   takes the entity body size and palette, since it converts to a relation of its
   own, and is drawn as a filled diamond inside an unfilled rectangle, which is
@@ -381,9 +443,13 @@ not been built yet. Their presence in those documents is not a completion claim.
   saved. Folding hides questions and never answers: everything inside stays in
   the model and stays visible to validation, readiness and conversion.
 - It also carries the **rules a table will enforce** — identifier, required,
-  unique — kept deliberately apart from its Chen kind. A key oval says how the
-  diagram draws it; these say what the database will insist on, and the two are
-  set at different stages by different people.
+  unique. **Being the identifier and being drawn as a key are one fact**
+  (Zain, 2026-09-24; they were kept apart before). Choosing Key on the diagram
+  makes the attribute the primary key, and ticking Identifier draws it as a
+  key; taking either off does both. A project opened from before is brought
+  into agreement as it opens: a key oval becomes the primary key and an
+  identifier is drawn as a key. A composite keeps its shape and may still
+  identify a row; in Parts mode its parts are then the key columns.
 - Entities, attributes and relationships carry a **comment for the schema**,
   which is what a generated table or column says about itself. It is not the
   description, which says what the thing means to a reader, and it is not a
@@ -409,8 +475,10 @@ not been built yet. Their presence in those documents is not a completion claim.
   and `image` — still read and still save, and say so when offered.
 - **Conversion decisions** travel with the project: the table naming convention,
   each hierarchy's mapping strategy, what each composite attribute becomes,
-  which side of a one-to-one carries the key, a bridge table's name, an entity's
-  chosen identifier, and any table name typed over the derived one. Each is
+  which side of a one-to-one carries the key, a bridge table's name, whether a
+  bridge with no identifier of its own is keyed by its participants' foreign
+  keys, an entity's chosen identifier, and any table name typed over the
+  derived one. Each is
   keyed by stable identity, so an answer survives renaming and is never asked
   twice; each is an ordinary edit, so it undoes; and taking an answer back
   returns that question to its default rather than recording a different answer.
@@ -603,7 +671,7 @@ geometry changes use **Apply position and size**.
 
 | Phase | Evidence and remaining work |
 | --- | --- |
-| 0 — Architecture | Completed review; ADR-001–013 accepted. ADR-014 records implementation choices. ADR-015 records export and interchange formats, whose picture half is now implemented and whose relational half is not; ADR-016 records project organisation and the start experience, which is not implemented; ADR-017 records review comments, which are implemented and are deliberately kept apart from an element's description and from the Note element; ADR-018 records that search narrows the diagram rather than walking hit to hit, which is implemented. |
+| 0 — Architecture | Completed review; ADR-001–013 accepted. ADR-014 records implementation choices. ADR-015 records export and interchange formats, whose picture half is now implemented and whose relational half is not; ADR-016 records project organisation and the start experience, of which the Home screen and its three start cards (with Templates and Import in its sidebar, ADR-022 §9.14) are implemented and recent projects, templates, project folders and thumbnails are not (see *The Home screen and the Azure theme*); ADR-017 records review comments, which are implemented and are deliberately kept apart from an element's description and from the Note element; ADR-018 records that search narrows the diagram rather than walking hit to hit, which is implemented; ADR-021 records relational identity and provenance, which is implemented; ADR-022 records four visible workspaces, the theme token resolver, the menu bar and the start-route readiness gate, of which the token resolver, the Azure theme and the readiness gate are implemented, the menu bar order is implemented for the native menu bar, the workspaces wear Azure with Relational Design offering none of the conceptual tools (§9.12), and the Home screen, its card states and both workspaces are held to reference pictures at 1440 × 1080 (see *The Home screen and the Azure theme*). |
 | 1 — Build foundation | Exit criteria met: layered CMake targets, warning flags, Debug/Release, passing suites, macOS launch, and committed repository state. Windows/Linux instructions exist but those platforms are unverified. |
 | 2 — Shell | Functional desktop shell delivered. Future Schema/Table/SQL/Data navigation waits for usable destinations. |
 | 3 — Commands | Implemented Qt-free semantic operations, atomic deltas, dirty state, bounded undo/redo. |
@@ -617,7 +685,7 @@ geometry changes use **Apply position and size**.
 | 13 — One model | Complete. One conceptual model with no modes; logical types with a length, the identifier/required/unique rules and the schema comment, all always present and gathered in a collapsible "For the schema" section whose state is a user preference rather than project data. The earlier Basic/Convertible mode design is withdrawn and removed; files that recorded a mode still open. |
 | 14 — Readiness | Partial. A relationship side records whether it was answered, so a default can no longer be read as a choice; the full SQL type catalogue is offered with sizes and scales; and the conversion decisions persist against stable identities. Not implemented: `readiness` itself, and the structured policy of ADR-009 — Domain Invariant Violation, Blocking Error, Warning, Information, Unresolved Decision — that conversion will gate on. |
 | 15 — Project files | Single-page native format foundation delivered early to protect the current editor's work. No historical migration or recovery system. |
-| 16–17 — Pages/editor milestone | Not complete; multiple pages, the remaining conceptual semantics, and the start screen, templates and project folders of ADR-016 are required. |
+| 16–17 — Pages/editor milestone | Not complete; multiple pages, the remaining conceptual semantics, and the recent projects, templates, project folders and thumbnails of ADR-016 are required. The start screen itself is built. |
 | 18 onward | Import, provenance, physical design, SQL, data, and later production/ecosystem features remain planned. Schema generation has a preview ahead of them — see below. |
 | 24 — Schema workspace | Not started as a workspace. What exists is a **preview** of it: the conversion read as tables, drawn beside the diagram, with the questions it cannot settle asked on the tables they concern. It owns no relational objects, has no identities of its own, and is worked out afresh from the project every time. See the section below. |
 | 35 — Export | Partial, and pulled forward the way Phase 15 was, because ADR-015 splits export into halves with different prerequisites and neither the pictures nor the listings need anything later. Implemented: the pictures, their options, the project carried inside SVG and PNG, and all four documentation listings, offered together under Export. Not implemented: a multi-page PDF of a project, which waits for the multiple pages of Phase 16; the published JSON Schema for `.erdx`; the outline-text option for a pixel-exact handoff; and the whole schema half — `.sql`, Mermaid ER and DBML — which cannot precede the Phase 24 workspace it would read from. |
@@ -642,7 +710,8 @@ their own and a history of their own — is still a later and separate thing.
   discriminator, and table per concrete class.
 - **Conversion decisions**, asked on the tables they concern rather than in a
   dialog, and kept in the project against stable identities: the ISA strategy,
-  what a composite becomes, and which side of a 1:1 carries the key. An answer
+  what a composite becomes, which side of a 1:1 carries the key, and what keys
+  a bridge that has no identifier of its own (ADR-021 §5b). An answer
   in force is filled in; one that is only the default is filled faintly.
 - **Types and sizes**, answered where the column is. An unanswered type is
   drawn as a dashed blank; pressing it opens the whole SQL Server catalogue in
@@ -659,7 +728,41 @@ their own and a history of their own — is still a later and separate thing.
   land on one row. Any straight run can be pushed sideways; either end can be
   moved around its table's outline or pulled off it and left hanging, which is
   reported and not refused. A line always keeps enough straight length at each
-  end for its cardinality symbols.
+  end for its cardinality symbols. A generated line runs from the exact
+  primary-key row it references to the exact foreign-key row. Which side each
+  end leaves by, left or right, is chosen by trying all four pairings against
+  the router and keeping the cleanest (shortest, fewest turns, least shared
+  lane). When two are equally clean, the foreign key's left side wins. A line
+  shaped by hand skips this choice and keeps its shape, so automatic routing
+  never overrides manual control.
+- **Several tables are gathered and coloured together.** A band drawn from
+  the empty canvas takes every table it touches — touches rather than
+  swallows, since a band drawn across a row of tables is meant to take them
+  and asking for every edge to be inside would make a wide table almost
+  impossible to catch. Holding Shift or Control and pressing a table adds it
+  or takes it out, so a group can be gathered one at a time; held, a press
+  never picks the table up, because gathering and moving are different acts.
+  Pressing inside a group that has already been gathered keeps the group,
+  which is what makes a selection usable. **Dragging any table of a gathered
+  group moves the whole group** the same distance, so it keeps its
+  arrangement (2026-09-24; before, only the table under the hand moved). The
+  group stops as a whole when its first table reaches the top or left of the
+  schema, rather than piling up against the edge. The move is one edit, so
+  one undo puts every table back. As on the diagram, a press on the schema
+  gives it the keyboard, and **Ctrl+A (Cmd+A on macOS) gathers every
+  table**, so the whole schema can be moved together. Before, the keyboard
+  stayed with the diagram behind it, and Select All selected the diagram
+  instead. One gathered behaves as it always
+  did — ringed, with what it is joined to, and the rest faded; several means
+  exactly those, so nothing is drawn in with them.
+
+  They are coloured from the row's own menu, out of the same palette the
+  canvas offers, because a table here and the entity it came from are one
+  element wearing one colour: it is the same edit either way, and the colour
+  already travelled both ways. `swatches()` and `swatch_icon()` moved out of
+  the canvas's own file to be shared rather than copied, since two palettes
+  would drift apart. Applies to everything gathered, or to the table pressed
+  where nothing is.
 - **Looking at it**: pressing a table rings it and everything it is joined to
   and fades the rest; chips narrow by where a table came from; a search of its
   own picks out names; headers say what each table came from.
@@ -761,6 +864,31 @@ their own and a history of their own — is still a later and separate thing.
   wrong type is SQL that will not run. New `Attribute::auto_increment` and
   `SchemaColumn::auto_increment`, format version 25.
 
+- **The Relational Schema owns its identities** (ADR-021). A relation is no
+  longer keyed by the conceptual element it was derived from: it has a
+  `RelationId` of its own and records that element as its `origin`, with the
+  conversion rule that produced it. A foreign key has a `ForeignKeyId` for the
+  same reason. `TableId` is deliberately not used, being reserved for `Table`,
+  which stays a distinct internal concept and surfaces inside the Relational
+  Design workspace rather than a workspace of its own (ADR-022).
+
+  The identity is *derived* from the origin rather than drawn from the
+  generator, so the same project opened twice yields the same relations and
+  everything kept against them — place, width, height, typed name, added
+  columns, invented key names, counting keys, shaped lines — is still theirs.
+  It depends on the origin alone and never on the conversion rule, or
+  answering a conversion question differently would orphan all of it.
+
+  Validation asks the question forwards, since a derived identity cannot be
+  turned back into its origin: it works out what identities the project could
+  produce and checks the schema's state refers to one of them. Format version
+  26; a file written before it is migrated on load by the same derivation, so
+  the same old file always produces the same relations.
+
+  Behaviour is unchanged by design. Relations made by hand, schema-first
+  projects, SQL import and three-way reconciliation are the next steps and are
+  not built.
+
 **Not implemented.** `readiness()` itself and the gate it feeds (Phase 14);
 relational objects with identities of their own, and editing them as such
 (Phase 24); the generation baseline and three-way reconciliation (Phase 25);
@@ -788,6 +916,59 @@ they would read from.
   primary key, why it exists and that the name can be changed. Generating a key
   is right; doing it silently left the user with a name they did not choose and
   no sign that choosing another was allowed.
+- **The key that was drawn is the key** (Zain, 2026-09-24). An entity's key
+  attributes are its table's primary key: one column, or a composite key where
+  several are drawn. Nothing is invented beside them, so the example's tables
+  are keyed by their own `ID` rather than a generated `StudentID` next to an
+  ordinary `ID` column. A foreign key carries every column of the key it points
+  at, each named for the one it points at, qualified with the table's name
+  where that clashes (`ProfessorsID`); a one-to-one marks it unique only where
+  the key is a single column, since a column's own flag cannot say that a
+  combination is unique. A key is made only for an entity with no key
+  attribute, and a **notice says so**, once for each table, naming the entity
+  and the key made for it. Bridge and multivalued tables keep their own key by
+  the course rules and are not announced. A foreign key is no longer counted
+  among the types still open, or among the names that share an answer, since
+  its type is its key's.
+- **Bridge keys: the identifier first, the participant keys only by choice**
+  (Zain, 2026-09-24; ADR-021 §5b). A bridge is the table a many-to-many or
+  associative relationship becomes. Its key is chosen in this order:
+  - **A key the user defined.** This is a key attribute drawn on the
+    relationship, or a column added to the bridge on the schema and made its
+    primary key. It becomes the bridge's primary key, and the participants'
+    foreign keys stay ordinary foreign keys beside it.
+  - **Otherwise, a separate key of its own**, such as `EnrolledID`. This is
+    the default. It is generated, can be renamed, and is not announced.
+  - **Only where somebody chooses it, the participant keys.** The
+    participants' foreign keys together become one composite primary key
+    (`StudentID + CourseID`). Where a participant's own key has several
+    columns, all of them take part.
+
+  The choice is asked on the bridge table: *"Enrolled has no defined
+  identifier. Bridge primary key:"*, with the answers *Separate key
+  (default)* and *Use participant keys (composite PK)*. Where the bridge has
+  an identifier, the question is not shown, so nothing ever offers to replace
+  a key somebody drew. An answer given earlier never outranks an identifier
+  drawn later: the identifier takes over and the question goes away. The
+  earlier answer is kept, not erased, so it applies again if the identifier
+  is removed. Answering is an ordinary edit (`Editor::set_bridge_key`, kept
+  in `ConversionDecisions::bridge_key`, format version 28). It undoes, it is
+  saved, and it is removed with the relationship. The answer is handled by
+  `MainWindow::answer_decision`, which passes it on to the editor.
+
+  A bridge's foreign keys are `NOT NULL` under either strategy, and the
+  bridge end of each of its lines is drawn as mandatory. A row of Enrolled
+  that names no student is not an enrollment. Before this, the foreign keys
+  took the participation of the side they pointed at, and so were nullable
+  by default.
+
+  **Not yet reachable from the diagram.** The model's existing rule
+  `attribute.key.relationship` refuses a key attribute owned by a
+  relationship. So although the conversion would honour a key drawn on
+  Enrolled, the editor refuses to draw one. Today a bridge gets a
+  user-defined key only through a column added on the schema and made its
+  primary key. ADR-021 §5b records this conflict, which is open and waiting
+  for Zain's decision.
 - **A primary key is marked twice**, with the letters `PK` and a solid golden
   key beside them, upright with its teeth pointing down. The key is artwork in
   the icon set (`key.svg`) rather than a shape drawn in code, so it is a key
@@ -801,6 +982,13 @@ they would read from.
   the schema, so it follows the chosen artwork like every other icon, and the
   key gutter is wide enough to hold both marks rather than the mark being shrunk
   to fit.
+- **A foreign key is always marked `FK`, in green** (2026-09-24). This holds
+  when the column is also part of a composite primary key, as the participant
+  keys of a bridge are when somebody chooses them. The gutter never shows a
+  merged `PK FK` marker. That such a column belongs to the key is shown in its
+  Constraints cell, `PK, NOT NULL`. The orange `PK` marker and the golden key
+  are kept for key columns that are not foreign keys, so orange means
+  primary key and green means foreign key.
 - **A misplaced line end is told what is wrong and why.** An end still goes
   exactly where the hand puts it, including where the schema cannot mean it:
   nothing springs back. But a line on the schema joins two rows rather than two
@@ -812,6 +1000,41 @@ they would read from.
   out, which nothing can point at; a key of that table, but not the one this
   points at; or off the table, joining nothing. Said once when the hand lets go,
   not while it is still moving.
+
+  The two ends are told apart, because they are wrong in different ways: a
+  line runs *from* the key that points *to* the key pointed at, so the near
+  end has to sit on a column that does the pointing and the far end on the
+  column pointed at. A primary key is a perfectly good column to land on and a
+  very bad one to start from, and earns a different answer at each end — the
+  near end is told it is "a key this table is identified by, not a key that
+  points anywhere", the far end that it is "a key of this table, but not the
+  one X points at". It was previously reported at the near end as an ordinary
+  column, which a primary key is not.
+- **A warning comes up where the hand was, not along the bottom of the
+  window.** A `Notice` laid over the whole window and put beside the point the
+  pointer let go of: a remark about a connection belongs where the connection
+  was attempted, because that is where the person is looking, and a line along
+  the bottom of the window is too far from it to be read at all. It stands
+  below and to the right of that point, clear of the pointer so that what it
+  is about is not covered by what is said about it, and turns to the other
+  side where there is no room, so it never leaves the window. It keeps that
+  place when the window changes shape under it. Drawn in the theme's own amber —
+  the colour every palette already has for a warning, and the one a note on
+  the canvas is drawn in, so the two read as the same kind of thing said in
+  two places. What went wrong is in bold and why is under it, because the two
+  are read at different speeds: the first says whether to stop, the second
+  says what to do.
+
+  It is never dismissed and never taken away on a clock. A warning that has to
+  be clicked away stops the work it is about; one that goes after so many
+  seconds is gone before a slow reader has finished and still there long after
+  a quick one has. So it waits for the hand: something went wrong under the
+  pointer, the pointer stops while it is read, and moving on again is what
+  says it has been. It rises into place as it arrives and sinks back as it
+  goes, the movement tied to the fade so the two can never come apart. The
+  pointer passes straight through it, so it can never block the next thing to
+  be pressed, and undo takes it away with the thing it was about. The status
+  bar still keeps the record after it has gone.
 - **Another column is added where it will be read.** The table under the
   pointer shows an empty slot beneath its last row, which lights when the
   pointer is on it; pressing it makes the row and opens its name for typing in
@@ -854,17 +1077,223 @@ like any other, and it is now asked the same questions the diagram half is.
   unnoticed; four hundred typed table names were accounted 389 KiB and in fact
   retained 17.7 MiB.
 
-**Format.** Version 25 records whether a column counts itself up; version 24
+**Format.** Version 26 gives the Relational Schema identities of its own and
+keys its state by them; version 25 records whether a column counts itself up;
+version 24
 records what a key the conversion invented has been
 renamed to; version 21 records where the schema differs from the diagram;
 version 22 records how it has been arranged; version 23 records how tall a
-table has been pulled as well as how wide. Older files open, and read correctly
-as having none of these.
+table has been pulled as well as how wide; version 28 records which bridges
+somebody chose to key by their participants' foreign keys. Older files open,
+and read correctly as having none of these.
 
 The Part 1 checklist is a coverage inventory, not a replacement for semantic
 prerequisites. Persistence was deliberately pulled into this usable slice so
 newly drawn diagrams can survive application shutdown. This does not advance
 conversion, SQL, AI, or data features ahead of the roadmap.
+
+## The Home screen and the Azure theme
+
+Built under ADR-022, in the stages of the Azure programme whose list is kept
+outside the repository at `erdflow-notes/UI-AZURE-TASKS.md`. What is built:
+
+- **ERDFlow Azure** is a twentieth theme, `erdflow.azure`, and the theme of a
+  fresh profile. A profile that has already chosen a theme keeps it, and the
+  nineteen themes that were there before are unchanged and still offered.
+  Azure is fully specified as a set of tokens (`Tokens` in `theme.hpp`): colours,
+  radii, shadows and text styles. The other nineteen derive theirs from their
+  own palette through a resolver that runs once when a theme is put on and is
+  cached, never while painting. Azure's primary is `#1E88E5`. A selected row,
+  where white lettering sits on filled blue, uses `#1976D2` instead: an
+  accessibility override derived from Azure (ADR-022 §9.3), because white on
+  `#1E88E5` is 3.68:1 and every theme is held to 4.5:1 for ordinary text.
+- **ERDFlow opens on the Home screen** (`HomePage`), with the work behind it.
+  **Home** in the menu bar goes back to it. Panels that were open are put away
+  while it is up and come back with the work; a panel that was closed stays
+  closed. A file named on the command line, or `--example`, goes straight to
+  the work.
+- **The top of Home.** The native menu bar (File · Home · Edit · Insert ·
+  Design · View · Help) stays on Home. The ribbon's rows give way, while Home
+  is up, to a slim bar (`AppTopBar`) carrying only the ERDFlow mark, a
+  **Settings** button and a **Theme ▼** control, as Zain settled (ADR-022
+  §9.14). Theme opens the window's own theme menu, with its preview on hover.
+  Settings holds the window's own Theme, Icons and Notation menus. The ribbon
+  row that was in front comes back when Home is left. The status line stays.
+- **One page.** Everything on Home is on screen at once at the size ERDFlow
+  opens at (1440 × 920), at the 1440 × 1080 reference, and at 1366 × 740,
+  which the tests check. On a short window the spacing closes up first, then
+  the illustration steps aside, the card drawings shrink, and the cards
+  narrow, keeping their shape. Words, fields and buttons keep their size.
+  On a shorter window still, the centre scrolls rather than squash the cards
+  (ADR-022 §9.16). The learning panel goes below 1180 pixels wide and the
+  sidebar below 880, rather than either being squashed.
+- **The sidebar** (`HomeSidebar`) is eight buttons: Home, Open Project,
+  Recent · Examples, Templates · Import · and, at the foot, Settings and
+  Help. There is no New Project row, because the cards are where a project
+  is started (ADR-022 §9.20). Each has its outline icon from the same Lucide family as the rest
+  of the window. A single press activates a row. The list it replaced only
+  answered a double press on most platforms. Up, Down, Home and End move
+  between rows, and Tab reaches every one. The chosen row is `#1976D2` with
+  white lettering. Every row is wired: Open Project and Import open the Open
+  chooser; Recent opens the list of the
+  ten projects last opened, saved or created; Examples and Templates open the
+  bundled University project untitled, which is what starting from a template
+  is (ADR-016); Settings and Help open their menus beside the row.
+- The centre says **Welcome to ERDFlow** and *Design. Model. Convert.
+  Generate.* beside a **drawn illustration** (`WelcomeFlowIllustration`,
+  ADR-022 §9.15): a large three-tier database on a rounded platform over a
+  soft glow, with four panels around it, read by their marks: a structure of
+  boxes, an entity–relationship–entity, a table on a blue panel and a page of
+  SQL. Each panel leans towards the database; straight lines with two bends
+  join them to the platform (ADR-022 §9.17). It stands at the right of the welcome, its foot level with
+  *Create a new project*, up to 230 pixels tall, and steps aside on a short
+  or narrow page. It is painted, not loaded, in the theme's own tokens, at
+  any size. It is a component: the panels are data (`HeroOrbitItem`), a
+  caller can give it other words, and a panel given no ring is placed on one.
+  A caller can also draw a panel's content itself (`draw`, clipped to the
+  panel) and give it something to do when pressed (`on_press`). The
+  product's own panels use neither and stay decoration.
+- **The panels revolve round the database, and can always be made still**
+  (ADR-022 §9.16). All four travel one elliptical orbit, a full revolution
+  every 18 seconds at a constant 20° a second, a quarter-turn apart. A panel
+  behind the database is smaller and fainter and passes behind it; one in
+  front passes in front. The database stays put and breathes. Each panel's
+  line is three straight segments with two slightly rounded bends: a run out
+  of the panel, a slant, and a run into the platform. The two runs point the
+  same way and are the same length (ADR-022 §9.17). The line is worked out
+  every frame from the point on the panel's edge that faces the platform.
+  For a panel behind, it ends where it goes behind the database, so both
+  runs stay visible. It pulses faintly. Pointing at a panel highlights its border and stops nothing. The
+  glow and platform are drawn once and kept, and a frame costs only what
+  moves. The clock runs only while the Home screen is showing. Setting
+  `ERDFLOW_REDUCED_MOTION=1` starts it still, at the starting composition.
+  Nothing is conveyed by the motion alone.
+- **Three ways to start**, as cards in a fixed order with fixed wording:
+  *Conceptual Design (ERD)*, *Relational Schema* and *SQL Script (DDL)* (titles
+  changed 2026-09-24, ADR-022 §9.19 and §9.20). *From
+  Template / Example* and *Import Existing* are not cards. They are the
+  sidebar's Templates and Import rows (ADR-022 §9.14). The cards **share one
+  line**, never wrap, and are **door-shaped**: 1.10 times as tall as wide,
+  never wider than 315 pixels. On a wide window they stop there and the
+  group is centred. The drawing area grows from 88 to 105 pixels with the
+  card, and + Create stands at its foot. A card not yet available
+  shows its words at about three quarters strength and its drawing at 60%,
+  with the badge at full strength. A chosen card has a faint blue light at
+  its top (§9.15, §9.16). Each is a real
+  control: it takes keyboard focus and is read out by name and description.
+  Pressing a card **chooses** it and nothing more; the card's own **+ Create**,
+  centred at its foot, is what starts. A card reads top to bottom: title,
+  the *Coming soon* row (empty on a card that can be taken), drawing,
+  description, + Create. The helper line is no longer drawn.
+  *Relational Schema* and *SQL Project* are shown in their
+  places, marked *Coming soon* and not enabled, each saying why in its
+  tooltip: the first waits for ADR-021 Step B, the second for SQL to be
+  parsed into Relational Design and round-tripped (ADR-022 §9.2).
+- **Nothing is asked under the cards** (ADR-022 §9.19): the page ends with
+  them. Conceptual's **+ Create** opens a new, untitled conceptual project,
+  as File › New project does, and nothing is written until it is saved.
+  There is no Cancel. Home is left by starting or opening something. Where
+  a project's name and location are asked is still to be decided.
+  `ProjectDetailsForm` is kept for that decision, but Home no longer uses it.
+- **Live demos under the cards** (`HomeLiveDemo`, ADR-022 §9.21), **Stage 1
+  of 7**. Each card has a demo under it, as wide as the card, centred and
+  following it. The demo row sits on top of the page, so it takes only the
+  empty space under the cards and never moves or resizes one. **Stage 2**:
+  the Conceptual scene. Student, Course, Enrolled, the lines, five
+  attributes and the underlined keys arrive in twelve steps. Scenes are
+  stored as data and drawn by one painter (`home_demo_scenes`). There is no
+  clock yet, so Home shows the finished model. **Stage 3**: the Relational
+  Schema scene. Students, Courses and the Enrollments bridge fill in a row
+  at a time. The keys are marked, with PK as a gold key and FK in green,
+  and each foreign key's line runs row to row with Crow's Foot ends. There
+  is no diamond. **Stage 4**: the SQL scene. An editor rises, a nine-line
+  script creating the three tables is typed at a steady 40 characters a
+  second with a caret and theme syntax colours, and "✓ 3 tables created"
+  appears at its foot. Nothing is run. **Stage 5**: one `HomeDemoClock`
+  plays all three from a single 30 fps timer. The demos start 0, 1 and 2 s
+  in, and each then loops at its own length. Stopped, the demos stand
+  finished; the visual suite stops them for its pictures. **Stage 6**:
+  reduced motion comes through the hero's one seam (§9.9). Where stillness
+  is asked for, the demos never move and show their scenes finished. The
+  clock ticks only while the demo row is shown. It stops when Home is left,
+  and every demo starts again from the beginning when Home returns. **Moved
+  into the cards** (2026-09-25): the Conceptual demo (a horizontal ERD, by
+  another agent) and the Relational Schema demo (15 steps, a key marked
+  with its row) are held inside their cards, in place of each card's
+  drawing and description. Descriptions are still read out. All three
+  cards stay one height at 269 × 334, with + Create on one line. **SQL in
+  its card** (step 2): Zain's script, set compactly in ten lines, is typed
+  head then columns for each table, then "✓ 3 tables created". All three
+  demos are now inside their cards, the row under the cards is removed,
+  and the clock follows the card row. **Still pictures** (2026-09-25): all
+  three demos stand still, each showing its finished scene. The motion is
+  kept behind a per-card switch (the `played` list in
+  `HomePage::build_centre`, `moves`), and all three are off. The third card
+  is now titled *SQL Script (DDL)*. **Raised screens**: each demo is shown
+  on a small screen standing out of its card, drawn in the style of the hero
+  panels. The Conceptual card's screen shows the real Conceptual canvas: a
+  small example drawn by `DiagramView` at the real element sizes, recorded
+  once for each theme (`home_demo_canvas`).
+- **The learning panel** (`HomeLearningPanel`) has its four topics with their
+  icons, and *View tutorials* is a button that opens the quick guide, which is
+  the only tutorial there is yet. There is no *Open an example project* link,
+  because the sidebar's Examples row does that (ADR-022 §9.20). *Design today. Build tomorrow.* is set in
+  light italic over the wave at its foot.
+- Home's text is in the specification's pixel sizes. Where one of Azure's
+  colours would put ordinary text under 4.5:1 it is deepened only as far as
+  needed: Create Project and the chosen row use `#1976D2`, and the learning
+  links and the form's error line are darkened slightly.
+
+- **The workspaces wear Azure** (ADR-022 §9.12). The theme dresses the whole
+  window, so the Conceptual workspace, Relational Design, the panels, menus,
+  dialogs and ribbon all take Azure's colours with nothing about what they do
+  changed. The interface now names the relational workspace **Relational
+  Design** wherever it said "schema" for it: the header button (formerly
+  *Preview schema*), its search, its Full button and status message, the
+  resize grip, the properties section *For Relational Design*, *Add column in
+  Relational Design only*, and its empty state. Internal names are unchanged.
+- **Relational Design offers only its own tools.** While it has the whole
+  window, the header's badge reads RELATIONAL DESIGN rather than CONCEPTUAL.
+  The ribbon and its drawing tools (Entity, Attribute, Relationship,
+  Specialization, Connect, Note) are put away with the diagram, and so is
+  Insert › Picture, which places a picture on the diagram nobody can see.
+  What stays is its own: Arrange, Appearance, undo and redo, its search and
+  the theme. The Conceptual workspace keeps Select, Entity, Attribute,
+  Relationship, Specialization, Connect and Note.
+- **Reference pictures and an audit** (`tests/visual_tests.cpp`, the `visual`
+  suite). Home, the illustration on its own, a card at rest, under the
+  pointer, chosen and *Coming soon*, a sidebar row under the pointer, and
+  the Conceptual and Relational Design workspaces are drawn at the 1440 × 1080 reference (ADR-022 §9.6) with the
+  illustration still and the caret steady. Each is compared with a picture
+  kept under `tests/visual/<system>-<major version>`, and fails if more than
+  0.4% of its pixels differ. Fonts differ between systems and releases, so a
+  machine with no pictures of its own is told so and not compared. Pictures
+  are kept for `macos-26` today. The audit checks that Tab reaches every Home
+  control in reading order, that Tab leaves the description field (it used
+  to type a tab into it), that the focused card, row, link and Theme button
+  each show where the keyboard is, that every card and row has an accessible
+  name, and that thirteen text-and-surface pairs in Azure read at 4.5:1 or
+  better.
+
+Not built yet, though some of it is on screen:
+
+- **Relational Design First** and **SQL First** are disabled until their
+  workflows exist (ADR-022 §5, §9.2).
+- There is one template, the bundled University project. A gallery of
+  templates, *Save as template*, project folders as a library and thumbnails
+  (ADR-016) are not built. **Import** opens the same chooser as Open Project
+  until SQL and database sources have somewhere to go.
+- *View tutorials* opens the quick guide. There are no tutorials beyond it.
+- The platform's own reduced-motion setting is not read. Qt has no
+  cross-platform way to ask, so `ERDFLOW_REDUCED_MOTION` is the only way in
+  today, behind one function where a native reading would plug in (ADR-022
+  §9.9).
+- Relational Design is still a panel over the diagram rather than a
+  workspace of its own. It cannot yet make a table by hand (ADR-021 Step B),
+  so it has no Table tool to offer, and Insert has no relational entries.
+  SQL and Data are not built, so there is nothing of theirs to dress.
+- Reference pictures exist for one system and release. The audit is
+  offscreen and does not prove what a real screen reader announces.
 
 ## System qualities in this implementation
 
@@ -878,9 +1307,11 @@ conversion, SQL, AI, or data features ahead of the roadmap.
 
 ## Verification
 
-All six CTest suites passed in Debug, Release, and AddressSanitizer +
+All seven CTest suites pass in Debug, Release, and AddressSanitizer +
 UndefinedBehaviorSanitizer builds. They cover the core, real persistence adapter,
-canvas interactions, themes, desktop workflows, and application startup. See [development instructions](DEVELOPMENT.md)
+canvas interactions, themes, desktop workflows, application startup, and the
+reference pictures and accessibility audit of the Azure Home screen and
+workspaces. See [development instructions](DEVELOPMENT.md)
 for reproducible commands and [performance baseline](PERFORMANCE_BASELINE.md) for
 measurements. GUI checks currently use Qt's offscreen platform on macOS; the
 rendered example was visually inspected. This does not prove native dialogs,
@@ -909,9 +1340,33 @@ missing element, a hidden attribute that is gone, an arrangement off the canvas
 and a line shaped from a vanished link are each refused, that a column's and a
 remark's identities are remembered when a project is opened so neither can be
 issued twice, and that an edit swapping a whole field costs the undo budget what
-it retains; and lining up — that a dragged element still meets the edge and the
+it retains; lining up — that a dragged element still meets the edge and the
 middle of one far away across the diagram, and is left exactly where it was put
-when nothing is within reach.
+when nothing is within reach; and bridge keys — that a bridge keeps its
+separate key until the participant keys are chosen, that choosing them makes
+every foreign key a required part of one composite key, that the choice undoes
+and redoes, that a key drawn on the relationship afterwards takes over and
+removes the question, and that answering on the schema reaches the editor. No
+test yet checks that a foreign key which is also part of the key is still
+drawn with a green `FK`.
+
+**Not passing as of 2026-09-24.** The uncommitted bridge-key work leaves four
+suites failing in Debug:
+
+- `desktop_tests` does not compile. The new bridge test looks the schema view
+  up with `findChild<SchemaView>`, and `SchemaView` has no `Q_OBJECT`.
+- `persistence` still expects format version 27 where 28 is now written.
+- `core` fails the bridge test's step that draws a key on the relationship,
+  which is refused by `attribute.key.relationship` (ADR-021 §5b). It also
+  fails `schema_names_reach_the_diagram`, which expects the bridge's foreign
+  key into a renamed `MatricNo` key to be called `MatricNo`, while the
+  foreign-key naming rule now qualifies it with the table's name.
+- `visual`: the relational-design baseline predates the bridge-key question
+  under Enrolleds and the bridge foreign keys becoming `NOT NULL`, and it has
+  not been retaken.
+
+The claims above describe what the tests are written to check, not a passing
+run.
 
 ## Still to build in Part 1
 
@@ -930,3 +1385,39 @@ history storage, not whole-process memory. The session's issued-ID registry also
 grows with newly allocated IDs until New/Open. Files are limited to 8 MiB, with
 10,000 elements and 10,000 participants. These are resource limits, not promises
 that every maximum-size diagram is already smooth.
+
+### Home card motion replacement — Step A (2026-09-24)
+
+Only the Conceptual card has been migrated: its static drawing is removed,
+its existing lightweight `HomeLiveDemo` is now its child, and the description
+precedes the demo. The shared card row retains equal heights and aligned Create
+buttons. The other two cards and their existing below-card demos await B/C.
+
+The Conceptual scene now builds Student and Course, then each ID (underlined)
+and Name, then Enrolled, its relationship lines, optional-many Crow's Foot
+symbols, and Enrollment Date. Attribute curves share a short central trunk
+on each entity; relationship anchors use the opposite faces. Enrollment Date
+joins the diamond's right vertex. Colors come from existing theme tokens.
+The existing timeline, deterministic finished state, reduced-motion setting,
+and Home visibility handling are reused; no editor/domain behavior changes.
+
+Debug and Release builds succeed. Desktop tests (including ownership, common
+anchors, ordered arrivals, cardinalities, containment at five viewport sizes,
+card/button alignment and existing motion tests) pass in both. Full CTest runs
+are 5/7 in both: the pre-existing core failure `drawn keys are the primary key`
+and visual suite remain failing. Visual differences comprise the expected
+Home/card changes plus the pre-existing relational-design difference. The
+1440×1080 finished Home capture was inspected in `build/visual-output/home.png`;
+baselines remain untouched pending Step G. Stop here per the user's staged brief.
+
+### Conceptual Home demo horizontal presentation (2026-09-24)
+
+The follow-up presentation changes only the Conceptual card: Student on the
+left, Enrolled centered at authored x=140, Course equally distant on the right,
+all on y=100. Both entities' ID/Name branches emerge from their top-center
+anchors; horizontal relationship connectors and optional-many symbols use
+separate side anchors. Enrollment Date joins the diamond's bottom vertex.
+The visible description is removed, and its space is given to the centered
+demo; the previous responsive card height budget and Create baseline are
+preserved so the other cards and Home layout do not move. Motion ordering,
+notation, themes, and the real editor remain unchanged.

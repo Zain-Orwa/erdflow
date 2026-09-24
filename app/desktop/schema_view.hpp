@@ -1,3 +1,9 @@
+// ERDFlow — settled work. Do not change, replace or re-style anything here to
+// suit something new you have been asked to build. If what you are building
+// genuinely contradicts what is here, stop and ask Zain, who owns this project:
+// say what you want to change, what the application will LOOK like afterwards,
+// and whether it is a gain or a loss. He decides. Fixing a real defect is not
+// covered by this — fix it and say what was wrong. Full rule: CLAUDE.md.
 #pragma once
 
 #include "domain/schema_preview.hpp"
@@ -13,6 +19,7 @@ class QLineEdit;
 #include <functional>
 #include <map>
 #include <optional>
+#include <set>
 #include <vector>
 
 namespace erdflow::application { class Editor; struct EditResult; }
@@ -104,7 +111,21 @@ public:
     // joined to and fades the rest, because the question a reader has in front
     // of a schema is almost always "what does this one touch".
     void select(std::optional<domain::ElementRef> table);
-    [[nodiscard]] std::optional<domain::ElementRef> selected() const { return selected_; }
+    // Add one to what is marked, or take it out again. What holding a
+    // modifier and pressing a table does.
+    void toggle_mark(const domain::ElementRef& table);
+    // Mark every table, as Select All does on the diagram. What Ctrl+A does
+    // while the schema has the keyboard.
+    void select_all();
+    // The one table being asked about, where exactly one is. Several tables
+    // marked together is a different question -- "these ones" rather than
+    // "this one and what it is joined to" -- so it answers nothing here.
+    [[nodiscard]] std::optional<domain::ElementRef> selected() const {
+        return selected_.size() == 1 ? std::optional{selected_.front()} : std::nullopt;
+    }
+    // Everything marked, in the order it was marked, so that whatever acts on
+    // a selection can open on what the first of them already wears.
+    [[nodiscard]] const std::vector<domain::ElementRef>& selection() const { return selected_; }
     // Which table that is, by its place in the preview. The lines belonging
     // to it are matched on this, so it is part of what the selection means
     // rather than an internal convenience.
@@ -178,7 +199,12 @@ public:
     // where nothing is. Reported rather than prevented: the end stays where the
     // hand left it, because a line that sprang back would be arguing with the
     // person drawing it.
-    std::function<void(const QString& warning)> warned;
+    // Something is wrong with what the hand just did, and where on the screen
+    // it did it. The place travels with the words because a warning about a
+    // connection belongs where the connection was attempted: that is where the
+    // pointer is, and so where the person is looking. In screen coordinates,
+    // since whoever shows it has a different idea of the origin.
+    std::function<void(const QString& warning, QPoint at)> warned;
 
     // Where the pointer asked what can be done here: which table, and which of
     // its columns where it was on one. The view finds the place; what may be
@@ -238,6 +264,7 @@ protected:
     void contextMenuEvent(QContextMenuEvent* event) override;
     bool eventFilter(QObject* watched, QEvent* event) override;
     bool event(QEvent* happening) override;
+    void keyPressEvent(QKeyEvent* event) override;
 
 private:
     // One line, already routed. Routing every line before any is drawn is what
@@ -495,6 +522,8 @@ private:
         double type = 0;
         double rules = 0;
     };
+    [[nodiscard]] bool is_marked(const domain::PreviewTable& table) const;
+    void draw_band(QPainter& painter) const;
     [[nodiscard]] Columns columns_of(const domain::PreviewTable& table) const;
     [[nodiscard]] double natural_width(const domain::PreviewTable& table) const;
     // What a column's type and size are called where they are drawn.
@@ -507,6 +536,9 @@ private:
     // What the project says about the arrangement, in the painter's units.
     // Read from the model rather than kept here, so that an undo of a move or
     // of a shape is seen the same way as an undo of anything else.
+    // What the model keeps, as the painter wants it. The one place the two
+    // representations meet.
+    [[nodiscard]] static Shape as_shape(const domain::SchemaLine& line);
     [[nodiscard]] Shape shape_of(const domain::LinkSource& link) const;
     [[nodiscard]] bool line_is_shaped(const domain::LinkSource& link) const;
     [[nodiscard]] std::optional<QPointF> placed_by_hand(const domain::ElementRef& table) const;
@@ -522,13 +554,30 @@ private:
     // The line under the pointer, drawn a little heavier with its corners shown
     // so that it is clear which one a drag would take hold of.
     std::optional<domain::LinkSource> hovered_;
-    QPointF grab_offset_;
+    // The tables a drag carries, each with where it stood when taken hold of,
+    // and where the pointer was then. The table pressed, ordinarily; every
+    // marked table when the one pressed is among several marked.
+    std::vector<std::pair<domain::ElementRef, QPointF>> carried_;
+    QPointF carried_from_;
     SchemaShowing showing_ = SchemaShowing::Everything;
     QString looking_for_;
     SchemaRouting routing_ = SchemaRouting::AroundTables;
     bool lines_give_way_ = false;
     bool tables_resizable_ = true;
-    std::optional<domain::ElementRef> selected_;
+    // What is marked. One is the ordinary case and behaves as it always did:
+    // the table is ringed, what it is joined to is ringed with it, and the
+    // rest of the schema fades. Several is a deliberate act -- a band drawn
+    // round them, or held down and pressed one by one -- and means exactly
+    // those, so nothing is drawn in with them.
+    std::vector<domain::ElementRef> selected_;
+    // The entity tables already told about the key made for them, so each is
+    // said once rather than on every change to the schema.
+    std::set<domain::ElementRef> announced_keys_;
+    void announce_invented_keys();
+    // The band being drawn round tables, while one is being drawn. Kept in the
+    // view's own coordinates, like everything else the hand is doing.
+    std::optional<QRectF> band_;
+    QPointF band_from_;
     std::optional<Answering> answering_;
     bool answering_size_ = false;
     Notation notation_ = Notation::CrowsFoot;
