@@ -1,8 +1,16 @@
+// ERDFlow — settled work. Do not change, replace or re-style anything here to
+// suit something new you have been asked to build. If what you are building
+// genuinely contradicts what is here, stop and ask Zain, who owns this project:
+// say what you want to change, what the application will LOOK like afterwards,
+// and whether it is a gain or a loss. He decides. Fixing a real defect is not
+// covered by this — fix it and say what was wrong. Full rule: CLAUDE.md.
 #pragma once
 
 #include "diagram_view.hpp"
 #include "export_dialog.hpp"
 #include "icons.hpp"
+#include "home_page.hpp"
+#include "notice.hpp"
 #include "schema_view.hpp"
 #include "application/project_store.hpp"
 
@@ -20,7 +28,9 @@ class QAction;
 class QActionGroup;
 class QDockWidget;
 class QLabel;
+class QStackedWidget;
 class QLineEdit;
+class QMenu;
 class QComboBox;
 class QScrollArea;
 class QPushButton;
@@ -43,6 +53,12 @@ public:
     bool open_path(const QString& path);
     // Applies a theme to the window and its canvas, and remembers it.
     void set_theme(ThemeId id);
+    // Which of the two pages is in front. The home screen is where the
+    // application starts; the workspace is where the work is. Public because
+    // starting a project moves between them, and because a test has no other
+    // way to ask which one somebody is looking at.
+    void show_home(bool on);
+    [[nodiscard]] bool showing_home() const;
     // Shows a theme without choosing it, so one can be judged on the window
     // itself rather than on its name. Leaving the menu puts back the chosen one.
     void preview_theme(ThemeId id);
@@ -220,6 +236,34 @@ private:
     QLabel* count_label_ = nullptr;
     QLabel* zoom_label_ = nullptr;
     QLabel* readiness_label_ = nullptr;
+    // A remark laid over the work when something goes wrong under the hand.
+    // The status bar keeps the record; this is for the moment itself, when a
+    // line along the bottom of the window is too far from where the person is
+    // looking to be read at all.
+    Notice* notice_ = nullptr;
+    // The screen the application opens on, and the workspace behind it. Both
+    // exist from the start; which one is in front is all that changes, so
+    // nothing has to be built or torn down when somebody moves between them.
+    HomePage* home_ = nullptr;
+    QStackedWidget* pages_ = nullptr;
+    // The panels that were open when the home screen came forward, so exactly
+    // those come back and no others.
+    std::vector<QPointer<QDockWidget>> hidden_for_home_;
+    // Whichever ribbon rows were actually showing when Home came forward. Home
+    // has its own slim bar in their place; the native menu bar and the status
+    // line stay, since Home is never shown without its menus (ADR-022 section
+    // 9.14). Keeping this exact set means the row that was in front, not an
+    // assumed Home row, comes back afterwards.
+    std::vector<QPointer<QWidget>> hidden_chrome_for_home_;
+    bool home_chrome_hidden_ = false;
+    // Projects opened, saved or created lately, newest first, read from and
+    // kept in the settings. The Home screen's Recent row and the Home menu
+    // both open this one menu.
+    QMenu* recent_menu_ = nullptr;
+    // What the Home screen's Settings opens: the choices that belong to the
+    // whole application rather than to a project -- theme, icons, notation.
+    // The same menus the View menu holds, not copies of them.
+    QMenu* settings_menu_ = nullptr;
     QAction* undo_ = nullptr;
     QAction* redo_ = nullptr;
     QAction* duplicate_ = nullptr;
@@ -393,8 +437,21 @@ private:
     void refresh_selection_commands();
     bool confirm_discard();
     bool save(bool choose_path = false);
+    // Reset the editor only after the current work has actually been
+    // discarded or saved. The Home routes use the result so cancelling never
+    // navigates away or renames the project that was already open.
+    bool begin_new_project();
     void new_project();
-    void open_dialog();
+    bool open_dialog();
+    // Says where each of the Home screen's rows and links goes. Done once every
+    // menu they open exists.
+    void wire_home();
+    // Which workspace the window is showing in front: the badge says its name,
+    // and anything only the other one can take is put away (ADR-022 9.12).
+    void set_workspace_in_front(bool relational);
+    void remember_recent(const QString& path);
+    void refresh_recent_menu();
+    void show_quick_guide();
     // Hides the panels and gives the whole window to the diagram, or brings
     // back exactly the panels that were showing when it was turned on.
     void set_full_view(bool on);

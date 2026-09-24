@@ -1,3 +1,10 @@
+// ERDFlow — settled work. Do not change, replace or re-style anything here to
+// suit something new you have been asked to build. If what you are building
+// genuinely contradicts what is here, stop and ask Zain, who owns this project:
+// say what you want to change, what the application will LOOK like afterwards,
+// and whether it is a gain or a loss. He decides. Fixing a real defect is not
+// covered by this — fix it and say what was wrong. Full rule: CLAUDE.md.
+#include "domain/schema_preview.hpp"
 #include "infrastructure/project_store.hpp"
 
 #include <QFile>
@@ -107,6 +114,100 @@ void forget_answered_sides(QJsonObject& project) {
 void forget_schema_layout(QJsonObject& project) {
     project.remove("schema_layout");
 }
+// Version 27 is the first format that stores the prose entered with the other
+// project-creation details. A fixture taken back to any earlier version must
+// therefore lose the field as well as claim the earlier version.
+void forget_project_description(QJsonObject& project) {
+    project.remove("description");
+}
+// Version 28 is the first to record which bridges were chosen to be keyed by
+// their participants' foreign keys, so an earlier one carries no such list.
+void forget_bridge_keys(QJsonObject& project) {
+    if (!project.contains("decisions")) return;
+    auto decided = project["decisions"].toObject();
+    decided.remove("bridge_key");
+    project["decisions"] = decided;
+}
+// A document claiming to predate version 26 keyed the schema's own state by
+// the conceptual element each object came from, rather than by a relational
+// identity of its own.
+//
+// Turning a current document back into one means undoing a derivation, which
+// cannot be done from the identity alone -- so it is done from the project:
+// every element is asked what identity it would derive, and that answer is
+// looked up backwards. This is exactly the mapping the reader performs
+// forwards when it migrates such a file.
+void forget_relational(QJsonObject& project) {
+    std::map<QString, QJsonObject> whose;
+    const auto note = [&](const char* type, const QJsonArray& of) {
+        for (const auto& value : of) {
+            const auto id = value.toObject()["id"].toString();
+            auto bytes = Uuid{};
+            auto text = id;
+            text.remove('-');
+            for (std::size_t i = 0; i < bytes.bytes.size(); ++i)
+                bytes.bytes[i] = static_cast<std::uint8_t>(
+                    text.mid(static_cast<int>(i) * 2, 2).toUInt(nullptr, 16));
+            ElementRef ref = EntityId{bytes};
+            if (std::string(type) == "attribute") ref = AttributeId{bytes};
+            else if (std::string(type) == "relationship") ref = RelationshipId{bytes};
+            const auto derived = relation_from(ref);
+            QString made;
+            for (const auto byte : derived.value.bytes)
+                made += QString("%1").arg(byte, 2, 16, QChar('0'));
+            made.insert(20, '-'); made.insert(16, '-'); made.insert(12, '-'); made.insert(8, '-');
+            whose[made] = QJsonObject{{"type", QLatin1String(type)}, {"id", id}};
+        }
+    };
+    note("entity", project["entities"].toArray());
+    note("attribute", project["attributes"].toArray());
+    note("relationship", project["relationships"].toArray());
+    // Every list that used to name an element instead of a relation.
+    const auto back = [&](const QJsonArray& of) {
+        QJsonArray older;
+        for (const auto& value : of) {
+            auto entry = value.toObject();
+            const auto found = whose.find(entry["relation"].toString());
+            if (found == whose.end()) continue;
+            entry.remove("relation");
+            entry["element"] = found->second;
+            older.append(entry);
+        }
+        return older;
+    };
+    // Each list only where the document still has it: a document already taken
+    // back past the version that introduced one must not be handed it again.
+    if (project.contains("decisions")) {
+        auto decided = project["decisions"].toObject();
+        if (decided.contains("table_name")) decided["table_name"] = back(decided["table_name"].toArray());
+        project["decisions"] = decided;
+    }
+    if (project.contains("schema")) {
+        auto schema = project["schema"].toObject();
+        if (schema.contains("added")) schema["added"] = back(schema["added"].toArray());
+        if (schema.contains("keys")) schema["keys"] = back(schema["keys"].toArray());
+        // Only where the document still has them. A document already taken
+        // back past version 25 has no such list, and giving it an empty one
+        // would be handing it a field of a version it is claiming to predate.
+        if (schema.contains("counting_keys")) {
+            QJsonArray counting;
+            for (const auto& value : schema["counting_keys"].toArray()) {
+                const auto found = whose.find(value.toString());
+                if (found != whose.end()) counting.append(found->second);
+            }
+            schema["counting_keys"] = counting;
+        }
+        project["schema"] = schema;
+    }
+    if (!project.contains("schema_layout")) return;
+    auto layout = project["schema_layout"].toObject();
+    layout["tables"] = back(layout["tables"].toArray());
+    // A line before 26 named the link it was drawn for; that cannot be worked
+    // back out of the key, so such a document simply has none.
+    layout["lines"] = QJsonArray{};
+    project["schema_layout"] = layout;
+}
+
 // A document claiming to predate version 25 knew nothing of a column counting
 // itself up, so it says so nowhere -- neither on an attribute nor on a column
 // the schema added on its own.
@@ -250,6 +351,50 @@ void incomplete_models_save_and_open() {
     CHECK(!editor.can_redo());
 }
 
+void project_description_persists_across_the_version_boundary() {
+    Fixture fixture;
+    const std::string description = "A shared model of university staffing.\nReviewed each semester.";
+    CHECK(fixture.editor.describe_project(description));
+
+    const auto encoded = ErdxProjectStore::encode(fixture.editor.project());
+    const auto root = QJsonDocument::fromJson(encoded).object();
+    CHECK(root["format_version"].toInt() == 28);
+    CHECK(root["project"].toObject()["description"].toString().toStdString() == description);
+    const auto reopened = ErdxProjectStore::decode(encoded);
+    CHECK(reopened);
+    CHECK(reopened.project->description == description);
+    CHECK(*reopened.project == fixture.editor.project());
+
+    // The field is required in the version that introduced it, and an older
+    // version may not smuggle it in where an old writer could not understand
+    // or preserve it.
+    auto missing = root;
+    change_project(missing, [](QJsonObject& project) { project.remove("description"); });
+    reject(bytes(missing));
+    auto older = root;
+    auto older_project = older["project"].toObject();
+    forget_bridge_keys(older_project);
+    forget_project_description(older_project);
+    older["project"] = older_project;
+    older["format_version"] = 26;
+    const auto from_older = ErdxProjectStore::decode(bytes(older));
+    CHECK(from_older);
+    CHECK(from_older.project->description.empty());
+    CHECK(QJsonDocument::fromJson(ErdxProjectStore::encode(*from_older.project))
+              .object()["format_version"].toInt() == 28);
+    change_project(older, [&](QJsonObject& project) { project["description"] = QString::fromStdString(description); });
+    reject(bytes(older));
+
+    auto wrong_type = root;
+    change_project(wrong_type, [](QJsonObject& project) { project["description"] = true; });
+    reject(bytes(wrong_type));
+    auto too_long = root;
+    change_project(too_long, [](QJsonObject& project) {
+        project["description"] = QString(static_cast<qsizetype>(max_description_bytes + 1), QLatin1Char('x'));
+    });
+    reject(bytes(too_long));
+}
+
 void malformed_json_and_text() {
     for (const auto& input : {QByteArray{}, QByteArray{"{"}, QByteArray{"[]"}, QByteArray{"null"}, QByteArray{"{\"format\":true}"}}) reject(input);
     Fixture fixture;
@@ -287,7 +432,7 @@ void malformed_json_and_text() {
 
 void strict_version_and_field_contract() {
     Fixture fixture;
-    for (const auto& version : {QJsonValue(0), QJsonValue(26), QJsonValue(1.5), QJsonValue("1"), QJsonValue(true)}) {
+    for (const auto& version : {QJsonValue(0), QJsonValue(29), QJsonValue(1.5), QJsonValue("1"), QJsonValue(true)}) {
         auto root = fixture.document();
         root["format_version"] = version;
         reject(bytes(root));
@@ -386,7 +531,7 @@ void connector_shapes_persist_and_older_versions_still_open() {
 
     const auto encoded = ErdxProjectStore::encode(fixture.editor.project());
     const auto root = QJsonDocument::fromJson(encoded).object();
-    CHECK(root["format_version"].toInt() == 25);
+    CHECK(root["format_version"].toInt() == 28);
     CHECK(root["project"].toObject()["connectors"].toArray().size() == 2);
 
     // A pinned join survives the same round trip.
@@ -576,6 +721,7 @@ void connector_shapes_persist_and_older_versions_still_open() {
             project["connectors"] = connectors;
         }
         if (version < 2) project.remove("connectors");
+        forget_project_description(project);
         forget_answered_sides(project);
         forget_schema_layout(project);
         forget_auto_increment(project);
@@ -609,7 +755,7 @@ void connector_shapes_persist_and_older_versions_still_open() {
             // and reads as specialization, which is how those files were drawn.
             CHECK(specialization.direction == (version >= 5 ? Inheritance::Generalization : Inheritance::Specialization));
         }
-        CHECK(QJsonDocument::fromJson(ErdxProjectStore::encode(*opened.project)).object()["format_version"].toInt() == 25);
+        CHECK(QJsonDocument::fromJson(ErdxProjectStore::encode(*opened.project)).object()["format_version"].toInt() == 28);
     }
 
     // A document whose shape contradicts its declared version is refused rather
@@ -649,7 +795,7 @@ void pictures_and_notes_persist() {
 
     const auto encoded = ErdxProjectStore::encode(fixture.editor.project());
     const auto root = QJsonDocument::fromJson(encoded).object();
-    CHECK(root["format_version"].toInt() == 25);
+    CHECK(root["format_version"].toInt() == 28);
     const auto project = root["project"].toObject();
     CHECK(project["pictures"].toArray().size() == 1);
     CHECK(project["notes"].toArray().size() == 1);
@@ -706,6 +852,8 @@ void pictures_and_notes_persist() {
         stripped.append(entry);
     }
     older_project["notes"] = stripped;
+    forget_bridge_keys(older_project);
+    forget_project_description(older_project);
     forget_answered_sides(older_project);
     forget_schema_layout(older_project);
     forget_auto_increment(older_project);
@@ -877,7 +1025,7 @@ void answered_sides_persist() {
 
     const auto encoded = ErdxProjectStore::encode(editor.project());
     const auto root = QJsonDocument::fromJson(encoded).object();
-    CHECK(root["format_version"].toInt() == 25);
+    CHECK(root["format_version"].toInt() == 28);
     for (const auto& value : root["project"].toObject()["relationships"].toArray())
         for (const auto& side : value.toObject()["participants"].toArray()) {
             CHECK(side.toObject().contains("cardinality_confirmed"));
@@ -913,6 +1061,8 @@ void answered_sides_persist() {
         kept.append(entry);
     }
     older_project["relationships"] = kept;
+    forget_bridge_keys(older_project);
+    forget_project_description(older_project);
     forget_schema_layout(older_project);
     forget_auto_increment(older_project);
     forget_schema_edits(older_project);
@@ -976,7 +1126,7 @@ void conversion_decisions_persist() {
 
     const auto encoded = ErdxProjectStore::encode(editor.project());
     const auto root = QJsonDocument::fromJson(encoded).object();
-    CHECK(root["format_version"].toInt() == 25);
+    CHECK(root["format_version"].toInt() == 28);
     CHECK(root["project"].toObject().contains("decisions"));
 
     const auto reread = ErdxProjectStore::decode(encoded);
@@ -988,7 +1138,7 @@ void conversion_decisions_persist() {
     CHECK(decided.composite.at(fixture.address) == CompositeMode::Both);
     CHECK(decided.one_to_one_key.at(fixture.supervises) == side);
     CHECK(decided.junction_name.at(fixture.supervises) == "EmployeeSupervisor");
-    CHECK(decided.table_name.at(ElementRef{fixture.employee}) == "Staff");
+    CHECK(decided.table_name.at(relation_from(ElementRef{fixture.employee})) == "Staff");
 
     // Taking an answer back returns that question to its default rather than
     // recording a different answer.
@@ -1006,6 +1156,8 @@ void conversion_decisions_persist() {
     auto older = root;
     older["format_version"] = 19;
     auto older_project = older["project"].toObject();
+    forget_bridge_keys(older_project);
+    forget_project_description(older_project);
     forget_schema_layout(older_project);
     forget_auto_increment(older_project);
     forget_schema_edits(older_project);
@@ -1315,17 +1467,17 @@ void schema_divergence_persists() {
     Fixture fixture;
     auto& editor = fixture.editor;
     CHECK(editor.add_schema_column(ElementRef{fixture.employee}, "Nickname"));
-    const auto added = editor.project().schema.added.at(ElementRef{fixture.employee}).front().id;
+    const auto added = editor.project().schema.added.at(relation_from(ElementRef{fixture.employee})).front().id;
     CHECK(editor.hide_in_schema(fixture.address, true));
 
     const auto encoded = ErdxProjectStore::encode(editor.project());
     const auto root = QJsonDocument::fromJson(encoded).object();
-    CHECK(root["format_version"].toInt() == 25);
+    CHECK(root["format_version"].toInt() == 28);
     const auto reopened = ErdxProjectStore::decode(encoded);
     CHECK(reopened);
     CHECK(*reopened.project == editor.project());
-    CHECK(reopened.project->schema.added.at(ElementRef{fixture.employee}).front().id == added);
-    CHECK(reopened.project->schema.added.at(ElementRef{fixture.employee}).front().name == "Nickname");
+    CHECK(reopened.project->schema.added.at(relation_from(ElementRef{fixture.employee})).front().id == added);
+    CHECK(reopened.project->schema.added.at(relation_from(ElementRef{fixture.employee})).front().name == "Nickname");
     CHECK(reopened.project->schema.hidden.contains(fixture.address));
     // The diagram is untouched by either: a hidden attribute is still on it.
     CHECK(reopened.project->attributes.contains(fixture.address));
@@ -1333,6 +1485,8 @@ void schema_divergence_persists() {
     // A file from before the schema could differ opens with the two agreeing.
     auto older = root;
     auto older_project = older["project"].toObject();
+    forget_bridge_keys(older_project);
+    forget_project_description(older_project);
     forget_schema_layout(older_project);
     forget_auto_increment(older_project);
     forget_schema_edits(older_project);
@@ -1363,13 +1517,13 @@ void schema_arrangement_persists() {
 
     const auto encoded = ErdxProjectStore::encode(editor.project());
     const auto root = QJsonDocument::fromJson(encoded).object();
-    CHECK(root["format_version"].toInt() == 25);
+    CHECK(root["format_version"].toInt() == 28);
     const auto reopened = ErdxProjectStore::decode(encoded);
     CHECK(reopened);
     CHECK(*reopened.project == editor.project());
-    CHECK(reopened.project->schema_layout.widths.at(table) == 340);
-    CHECK(reopened.project->schema_layout.heights.at(table) == 260);
-    CHECK((reopened.project->schema_layout.tables.at(table) == Point{80, 120}));
+    CHECK(reopened.project->schema_layout.widths.at(relation_from(table)) == 340);
+    CHECK(reopened.project->schema_layout.heights.at(relation_from(table)) == 260);
+    CHECK((reopened.project->schema_layout.tables.at(relation_from(table)) == Point{80, 120}));
 
     // A table that has only been made taller still has a row of its own, so
     // its height is not lost for want of anything else to write beside it.
@@ -1379,7 +1533,7 @@ void schema_arrangement_persists() {
     const auto tall = ErdxProjectStore::decode(ErdxProjectStore::encode(only_taller.editor.project()));
     CHECK(tall);
     CHECK(tall.project->schema_layout.widths.empty());
-    CHECK(tall.project->schema_layout.heights.at(ElementRef{only_taller.employee}) == 300);
+    CHECK(tall.project->schema_layout.heights.at(relation_from(ElementRef{only_taller.employee})) == 300);
 
     // A version 22 file says only how wide a table was pulled, which reads
     // correctly as one still as tall as its own rows make it.
@@ -1399,13 +1553,16 @@ void schema_arrangement_persists() {
     auto older_schema = older_project["schema"].toObject();
     older_schema.remove("keys");
     older_project["schema"] = older_schema;
+    forget_bridge_keys(older_project);
+    forget_project_description(older_project);
     forget_auto_increment(older_project);
+    forget_relational(older_project);
     older["project"] = older_project;
     older["format_version"] = 22;
     const auto from_older = ErdxProjectStore::decode(bytes(older));
     CHECK(from_older);
     CHECK(from_older.project->schema_layout.heights.empty());
-    CHECK(from_older.project->schema_layout.widths.at(table) == 340);
+    CHECK(from_older.project->schema_layout.widths.at(relation_from(table)) == 340);
 
     // And a version 23 file that omits the height is refused rather than read
     // leniently: a document must look like the version it claims.
@@ -1429,6 +1586,63 @@ void schema_arrangement_persists() {
     reject_because(bytes(impossible), "A schema table height is outside what a table may be.");
 }
 
+// A file written before the Relational Schema had identities of its own is
+// migrated on the way in, and must come out meaning exactly what it meant.
+void legacy_schema_state_migrates() {
+    Fixture fixture;
+    auto& editor = fixture.editor;
+    // Work of every kind that used to be kept against a conceptual element.
+    CHECK(editor.set_table_name(ElementRef{fixture.employee}, "Staff"));
+    CHECK(editor.add_schema_column(ElementRef{fixture.employee}, "Nickname"));
+    CHECK(editor.rename_schema_key(ElementRef{fixture.employee}, "StaffNo"));
+    CHECK(editor.set_key_auto_increment(ElementRef{fixture.employee}, true));
+    CHECK(editor.resize_schema_tables(
+        {{ElementRef{fixture.employee}, SchemaTableBox{340, 260, Point{80, 120}}}}));
+
+    const auto current = ErdxProjectStore::encode(editor.project());
+    const auto root = QJsonDocument::fromJson(current).object();
+    CHECK(root["format_version"].toInt() == 28);
+
+    // The same document, said the way a version 25 file said it.
+    auto older = root;
+    auto older_project = older["project"].toObject();
+    forget_bridge_keys(older_project);
+    forget_project_description(older_project);
+    forget_relational(older_project);
+    older["project"] = older_project;
+    older["format_version"] = 25;
+
+    const auto migrated = ErdxProjectStore::decode(bytes(older));
+    CHECK(migrated);
+    const auto relation = relation_from(ElementRef{fixture.employee});
+    // Everything that was kept against the element is now kept against the
+    // relation it produces, and says the same thing.
+    CHECK(migrated.project->decisions.table_name.at(relation) == "Staff");
+    CHECK(migrated.project->schema.key_names.at(relation) == "StaffNo");
+    CHECK(migrated.project->schema.counting_keys.contains(relation));
+    CHECK(migrated.project->schema.added.at(relation).front().name == "Nickname");
+    CHECK((migrated.project->schema_layout.tables.at(relation) == Point{80, 120}));
+    CHECK(migrated.project->schema_layout.widths.at(relation) == 340);
+    CHECK(migrated.project->schema_layout.heights.at(relation) == 260);
+
+    // The same input migrated twice gives the same identities. An identity
+    // that changed on each load would lose everything kept against it.
+    const auto again = ErdxProjectStore::decode(bytes(older));
+    CHECK(again);
+    CHECK(again.project->schema_layout.tables == migrated.project->schema_layout.tables);
+    CHECK(again.project->schema.added.begin()->first == migrated.project->schema.added.begin()->first);
+
+    // And the schema it produces is the schema it produced before: the whole
+    // point of the round is that nothing a reader sees has changed.
+    CHECK(schema_preview(*migrated.project) == schema_preview(editor.project()));
+
+    // A migrated file written out again is a version 26 file, and reads back
+    // without needing migrating a second time.
+    const auto rewritten = ErdxProjectStore::decode(ErdxProjectStore::encode(*migrated.project));
+    CHECK(rewritten);
+    CHECK(*rewritten.project == *migrated.project);
+}
+
 void schema_metadata_persists() {
     Fixture fixture;
     auto& editor = fixture.editor;
@@ -1445,7 +1659,7 @@ void schema_metadata_persists() {
 
     const auto encoded = ErdxProjectStore::encode(editor.project());
     const auto root = QJsonDocument::fromJson(encoded).object();
-    CHECK(root["format_version"].toInt() == 25);
+    CHECK(root["format_version"].toInt() == 28);
     // Version 18 has no conceptual mode to write, because there are no modes.
     CHECK(!root["project"].toObject().contains("mode"));
 
@@ -1494,6 +1708,7 @@ void schema_metadata_persists() {
         moded["format_version"] = 17;
         auto moded_project = moded["project"].toObject();
         moded_project["mode"] = QLatin1String(named);
+        forget_project_description(moded_project);
         forget_answered_sides(moded_project);
         forget_schema_layout(moded_project);
         forget_auto_increment(moded_project);
@@ -1508,7 +1723,7 @@ void schema_metadata_persists() {
         CHECK(from_moded.project->entities.at(fixture.employee).comment == "A person on the payroll.");
         // Read back, it is a version 18 project like any other, carrying no mode.
         const auto again = QJsonDocument::fromJson(ErdxProjectStore::encode(*from_moded.project)).object();
-        CHECK(again["format_version"].toInt() == 25);
+        CHECK(again["format_version"].toInt() == 28);
         CHECK(!again["project"].toObject().contains("mode"));
     }
 
@@ -1542,7 +1757,7 @@ void comments_persist() {
 
     const auto encoded = ErdxProjectStore::encode(editor.project());
     const auto root = QJsonDocument::fromJson(encoded).object();
-    CHECK(root["format_version"].toInt() == 25);
+    CHECK(root["format_version"].toInt() == 28);
     const auto written = root["project"].toObject()["comments"].toArray();
     CHECK(written.size() == 2);
 
@@ -1616,6 +1831,8 @@ void comments_persist() {
         }
         older_project[group] = kept;
     }
+    forget_bridge_keys(older_project);
+    forget_project_description(older_project);
     forget_answered_sides(older_project);
     forget_schema_layout(older_project);
     forget_auto_increment(older_project);
@@ -1631,12 +1848,14 @@ int main() {
     const std::pair<const char*, std::function<void()>> tests[] = {
         {"UUIDv7 and exact graph roundtrip", uuid_generation_and_roundtrip},
         {"incomplete draft save/open", incomplete_models_save_and_open},
+        {"project description across the version boundary", project_description_persists_across_the_version_boundary},
         {"malformed JSON and Unicode", malformed_json_and_text},
         {"strict version and field contract", strict_version_and_field_contract},
         {"escaped field name decoding", escaped_field_names},
         {"connector shapes persist across versions", connector_shapes_persist_and_older_versions_still_open},
         {"pictures and notes persist", pictures_and_notes_persist},
         {"comments persist", comments_persist},
+        {"legacy schema state migrates", legacy_schema_state_migrates},
         {"schema metadata persists", schema_metadata_persists},
         {"schema divergence persists", schema_divergence_persists},
         {"schema arrangement persists", schema_arrangement_persists},

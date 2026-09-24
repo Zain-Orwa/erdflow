@@ -38,7 +38,8 @@ add_library(erdflow_canvas app/desktop/diagram_view.cpp app/desktop/theme.cpp ap
                           app/desktop/document_export.cpp)
 target_link_libraries(erdflow_canvas PUBLIC erdflow_application Qt6::Widgets Qt6::Svg PRIVATE erdflow_warnings)
 
-add_library(erdflow_desktop app/desktop/main_window.cpp app/desktop/schema_view.cpp app/desktop/ribbon.cpp app/desktop/icons.cpp
+add_library(erdflow_desktop app/desktop/main_window.cpp app/desktop/schema_view.cpp app/desktop/notice.cpp
+                            app/desktop/home_page.cpp app/desktop/home_live_demo.cpp app/desktop/home_demo_scenes.cpp app/desktop/home_demo_canvas.cpp app/desktop/app_top_bar.cpp app/desktop/home_sidebar.cpp app/desktop/home_learning_panel.cpp app/desktop/start_route_card.cpp app/desktop/project_details_form.cpp app/desktop/welcome_flow_illustration.cpp app/desktop/ribbon.cpp app/desktop/icons.cpp
                             app/desktop/symbols.cpp app/desktop/symbol_picker.cpp
                             app/desktop/export_dialog.cpp app/desktop/search_bar.cpp)
 target_link_libraries(erdflow_desktop PUBLIC erdflow_canvas Qt6::Svg PRIVATE erdflow_warnings)
@@ -102,6 +103,15 @@ qt_add_resources(erdflow_desktop "erdflow_icons_outline"
         assets/icons-outline/properties.svg assets/icons-outline/validate.svg
         assets/icons-outline/theme.svg assets/icons-outline/settings.svg
         assets/icons-outline/full-view.svg assets/icons-outline/close.svg
+        # The Home screen's own: its sidebar, its learning panel and its bar.
+        # Lucide throughout, so the page reads as one family with the rest.
+        assets/icons-outline/house.svg assets/icons-outline/recent.svg
+        assets/icons-outline/examples.svg assets/icons-outline/templates.svg
+        assets/icons-outline/import.svg assets/icons-outline/help.svg
+        assets/icons-outline/tutorials.svg assets/icons-outline/conceptual.svg
+        assets/icons-outline/relational.svg assets/icons-outline/sql.svg
+        assets/icons-outline/flow.svg assets/icons-outline/chevron-right.svg
+        assets/icons-outline/chevron-down.svg assets/icons-outline/appearance.svg
 )
 
 add_executable(erdflow app/desktop/main.cpp)
@@ -130,5 +140,15 @@ if(BUILD_TESTING)
     target_link_libraries(desktop_tests PRIVATE erdflow_desktop erdflow_infrastructure erdflow_warnings)
     add_test(NAME desktop COMMAND desktop_tests)
     add_test(NAME desktop_smoke COMMAND erdflow --example --smoke-test)
-    set_tests_properties(canvas theme desktop desktop_smoke PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
+    # Home and both workspaces photographed at the 1440 x 1080 reference and
+    # held to pictures kept per platform, plus an audit of keyboard reach,
+    # focus and contrast on Home (ADR-022 section 9.12). A platform with no
+    # pictures of its own runs the audit and says the pictures were skipped.
+    add_executable(visual_tests tests/visual_tests.cpp)
+    target_link_libraries(visual_tests PRIVATE erdflow_desktop erdflow_infrastructure erdflow_warnings)
+    target_compile_definitions(visual_tests PRIVATE
+        ERDFLOW_VISUAL_BASELINES="${CMAKE_SOURCE_DIR}/tests/visual"
+        ERDFLOW_VISUAL_OUTPUT="${CMAKE_BINARY_DIR}/visual-output")
+    add_test(NAME visual COMMAND visual_tests)
+    set_tests_properties(canvas theme desktop desktop_smoke visual PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
 endif()

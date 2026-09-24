@@ -1,3 +1,9 @@
+// ERDFlow — settled work. Do not change, replace or re-style anything here to
+// suit something new you have been asked to build. If what you are building
+// genuinely contradicts what is here, stop and ask Zain, who owns this project:
+// say what you want to change, what the application will LOOK like afterwards,
+// and whether it is a gain or a loss. He decides. Fixing a real defect is not
+// covered by this — fix it and say what was wrong. Full rule: CLAUDE.md.
 #pragma once
 
 #include <array>
@@ -32,6 +38,16 @@ using PictureId = Id<struct PictureTag>;
 using NoteId = Id<struct NoteTag>;
 using CommentId = Id<struct CommentTag>;
 using SchemaColumnId = Id<struct SchemaColumnTag>;
+// The Relational Schema's own identities. ADR-008 requires each modelling
+// level to use its own typed identity and forbids reusing a conceptual one at
+// the level below, so a relation is not keyed by the entity it came from --
+// it has an identity of its own and records that entity as its origin.
+//
+// `TableId` is deliberately not used here: ADR-008 and the roadmap reserve
+// Table for the Physical/Table Design level below this one, whose lineage
+// runs Entity -> Relation -> Table.
+using RelationId = Id<struct RelationTag>;
+using ForeignKeyId = Id<struct ForeignKeyTag>;
 // A specialization is a placed element of its own: it carries the ISA triangle
 // on the canvas and the constraints that decide how it converts to relations.
 // A picture and a note are placed elements too, though not database objects:
@@ -189,10 +205,12 @@ struct Attribute {
     std::uint32_t length = 0;
     std::uint32_t scale = 0;
     // Whether this is part of what identifies a row, whether it must be filled
-    // in, and whether no two rows may share it. Kept apart from the attribute's
-    // Chen kind: a key oval says how the diagram draws it, these say what the
-    // table will enforce, and the two are set at different stages by different
-    // people.
+    // in, and whether no two rows may share it. Being the identifier and being
+    // drawn as a key oval are one fact (Zain, 2026-09-24, which replaced
+    // keeping them apart): the Editor changes them together from either side,
+    // and a project opened from before is brought into agreement. A composite
+    // is the exception, since it cannot be drawn as one key oval; it may still
+    // identify a row, through its parts.
     bool identifier = false;
     bool required = false;
     bool unique = false;
@@ -372,6 +390,10 @@ enum class IsaStrategy { PerSubclass, SingleTable, PerConcrete };
 // attribute already is.
 enum class CompositeMode { Parts, Whole, Both };
 
+// A conceptual key takes precedence. Without one, Own is the fallback;
+// Pair uses participant foreign keys as a composite PK only by explicit choice.
+enum class BridgeKey { Pair, Own };
+
 // Whether a table is named for the many rows it holds -- Student becomes
 // Students -- or kept as the diagram draws it.
 enum class TableNaming { Plural, AsDrawn };
@@ -395,12 +417,14 @@ struct ConversionDecisions {
     std::map<RelationshipId, ParticipantId> one_to_one_key;
     // What a bridge table is called, where the generated name is not wanted.
     std::map<RelationshipId, std::string> junction_name;
+    // Optional bridge strategy. Absent uses a separate fallback key.
+    std::map<RelationshipId, BridgeKey> bridge_key;
     // Which attribute identifies an entity that has no key drawn on it.
     std::map<EntityId, AttributeId> identifier;
     // A table name typed over the one that was derived. Derived names come
     // from rules and a word list, and neither is ever complete, so a correction
     // must always be possible and must always win.
-    std::map<ElementRef, std::string> table_name;
+    std::map<RelationId, std::string> table_name;
     auto operator<=>(const ConversionDecisions&) const = default;
 };
 
@@ -445,6 +469,53 @@ struct SchemaColumn {
 // subtype points at its parent.
 using LinkSource = std::variant<ParticipantId, AttributeId, EntityId>;
 
+// Which rule of the conversion produced a relation.
+//
+// Kept beside the element a relation came from rather than inside its
+// identity, and that distinction matters: an identity that moved when a
+// conversion decision changed would orphan everything kept against it -- the
+// layout, the typed name, the columns added to it -- the moment somebody chose
+// a different ISA strategy. So the rule is provenance, never identity.
+//
+// The list is short on purpose. ADR-008 warns against inventing mapping kinds
+// before there are transformation rules to name, so these are exactly the
+// rules the conversion already implements and no more.
+enum class ConversionRule {
+    EntityToRelation,
+    ManyToManyToBridge,
+    AssociativeToBridge,
+    MultivaluedToRelation,
+    SubtypeToRelation,
+};
+
+// Where a relation came from, where it came from anywhere.
+//
+// Two fields rather than a bare identity, because reconciliation will need to
+// know *how* a relation was produced and not merely which element produced
+// it: "this exists because of the many-to-many rule" is an explanation, and
+// "this came from Enrolled" on its own is not.
+struct Provenance {
+    ElementRef source;
+    ConversionRule rule = ConversionRule::EntityToRelation;
+    auto operator<=>(const Provenance&) const = default;
+};
+
+// The identity a generated relation is given, worked out from the element it
+// came from rather than drawn from the generator.
+//
+// Derived rather than issued because the same project opened twice has to
+// produce the same relations: a relation's place on the schema, the width it
+// was pulled to, the name typed over its own and the columns added to it are
+// all kept against this identity, and one that changed on each load would
+// lose every one of them. The derivation is stable on every machine and in
+// every run.
+//
+// It is a different value of a different type from the identity it is derived
+// from, which is what ADR-008 asks for. It depends on the origin alone, never
+// on the rule, so answering a conversion question differently moves nothing.
+[[nodiscard]] RelationId relation_from(const ElementRef& origin);
+[[nodiscard]] ForeignKeyId foreign_key_from(const LinkSource& origin);
+
 // Where one end of a line has been put by hand. On its table the place is a
 // fraction of the table's box, so the join keeps its position when the table
 // is moved or gains a row; off its table it is a point on the schema.
@@ -472,15 +543,15 @@ struct SchemaLine {
 // over an afternoon and lost to a closed window would be a schema nobody
 // arranges twice.
 struct SchemaLayout {
-    std::map<ElementRef, Point> tables;
+    std::map<RelationId, Point> tables;
     // How wide a table has been pulled, and how tall. A table is taken hold of
     // by whichever of its four edges or corners the hand reaches for, so both
     // are a table's to choose. Absent means the standard width, and the height
     // the rows themselves ask for; a height that has been given is room the
     // rows share between them rather than a gap under the last of them.
-    std::map<ElementRef, double> widths;
-    std::map<ElementRef, double> heights;
-    std::map<LinkSource, SchemaLine> lines;
+    std::map<RelationId, double> widths;
+    std::map<RelationId, double> heights;
+    std::map<ForeignKeyId, SchemaLine> lines;
     [[nodiscard]] bool empty() const {
         return tables.empty() && widths.empty() && heights.empty() && lines.empty();
     }
@@ -502,7 +573,7 @@ struct SchemaTableBox {
 struct SchemaOverrides {
     // Columns added to one table at the schema level only, in the order they
     // were added, under the element whose table they were added to.
-    std::map<ElementRef, std::vector<SchemaColumn>> added;
+    std::map<RelationId, std::vector<SchemaColumn>> added;
     // Attributes the schema does not show, though the diagram still draws them.
     std::set<AttributeId> hidden;
     // What a key the conversion invented is called, where the generated name
@@ -512,14 +583,14 @@ struct SchemaOverrides {
     // table came from, since the key itself has no identity to be keyed by.
     // Every foreign key pointing at that table is named for its primary key, so
     // renaming the key here renames those too, which is the point.
-    std::map<ElementRef, std::string> key_names;
+    std::map<RelationId, std::string> key_names;
     // Whether a key the conversion invented counts itself up. Kept here for
     // the same reason its name is: the key has no attribute behind it and no
     // identity of its own, so the element the table came from is the only
     // stable thing it can be remembered against. This is the commonest place
     // of all to want it -- a table with nothing to identify it is given a
     // surrogate, and a surrogate is what IDENTITY is for.
-    std::set<ElementRef> counting_keys;
+    std::set<RelationId> counting_keys;
     [[nodiscard]] bool empty() const {
         return added.empty() && hidden.empty() && key_names.empty() && counting_keys.empty();
     }
@@ -529,6 +600,10 @@ struct SchemaOverrides {
 struct Project {
     ProjectId id;
     std::string name = "Untitled";
+    // Project-level prose belongs to the document, rather than to any one
+    // diagram element. The Home details form captures it when the project is
+    // created, and it must travel with the project thereafter.
+    std::string description;
     std::map<EntityId, Entity> entities;
     std::map<AttributeId, Attribute> attributes;
     std::map<RelationshipId, Relationship> relationships;

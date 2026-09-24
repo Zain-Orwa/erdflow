@@ -1,3 +1,9 @@
+// ERDFlow — settled work. Do not change, replace or re-style anything here to
+// suit something new you have been asked to build. If what you are building
+// genuinely contradicts what is here, stop and ask Zain, who owns this project:
+// say what you want to change, what the application will LOOK like afterwards,
+// and whether it is a gain or a loss. He decides. Fixing a real defect is not
+// covered by this — fix it and say what was wrong. Full rule: CLAUDE.md.
 #include "domain/model.hpp"
 
 #include <algorithm>
@@ -14,6 +20,56 @@ bool Uuid::valid() const {
 
 Uuid uuid(const ElementRef& ref) {
     return std::visit([](const auto& id) { return id.value; }, ref);
+}
+
+namespace {
+// A sixteen-byte value worked out from another, the same way on every machine
+// and in every run.
+//
+// This is how a generated relation is given an identity of its own without
+// drawing one from the generator. ADR-001 forbids identity that moves and
+// ADR-008 forbids reusing a conceptual identity one level down; a derived
+// value satisfies both, and has the property the generator cannot offer --
+// open the same project twice and the relations are the same relations, so
+// everything kept against them is still theirs.
+//
+// FNV-1a, run four times from different starting points to fill the sixteen
+// bytes. It is not a cryptographic hash and is not trying to be: it has to be
+// stable, spread well enough that two origins do not collide, and nothing
+// here is a secret. The version and variant bits are stamped afterwards so
+// the result is a well-formed identity like any other.
+Uuid derived(const Uuid& from, std::uint8_t kind) {
+    Uuid made{};
+    for (std::uint64_t pass = 0; pass < 4; ++pass) {
+        std::uint64_t hash = 0xcbf29ce484222325ULL + pass * 0x9e3779b97f4a7c15ULL;
+        const auto mix = [&hash](std::uint8_t byte) {
+            hash ^= byte;
+            hash *= 0x100000001b3ULL;
+        };
+        mix(kind);
+        for (const auto byte : from.bytes) mix(byte);
+        for (std::size_t i = 0; i < 4; ++i)
+            made.bytes[pass * 4 + i] = static_cast<std::uint8_t>(hash >> (i * 8));
+    }
+    made.bytes[6] = static_cast<std::uint8_t>((made.bytes[6] & 0x0fU) | 0x70U);
+    made.bytes[8] = static_cast<std::uint8_t>((made.bytes[8] & 0x3fU) | 0x80U);
+    return made;
+}
+// What the origin was, so that two origins which happen to share a value but
+// not a kind cannot derive the same identity.
+constexpr std::uint8_t relation_kind = 0x52;      // 'R'
+constexpr std::uint8_t foreign_key_kind = 0x4b;   // 'K'
+} // namespace
+
+RelationId relation_from(const ElementRef& origin) {
+    return RelationId{derived(uuid(origin),
+                              static_cast<std::uint8_t>(relation_kind + origin.index()))};
+}
+
+ForeignKeyId foreign_key_from(const LinkSource& origin) {
+    const auto value = std::visit([](const auto& id) { return id.value; }, origin);
+    return ForeignKeyId{derived(value,
+                                static_cast<std::uint8_t>(foreign_key_kind + origin.index()))};
 }
 
 namespace {
@@ -240,6 +296,39 @@ std::string description(const Project& project, const ElementRef& ref) {
     return visit_element(project, ref, [](const auto* element) { return element ? element->description : std::string{}; });
 }
 
+namespace {
+// Every identity a relation could have in this project, and every identity a
+// foreign key could have.
+//
+// A derived identity cannot be turned back into the element it came from, so
+// validation asks the question the other way round: it works out what the
+// project could produce and checks that the schema's own state refers to one
+// of those. Anything else is a remnant of something deleted.
+//
+// Deliberately looser than asking the conversion itself. Whether a particular
+// element produces a table today depends on conversion decisions somebody can
+// change; whether the element is still there does not, and that is what makes
+// a remnant a remnant.
+std::set<RelationId> possible_relations(const Project& project) {
+    std::set<RelationId> possible;
+    for (const auto& [id, entity] : project.entities) { (void)entity; possible.insert(relation_from(ElementRef{id})); }
+    for (const auto& [id, attribute] : project.attributes) { (void)attribute; possible.insert(relation_from(ElementRef{id})); }
+    for (const auto& [id, relationship] : project.relationships) { (void)relationship; possible.insert(relation_from(ElementRef{id})); }
+    return possible;
+}
+
+std::set<ForeignKeyId> possible_foreign_keys(const Project& project) {
+    std::set<ForeignKeyId> possible;
+    for (const auto& [id, attribute] : project.attributes) { (void)attribute; possible.insert(foreign_key_from(LinkSource{id})); }
+    for (const auto& [id, entity] : project.entities) { (void)entity; possible.insert(foreign_key_from(LinkSource{id})); }
+    for (const auto& [id, relationship] : project.relationships) {
+        (void)id;
+        for (const auto& side : relationship.participants) possible.insert(foreign_key_from(LinkSource{side.id}));
+    }
+    return possible;
+}
+} // namespace
+
 std::vector<Issue> validate(const Project& project) {
     std::vector<Issue> issues;
     auto error = [&](std::string code, std::string message, std::optional<ElementRef> ref = {}) {
@@ -284,7 +373,7 @@ std::vector<Issue> validate(const Project& project) {
             error("text.comment.invalid", "Comments must be valid UTF-8 and fit in 16,384 bytes.", ref);
     };
     identity(project.id.value);
-    text_fields(project.name, {});
+    text_fields(project.name, project.description);
     for (const auto& [id, entity] : project.entities) {
         const ElementRef ref = id;
         if (!project.layout.contains(ref)) error("layout.element.missing", "The entity has no canvas layout.", ref);
@@ -638,6 +727,18 @@ std::vector<Issue> validate(const Project& project) {
                              [&](const Participant& one) { return one.id == side; }))
                 error("decision.key_side.invalid", "The chosen side does not belong to this relationship.", ref);
         }
+        for (const auto& [id, keyed] : decided.bridge_key) {
+            const ElementRef ref = id;
+            // A bridge answered and then made one-to-many keeps its answer
+            // unused rather than invalid: it applies again the moment the
+            // relationship is many-to-many again.
+            if (!project.relationships.contains(id))
+                error("decision.bridge_key.missing", "A bridge-key decision refers to a missing relationship.", ref);
+            switch (keyed) {
+            case BridgeKey::Pair: case BridgeKey::Own: break;
+            default: error("decision.bridge_key.invalid", "The bridge-key decision is invalid.", ref);
+            }
+        }
         for (const auto& [id, chosen] : decided.junction_name) {
             const ElementRef ref = id;
             if (!project.relationships.contains(id))
@@ -653,13 +754,15 @@ std::vector<Issue> validate(const Project& project) {
             if (found == project.attributes.end() || found->second.owner != AttributeOwner{ElementRef{id}})
                 error("decision.identifier.invalid", "The chosen identifier is not this entity's attribute.", ref);
         }
-        for (const auto& [ref, chosen] : decided.table_name) {
-            if (!exists(project, ref))
-                error("decision.table_name.missing", "A table name refers to a missing element.", ref);
+        for (const auto& [relation, chosen] : decided.table_name) {
+            if (!possible_relations(project).contains(relation))
+                error("decision.table_name.missing", "A table name refers to a missing element.");
             if (chosen.size() > max_name_bytes || !valid_text(chosen, false) || empty_name(chosen))
-                error("decision.table_name.invalid", "A table name must be valid text.", ref);
+                error("decision.table_name.invalid", "A table name must be valid text.");
         }
     }
+    const auto relations = possible_relations(project);
+    const auto foreign_keys = possible_foreign_keys(project);
     // What the schema has been told that the diagram does not say. ADR-010
     // allows the two levels to differ, and a difference is a fact to be
     // recorded rather than a mistake -- but a difference has to be about
@@ -669,9 +772,10 @@ std::vector<Issue> validate(const Project& project) {
     // read back without complaint.
     {
         std::size_t added = 0;
-        for (const auto& [ref, columns] : project.schema.added) {
-            if (!exists(project, ref))
-                error("schema.table.missing", "A schema column was added to a missing element.", ref);
+        for (const auto& [relation, columns] : project.schema.added) {
+            const std::optional<ElementRef> ref;
+            if (!relations.contains(relation))
+                error("schema.table.missing", "A schema column was added to a missing element.");
             added += columns.size();
             for (const auto& column : columns) {
                 identity(column.id.value, ref);
@@ -705,12 +809,17 @@ std::vector<Issue> validate(const Project& project) {
         }
         // A name given to an invented key is text like a table's typed name,
         // and belongs to an element that has to still be there.
-        for (const auto& [ref, chosen] : project.schema.key_names) {
-            if (!exists(project, ref))
-                error("schema.key_name.missing", "A key name refers to a missing element.", ref);
+        for (const auto& [relation, chosen] : project.schema.key_names) {
+            if (!relations.contains(relation))
+                error("schema.key_name.missing", "A key name refers to a missing element.");
             if (chosen.size() > max_name_bytes || !valid_text(chosen, false) || empty_name(chosen))
-                error("schema.key_name.invalid", "A key name must be valid text.", ref);
+                error("schema.key_name.invalid", "A key name must be valid text.");
         }
+        // A key told to count itself up has to belong to a relation that is
+        // still there, for the same reason its name does.
+        for (const auto& relation : project.schema.counting_keys)
+            if (!relations.contains(relation))
+                error("schema.counting_key.missing", "A counting key refers to a missing element.");
     }
     // An attribute with no logical type yet has not answered a question that
     // conversion will ask. That is a matter of readiness rather than validity:
@@ -770,28 +879,28 @@ std::vector<Issue> validate(const Project& project) {
         if (arranged.tables.size() > max_elements || arranged.widths.size() > max_elements
             || arranged.heights.size() > max_elements || arranged.lines.size() > max_elements)
             error("schema.layout.limit", "The schema arrangement exceeds the element limit.");
-        for (const auto& [ref, point] : arranged.tables) {
-            if (!exists(project, ref))
-                error("schema.layout.reference.missing", "A schema place refers to a missing element.", ref);
+        for (const auto& [relation, point] : arranged.tables) {
+            if (!relations.contains(relation))
+                error("schema.layout.reference.missing", "A schema place refers to a missing element.");
             if (!on_canvas(point))
-                error("schema.layout.bounds.invalid", "A schema table must be placed within the supported canvas.", ref);
+                error("schema.layout.bounds.invalid", "A schema table must be placed within the supported canvas.");
         }
         // A width and a height are pulled separately and stored separately, so
         // they are asked separately rather than assumed to arrive together.
         for (const auto* sizes : {&arranged.widths, &arranged.heights})
-            for (const auto& [ref, size] : *sizes) {
-                if (!exists(project, ref))
-                    error("schema.layout.reference.missing", "A schema size refers to a missing element.", ref);
+            for (const auto& [relation, size] : *sizes) {
+                if (!relations.contains(relation))
+                    error("schema.layout.reference.missing", "A schema size refers to a missing element.");
                 if (!std::isfinite(size) || size <= 0 || size > max_coordinate)
-                    error("schema.layout.size.invalid", "A schema table's size must be finite, positive, and within the supported canvas.", ref);
+                    error("schema.layout.size.invalid", "A schema table's size must be finite, positive, and within the supported canvas.");
             }
-        for (const auto& [link, line] : arranged.lines) {
-            // Report against the element the line is drawn from where there is
-            // one, so the schema can highlight it; a participant has none.
-            std::optional<ElementRef> owner;
-            if (const auto* attribute = std::get_if<AttributeId>(&link)) owner = ElementRef{*attribute};
-            else if (const auto* entity = std::get_if<EntityId>(&link)) owner = ElementRef{*entity};
-            if (!link_exists(project, link))
+        for (const auto& [key, line] : arranged.lines) {
+            // A foreign key has an identity of its own now, and that identity
+            // cannot be turned back into the element behind it, so a line is
+            // reported without one. What is asked is the same question: does
+            // the key this line was drawn for still exist?
+            const std::optional<ElementRef> owner;
+            if (!foreign_keys.contains(key))
                 error("schema.line.reference.missing", "A schema line refers to a link that no longer exists.", owner);
             if (line.route.size() > max_elements)
                 error("schema.line.route.limit", "A schema line route exceeds the element limit.", owner);

@@ -1,3 +1,9 @@
+// ERDFlow — settled work. Do not change, replace or re-style anything here to
+// suit something new you have been asked to build. If what you are building
+// genuinely contradicts what is here, stop and ask Zain, who owns this project:
+// say what you want to change, what the application will LOOK like afterwards,
+// and whether it is a gain or a loss. He decides. Fixing a real defect is not
+// covered by this — fix it and say what was wrong. Full rule: CLAUDE.md.
 #include "main_window.hpp"
 #include "export_dialog.hpp"
 #include "ribbon.hpp"
@@ -21,6 +27,7 @@
 #include <QSpinBox>
 #include <QClipboard>
 #include <QFileDialog>
+#include <QDir>
 #include <QFileInfo>
 #include <QFocusEvent>
 #include <QFontMetricsF>
@@ -39,6 +46,7 @@
 #include <QScreen>
 #include <QMenuBar>
 #include <QMenu>
+#include <QColorDialog>
 #include <QMessageBox>
 #include <QMimeData>
 #include <QPaintEvent>
@@ -49,6 +57,7 @@
 #include <QScopeGuard>
 #include <QScrollArea>
 #include <QSettings>
+#include <QStackedWidget>
 #include <QSignalBlocker>
 #include <QSlider>
 #include <QStandardItemModel>
@@ -536,8 +545,8 @@ public:
         setCursor(Qt::SizeVerCursor);
         setFixedHeight(11);
         setFocusPolicy(Qt::StrongFocus);
-        setAccessibleName("Resize the schema preview");
-        setToolTip("Drag to make the schema taller or shorter. Double-click for half or full.");
+        setAccessibleName("Resize Relational Design");
+        setToolTip("Drag to make Relational Design taller or shorter. Double-click for half or full.");
     }
     // Told how far the pointer has moved since the drag began, in pixels.
     std::function<void(int)> dragged;
@@ -942,6 +951,7 @@ MainWindow::MainWindow(application::Editor& editor, application::ProjectStore& s
     build_actions();
     // The tabs go on once every action and menu they are built from exists.
     ribbon_ = new Ribbon(*this);
+    wire_home();
     // Which field a picked character goes into is decided by where the caret
     // was, so the last text field written in is remembered as focus moves.
     connect(qApp, &QApplication::focusChanged, this, [this](QWidget* was, QWidget* now) {
@@ -958,6 +968,9 @@ MainWindow::MainWindow(application::Editor& editor, application::ProjectStore& s
     canvas_->on_zoom = [this](double factor) {
         zoom_label_->setText(QString::number(qRound(factor * 100)) + "%");
     };
+    // The application opens on the home screen, with the work's own
+    // furniture put away behind it until somebody chooses something to do.
+    show_home(true);
     refresh();
 }
 
@@ -1356,11 +1369,11 @@ void MainWindow::build_shell() {
     // What the model becomes, beside the badge that says what workspace this
     // is. It belongs here rather than among the drawing tools: it is about
     // what is being looked at, not something to draw with.
-    auto* preview = new QPushButton("Preview schema", header);
+    auto* preview = new QPushButton("Relational Design", header);
     preview->setObjectName("previewSchema");
     preview->setCheckable(true);
-    preview->setToolTip("The schema this diagram would become, raised over the lower half of the "
-                        "canvas. It is a preview: nothing is converted, and nothing is written.");
+    preview->setToolTip("The Relational Design this diagram becomes, raised over the lower half of "
+                        "the canvas. It is a preview: nothing is converted, and nothing is written.");
     connect(preview, &QPushButton::clicked, this, [this] { show_schema(!schema_open_); });
     header_layout->addWidget(preview);
     search_button_ = new QToolButton(header);
@@ -1388,7 +1401,7 @@ void MainWindow::build_shell() {
     }
     schema_search_ = new QLineEdit(schema_header_tools_);
     schema_search_->setObjectName("schemaSearch");
-    schema_search_->setPlaceholderText("Search the schema");
+    schema_search_->setPlaceholderText("Search Relational Design");
     schema_search_->setClearButtonEnabled(true);
     schema_search_->setFixedWidth(190);
     schema_search_->setToolTip("Pick out the tables and columns whose names contain this.");
@@ -1444,7 +1457,7 @@ void MainWindow::build_shell() {
     auto* bar_layout = new QHBoxLayout(schema_bar);
     bar_layout->setContentsMargins(12, 7, 12, 7);
     bar_layout->setSpacing(9);
-    auto* schema_title = new QLabel("Schema preview", schema_bar);
+    auto* schema_title = new QLabel("Relational Design", schema_bar);
     schema_title->setObjectName("schemaTitle");
     bar_layout->addWidget(schema_title);
     schema_state_ = new QLabel(schema_bar);
@@ -1583,7 +1596,7 @@ void MainWindow::build_shell() {
     auto* full_schema = new QPushButton("Full", schema_bar);
     full_schema->setObjectName("schemaFull");
     full_schema->setCheckable(true);
-    full_schema->setToolTip("Give the whole window to the schema: the panels go away and the "
+    full_schema->setToolTip("Give the whole window to Relational Design: the panels go away and the "
                             "diagram behind it is covered. Press again to bring everything back.");
     bar_layout->addWidget(full_schema);
     auto* close_schema = new QPushButton("Close", schema_bar);
@@ -1657,8 +1670,12 @@ void MainWindow::build_shell() {
     // reported, not refused, because a line that sprang back would be arguing
     // with the person drawing it. Said for long enough to be read, since it
     // explains something rather than confirming it.
-    schema_->warned = [this](const QString& warning) {
-        if (!warning.isEmpty()) statusBar()->showMessage(warning, 12000);
+    schema_->warned = [this](const QString& warning, QPoint at) {
+        if (warning.isEmpty()) return;
+        // Both: the status bar keeps it after the notice has gone, and the
+        // notice is what gets read, being put where the hand already is.
+        statusBar()->showMessage(warning, 12000);
+        if (notice_) notice_->say(warning, mapFromGlobal(at));
     };
     schema_->add_column = [this](std::size_t which) {
         if (!schema_ || which >= schema_->preview().tables.size()) return;
@@ -1738,7 +1755,35 @@ void MainWindow::build_shell() {
     instructions->setObjectName("canvasInstructions");
     instructions->setContentsMargins(18, 10, 18, 10);
     layout->addWidget(instructions);
-    setCentralWidget(workspace);
+    // The home screen and the workspace both exist from the start, stacked,
+    // so moving between them is a change of which is in front rather than a
+    // teardown and a rebuild.
+    home_ = new HomePage(this);
+    // A card's + Create takes its route. A route that cannot yet be taken has
+    // its button disabled, so there is no case here for one that leads
+    // nowhere. Where the sidebar's rows go is said in wire_home, once the
+    // menus some of them open exist.
+    home_->route_chosen = [this](StartRoute route) {
+        switch (route) {
+        case StartRoute::Conceptual:
+            // A new conceptual project, untitled, as New Project makes one.
+            // Its name and where it is kept are asked elsewhere, not on Home
+            // (ADR-022 section 9.19).
+            if (begin_new_project()) show_home(false);
+            return;
+        case StartRoute::RelationalDesign:
+        case StartRoute::Sql:
+            // Neither route is enabled, so neither can be chosen. Named here
+            // so that enabling one later is a compiler error until somebody
+            // says what it should do.
+            return;
+        }
+    };
+    pages_ = new QStackedWidget(this);
+    pages_->setObjectName("pages");
+    pages_->addWidget(home_);
+    pages_->addWidget(workspace);
+    setCentralWidget(pages_);
 
     auto* explorer_dock = new QDockWidget("Explorer", this);
     explorer_dock->setObjectName("explorerDock");
@@ -1816,6 +1861,11 @@ void MainWindow::build_shell() {
     view_menu->addAction(properties_dock->toggleViewAction());
     view_menu->addAction(validation_dock_->toggleViewAction());
     count_label_ = new QLabel(this);
+    // Laid over the whole window rather than over one view, so it is in the
+    // same place whatever is being worked on and never scrolls away with the
+    // thing it is about.
+    notice_ = new Notice(this);
+    notice_->wear(theme(theme_));
     readiness_label_ = new QLabel(this);
     zoom_label_ = new QLabel("100%", this);
     statusBar()->addWidget(count_label_);
@@ -1879,7 +1929,10 @@ void MainWindow::build_actions() {
     auto* action_new = file->addAction("&New project", QKeySequence::New, this, &MainWindow::new_project);
     action_new->setObjectName("newProject");
     action_glyphs_[action_new] = Glyph::New;
-    action_glyphs_[file->addAction("&Open…", QKeySequence::Open, this, &MainWindow::open_dialog)] = Glyph::Open;
+    auto* action_open = file->addAction("&Open…", QKeySequence::Open, this,
+                                        &MainWindow::open_dialog);
+    action_open->setObjectName("openProject");
+    action_glyphs_[action_open] = Glyph::Open;
     auto* action_save = file->addAction("&Save", QKeySequence::Save, this, [this] { save(); });
     action_save->setObjectName("saveProject");
     action_glyphs_[action_save] = Glyph::Save;
@@ -1994,7 +2047,7 @@ void MainWindow::build_actions() {
     auto* import_later = import_menu->addAction("From another tool…");
     import_later->setObjectName("importFromOtherTools");
     import_later->setEnabled(false);
-    import_later->setToolTip("SQL, CSV and JSON arrive with the Relational Schema workspace: they describe "
+    import_later->setToolTip("SQL, CSV and JSON arrive with the Relational Design workspace: they describe "
                              "tables rather than a conceptual diagram, so there is nowhere yet to put them.");
     for (auto* action : import_menu->actions())
         if (!action->isSeparator() && action->isEnabled()) import_actions_.push_back(action);
@@ -2007,11 +2060,70 @@ void MainWindow::build_actions() {
     // Named like the window's other menus, so it can be found by name.
     edit->setObjectName("editMenu");
     menuBar()->insertMenu(findChild<QMenu*>("viewMenu")->menuAction(), edit);
+
+    // Home, between File and Edit: where somebody goes to start something
+    // rather than to do something to what is already open. Edit keeps Undo,
+    // Redo and the rest, which is where anybody would look for them.
+    auto* home_menu = new QMenu("&Home", this);
+    home_menu->setObjectName("homeMenu");
+    menuBar()->insertMenu(edit->menuAction(), home_menu);
+    auto* go_home = home_menu->addAction("Home", QKeySequence("Ctrl+Shift+H"),
+                                         this, [this] { show_home(true); });
+    go_home->setObjectName("goHome");
+    go_home->setToolTip("The screen ERDFlow opens on, where a project is started or found.");
+    home_menu->addSeparator();
+    home_menu->addAction(findChild<QAction*>("newProject"));
+    home_menu->addAction(findChild<QAction*>("openProject"));
+    home_menu->addSeparator();
+    recent_menu_ = home_menu->addMenu("Recent");
+    recent_menu_->setObjectName("recentMenu");
+    connect(recent_menu_, &QMenu::aboutToShow, this, [this] { refresh_recent_menu(); });
+    refresh_recent_menu();
+    home_menu->addSeparator();
+    auto* examples = home_menu->addAction("Open example", this, [this] { load_example(); });
+    examples->setObjectName("homeExamples");
+    // A template is a project copied and left untitled (ADR-016). The bundled
+    // University project is the one there is, and load_example leaves it
+    // untitled and unsaved, which is exactly what starting from a template is.
+    auto* templates = home_menu->addAction("New from template", this, [this] { load_example(); });
+    templates->setObjectName("homeTemplates");
+
+    // Design: what is done to the model as a whole rather than to one thing in
+    // it. Arrange and Appearance already exist on the schema's own header; the
+    // menu is where they are reachable from the keyboard and from a workspace
+    // that has no header of its own.
+    auto* design_menu = new QMenu("&Design", this);
+    design_menu->setObjectName("designMenu");
+    menuBar()->insertMenu(findChild<QMenu*>("viewMenu")->menuAction(), design_menu);
+    // File · Home · Edit · Insert · Design · View · Help. Insert is built
+    // later than this and lands ahead of Design, so Design is moved behind it
+    // once both are there.
+    if (auto* insert_menu = findChild<QMenu*>("insertMenu")) {
+        menuBar()->removeAction(design_menu->menuAction());
+        const auto& order = menuBar()->actions();
+        const auto at = std::find(order.begin(), order.end(), insert_menu->menuAction());
+        menuBar()->insertMenu(at + 1 == order.end() ? nullptr : *(at + 1),
+                              design_menu);
+    }
+    auto* to_schema = design_menu->addAction("Relational Design", QKeySequence("Ctrl+R"),
+                                             this, [this] { show_schema(true); });
+    to_schema->setObjectName("designRelational");
+    design_menu->addSeparator();
+    auto* tidy = design_menu->addAction("Arrange the relational design", this, [this] {
+        if (schema_) schema_->tidy();
+    });
+    tidy->setObjectName("designArrange");
+    tidy->setToolTip("Lay the tables out again from scratch, undoing any arrangement by hand.");
     undo_ = edit->addAction("Undo", QKeySequence::Undo, this, [this] {
+        // A remark never outlives the thing it remarks on: taking back the
+        // misplaced end takes back what was said about it, rather than leaving
+        // a warning standing over work that has been put right.
+        if (notice_) notice_->put_away();
         finish_field_edit(); canvas_->cancel_interaction(); show_result(editor_.undo());
     });
     undo_->setObjectName("undoCommand");
     redo_ = edit->addAction("Redo", QKeySequence::Redo, this, [this] {
+        if (notice_) notice_->put_away();
         finish_field_edit(); canvas_->cancel_interaction(); show_result(editor_.redo());
     });
     redo_->setObjectName("redoCommand");
@@ -2207,6 +2319,13 @@ void MainWindow::build_actions() {
     auto* insert_menu = new QMenu("&Insert", this);
     insert_menu->setObjectName("insertMenu");
     menuBar()->insertMenu(findChild<QMenu*>("viewMenu")->menuAction(), insert_menu);
+    // Design was made before Insert existed, so put it back after Insert now
+    // that both actions can be ordered. This is the native application menu;
+    // the ribbon below it remains a separate workspace tool system.
+    if (auto* designing = findChild<QMenu*>("designMenu")) {
+        menuBar()->removeAction(designing->menuAction());
+        menuBar()->insertMenu(findChild<QMenu*>("viewMenu")->menuAction(), designing);
+    }
     insert_menu->addAction(picture);
     // Characters that cannot be typed but are wanted constantly in this of all
     // editors: the relational algebra signs, the set and logic signs, arrows,
@@ -2537,6 +2656,7 @@ void MainWindow::build_actions() {
     // The icon set is a choice about appearance like the theme is, so it sits
     // in the same menu rather than somewhere of its own.
     auto* icon_menu = view->addMenu("Icons");
+    icon_menu->setObjectName("iconMenu");
     auto* icon_group = new QActionGroup(this);
     for (const auto mode : {IconMode::Outline, IconMode::Normal, IconMode::Modern}) {
         auto* action = icon_menu->addAction(mode == IconMode::Modern ? "Modern"
@@ -2554,6 +2674,7 @@ void MainWindow::build_actions() {
     toolbar->addSeparator();
     toolbar->addWidget(theme_button_);
     auto* notations = view->addMenu("Notation");
+    notations->setObjectName("notationMenu");
     auto* notation_group = new QActionGroup(this);
     for (const auto& [style, label] : notation_styles()) {
         auto* action = notations->addAction(label);
@@ -2570,17 +2691,7 @@ void MainWindow::build_actions() {
     refresh_icons();
     auto* help = menuBar()->addMenu("&Help");
     help->setObjectName("helpMenu");
-    help->addAction("Quick guide", this, [this] {
-        QMessageBox::information(this, "Drawing a conceptual ERD",
-            "1. Choose Entity, Attribute, or Relationship and click the canvas.\n"
-            "2. Use Connect, then click the two objects to link them.\n"
-            "3. Select an object to edit its Properties. Field edits apply on focus loss.\n"
-            "4. Select a relationship to set each participant's cardinality, participation, and role.\n"
-            "5. Save your work as an .erdx project.\n\n"
-            "Drag to move; Shift-click for multiple selection. Scroll to zoom.\n"
-            "Escape cancels the current gesture. Delete removes the canvas selection.\n"
-            "Unfinished diagrams can be saved; Model checks explain missing information.");
-    });
+    help->addAction("Quick guide", this, [this] { show_quick_guide(); })->setObjectName("quickGuide");
     help->addAction("About ERDFlow", this, [this] {
         QMessageBox::about(this, "ERDFlow", "ERDFlow 0.1 · Conceptual editor foundation\n\n"
                            "Draw once, progressively refine.\nC++20 · Qt 6 · Local project files");
@@ -3212,7 +3323,7 @@ void MainWindow::refresh_properties() {
     const bool schema_bound = std::holds_alternative<EntityId>(ref)
         || std::holds_alternative<AttributeId>(ref) || std::holds_alternative<RelationshipId>(ref);
     if (schema_bound) {
-        auto* section = new FoldingSection("For the schema", label_tone, schema_section_open_, panel);
+        auto* section = new FoldingSection("For Relational Design", label_tone, schema_section_open_, panel);
         section->setObjectName("schemaSection");
         // Remembered for the next element looked at and the next time the
         // application is opened. It is the user's preference, so it is kept
@@ -3593,6 +3704,9 @@ void MainWindow::resizeEvent(QResizeEvent* event) {
     QMainWindow::resizeEvent(event);
     fit_toolbar();
     lay_out_schema();
+    // A notice stands where it was put, so it is put there again whenever the
+    // window it is laid over changes shape under it.
+    if (notice_) notice_->settle_again();
 }
 
 // A tool that has fallen off the end of the toolbar may as well not exist, so
@@ -3694,6 +3808,10 @@ void MainWindow::apply_appearance(ThemeId id) {
         schema_->set_theme(theme(id));
         schema_->set_notation(canvas_->notation());
     }
+    if (notice_) notice_->wear(theme(id));
+    // The Home screen asks the resolved tokens of the same theme, so it
+    // follows the window rather than staying in the one it was built in.
+    if (home_) home_->wear(id);
     refresh_icons();
     refresh_explorer();
     // The panel's labels are written in the theme's own hues, so they are
@@ -3923,18 +4041,169 @@ bool MainWindow::save(bool choose_path) {
         return false;
     }
     path_ = location;
+    remember_recent(path_);
     refresh();
     statusBar()->showMessage("Saved " + QFileInfo(path_).fileName(), 7000);
     return true;
 }
 
-void MainWindow::new_project() {
-    if (!confirm_discard()) return;
+void MainWindow::show_home(bool on) {
+    if (!pages_) return;
+    // The docks and the tool bar belong to the work, not to the home screen,
+    // so they go away with it. Which ones come back is remembered rather than
+    // assumed: a panel somebody had closed must not be reopened just because
+    // they visited the home screen and left it again.
+    if (on) {
+        if (!home_chrome_hidden_) {
+            home_chrome_hidden_ = true;
+            for (auto* dock : findChildren<QDockWidget*>())
+                // Asked as "not explicitly hidden" rather than "visible",
+                // because at the moment the window is built nothing is
+                // visible yet -- the window itself has not been shown -- and
+                // a panel that was going to appear would otherwise be missed
+                // and left standing over the home screen.
+                if (!dock->isHidden()) { hidden_for_home_.push_back(dock); dock->hide(); }
+
+            // The ribbon is the workspace's tool system, and Home has nothing
+            // for it to act on, so its rows give way to Home's own slim bar.
+            // The native menu bar and the status line stay: Home is never
+            // left without its menus (ADR-022 section 9.14). Exactly the rows
+            // that were out are remembered, so the one that was in front
+            // comes back rather than an assumed Home row.
+            for (auto* bar : findChildren<QToolBar*>())
+                if (!bar->isHidden()) {
+                    hidden_chrome_for_home_.push_back(bar);
+                    bar->hide();
+                }
+        }
+    } else {
+        for (const auto& dock : hidden_for_home_) if (dock) dock->show();
+        hidden_for_home_.clear();
+        for (const auto& chrome : hidden_chrome_for_home_) if (chrome) chrome->show();
+        hidden_chrome_for_home_.clear();
+        home_chrome_hidden_ = false;
+    }
+    pages_->setCurrentIndex(on ? 0 : 1);
+}
+
+bool MainWindow::showing_home() const {
+    return pages_ != nullptr && pages_->currentIndex() == 0;
+}
+
+bool MainWindow::begin_new_project() {
+    if (!confirm_discard()) return false;
     editor_.new_project();
     path_.clear();
     refresh();
     canvas_->actual_size();
     canvas_->centerOn(0, 0);
+    return true;
+}
+
+void MainWindow::new_project() {
+    (void)begin_new_project();
+}
+
+namespace {
+constexpr int recent_limit = 10;
+const char* const recent_key = "recentProjects";
+} // namespace
+
+void MainWindow::remember_recent(const QString& path) {
+    if (path.isEmpty()) return;
+    const auto absolute = QFileInfo(path).absoluteFilePath();
+    auto recent = QSettings().value(recent_key).toStringList();
+    recent.removeAll(absolute);
+    recent.prepend(absolute);
+    while (recent.size() > recent_limit) recent.removeLast();
+    QSettings().setValue(recent_key, recent);
+}
+
+void MainWindow::refresh_recent_menu() {
+    if (!recent_menu_) return;
+    recent_menu_->clear();
+    const auto recent = QSettings().value(recent_key).toStringList();
+    if (recent.isEmpty()) {
+        // Said rather than left as an empty menu, which reads as broken.
+        recent_menu_->addAction("No recent projects yet")->setEnabled(false);
+        return;
+    }
+    for (const auto& path : recent) {
+        const QFileInfo file(path);
+        const bool there = file.exists();
+        auto* entry = recent_menu_->addAction(there ? file.completeBaseName()
+                                                    : file.completeBaseName() + " (moved or deleted)");
+        entry->setToolTip(QDir::toNativeSeparators(path));
+        entry->setStatusTip(QDir::toNativeSeparators(path));
+        connect(entry, &QAction::triggered, this, [this, path, there] {
+            if (there) { open_path(path); return; }
+            // A project can be moved or deleted outside ERDFlow. Its entry says
+            // so and offers to be forgotten, rather than failing to open (ADR-016).
+            if (QMessageBox::question(this, "Project not found",
+                    QDir::toNativeSeparators(path) + " is no longer there. Forget it?",
+                    QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes) == QMessageBox::Yes) {
+                auto kept = QSettings().value(recent_key).toStringList();
+                kept.removeAll(path);
+                QSettings().setValue(recent_key, kept);
+            }
+        });
+    }
+    recent_menu_->addSeparator();
+    recent_menu_->addAction("Clear recent projects", this, [] {
+        QSettings().remove(recent_key);
+    })->setObjectName("clearRecent");
+}
+
+void MainWindow::show_quick_guide() {
+    QMessageBox::information(this, "Drawing a conceptual ERD",
+        "1. Choose Entity, Attribute, or Relationship and click the canvas.\n"
+        "2. Use Connect, then click the two objects to link them.\n"
+        "3. Select an object to edit its Properties. Field edits apply on focus loss.\n"
+        "4. Select a relationship to set each participant's cardinality, participation, and role.\n"
+        "5. Save your work as an .erdx project.\n\n"
+        "Drag to move; Shift-click for multiple selection. Scroll to zoom.\n"
+        "Escape cancels the current gesture. Delete removes the canvas selection.\n"
+        "Unfinished diagrams can be saved; Model checks explain missing information.");
+}
+
+void MainWindow::wire_home() {
+    if (!home_) return;
+    // Settings on the Home screen holds the choices that belong to the whole
+    // application. They are the View menu's own submenus, added here as well
+    // rather than copied, so the two can never disagree.
+    settings_menu_ = new QMenu("Settings", this);
+    settings_menu_->setObjectName("settingsMenu");
+    for (const char* name : {"themeMenu", "iconMenu", "notationMenu"})
+        if (auto* menu = findChild<QMenu*>(name)) settings_menu_->addMenu(menu);
+    home_->top_bar()->attach_settings_menu(settings_menu_);
+    home_->top_bar()->attach_theme_menu(findChild<QMenu*>("themeMenu"));
+
+    auto* rail = home_->sidebar();
+    // A menu opened from a row stands beside it, as a submenu would.
+    const auto beside = [rail](HomeSection section, QMenu* menu) {
+        return [rail, section, menu] {
+            if (!menu) return;
+            auto* row = rail->button(section);
+            menu->popup(row->mapToGlobal(QPoint(row->width() + 6, 0)));
+        };
+    };
+    rail->set_callback(HomeSection::OpenProject, [this] { open_dialog(); });
+    rail->set_callback(HomeSection::Recent, beside(HomeSection::Recent, recent_menu_));
+    rail->set_callback(HomeSection::Examples, [this] { load_example(); });
+    // Templates are projects (ADR-016), and the bundled University project is
+    // the one there is. It opens untitled and unsaved, as a template should.
+    rail->set_callback(HomeSection::Templates, [this] { load_example(); });
+    // Bringing in work that already exists. Today that is an ERDFlow project
+    // or a picture carrying one; SQL and database sources join it when there
+    // is a Relational Design to read them into.
+    rail->set_callback(HomeSection::Import, [this] { open_dialog(); });
+    rail->set_callback(HomeSection::Settings, beside(HomeSection::Settings, settings_menu_));
+    rail->set_callback(HomeSection::Help, beside(HomeSection::Help, findChild<QMenu*>("helpMenu")));
+
+    auto* learning = home_->learning();
+    // There are no tutorials beyond the quick guide yet, so that is what this
+    // opens rather than nothing.
+    learning->set_callback(HomeLearningLink::ViewTutorials, [this] { show_quick_guide(); });
 }
 
 namespace {
@@ -4213,11 +4482,11 @@ application::LoadResult MainWindow::read_project(const QString& path) {
     return store_.project_from_bytes(std::string(payload.constData(), static_cast<std::size_t>(payload.size())));
 }
 
-void MainWindow::open_dialog() {
+bool MainWindow::open_dialog() {
     const auto location = QFileDialog::getOpenFileName(this, "Open ERDFlow project", path_,
         "ERDFlow project or picture (*.erdx *.svg *.png);;ERDFlow project (*.erdx);;"
         "Picture carrying a project (*.svg *.png)");
-    if (!location.isEmpty()) open_path(location);
+    return !location.isEmpty() && open_path(location);
 }
 
 bool MainWindow::open_path(const QString& path) {
@@ -4237,10 +4506,13 @@ bool MainWindow::open_path(const QString& path) {
     }
     const auto result = editor_.replace_project(std::move(*candidate.project));
     if (!result) { show_result(result); return false; }
+    // A project is open, so the home screen has done its job.
+    show_home(false);
     // A project opened out of a picture has no project file of its own yet.
     // Leaving the picture as the save location would overwrite it with project
     // bytes and destroy the picture, so the next save asks where it should go.
     path_ = may_carry_project(path) ? QString() : path;
+    remember_recent(path_);
     refresh();
     canvas_->fit_diagram();
     if (path_.isEmpty())
@@ -4663,6 +4935,12 @@ std::vector<QWidget*> MainWindow::chrome_for_drawing() const {
     return furniture;
 }
 
+void MainWindow::set_workspace_in_front(bool relational) {
+    if (auto* badge = findChild<QLabel*>("workspaceBadge"))
+        badge->setText(relational ? "RELATIONAL DESIGN" : "CONCEPTUAL");
+    if (auto* picture = findChild<QAction*>("insertPicture")) picture->setVisible(!relational);
+}
+
 void MainWindow::set_schema_full(bool full) {
     if (schema_full_ == full) return;
     schema_full_ = full;
@@ -4706,6 +4984,12 @@ void MainWindow::set_schema_full(bool full) {
             }
             schema_header_tools_->show();
         }
+        // Relational Design is now the workspace in front, so the header says
+        // so, and what only the diagram can take is put away with the diagram:
+        // a picture is placed on the canvas, which cannot be seen. The ribbon's
+        // drawing tools have already gone with the rest of its rows (ADR-022
+        // section 9.12: Relational Design offers no conceptual-only tools).
+        set_workspace_in_front(true);
         schema_share_ = 1.0;
     } else {
         if (schema_took_full_view_) set_full_view(false);
@@ -4715,6 +4999,7 @@ void MainWindow::set_schema_full(bool full) {
         for (const auto& furniture : hidden_chrome_) if (furniture) furniture->show();
         hidden_chrome_.clear();
         if (schema_header_tools_) schema_header_tools_->hide();
+        set_workspace_in_front(false);
         schema_share_ = schema_share_before_full_;
     }
     lay_out_schema();
@@ -4724,7 +5009,7 @@ void MainWindow::set_schema_full(bool full) {
         button->setChecked(full);
         button->setText(full ? "Exit full" : "Full");
     }
-    statusBar()->showMessage(full ? "The schema has the whole window. Press Full again to bring the rest back."
+    statusBar()->showMessage(full ? "Relational Design has the whole window. Press Full again to bring the rest back."
                                   : "Everything is back.", 5000);
 }
 
@@ -4934,7 +5219,7 @@ void MainWindow::offer_schema_actions(const SchemaView::Spot& spot) {
     // The same thing, kept off the diagram. It is the departure rather than the
     // ordinary case, so it is asked for by name here and is not what the slot
     // under the table does.
-    auto* aside = menu.addAction("Add column on the schema only");
+    auto* aside = menu.addAction("Add column in Relational Design only");
     aside->setObjectName("schemaAddColumnOnly");
     connect(aside, &QAction::triggered, this,
             [this, origin = *table.origin] { add_schema_column(origin, true); });
@@ -4970,6 +5255,60 @@ void MainWindow::offer_schema_actions(const SchemaView::Spot& spot) {
                 : "The conversion made this column. It is not the model's to remove.");
         connect(remove, &QAction::triggered, this,
                 [this, origin = *table.origin, column] { remove_schema_column(origin, column); });
+    }
+    // What colour the tables wear. The same palette the canvas offers, because
+    // a table here and the entity it came from are one element wearing one
+    // colour: colouring it on either side is the same edit, and the colour
+    // already travels both ways.
+    //
+    // Applies to everything marked, so a band drawn round a group colours the
+    // group. Where nothing is marked it applies to the table pressed.
+    std::vector<domain::ElementRef> chosen = schema_->selection();
+    if (chosen.empty() && table.origin) chosen.push_back(*table.origin);
+    if (!chosen.empty()) {
+        menu.addSeparator();
+        const auto several = chosen.size() > 1;
+        auto* colours = menu.addMenu(several ? QString("Colour %1 tables").arg(chosen.size())
+                                             : QString("Colour"));
+        colours->setObjectName("schemaColour");
+        for (const auto& [name, colour] : swatches()) {
+            auto* entry = colours->addAction(swatch_icon(colour), QString::fromLatin1(name));
+            entry->setObjectName("schemaSwatch" + QString::fromLatin1(name));
+            connect(entry, &QAction::triggered, this, [this, chosen, colour] {
+                show_result(editor_.recolour(chosen, domain::Colour{
+                    static_cast<std::uint8_t>(colour.red()),
+                    static_cast<std::uint8_t>(colour.green()),
+                    static_cast<std::uint8_t>(colour.blue())}), false);
+            });
+        }
+        colours->addSeparator();
+        auto* custom = colours->addAction("Custom colour…");
+        custom->setObjectName("schemaCustomColour");
+        connect(custom, &QAction::triggered, this, [this, chosen] {
+            // Opened on what the first of them already wears, so the dialog
+            // starts from the colour being changed rather than from nothing.
+            const auto& worn = editor_.project().colours;
+            const auto current = worn.find(chosen.front());
+            const auto initial = current == worn.end()
+                ? QColor(Qt::white)
+                : QColor(current->second.red, current->second.green, current->second.blue);
+            const auto picked = QColorDialog::getColor(initial, this, "Choose a surface colour");
+            if (!picked.isValid()) return;
+            show_result(editor_.recolour(chosen, domain::Colour{
+                static_cast<std::uint8_t>(picked.red()),
+                static_cast<std::uint8_t>(picked.green()),
+                static_cast<std::uint8_t>(picked.blue())}), false);
+        });
+        auto* plain = colours->addAction("Use theme colour");
+        plain->setObjectName("schemaClearColour");
+        // Nothing to clear where none of them has been given a colour.
+        const auto& worn = editor_.project().colours;
+        plain->setEnabled(std::any_of(chosen.begin(), chosen.end(),
+                                      [&](const domain::ElementRef& ref) {
+                                          return worn.contains(ref);
+                                      }));
+        connect(plain, &QAction::triggered, this,
+                [this, chosen] { show_result(editor_.recolour(chosen, {}), false); });
     }
     menu.exec(spot.at);
 }
@@ -5041,6 +5380,12 @@ void MainWindow::answer_decision(const domain::OpenDecision& decision, std::size
         if (choice >= modes.size()) return;
         show_result(editor_.set_composite_mode(std::get<domain::AttributeId>(decision.about),
                                                modes[choice]), false);
+        return;
+    }
+    case domain::DecisionKind::BridgeKey: {
+        if (!std::holds_alternative<domain::RelationshipId>(decision.about) || choice > 1) return;
+        show_result(editor_.set_bridge_key(std::get<domain::RelationshipId>(decision.about),
+                    choice == 1 ? domain::BridgeKey::Pair : domain::BridgeKey::Own), false);
         return;
     }
     case domain::DecisionKind::OneToOneKey: {
@@ -5125,11 +5470,11 @@ void MainWindow::remove_schema_column(domain::ElementRef table, const domain::Pr
     ask.setWindowTitle("Remove it from the diagram too?");
     ask.setText(QString("Remove \"%1\" from the diagram as well?").arg(text(column.name)));
     ask.setInformativeText("Removing it from both deletes the attribute, and can be undone. "
-                           "Removing it from the schema only leaves the attribute on the diagram "
-                           "and stops the schema showing it, which is allowed: the schema and the "
-                           "diagram describe different levels.");
+                           "Removing it from Relational Design only leaves the attribute on the "
+                           "diagram and stops Relational Design showing it, which is allowed: the "
+                           "two describe different levels.");
     auto* both = ask.addButton("Remove from both", QMessageBox::DestructiveRole);
-    auto* only = ask.addButton("Schema only", QMessageBox::AcceptRole);
+    auto* only = ask.addButton("Relational Design only", QMessageBox::AcceptRole);
     ask.addButton(QMessageBox::Cancel);
     ask.setDefaultButton(both);
     ask.exec();
@@ -5223,9 +5568,11 @@ void MainWindow::refresh_shared_names() {
 void MainWindow::refresh_schema_state() {
     if (!schema_ || !schema_state_) return;
     std::size_t open = 0;
+    // A foreign key is not counted: its type is its key's, answered where the
+    // key is, so counting it again would ask the same question twice.
     for (const auto& table : schema_->preview().tables)
         for (const auto& column : table.columns)
-            if (column.type == domain::LogicalType::Unset) ++open;
+            if (column.type == domain::LogicalType::Unset && !column.foreign_key) ++open;
     // Where the schema has been edited away from the diagram. Reported for the
     // same reason a loose end is: a reader who has made the two levels differ
     // should be told they differ, since the whole point of allowing it is that
@@ -5253,7 +5600,19 @@ void MainWindow::refresh_export_actions() {
 
 void MainWindow::load_example() {
     if (!confirm_discard()) return;
+    // Anything that puts a project in front of somebody leaves the home
+    // screen: the home screen is for choosing what to work on, and once that
+    // is chosen it is the work they want to see.
+    show_home(false);
     application::Editor example(ids_);
+    // This diagram was laid out when a body was half the size it is now. Rather than re-typing every coordinate in it, each rectangle is
+    // taken at the scale the bodies grew by: the arrangement is kept exactly,
+    // and the list below still reads as the layout it is rather than as a
+    // column of unrelated numbers.
+    const auto at = [](double x, double y, double wide, double tall) {
+        return domain::Rect{x * diagram_scale, y * diagram_scale,
+                            wide * diagram_scale, tall * diagram_scale};
+    };
     example.rename_project("University · Students, courses and professors");
     // The diagram an introductory course draws: three entities, the three ways
     // they relate, and one of every kind of attribute -- a key, a composite
@@ -5284,53 +5643,53 @@ void MainWindow::load_example() {
         example.update_participant(relationship, *joined.participant, maximum, participation, "");
     };
 
-    const auto student = add_entity("Student", {-441, -195, 160, 80});
-    const auto course = add_entity("Course", {-441, 319, 160, 80});
-    const auto professor = add_entity("Professor", {433, 319, 160, 80});
+    const auto student = add_entity("Student", at(-441, -195, 160, 80));
+    const auto course = add_entity("Course", at(-441, 319, 160, 80));
+    const auto professor = add_entity("Professor", at(433, 319, 160, 80));
 
     // A student may enroll in any number of courses and a course may hold any
     // number of students, so the pair that resolves into its own table later.
-    const auto enrolled = add_relationship("Enrolled", {-456, 33, 190, 110});
+    const auto enrolled = add_relationship("Enrolled", at(-456, 33, 190, 110));
     join(enrolled, student, Cardinality::Many, Participation::Partial);
     join(enrolled, course, Cardinality::Many, Participation::Partial);
     // A course is taught by at most one professor, and a professor may be
     // between courses, so neither side is obliged to take part.
-    const auto teaches = add_relationship("Teaches", {-52, 304, 190, 110});
+    const auto teaches = add_relationship("Teaches", at(-52, 304, 190, 110));
     join(teaches, course, Cardinality::One, Participation::Partial);
     join(teaches, professor, Cardinality::One, Participation::Partial);
     // Mentoring is the one side that is compulsory: every professor mentors,
     // while a student need not be mentored at all.
-    const auto mentor = add_relationship("Mentor", {415, -208, 190, 110});
+    const auto mentor = add_relationship("Mentor", at(415, -208, 190, 110));
     join(mentor, student, Cardinality::Many, Participation::Partial);
     join(mentor, professor, Cardinality::One, Participation::Total);
 
     // A student is identified by an ID, named by a composite whose three parts
     // hang off it, has an age nobody stores, and may be reached on more than
     // one telephone.
-    add_attribute("ID", {-727, -180, 150, 60}, student, AttributeKind::Key);
-    const auto student_name = add_attribute("Name", {-544, -400, 150, 60}, student, AttributeKind::Composite);
-    add_attribute("First", {-805, -515, 150, 60}, student_name);
-    add_attribute("Mid", {-617, -544, 150, 60}, student_name);
-    add_attribute("Last", {-418, -542, 150, 60}, student_name);
-    add_attribute("Gender", {-715, -300, 150, 60}, student);
-    add_attribute("Birth Date", {-367, -356, 150, 60}, student);
-    add_attribute("Age", {-170, -363, 150, 60}, student, AttributeKind::Derived);
-    add_attribute("Phone", {27, -360, 150, 60}, student, AttributeKind::Multivalued);
+    add_attribute("ID", at(-727, -180, 150, 60), student, AttributeKind::Key);
+    const auto student_name = add_attribute("Name", at(-544, -400, 150, 60), student, AttributeKind::Composite);
+    add_attribute("First", at(-805, -515, 150, 60), student_name);
+    add_attribute("Mid", at(-617, -544, 150, 60), student_name);
+    add_attribute("Last", at(-418, -542, 150, 60), student_name);
+    add_attribute("Gender", at(-715, -300, 150, 60), student);
+    add_attribute("Birth Date", at(-367, -356, 150, 60), student);
+    add_attribute("Age", at(-170, -363, 150, 60), student, AttributeKind::Derived);
+    add_attribute("Phone", at(27, -360, 150, 60), student, AttributeKind::Multivalued);
 
-    add_attribute("ID", {-576, 506, 150, 60}, course, AttributeKind::Key);
-    add_attribute("Name", {-728, 387, 150, 60}, course);
-    add_attribute("Credit Hours", {-707, 263, 150, 60}, course);
+    add_attribute("ID", at(-576, 506, 150, 60), course, AttributeKind::Key);
+    add_attribute("Name", at(-728, 387, 150, 60), course);
+    add_attribute("Credit Hours", at(-707, 263, 150, 60), course);
 
-    add_attribute("ID", {277, 506, 150, 60}, professor, AttributeKind::Key);
-    add_attribute("Name", {489, 506, 150, 60}, professor);
-    add_attribute("Salary", {661, 414, 150, 60}, professor);
+    add_attribute("ID", at(277, 506, 150, 60), professor, AttributeKind::Key);
+    add_attribute("Name", at(489, 506, 150, 60), professor);
+    add_attribute("Salary", at(661, 414, 150, 60), professor);
 
     // The date belongs to the enrollment rather than to the student or to the
     // course, which is the reason a relationship may carry attributes at all.
     // Its ellipse is the one that is drawn wider than the rest, because the
     // name is longer than the others and an example should not open on a
     // label that has been cut short.
-    add_attribute("Enrollment Date", {-175, 17, 200, 60}, enrolled);
+    add_attribute("Enrollment Date", at(-175, 17, 200, 60), enrolled);
 
     show_result(editor_.replace_project(example.project()));
     path_.clear();

@@ -1,6 +1,13 @@
+// ERDFlow — settled work. Do not change, replace or re-style anything here to
+// suit something new you have been asked to build. If what you are building
+// genuinely contradicts what is here, stop and ask Zain, who owns this project:
+// say what you want to change, what the application will LOOK like afterwards,
+// and whether it is a gain or a loss. He decides. Fixing a real defect is not
+// covered by this — fix it and say what was wrong. Full rule: CLAUDE.md.
 #include "domain/schema_preview.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <map>
 #include <set>
 
@@ -131,8 +138,13 @@ PreviewColumn column_of(AttributeId id, const Attribute& attribute) {
     column.type = attribute.logical_type;
     column.length = attribute.length;
     column.scale = attribute.scale;
-    column.primary_key = attribute.identifier;
-    column.required = attribute.required || attribute.identifier;
+    // An attribute drawn as a key is part of the primary key: the key a
+    // person drew is the table's key, and nothing is invented beside it (Zain,
+    // 2026-09-24). The Editor keeps the two flags together; this reads either,
+    // so a model that reaches here some other way still converts the same.
+    const bool key = attribute.identifier || attribute.kind == AttributeKind::Key;
+    column.primary_key = key;
+    column.required = attribute.required || key;
     column.unique = attribute.unique;
     column.auto_increment = attribute.auto_increment;
     column.origin = id;
@@ -155,10 +167,10 @@ PreviewColumn generated_key(std::string name) {
 // The table is named by the element it came from, which is the only stable
 // thing an invented column has to be remembered against.
 PreviewColumn generated_key_for(const Project& project, const ElementRef& table, std::string suggested) {
-    const auto chosen = project.schema.key_names.find(table);
+    const auto chosen = project.schema.key_names.find(relation_from(table));
     auto column = generated_key(chosen != project.schema.key_names.end() ? chosen->second
                                                                          : std::move(suggested));
-    column.auto_increment = project.schema.counting_keys.contains(table);
+    column.auto_increment = project.schema.counting_keys.contains(relation_from(table));
     return column;
 }
 } // namespace
@@ -170,7 +182,8 @@ std::vector<SharedName> shared_names(const SchemaPreview& preview) {
     std::map<std::string, std::size_t> seen;
     for (const auto& table : preview.tables)
         for (const auto& column : table.columns) {
-            if (column.ignored || column.type != LogicalType::Unset) continue;
+            // A foreign key's type is its key's, answered where the key is.
+            if (column.ignored || column.foreign_key || column.type != LogicalType::Unset) continue;
             const auto found = seen.find(column.name);
             const auto at = found == seen.end()
                 ? (seen.emplace(column.name, groups.size()),
@@ -197,7 +210,7 @@ namespace {
 // What a table is called: the name typed over it, else the entity's own name
 // under the project's naming convention.
 std::string table_name(const Project& project, const ElementRef& origin, const std::string& base) {
-    const auto typed = project.decisions.table_name.find(origin);
+    const auto typed = project.decisions.table_name.find(relation_from(origin));
     if (typed != project.decisions.table_name.end()) return typed->second;
     return project.decisions.naming == TableNaming::AsDrawn ? base : plural_of(base);
 }
@@ -232,8 +245,17 @@ void add_attribute(const Project& project, const ElementRef& owner,
     const auto found = project.decisions.composite.find(id);
     const auto mode = found == project.decisions.composite.end() ? CompositeMode::Parts : found->second;
     if (mode != CompositeMode::Whole) {
+        const auto first_part = into.size();
         for (const auto& [part_id, part] : owned_by(project, ElementRef{id}))
             add_attribute(project, owner, part_id, part, into);
+        // A composite that identifies a row does so through its parts, so
+        // where the parts become the columns they are the key.
+        if (attribute.identifier && mode == CompositeMode::Parts)
+            for (auto at = first_part; at < into.size(); ++at)
+                if (!into[at].ignored) {
+                    into[at].primary_key = true;
+                    into[at].required = true;
+                }
     }
     if (mode != CompositeMode::Parts) {
         auto whole = column_of(id, attribute);
@@ -249,7 +271,7 @@ void add_attribute(const Project& project, const ElementRef& owner,
 // where a reader expects a column they added themselves to be.
 void add_schema_only(const Project& project, const ElementRef& table,
                      std::vector<PreviewColumn>& into) {
-    const auto found = project.schema.added.find(table);
+    const auto found = project.schema.added.find(relation_from(table));
     if (found == project.schema.added.end()) return;
     for (const auto& one : found->second) {
         PreviewColumn column;
@@ -265,6 +287,34 @@ void add_schema_only(const Project& project, const ElementRef& table,
         column.added = one.id;
         into.push_back(column);
     }
+}
+
+// What an element is called, as one word, for a foreign key named after it:
+// Course for a key into Courses. Spaces are taken out, because a name like
+// Course Section is one word as the start of a column name.
+std::string element_word(const Project& project, const std::optional<ElementRef>& origin) {
+    if (!origin) return {};
+    std::string name;
+    if (const auto* entity = std::get_if<EntityId>(&*origin)) {
+        if (const auto found = project.entities.find(*entity); found != project.entities.end()) name = found->second.name;
+    } else if (const auto* relationship = std::get_if<RelationshipId>(&*origin)) {
+        if (const auto found = project.relationships.find(*relationship); found != project.relationships.end())
+            name = found->second.name;
+    } else if (const auto* attribute = std::get_if<AttributeId>(&*origin)) {
+        if (const auto found = project.attributes.find(*attribute); found != project.attributes.end())
+            name = found->second.name;
+    }
+    std::erase_if(name, [](unsigned char c) { return std::isspace(c) != 0; });
+    return name;
+}
+
+// Whether a name already starts with a word, whatever its case.
+bool begins_with(const std::string& name, const std::string& word) {
+    if (word.empty() || name.size() < word.size()) return false;
+    for (std::size_t i = 0; i < word.size(); ++i)
+        if (std::tolower(static_cast<unsigned char>(name[i])) != std::tolower(static_cast<unsigned char>(word[i])))
+            return false;
+    return true;
 }
 
 // The primary key columns of a table, by position, so a foreign key can name
@@ -302,12 +352,15 @@ SchemaPreview schema_preview(const Project& project) {
         }
         if (key_columns(table).empty() && !entity.weak)
             table.columns.insert(table.columns.begin(), generated_key_for(project, ElementRef{id}, entity.name + "ID"));
+        table.id = relation_from(ElementRef{id});
+        table.provenance = Provenance{ElementRef{id}, ConversionRule::EntityToRelation};
         table_of.emplace(ElementRef{id}, preview.tables.size());
         preview.tables.push_back(std::move(table));
     }
 
     // 2. A table for each relationship that carries its own identity, and for
-    //    each many-to-many: a bridge holding both keys, with a key of its own.
+    //    each many-to-many: a bridge with its own key and FK-only participant rows.
+    std::set<std::size_t> participant_keys; // explicit strategies waiting for their referenced keys
     for (const auto& [id, relationship] : project.relationships) {
         const auto many = std::count_if(relationship.participants.begin(), relationship.participants.end(),
                                         [](const Participant& side) { return side.maximum == Cardinality::Many; });
@@ -320,12 +373,24 @@ SchemaPreview schema_preview(const Project& project) {
             ? named->second
             : table_name(project, ElementRef{id}, relationship.name);
         table.origin_kind = relationship.associative ? TableOrigin::Associative : TableOrigin::Bridge;
-        // Its own primary key first, which is the rule: the bridge is given one
-        // rather than keyed by the pair of foreign keys it holds.
-        table.columns.push_back(generated_key_for(project, ElementRef{id}, relationship.name + "ID"));
         for (const auto& [attribute_id, attribute] : owned_by(project, ElementRef{id}))
             add_attribute(project, ElementRef{id}, attribute_id, attribute, table.columns);
         add_schema_only(project, ElementRef{id}, table.columns);
+        // A conceptual identifier wins even over a previously saved strategy.
+        // Without one, participant keys are used only by explicit choice.
+        if (key_columns(table).empty()) {
+            const auto choice = project.decisions.bridge_key.find(id);
+            if (choice != project.decisions.bridge_key.end() && choice->second == BridgeKey::Pair)
+                participant_keys.insert(preview.tables.size());
+            else
+                table.columns.insert(table.columns.begin(),
+                                     generated_key_for(project, ElementRef{id}, relationship.name + "ID"));
+        }
+        table.id = relation_from(ElementRef{id});
+        table.provenance = Provenance{ElementRef{id},
+                                      relationship.associative
+                                          ? ConversionRule::AssociativeToBridge
+                                          : ConversionRule::ManyToManyToBridge};
         table_of.emplace(ElementRef{id}, preview.tables.size());
         preview.tables.push_back(std::move(table));
     }
@@ -343,57 +408,123 @@ SchemaPreview schema_preview(const Project& project) {
         value.primary_key = false;
         table.columns.push_back(value);
         add_schema_only(project, ElementRef{id}, table.columns);
+        table.id = relation_from(ElementRef{id});
+        table.provenance = Provenance{ElementRef{id}, ConversionRule::MultivaluedToRelation};
         table_of.emplace(ElementRef{id}, preview.tables.size());
         preview.tables.push_back(std::move(table));
     }
 
-    // A foreign key referring to a table's primary key, named for it.
+    // A foreign key referring to a table's primary key: one column for each
+    // column of that key, each named for the one it points at. A key made of
+    // several attributes is referred to by all of them, or the reference could
+    // not say which row it means.
     const auto add_foreign_key = [&](std::size_t into, std::size_t target,
                                      bool optional, bool one_to_one, ColumnOrigin kind,
-                                     LinkSource link, const std::string& role = {}) {
+                                     LinkSource link, const std::string& role = {}, bool key_part = false) {
         const auto keys = key_columns(preview.tables[target]);
         if (keys.empty()) return;
-        PreviewColumn column;
-        column.name = preview.tables[target].columns[keys.front()].name;
-        // The role the side was given names the key, which is the only thing
-        // that can tell two links to the same table apart. A flight's departure
-        // and arrival airports are both AirportID without it, and naming one of
-        // them after the table it points at says nothing about which is which.
-        if (!role.empty()) column.name = role + column.name;
-        // A key pointing back into its own table cannot share the name it
-        // points at, or a table would hold the same column twice.
-        else if (into == target) column.name = "Parent" + column.name;
-        // Qualify until the name is the table's own. Comparing once while
-        // changing the name mid-comparison leaves whether it collides
-        // depending on the order the columns happen to be in.
-        const auto taken_already = [&](const std::string& wanted) {
-            return std::any_of(preview.tables[into].columns.begin(), preview.tables[into].columns.end(),
-                               [&](const PreviewColumn& existing) { return existing.name == wanted; });
-        };
-        if (taken_already(column.name)) {
-            const auto qualified = preview.tables[target].name + column.name;
-            column.name = qualified;
-            for (int attempt = 2; taken_already(column.name); ++attempt)
-                column.name = qualified + std::to_string(attempt);
+        for (const auto key : keys) {
+            PreviewColumn column;
+            const auto& key_name = preview.tables[target].columns[key].name;
+            // The role the side was given names the key, which is the only
+            // thing that can tell two links to the same table apart. A flight's
+            // departure and arrival airports are both AirportID without it, and
+            // naming one of them after the table it points at says nothing
+            // about which is which.
+            if (!role.empty()) column.name = role + key_name;
+            // A key pointing back into its own table cannot share the name it
+            // points at, or a table would hold the same column twice.
+            else if (into == target) column.name = "Parent" + key_name;
+            // Otherwise it is named for what it points at as well as for the
+            // key, so a key called ID never gives a foreign key called only ID,
+            // which could point anywhere (Zain, 2026-09-24). A key already named
+            // for its own table keeps its name: StudentID stays StudentID.
+            else {
+                const auto owner = element_word(project, preview.tables[target].origin);
+                column.name = owner.empty() || begins_with(key_name, owner) ? key_name : owner + key_name;
+            }
+            // Qualify until the name is the table's own. Comparing once while
+            // changing the name mid-comparison leaves whether it collides
+            // depending on the order the columns happen to be in.
+            const auto taken_already = [&](const std::string& wanted) {
+                return std::any_of(preview.tables[into].columns.begin(), preview.tables[into].columns.end(),
+                                   [&](const PreviewColumn& existing) { return existing.name == wanted; });
+            };
+            if (taken_already(column.name)) {
+                const auto qualified = preview.tables[target].name + column.name;
+                column.name = qualified;
+                for (int attempt = 2; taken_already(column.name); ++attempt)
+                    column.name = qualified + std::to_string(attempt);
+            }
+            column.type = preview.tables[target].columns[key].type;
+            column.length = preview.tables[target].columns[key].length;
+            column.foreign_key = true;
+            column.required = !optional;
+            column.primary_key = key_part;
+            // A key on the near side of a one-to-one holds one row and no
+            // more, which is exactly what unique says. It is the relationship's
+            // shape rather than a rule anybody typed, so it is read from it.
+            // Where the key has several columns it is their combination that
+            // is unique, which one column's own flag cannot say, so it is
+            // marked only on a key of one column.
+            column.unique = one_to_one && keys.size() == 1;
+            column.origin_kind = kind;
+            column.references = target;
+            column.references_column = key;
+            column.optional_link = optional;
+            column.one_to_one = one_to_one;
+            column.link = link;
+            column.key_id = foreign_key_from(link);
+            preview.tables[into].columns.push_back(column);
         }
-        column.type = preview.tables[target].columns[keys.front()].type;
-        column.length = preview.tables[target].columns[keys.front()].length;
-        column.foreign_key = true;
-        column.required = !optional;
-        // A key on the near side of a one-to-one holds one row and no more,
-        // which is exactly what unique says. It is the relationship's shape
-        // rather than a rule anybody typed, so it is read from it.
-        column.unique = one_to_one;
-        column.origin_kind = kind;
-        column.references = target;
-        column.references_column = keys.front();
-        column.optional_link = optional;
-        column.one_to_one = one_to_one;
-        column.link = link;
-        preview.tables[into].columns.push_back(column);
     };
 
-    // 4. The multivalued tables take their owner's key.
+    // 4. Resolve explicitly chosen participant keys before other tables take
+    // references to them. Default bridges already have their separate keys.
+    std::vector<RelationshipId> waiting;
+    for (const auto& [id, relationship] : project.relationships)
+        if (table_of.contains(ElementRef{id})) waiting.push_back(id);
+    const auto own_key = [&](RelationshipId id) {
+        auto& columns = preview.tables[table_of.at(ElementRef{id})].columns;
+        columns.insert(columns.begin(), generated_key_for(project, ElementRef{id},
+                                                          project.relationships.at(id).name + "ID"));
+        participant_keys.erase(table_of.at(ElementRef{id}));
+    };
+    while (!waiting.empty()) {
+        bool progressed = false;
+        for (auto at = waiting.begin(); at != waiting.end();) {
+            const auto& sides = project.relationships.at(*at).participants;
+            const auto here = table_of.at(ElementRef{*at});
+            const bool ready = std::none_of(sides.begin(), sides.end(), [&](const Participant& side) {
+                const auto target = table_of.find(target_ref(side.target));
+                return target != table_of.end() && participant_keys.contains(target->second);
+            });
+            if (!ready) { ++at; continue; }
+            const bool paired = participant_keys.contains(here);
+            if (sides.size() >= 2)
+                for (const auto& side : sides) {
+                    const auto target = table_of.find(target_ref(side.target));
+                    if (target == table_of.end()) continue;
+                    add_foreign_key(here, target->second, false, false, ColumnOrigin::ForeignKey,
+                                    LinkSource{side.id}, side.role, paired);
+                }
+            // Incomplete bridges cannot form a key from absent references.
+            if (key_columns(preview.tables[here]).empty()) own_key(*at);
+            participant_keys.erase(here);
+            at = waiting.erase(at);
+            progressed = true;
+        }
+        // A cycle of participant-derived keys has no starting identifier.
+        // Supply the established fallback so the remaining references resolve.
+        if (!progressed) {
+            const auto cycle = std::find_if(waiting.begin(), waiting.end(), [&](RelationshipId id) {
+                return participant_keys.contains(table_of.at(ElementRef{id}));
+            });
+            if (cycle != waiting.end()) own_key(*cycle);
+        }
+    }
+
+    // 5. The multivalued tables take their owner's key.
     for (const auto& [id, attribute] : project.attributes) {
         if (attribute.kind != AttributeKind::Multivalued || !attribute.owner) continue;
         const auto here = table_of.find(ElementRef{id});
@@ -403,23 +534,13 @@ SchemaPreview schema_preview(const Project& project) {
                         LinkSource{id});
     }
 
-    // 5. Relationships. A bridge takes every side's key; a one-to-many puts the
-    //    one side's key on the many side; a one-to-one puts it wherever it was
-    //    decided, and on the second side by default.
+    // 6. The other relationships. A one-to-many puts the one side's key on the
+    //    many side; a one-to-one puts it wherever it was decided, and on the
+    //    second side by default.
     for (const auto& [id, relationship] : project.relationships) {
         const auto& sides = relationship.participants;
         if (sides.size() < 2) continue;
-        const auto bridge = table_of.find(ElementRef{id});
-        if (bridge != table_of.end()) {
-            for (const auto& side : sides) {
-                const auto target = table_of.find(target_ref(side.target));
-                if (target == table_of.end()) continue;
-                add_foreign_key(bridge->second, target->second,
-                                side.participation == Participation::Partial, false,
-                                ColumnOrigin::ForeignKey, LinkSource{side.id}, side.role);
-            }
-            continue;
-        }
+        if (table_of.contains(ElementRef{id})) continue;   // a bridge, keyed above
         // Not a bridge: exactly one side carries the key.
         const auto many = std::find_if(sides.begin(), sides.end(), [](const Participant& side) {
             return side.maximum == Cardinality::Many;
@@ -507,8 +628,25 @@ SchemaPreview schema_preview(const Project& project) {
         }
         attach(target_ref(sides[decision.chosen].target), std::move(decision));
     }
+    // A bridge strategy is optional and never replaces a conceptual key.
+    for (const auto& [id, relationship] : project.relationships) {
+        const auto here = table_of.find(ElementRef{id});
+        if (here == table_of.end()) continue;
+        const auto& table = preview.tables[here->second];
+        if (std::any_of(table.columns.begin(), table.columns.end(), [](const PreviewColumn& column) {
+                return column.primary_key && !column.foreign_key
+                    && column.origin_kind != ColumnOrigin::Generated;
+            })) continue;
+        const auto choice = project.decisions.bridge_key.find(id);
+        OpenDecision decision;
+        decision.kind = DecisionKind::BridgeKey;
+        decision.about = ElementRef{id};
+        decision.answered = choice != project.decisions.bridge_key.end();
+        decision.chosen = decision.answered && choice->second == BridgeKey::Pair ? 1 : 0;
+        attach(ElementRef{id}, std::move(decision));
+    }
 
-    // 6. Hierarchies. The relationship is always one to one, and how it is
+    // 7. Hierarchies. The relationship is always one to one, and how it is
     //    mapped is the one conversion question with three genuinely different
     //    answers, so all three are built rather than only the default.
     //
@@ -590,7 +728,13 @@ SchemaPreview schema_preview(const Project& project) {
                 if (const auto instead = folded_into.find(target); instead != folded_into.end())
                     target = instead->second;
                 column.references = moved_to[target];
-                if (!column.references) column.references_column = 0;
+                // With nothing left to point at it is not a foreign key, and is
+                // not marked as one: a column keeps the value, and loses the
+                // claim to refer to a table that is no longer there.
+                if (!column.references) {
+                    column.references_column = 0;
+                    column.foreign_key = false;
+                }
             }
         }
         // A question asked on a table that is about to go has to be asked

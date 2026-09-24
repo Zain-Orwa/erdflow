@@ -1,5 +1,12 @@
 # ADR-001 — Stable Identity Strategy
 
+> **Settled work.** Do not change, replace or re-style anything in this
+> document to suit something new you have been asked to build. If what you are
+> building genuinely contradicts what is written here, stop and ask Zain, who
+> owns this project: say what you want to change, what the application will
+> look like afterwards, and whether it is a gain or a loss. He decides.
+> Full rule: [CLAUDE.md](../../CLAUDE.md).
+
 **Status:** Accepted  
 **Date:** 2026-08-31  
 **Project:** ERDFlow  

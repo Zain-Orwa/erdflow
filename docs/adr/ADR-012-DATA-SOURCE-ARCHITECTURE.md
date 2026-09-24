@@ -1,5 +1,20 @@
 # ADR-012 — Data Source Architecture
 
+> **Settled work.** Do not change, replace or re-style anything in this
+> document to suit something new you have been asked to build. If what you are
+> building genuinely contradicts what is written here, stop and ask Zain, who
+> owns this project: say what you want to change, what the application will
+> look like afterwards, and whether it is a gain or a loss. He decides.
+> Full rule: [CLAUDE.md](../../CLAUDE.md).
+
+> **Amended by [ADR-022](ADR-022-FOUR-VISIBLE-WORKSPACES-AND-AZURE-THEME.md), 2026-09-23.**
+> The product now shows **four** visible workspaces — Conceptual ERD,
+> Relational Design, SQL, Data — with Relational Schema and Physical / Table
+> Design presented through the single **Relational Design** workspace. What
+> this document says about them as *concepts* still holds: they remain
+> internally distinct. Only their presentation to the user has been merged.
+
+
 **Status:** Accepted
 
 **Reviewed:** 2026-09-14

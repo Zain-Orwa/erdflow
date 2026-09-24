@@ -1,3 +1,9 @@
+// ERDFlow — settled work. Do not change, replace or re-style anything here to
+// suit something new you have been asked to build. If what you are building
+// genuinely contradicts what is here, stop and ask Zain, who owns this project:
+// say what you want to change, what the application will LOOK like afterwards,
+// and whether it is a gain or a loss. He decides. Fixing a real defect is not
+// covered by this — fix it and say what was wrong. Full rule: CLAUDE.md.
 #include "infrastructure/project_store.hpp"
 
 #include <QFile>
@@ -48,8 +54,12 @@ namespace {
 // key the conversion invented has been renamed to, which renames every
 // foreign key that points at it; version 23 records how tall
 // a table has been pulled as well as how wide, since a table answers to all
-// four of its edges.
-constexpr int current_format_version = 25;
+// four of its edges; version 25 records auto-incrementing columns; version 26
+// gives generated relations stable identities of their own; version 27 adds
+// the description captured with a project's other creation details; version
+// 28 records which bridges were chosen to be keyed by their participants'
+// foreign keys.
+constexpr int current_format_version = 28;
 QString text(const std::string& value) { return QString::fromUtf8(value.data(), static_cast<qsizetype>(value.size())); }
 Uuid bytes_of(const QUuid& value) {
     Uuid result;
@@ -170,6 +180,17 @@ CompositeMode parse_composite(const QJsonValue& value) {
     invalid("Unsupported composite decision.");
 }
 
+QLatin1String bridge_key_name(BridgeKey keyed) {
+    return QLatin1String(keyed == BridgeKey::Own ? "own" : "pair");
+}
+
+BridgeKey parse_bridge_key(const QJsonValue& value) {
+    const auto name = string(value);
+    if (name == "pair") return BridgeKey::Pair;
+    if (name == "own") return BridgeKey::Own;
+    invalid("Unsupported bridge-key decision.");
+}
+
 // Defined below, beside the other readers.
 ElementRef parse_ref(const QJsonValue& value);
 
@@ -186,8 +207,8 @@ QJsonArray decision_list(const Map& answers, Value&& value_of) {
 
 QJsonObject encode_decisions(const ConversionDecisions& decided) {
     QJsonArray names;
-    for (const auto& [ref, chosen] : decided.table_name)
-        names.append(QJsonObject{{"element", reference(ref)}, {"value", text(chosen)}});
+    for (const auto& [relation, chosen] : decided.table_name)
+        names.append(QJsonObject{{"relation", uuid_text(relation.value)}, {"value", text(chosen)}});
     return QJsonObject{
         {"naming", QLatin1String(decided.naming == TableNaming::AsDrawn ? "as_drawn" : "plural")},
         {"isa", decision_list(decided.isa, [](IsaStrategy s) { return QJsonValue(isa_name(s)); })},
@@ -196,14 +217,22 @@ QJsonObject encode_decisions(const ConversionDecisions& decided) {
             [](ParticipantId side) { return QJsonValue(uuid_text(side.value)); })},
         {"junction_name", decision_list(decided.junction_name,
             [](const std::string& chosen) { return QJsonValue(text(chosen)); })},
+        {"bridge_key", decision_list(decided.bridge_key,
+            [](BridgeKey keyed) { return QJsonValue(bridge_key_name(keyed)); })},
         {"identifier", decision_list(decided.identifier,
             [](AttributeId chosen) { return QJsonValue(uuid_text(chosen.value)); })},
         {"table_name", names}};
 }
 
-ConversionDecisions parse_decisions(const QJsonValue& value) {
-    auto o = object(value, {"naming", "isa", "composite", "one_to_one_key",
-                            "junction_name", "identifier", "table_name"});
+ConversionDecisions parse_decisions(const QJsonValue& value, bool relational, bool keyed_bridges) {
+    // Version 28 records what keys each bridge where somebody said. A file
+    // written before it has no such list, which reads correctly as every
+    // bridge keyed by the default, a separate fallback key.
+    auto o = keyed_bridges
+        ? object(value, {"naming", "isa", "composite", "one_to_one_key",
+                         "junction_name", "bridge_key", "identifier", "table_name"})
+        : object(value, {"naming", "isa", "composite", "one_to_one_key",
+                         "junction_name", "identifier", "table_name"});
     ConversionDecisions decided;
     const auto naming = string(o["naming"]);
     if (naming == "as_drawn") decided.naming = TableNaming::AsDrawn;
@@ -227,13 +256,21 @@ ConversionDecisions parse_decisions(const QJsonValue& value) {
         auto entry = object(item, {"id", "value"});
         decided.junction_name.emplace(RelationshipId{parse_id(entry["id"])}, string(entry["value"]));
     }
+    if (keyed_bridges)
+        for (const auto& item : array(o["bridge_key"])) {
+            auto entry = object(item, {"id", "value"});
+            decided.bridge_key.emplace(RelationshipId{parse_id(entry["id"])}, parse_bridge_key(entry["value"]));
+        }
     for (const auto& item : array(o["identifier"])) {
         auto entry = object(item, {"id", "value"});
         decided.identifier.emplace(EntityId{parse_id(entry["id"])}, AttributeId{parse_id(entry["value"])});
     }
     for (const auto& item : array(o["table_name"])) {
-        auto entry = object(item, {"element", "value"});
-        decided.table_name.emplace(parse_ref(entry["element"]), string(entry["value"]));
+        auto entry = relational ? object(item, {"relation", "value"})
+                                : object(item, {"element", "value"});
+        const auto relation = relational ? RelationId{parse_id(entry["relation"])}
+                                         : relation_from(parse_ref(entry["element"]));
+        decided.table_name.emplace(relation, string(entry["value"]));
     }
     return decided;
 }
@@ -287,7 +324,7 @@ bool parse_flag(const QJsonValue& value, const char* what) {
 // this existed simply has no section, which reads as no differences at all.
 QJsonObject encode_schema(const SchemaOverrides& schema) {
     QJsonArray added;
-    for (const auto& [table, columns] : schema.added) {
+    for (const auto& [relation, columns] : schema.added) {
         QJsonArray of_table;
         for (const auto& column : columns)
             of_table.append(QJsonObject{{"id", uuid_text(column.id.value)}, {"name", text(column.name)},
@@ -297,26 +334,28 @@ QJsonObject encode_schema(const SchemaOverrides& schema) {
                 {"required", column.required}, {"unique", column.unique},
                 {"auto_increment", column.auto_increment},
                 {"comment", text(column.comment)}});
-        added.append(QJsonObject{{"element", reference(table)}, {"columns", of_table}});
+        added.append(QJsonObject{{"relation", uuid_text(relation.value)}, {"columns", of_table}});
     }
     QJsonArray hidden;
     for (const auto& id : schema.hidden) hidden.append(uuid_text(id.value));
     QJsonArray keys;
-    for (const auto& [table, chosen] : schema.key_names)
-        keys.append(QJsonObject{{"element", reference(table)}, {"name", text(chosen)}});
+    for (const auto& [relation, chosen] : schema.key_names)
+        keys.append(QJsonObject{{"relation", uuid_text(relation.value)}, {"name", text(chosen)}});
     QJsonArray counting;
-    for (const auto& table : schema.counting_keys) counting.append(reference(table));
+    for (const auto& relation : schema.counting_keys) counting.append(uuid_text(relation.value));
     return QJsonObject{{"added", added}, {"hidden", hidden}, {"keys", keys},
                        {"counting_keys", counting}};
 }
 
-SchemaOverrides parse_schema(const QJsonValue& value, bool named_keys, bool counted) {
+SchemaOverrides parse_schema(const QJsonValue& value, bool named_keys, bool counted,
+                            bool relational) {
     auto o = counted ? object(value, {"added", "hidden", "keys", "counting_keys"})
            : named_keys ? object(value, {"added", "hidden", "keys"})
                         : object(value, {"added", "hidden"});
     SchemaOverrides schema;
     for (const auto& item : array(o["added"])) {
-        auto entry = object(item, {"element", "columns"});
+        auto entry = relational ? object(item, {"relation", "columns"})
+                                : object(item, {"element", "columns"});
         std::vector<SchemaColumn> columns;
         for (const auto& one : array(entry["columns"])) {
             auto c = counted
@@ -337,19 +376,25 @@ SchemaOverrides parse_schema(const QJsonValue& value, bool named_keys, bool coun
             columns.push_back(std::move(column));
         }
         if (columns.empty()) continue;
-        if (!schema.added.emplace(parse_ref(entry["element"]), std::move(columns)).second)
+        const auto owner = relational ? RelationId{parse_id(entry["relation"])}
+                                      : relation_from(parse_ref(entry["element"]));
+        if (!schema.added.emplace(owner, std::move(columns)).second)
             invalid("Duplicate schema column owner.");
     }
     for (const auto& item : array(o["hidden"])) schema.hidden.insert(AttributeId{parse_id(item)});
     if (named_keys)
         for (const auto& item : array(o["keys"])) {
-            auto entry = object(item, {"element", "name"});
-            if (!schema.key_names.emplace(parse_ref(entry["element"]), string(entry["name"])).second)
+            auto entry = relational ? object(item, {"relation", "name"})
+                                    : object(item, {"element", "name"});
+            const auto named = relational ? RelationId{parse_id(entry["relation"])}
+                                          : relation_from(parse_ref(entry["element"]));
+            if (!schema.key_names.emplace(named, string(entry["name"])).second)
                 invalid("Duplicate schema key name.");
         }
     if (counted)
         for (const auto& item : array(o["counting_keys"]))
-            if (!schema.counting_keys.insert(parse_ref(item)).second)
+            if (!schema.counting_keys.insert(relational ? RelationId{parse_id(item)}
+                                                        : relation_from(parse_ref(item))).second)
                 invalid("Duplicate counting key.");
     return schema;
 }
@@ -483,23 +528,23 @@ QJsonObject encode_layout(const SchemaLayout& layout) {
     // A table's place and the size it was pulled to are written together, so a
     // table that has only been widened or made taller still has a row of its
     // own and is not lost.
-    std::map<ElementRef, QJsonObject> arranged;
-    for (const auto& [table, at] : layout.tables)
-        arranged[table] = QJsonObject{{"element", reference(table)}, {"x", at.x}, {"y", at.y}};
-    const auto pulled = [&](const std::map<ElementRef, double>& sizes, const char* field) {
-        for (const auto& [table, size] : sizes) {
-            auto& entry = arranged[table];
+    std::map<RelationId, QJsonObject> arranged;
+    for (const auto& [relation, at] : layout.tables)
+        arranged[relation] = QJsonObject{{"relation", uuid_text(relation.value)}, {"x", at.x}, {"y", at.y}};
+    const auto pulled = [&](const std::map<RelationId, double>& sizes, const char* field) {
+        for (const auto& [relation, size] : sizes) {
+            auto& entry = arranged[relation];
             if (entry.isEmpty())
-                entry = QJsonObject{{"element", reference(table)}, {"x", 0.0}, {"y", 0.0}};
+                entry = QJsonObject{{"relation", uuid_text(relation.value)}, {"x", 0.0}, {"y", 0.0}};
             entry[QLatin1String(field)] = size;
-            if (!layout.tables.contains(table)) entry["placed"] = false;
+            if (!layout.tables.contains(relation)) entry["placed"] = false;
         }
     };
     pulled(layout.widths, "width");
     pulled(layout.heights, "height");
     QJsonArray tables;
-    for (auto& [table, entry] : arranged) {
-        if (!entry.contains("placed")) entry["placed"] = layout.tables.contains(table);
+    for (auto& [relation, entry] : arranged) {
+        if (!entry.contains("placed")) entry["placed"] = layout.tables.contains(relation);
         // Nothing said about a size is a zero, which reads back as a table
         // that was never pulled that way rather than as one pulled to nothing.
         if (!entry.contains("width")) entry["width"] = 0.0;
@@ -507,12 +552,12 @@ QJsonObject encode_layout(const SchemaLayout& layout) {
         tables.append(entry);
     }
     QJsonArray lines;
-    for (const auto& [link, line] : layout.lines) {
+    for (const auto& [key, line] : layout.lines) {
         QJsonArray route;
         for (const auto& corner : line.route)
             route.append(QJsonObject{{"x", corner.x}, {"y", corner.y}});
         lines.append(QJsonObject{
-            {"link", encode_link(link)}, {"route", route},
+            {"key", uuid_text(key.value)}, {"route", route},
             {"from", line.from ? QJsonValue(encode_end(*line.from)) : QJsonValue(QJsonValue::Null)},
             {"to", line.to ? QJsonValue(encode_end(*line.to)) : QJsonValue(QJsonValue::Null)}});
     }
@@ -522,13 +567,15 @@ QJsonObject encode_layout(const SchemaLayout& layout) {
 // Version 23 added the height a table has been pulled to. A file written
 // before it has width alone, which reads correctly as a table whose height is
 // still however many rows it has.
-SchemaLayout parse_layout(const QJsonValue& value, bool tall) {
+SchemaLayout parse_layout(const QJsonValue& value, bool tall, bool relational) {
     auto o = object(value, {"tables", "lines"});
     SchemaLayout layout;
     for (const auto& item : array(o["tables"])) {
-        auto entry = tall ? object(item, {"element", "x", "y", "width", "height", "placed"})
-                          : object(item, {"element", "x", "y", "width", "placed"});
-        const auto table = parse_ref(entry["element"]);
+        const auto* key_field = relational ? "relation" : "element";
+        auto entry = tall ? object(item, {key_field, "x", "y", "width", "height", "placed"})
+                          : object(item, {key_field, "x", "y", "width", "placed"});
+        const auto table = relational ? RelationId{parse_id(entry[QLatin1String(key_field)])}
+                                      : relation_from(parse_ref(entry["element"]));
         if (parse_flag(entry["placed"], "placed")
             && !layout.tables.emplace(table, Point{number(entry["x"]), number(entry["y"])}).second)
             invalid("Duplicate schema table placement.");
@@ -548,7 +595,8 @@ SchemaLayout parse_layout(const QJsonValue& value, bool tall) {
             invalid("Duplicate schema table height.");
     }
     for (const auto& item : array(o["lines"])) {
-        auto entry = object(item, {"link", "route", "from", "to"});
+        auto entry = relational ? object(item, {"key", "route", "from", "to"})
+                                : object(item, {"link", "route", "from", "to"});
         SchemaLine line;
         for (const auto& corner : array(entry["route"])) {
             auto at = object(corner, {"x", "y"});
@@ -557,7 +605,9 @@ SchemaLayout parse_layout(const QJsonValue& value, bool tall) {
         if (!entry["from"].isNull()) line.from = parse_end(entry["from"]);
         if (!entry["to"].isNull()) line.to = parse_end(entry["to"]);
         if (line.empty()) continue;
-        if (!layout.lines.emplace(parse_link(entry["link"]), std::move(line)).second)
+        const auto key = relational ? ForeignKeyId{parse_id(entry["key"])}
+                                    : foreign_key_from(parse_link(entry["link"]));
+        if (!layout.lines.emplace(key, std::move(line)).second)
             invalid("Duplicate schema line shape.");
     }
     return layout;
@@ -677,7 +727,7 @@ void check_structure(const QByteArray& input) {
             // bookkeeping this preflight does for a hostile document before
             // the real parse ever runs. It is not a schema check: it only has
             // to stay above the widest object the format actually writes,
-            // which is the project itself at seventeen fields.
+            // which is the project itself at eighteen fields.
             if (keys.size() > 20) invalid("Unsupported project fields.");
         }
     }
@@ -699,6 +749,7 @@ QByteArray ErdxProjectStore::encode(const Project& project) {
         if (value.size() > budget - text_bytes) invalid("The project exceeds the 8 MiB file limit.");
         text_bytes += value.size();
     };
+    count(project.description);
     for (const auto& [id, entity] : project.entities) { (void)id; count(entity.name); count(entity.description); }
     for (const auto& [id, attribute] : project.attributes) { (void)id; count(attribute.name); count(attribute.description); }
     for (const auto& [id, relationship] : project.relationships) {
@@ -796,6 +847,7 @@ QByteArray ErdxProjectStore::encode(const Project& project) {
     }
     auto bytes = QJsonDocument(QJsonObject{{"format", "erdflow"}, {"format_version", current_format_version},
         {"project", QJsonObject{{"id", uuid_text(project.id.value)}, {"name", text(project.name)},
+        {"description", text(project.description)},
         {"entities", entities}, {"attributes", attributes}, {"relationships", relationships},
         {"layout", layout}, {"connectors", connectors}, {"colours", colours},
         {"specializations", specializations}, {"pictures", pictures}, {"notes", notes},
@@ -884,6 +936,17 @@ application::LoadResult ErdxProjectStore::decode(const QByteArray& input) {
         // before it simply says nothing about it, which reads correctly as no
         // column doing so.
         const bool generated = number_version >= 25;
+        // Version 26 gives the Relational Schema identities of its own, as
+        // ADR-008 requires, instead of keying its state by the conceptual
+        // element each object came from. A file written before it is migrated
+        // on the way in: the identity is worked out from the element that used
+        // to be the key, by the same derivation the conversion uses, so the
+        // same old file always yields the same relations.
+        const bool relational = number_version >= 26;
+        // Version 27 keeps the optional prose captured by the project-creation
+        // form. Older files had nowhere to store it, and therefore open with
+        // an empty description rather than having one invented for them.
+        const bool described = number_version >= 27;
         // Version 21 records where the schema differs from the diagram. A file
         // written before it simply has no such section, which reads correctly
         // as the two agreeing about everything.
@@ -901,7 +964,9 @@ application::LoadResult ErdxProjectStore::decode(const QByteArray& input) {
         // which reads correctly as every generated key still carrying the name
         // the rule gave it.
         const bool named_keys = number_version >= 24;
-        const auto data = arranged
+        const auto data = described
+            ? object(root["project"], {"id", "name", "description", "entities", "attributes", "relationships", "layout", "connectors", "specializations", "colours", "pictures", "notes", "comments", "transparency", "decisions", "schema", "schema_layout", "background"})
+            : arranged
             ? object(root["project"], {"id", "name", "entities", "attributes", "relationships", "layout", "connectors", "specializations", "colours", "pictures", "notes", "comments", "transparency", "decisions", "schema", "schema_layout", "background"})
             : diverged
             ? object(root["project"], {"id", "name", "entities", "attributes", "relationships", "layout", "connectors", "specializations", "colours", "pictures", "notes", "comments", "transparency", "decisions", "schema", "background"})
@@ -929,6 +994,7 @@ application::LoadResult ErdxProjectStore::decode(const QByteArray& input) {
         Project project;
         project.id = ProjectId{parse_id(data["id"])};
         project.name = string(data["name"]);
+        if (described) project.description = string(data["description"], max_description_bytes);
         for (const auto& value : array(data["entities"])) {
             auto o = convertible ? object(value, {"id", "name", "description", "weak", "comment"})
                    : weak_entities ? object(value, {"id", "name", "description", "weak"})
@@ -1174,9 +1240,9 @@ application::LoadResult ErdxProjectStore::decode(const QByteArray& input) {
             const auto named = string(data["mode"]);
             if (named != "convertible" && named != "basic") invalid("Unsupported conceptual mode.");
         }
-        if (catalogued) project.decisions = parse_decisions(data["decisions"]);
-        if (diverged) project.schema = parse_schema(data["schema"], named_keys, generated);
-        if (arranged) project.schema_layout = parse_layout(data["schema_layout"], pulled_tables);
+        if (catalogued) project.decisions = parse_decisions(data["decisions"], relational, number_version >= 28);
+        if (diverged) project.schema = parse_schema(data["schema"], named_keys, generated, relational);
+        if (arranged) project.schema_layout = parse_layout(data["schema_layout"], pulled_tables, relational);
         if (papered) {
             const auto o = object(data["background"], {"style", "strength", "image"});
             project.background.style = parse_background_style(o["style"]);

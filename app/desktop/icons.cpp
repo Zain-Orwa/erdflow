@@ -1,6 +1,13 @@
+// ERDFlow — settled work. Do not change, replace or re-style anything here to
+// suit something new you have been asked to build. If what you are building
+// genuinely contradicts what is here, stop and ask Zain, who owns this project:
+// say what you want to change, what the application will LOOK like afterwards,
+// and whether it is a gain or a loss. He decides. Fixing a real defect is not
+// covered by this — fix it and say what was wrong. Full rule: CLAUDE.md.
 #include "icons.hpp"
 
 #include <QFile>
+#include <QImage>
 #include <QLinearGradient>
 #include <QPainter>
 #include <QPainterPath>
@@ -489,7 +496,26 @@ QString icon_name(Glyph glyph) {
     return QStringLiteral("select");
 }
 
-QIcon glyph_icon(Glyph glyph, const Theme& colors, int size, IconMode mode) {
+QPixmap outline_pixmap(const QString& name, const QColor& ink, int size) {
+    QFile file(QStringLiteral(":/erdflow/icons-outline/%1.svg").arg(name));
+    if (!file.open(QIODevice::ReadOnly)) return {};
+    // The same substitution glyph_icon makes: the file names its colour as the
+    // text's, which Qt's renderer does not resolve, so the ink goes in first.
+    auto drawing = file.readAll();
+    drawing.replace("currentColor", ink.name().toLatin1());
+    QSvgRenderer renderer(drawing);
+    if (!renderer.isValid()) return {};
+    QPixmap pixmap(QSize(size, size) * 3);
+    pixmap.setDevicePixelRatio(3);
+    pixmap.fill(Qt::transparent);
+    QPainter painter(&pixmap);
+    painter.setRenderHint(QPainter::Antialiasing);
+    renderer.render(&painter, QRectF(0, 0, size, size));
+    return pixmap;
+}
+
+namespace {
+QIcon inked_icon(Glyph glyph, const Theme& colors, int size, IconMode mode) {
     if (mode == IconMode::Outline) {
         // The line art is drawn in one colour, named in the file as the colour
         // of the surrounding text. Qt's renderer does not resolve that itself,
@@ -556,6 +582,45 @@ QIcon glyph_icon(Glyph glyph, const Theme& colors, int size, IconMode mode) {
     painter.setRenderHint(QPainter::Antialiasing);
     draw(painter, glyph, colors, size);
     return QIcon(pixmap);
+}
+
+// A drawing with its colour taken out: every pixel the grey of its own
+// brightness, its opacity untouched.
+QPixmap greyed_pixmap(const QPixmap& drawn) {
+    auto image = drawn.toImage().convertToFormat(QImage::Format_ARGB32);
+    for (int y = 0; y < image.height(); ++y) {
+        auto* row = reinterpret_cast<QRgb*>(image.scanLine(y));
+        for (int x = 0; x < image.width(); ++x) {
+            const auto level = qGray(row[x]);
+            row[x] = qRgba(level, level, level, qAlpha(row[x]));
+        }
+    }
+    auto grey = QPixmap::fromImage(image);
+    grey.setDevicePixelRatio(drawn.devicePixelRatio());
+    return grey;
+}
+
+// An icon in greys, state by state. Only the states it was given are carried
+// over; Qt makes the rest from them, as it would have from the coloured one.
+QIcon without_colour(const QIcon& icon, int size) {
+    QIcon grey;
+    for (const auto state : {QIcon::Off, QIcon::On})
+        for (const auto mode : {QIcon::Normal, QIcon::Active, QIcon::Selected}) {
+            const bool resting = mode == QIcon::Normal && state == QIcon::Off;
+            if (!resting && icon.availableSizes(mode, state).isEmpty()) continue;
+            const auto drawn = icon.pixmap(QSize(size, size), 3.0, mode, state);
+            if (!drawn.isNull()) grey.addPixmap(greyed_pixmap(drawn), mode, state);
+        }
+    return grey;
+}
+} // namespace
+
+QIcon glyph_icon(Glyph glyph, const Theme& colors, int size, IconMode mode) {
+    // A theme with no colour of its own has none in its icons either, whichever
+    // set they come from -- the coloured artwork included, which otherwise
+    // keeps its colours under every theme (Zain, 2026-09-24).
+    auto icon = inked_icon(glyph, colors, size, mode);
+    return colourless(colors.id) ? without_colour(icon, size) : icon;
 }
 
 } // namespace erdflow::desktop
