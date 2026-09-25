@@ -26,6 +26,8 @@ int main(int argc, char* argv[]) {
     // A profile that has chosen keeps its choice; only one that never has is
     // given the new default. Somebody who settled on a theme must not find it
     // swapped out from under them because the shipped default moved.
+    const bool had_chosen = settings.contains("theme");
+    const auto chosen_key = settings.value("theme").toString();
     const auto chosen = erdflow::desktop::theme_from_key(
         settings.value("theme", erdflow::desktop::default_theme_key()).toString());
     erdflow::desktop::apply_theme(app, chosen);
@@ -75,6 +77,14 @@ int main(int argc, char* argv[]) {
     window.set_icon_mode(erdflow::desktop::icon_mode_from_key(
         settings.value("iconMode", "outline").toString()));
     window.set_theme(wearing);
+    // set_theme remembers what it is given, which is right for a choice made
+    // in the window but not for --theme, which is for this run only: what the
+    // profile had chosen, or that it had chosen nothing, is put back.
+    if (parser.isSet("theme")) {
+        QSettings remembered;
+        if (had_chosen) remembered.setValue("theme", chosen_key);
+        else remembered.remove("theme");
+    }
     if (parser.isSet("size")) {
         const auto parts = parser.value("size").toLower().split('x');
         if (parts.size() == 2) window.resize(parts[0].toInt(), parts[1].toInt());

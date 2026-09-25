@@ -1123,6 +1123,10 @@ outside the repository at `erdflow-notes/UI-AZURE-TASKS.md`. What is built:
   maximised. 1440 × 920 is the size it returns to when un-maximised, and a
   run with `--screenshot` or `--size` is shown at that size, or the one asked
   for, rather than maximised.
+- **`--theme` is for that run only** (fixed 2026-09-25). A run with it had
+  been saving that theme as the profile's choice, because the window
+  remembers whatever theme it is given. The profile's own choice, or its
+  having made none, is now put back after the window is built.
 - **One page.** Everything on Home is on screen at once at the window's
   un-maximised size (1440 × 920), at the 1440 × 1080 reference, and at 1366 × 740,
   which the tests check. On a short window the spacing closes up first, then
