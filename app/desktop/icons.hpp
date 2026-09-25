@@ -46,5 +46,9 @@ enum class IconMode { Normal, Modern, Outline };
 // its extension. An empty pixmap means there is no such drawing; the caller
 // decides what stands in, since a row with words beside it can do without.
 [[nodiscard]] QPixmap outline_pixmap(const QString& name, const QColor& ink, int size);
+// The same line art with its closed shapes filled in the ink too, for a mark
+// that has to read as solid at a small size -- the spark on Create with AI.
+// Its open strokes are drawn as they are.
+[[nodiscard]] QPixmap solid_pixmap(const QString& name, const QColor& ink, int size);
 
 } // namespace erdflow::desktop

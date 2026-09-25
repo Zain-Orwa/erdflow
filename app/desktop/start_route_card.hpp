@@ -86,6 +86,14 @@ public:
     [[nodiscard]] bool compact() const { return compact_; }
     // What starts the project. Disabled with its card.
     [[nodiscard]] QPushButton* create_button() const { return create_; }
+    // Beside it, Create with AI. On every card, and not yet built, so it
+    // cannot be pressed on any of them and says why when pointed at. On a
+    // card too narrow to hold both in full, it says only "AI", with the same
+    // spark and the same name read out.
+    [[nodiscard]] QPushButton* ai_button() const { return ai_; }
+    // Where its preview's screen stands, in the card's own coordinates, or
+    // nothing where it holds none or the preview is too small to be drawn.
+    [[nodiscard]] QRectF preview() const;
 
 protected:
     void paintEvent(QPaintEvent* event) override;
@@ -96,7 +104,8 @@ protected:
 private:
     struct Flow {
         QFont title_font, body_font;
-        QRectF title, badge, body, button;
+        QRectF title, badge, body, button, ai_button;
+        bool ai_short = false;
         double icon_top = 0;
         double bottom = 0;
     };
@@ -104,11 +113,12 @@ private:
     [[nodiscard]] Flow flow_at(int card_width, bool compact) const;
     [[nodiscard]] static double icon_scale(int card_width, bool compact);
     void paint_icon(QPainter& painter, const QRectF& into) const;
-    // Puts the button at the card's foot, centred.
+    // Puts the two buttons at the card's foot, side by side, the pair centred.
     void place_button();
 
     StartRouteDefinition what_;
     QPushButton* create_ = nullptr;
+    QPushButton* ai_ = nullptr;
     HomeLiveDemo* demo_ = nullptr;
     ThemeId theme_ = ThemeId::Azure;
     bool under_pointer_ = false;

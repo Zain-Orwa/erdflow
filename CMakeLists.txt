@@ -112,6 +112,7 @@ qt_add_resources(erdflow_desktop "erdflow_icons_outline"
         assets/icons-outline/relational.svg assets/icons-outline/sql.svg
         assets/icons-outline/flow.svg assets/icons-outline/chevron-right.svg
         assets/icons-outline/chevron-down.svg assets/icons-outline/appearance.svg
+        assets/icons-outline/sparkles.svg
 )
 
 add_executable(erdflow app/desktop/main.cpp)
