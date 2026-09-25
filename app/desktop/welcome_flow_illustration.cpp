@@ -459,7 +459,8 @@ std::vector<HeroOrbitItem> WelcomeFlowIllustration::product_cards(const Tokens& 
     // becomes, and its SQL. They start with the two blue ones behind the
     // database and the hierarchy and the SQL page in front at either side,
     // in the order the reference reads left to right. Their titles are what a
-    // screen reader says.
+    // screen reader says. All four are in the interface's own blues: the SQL
+    // page was gold, and Zain asked on 2026-09-25 for it to match the rest.
     return {
         panel("conceptual", HeroIcon::Structure, "Conceptual ERD", t.primary, 0.375,
               {78, 96}, false),
@@ -467,7 +468,7 @@ std::vector<HeroOrbitItem> WelcomeFlowIllustration::product_cards(const Tokens& 
               {78, 92}, false),
         panel("relational", HeroIcon::Relational, "Relational Design", t.primary, 0.875,
               {74, 90}, false),
-        panel("sql", HeroIcon::Sql, "SQL", t.gold, 0.125, {80, 100}, false),
+        panel("sql", HeroIcon::Sql, "SQL", t.primary, 0.125, {80, 100}, false),
     };
 }
 
@@ -619,8 +620,6 @@ void WelcomeFlowIllustration::draw_connectors(QPainter& painter) const {
     const auto base = theme_ == ThemeId::Azure ? QColor("#79BDF2") : mix(blue, Qt::white, 0.42);
     const auto scale = drawing_scale();
     painter.save();
-    painter.setPen(QPen(with_alpha(base, 0.9 + pulse), std::clamp(2.2 * scale, 2.0, 2.4),
-                        Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
     painter.setBrush(Qt::NoBrush);
     // Each bend is rounded a little. The line stays straight segments, only
     // without sharp corners. A short segment gets a smaller corner, so a
@@ -629,6 +628,7 @@ void WelcomeFlowIllustration::draw_connectors(QPainter& painter) const {
     std::vector<QPolygonF> lines;
     for (std::size_t i = 0; i < items_.size(); ++i)
         if (items_[i].visible) lines.push_back(connector(i));
+    std::vector<QPainterPath> paths;
     for (const auto& line : lines) {
         QPainterPath path(line.front());
         for (qsizetype k = 1; k + 1 < line.size(); ++k) {
@@ -645,12 +645,75 @@ void WelcomeFlowIllustration::draw_connectors(QPainter& painter) const {
             path.quadTo(line[k], line[k] + on * (r / on_length));
         }
         path.lineTo(line.back());
+        paths.push_back(path);
+    }
+
+    // Each line is drawn as a small conduit rather than a stroke (Zain,
+    // 2026-09-25): a soft glow round it, a light-blue wall and a paler core
+    // inside, so it reads as a channel with two edges; fine marks of data in
+    // the core running out from the database; and tiny lights travelling
+    // along it both ways, out to the panel and back into the platform. Calm,
+    // and light: nothing here is heavier than the panels it joins. Its route
+    // is the one above, unchanged.
+    const auto tube = std::clamp(5.6 * scale, 3.6, 5.4);
+    const auto core = tube * 0.44;
+    const auto wall = mix(base, blue, 0.28);
+    const auto light = mix(base, Qt::white, 0.78);
+    for (const auto& path : paths) {
+        painter.setPen(QPen(with_alpha(base, 0.16), tube + 5.0 * scale, Qt::SolidLine, Qt::RoundCap,
+                            Qt::RoundJoin));
+        painter.drawPath(path);
+        painter.setPen(QPen(with_alpha(wall, 0.92), tube, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter.drawPath(path);
+        painter.setPen(QPen(with_alpha(light, 0.9 + pulse), core, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter.drawPath(path);
+        // The marks of data in the core, drifting outward with the clock.
+        QPen marks(with_alpha(blue, 0.34), core * 0.55, Qt::CustomDashLine, Qt::FlatCap, Qt::RoundJoin);
+        marks.setDashPattern({2.2, 4.2});
+        marks.setDashOffset(std::fmod(seconds_ * 5.0, 6.4));
+        painter.setPen(marks);
         painter.drawPath(path);
     }
-    // Where each line meets the platform, a small bead, as a plug would have.
+    // The lights: two going out from the database and one coming back on each
+    // line, a lap every few seconds, each line's out of step with the next.
+    // A light fades in as it leaves one end and out as it reaches the other,
+    // so none ever appears or vanishes at once. Stood still, they rest where
+    // the clock left them. A line runs from the panel to the platform.
+    constexpr double lap_seconds = 3.6;
     painter.setPen(Qt::NoPen);
-    painter.setBrush(mix(blue, Qt::white, 0.3));
-    for (const auto& line : lines) painter.drawEllipse(line.back(), 2.4 * scale, 2.4 * scale);
+    for (std::size_t n = 0; n < paths.size(); ++n) {
+        for (int k = 0; k < 3; ++k) {
+            const bool back_in = k == 2;
+            const auto along = std::fmod(seconds_ / lap_seconds + 0.29 * static_cast<double>(n) + 0.5 * k, 1.0);
+            const auto at = paths[n].pointAtPercent(back_in ? along : 1.0 - along);
+            const auto strength = std::sin(along * M_PI);
+            const auto glowing = back_in ? mix(base, Qt::white, 0.25) : blue;
+            painter.setBrush(with_alpha(glowing, 0.22 * strength));
+            painter.drawEllipse(at, core * 2.2, core * 2.2);
+            painter.setBrush(with_alpha(glowing, 0.45 * strength));
+            painter.drawEllipse(at, core * 1.2, core * 1.2);
+            painter.setBrush(with_alpha(Qt::white, strength));
+            painter.drawEllipse(at, core * 0.62, core * 0.62);
+        }
+    }
+    // Ports where each line plugs in: a lit socket on the platform, and a
+    // smaller one at the panel, half under the panel's edge, so the line is
+    // plainly attached at both ends rather than touching.
+    for (const auto& line : lines) {
+        const auto socket = [&](QPointF at, double radius) {
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(with_alpha(base, 0.28));
+            painter.drawEllipse(at, radius * 1.9, radius * 1.9);
+            painter.setPen(QPen(wall, std::max(0.8, 0.9 * scale)));
+            painter.setBrush(mix(base, Qt::white, 0.85));
+            painter.drawEllipse(at, radius, radius);
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(mix(blue, Qt::white, 0.1));
+            painter.drawEllipse(at, radius * 0.45, radius * 0.45);
+        };
+        socket(line.back(), std::max(2.6, 3.4 * scale));
+        socket(line.front(), std::max(2.0, 2.6 * scale));
+    }
     painter.restore();
 }
 
@@ -716,7 +779,8 @@ void WelcomeFlowIllustration::draw_card(QPainter& painter, std::size_t which) co
     const auto& t = tokens(theme_);
     const auto& item = items_[which];
     const auto blue = hero_blue();
-    const bool warm = item.icon == HeroIcon::Sql || item.accent == t.gold;
+    // Gold where a panel asks for it; the product's panels are all blue.
+    const bool warm = item.accent == t.gold;
     const bool filled = !warm && item.icon == HeroIcon::Relational;
     const bool pointed_at = static_cast<int>(which) == under_pointer_;
     const QRectF card(-item.size.width() / 2, -item.size.height() / 2, item.size.width(),
@@ -888,14 +952,16 @@ void WelcomeFlowIllustration::draw_mark(QPainter& painter, const HeroOrbitItem& 
         page.lineTo(page_left + page_wide, top + page_tall);
         page.lineTo(page_left, top + page_tall);
         page.closeSubpath();
-        painter.setPen(QPen(t.gold.darker(112), 1.1));
-        painter.setBrush(mix(t.gold, Qt::white, 0.08));
+        // In the panel's own colour: gold on a warm panel, blue on the rest.
+        const auto ink = item.accent == t.gold ? t.gold : hero_blue();
+        painter.setPen(QPen(ink.darker(112), 1.1));
+        painter.setBrush(mix(ink, Qt::white, 0.08));
         painter.drawPath(page);
         QPainterPath corner;
         corner.moveTo(page_left + page_wide - fold, top);
         corner.lineTo(page_left + page_wide - fold, top + fold);
         corner.lineTo(page_left + page_wide, top + fold);
-        painter.setBrush(mix(t.gold, Qt::white, 0.55));
+        painter.setBrush(mix(ink, Qt::white, 0.55));
         painter.drawPath(corner);
         painter.setPen(QPen(with_alpha(Qt::white, 0.9), 1.3, Qt::SolidLine, Qt::RoundCap));
         for (const auto row : {1.35, 1.85, 2.35})
@@ -908,7 +974,10 @@ void WelcomeFlowIllustration::draw_mark(QPainter& painter, const HeroOrbitItem& 
             word.setPixelSize(std::max(1, static_cast<int>(std::round(1.45 * u))));
             word.setWeight(QFont::Bold);
             painter.setFont(word);
-            painter.setPen(theme_ == ThemeId::Azure ? QColor("#4A3500") : t.text_heading);
+            // On a blue panel, a deep shade of the drawing's own blue, which
+            // reads on the pale panel whatever the theme's own lettering is.
+            painter.setPen(item.accent != t.gold ? mix(hero_blue(), Qt::black, 0.55)
+                           : theme_ == ThemeId::Azure ? QColor("#4A3500") : t.text_heading);
             painter.drawText(QRectF(card.left(), top + page_tall + 0.25 * u, card.width(), 1.9 * u),
                              Qt::AlignCenter, QStringLiteral("SQL"));
         }

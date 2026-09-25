@@ -1171,7 +1171,23 @@ outside the repository at `erdflow-notes/UI-AZURE-TASKS.md`. What is built:
   same way and are the same length (ADR-022 §9.17). The line is worked out
   every frame from the point on the panel's edge that faces the platform.
   For a panel behind, it ends where it goes behind the database, so both
-  runs stay visible. It pulses faintly. Pointing at a panel highlights its border and stops nothing. The
+  runs stay visible. It pulses faintly. It is drawn as a small conduit
+  rather than a plain stroke (Zain, 2026-09-25):
+  - a soft glow round it, a light-blue wall and a paler core, so it reads
+    as a channel with two edges;
+  - fine marks of data in the core, drifting outward;
+  - tiny glowing lights travelling both ways, two out to the panel and one
+    back into the platform, a lap every 3.6 seconds, fading in and out at
+    the ends;
+  - a lit port where it plugs into the platform, and a smaller one half
+    under the panel's edge.
+
+  The route is unchanged. Stood still, the lights rest where the clock
+  left them. The SQL panel is in the interface's blues rather than gold
+  (Zain, 2026-09-25): a pale panel, a blue page, and "SQL" lettered in a
+  deep shade of the drawing's blue, which reads on the pale panel in every
+  theme. Gold stays available to any panel that asks for it, and the small
+  diamond in the relationships panel is still gold. Pointing at a panel highlights its border and stops nothing. The
   glow and platform are drawn once and kept, and a frame costs only what
   moves. The clock runs only while the Home screen is showing. Setting
   `ERDFLOW_REDUCED_MOTION=1` starts it still, at the starting composition.
