@@ -1119,8 +1119,12 @@ outside the repository at `erdflow-notes/UI-AZURE-TASKS.md`. What is built:
   §9.14). Theme opens the window's own theme menu, with its preview on hover.
   Settings holds the window's own Theme, Icons and Notation menus. The ribbon
   row that was in front comes back when Home is left. The status line stays.
-- **One page.** Everything on Home is on screen at once at the size ERDFlow
-  opens at (1440 × 920), at the 1440 × 1080 reference, and at 1366 × 740,
+- **Opens filling the screen.** An ordinary launch shows the window
+  maximised. 1440 × 920 is the size it returns to when un-maximised, and a
+  run with `--screenshot` or `--size` is shown at that size, or the one asked
+  for, rather than maximised.
+- **One page.** Everything on Home is on screen at once at the window's
+  un-maximised size (1440 × 920), at the 1440 × 1080 reference, and at 1366 × 740,
   which the tests check. On a short window the spacing closes up first, then
   the illustration steps aside, the card drawings shrink, and the cards
   narrow, keeping their shape. Words, fields and buttons keep their size.

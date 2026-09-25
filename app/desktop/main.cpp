@@ -79,7 +79,11 @@ int main(int argc, char* argv[]) {
         const auto parts = parser.value("size").toLower().split('x');
         if (parts.size() == 2) window.resize(parts[0].toInt(), parts[1].toInt());
     }
-    window.show();
+    // Somebody launching ERDFlow meets it filling the screen. The size the
+    // window is built at stays as its size when un-maximised, and a screenshot
+    // keeps the size it has always been taken at, or the one --size asks for.
+    if (parser.isSet("size") || parser.isSet("screenshot")) window.show();
+    else window.showMaximized();
     QTimer::singleShot(0, &window, [&] {
         if (!parser.positionalArguments().isEmpty()) window.open_path(parser.positionalArguments().front());
         else if (parser.isSet("example")) window.load_example();
