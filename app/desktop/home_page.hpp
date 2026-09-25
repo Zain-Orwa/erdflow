@@ -71,6 +71,9 @@ public:
     [[nodiscard]] QStringList sidebar_labels() const;
     // The cards, in the order they are shown.
     [[nodiscard]] std::vector<StartRouteCard*> cards() const { return cards_; }
+    // Between each card and the next, the sign of the way from one to the
+    // other and back, in the cards' order.
+    [[nodiscard]] std::vector<QWidget*> bridges() const { return bridges_; }
     // The live demos, one inside each card and in the same order.
     [[nodiscard]] std::vector<HomeLiveDemo*> demos() const { return demos_; }
     // The one clock the demos are played by.
@@ -91,6 +94,7 @@ public:
     [[nodiscard]] bool compact() const { return compact_; }
 
 protected:
+    bool eventFilter(QObject* watched, QEvent* event) override;
     void paintEvent(QPaintEvent* event) override;
     void resizeEvent(QResizeEvent* event) override;
     void showEvent(QShowEvent* event) override;
@@ -110,11 +114,15 @@ private:
     QScrollArea* centre_scroll_ = nullptr;
     HomeLearningPanel* learning_ = nullptr;
     QLabel* title_ = nullptr;
+    QLabel* welcome_ = nullptr;
     QLabel* subtitle_ = nullptr;
     QLabel* section_ = nullptr;
+    // Between each card and the next, the way on and the way back.
+    std::vector<QWidget*> bridges_;
     QWidget* card_row_ = nullptr;
     WelcomeFlowIllustration* hero_ = nullptr;
     QWidget* hero_holder_ = nullptr;
+    QWidget* hero_backdrop_ = nullptr;
     // The gaps between the centre's parts, which close up on a short window.
     QSpacerItem* top_space_ = nullptr;
     QSpacerItem* header_space_ = nullptr;

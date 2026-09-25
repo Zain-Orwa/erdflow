@@ -8,12 +8,15 @@
 
 #include "app/desktop/home_sidebar.hpp"
 #include "app/desktop/home_live_demo.hpp"
+#include "app/desktop/icons.hpp"
 
 #include <QEnterEvent>
 #include <QFontMetricsF>
+#include <QIcon>
 #include <QLinearGradient>
 #include <QPainter>
 #include <QPainterPath>
+#include <QRadialGradient>
 
 #include <algorithm>
 #include <cmath>
@@ -23,7 +26,27 @@ namespace {
 constexpr int card_width = 180;
 constexpr int card_height = 292;
 constexpr int min_card_width = 150;
-constexpr double card_padding = 18;
+// Kept close round the title, the preview and the buttons, so a card holds
+// its parts together without empty margins (Zain, 2026-09-25).
+constexpr double card_padding = 14;
+
+// A colour some share of the way from one to another, and a colour at a
+// given opacity.
+QColor blend(const QColor& from, const QColor& to, double share) {
+    const auto at = [share](int a, int b) { return static_cast<int>(std::lround(a + (b - a) * share)); };
+    return {at(from.red(), to.red()), at(from.green(), to.green()), at(from.blue(), to.blue())};
+}
+QColor tint(QColor colour, int alpha) {
+    colour.setAlpha(alpha);
+    return colour;
+}
+// The violet a spark shades towards: the accent turned a little along the
+// colour wheel, so it is violet beside a blue accent in every theme, and
+// grey where the theme has no colour.
+QColor violet_of(const QColor& accent, ThemeId id) {
+    if (colourless(id) || accent.hsvHue() < 0) return accent;
+    return QColor::fromHsv((accent.hsvHue() + 50) % 360, accent.hsvSaturation(), accent.value());
+}
 // The drawings are authored in a box this tall, and shown in a box between
 // 88 and 105 tall depending on the card's width (Zain, 2026-09-24), under the
 // title and the row where a card's badge sits.
@@ -37,11 +60,18 @@ constexpr double compact_icon_height = 40;
 // A card is a little taller than wide, like a door: its height is this many
 // times its width, whatever width the line gives it (Zain, 2026-09-24).
 constexpr double door = 1.10;
-// The row under the title where Coming soon is said, and the button at the
-// foot.
+// The row under the title where Coming soon is said, and the two buttons at
+// the foot: the gap between them, the least room either keeps round its
+// words, and the room Create with AI's spark takes before its words.
 constexpr double badge_height = 19;
 constexpr double button_height = 34;
-constexpr double button_padding = 20;
+constexpr double button_gap = 8;
+constexpr double least_button_padding = 6;
+// The spark is drawn with its own space after it, since a styled button sets
+// its icon hard against its words.
+constexpr int spark_size = 15;
+constexpr int spark_space = 5;
+constexpr double spark_room = spark_size + spark_space + 2;
 } // namespace
 
 const std::vector<StartRouteDefinition>& start_routes() {
@@ -95,6 +125,16 @@ StartRouteCard::StartRouteCard(const StartRouteDefinition& what, QWidget* parent
     create_->setCursor(Qt::PointingHandCursor);
     create_->setFocusPolicy(Qt::StrongFocus);
     if (!what.enabled && what.reason) create_->setToolTip(QString::fromLatin1(what.reason));
+    // Beside it, the same project made with AI (Zain, 2026-09-25). On every
+    // card so the card is complete, and on none of them yet to be pressed:
+    // AI is a later feature, so it stands disabled and says so.
+    ai_ = new QPushButton("Create with AI", this);
+    ai_->setObjectName(QString::fromLatin1(what.object_name) + "CreateWithAi");
+    ai_->setAccessibleName("Create " + QString::fromLatin1(what.title) + " with AI");
+    ai_->setFocusPolicy(Qt::StrongFocus);
+    ai_->setIconSize(QSize(spark_size + spark_space, spark_size));
+    ai_->setEnabled(false);
+    ai_->setToolTip("Creating with AI is coming soon.");
     wear(theme_);
 }
 
@@ -116,12 +156,18 @@ void StartRouteCard::resizeEvent(QResizeEvent* event) {
 }
 
 void StartRouteCard::place_button() {
-    if (!create_) return;
+    if (!create_ || !ai_) return;
     // At the foot of the card, however much room its shape gives beyond its
-    // words; the room opens above the button rather than below it.
-    auto at = flow_at(width()).button;
-    at.moveBottom(height() - (compact_ ? 12.0 : card_padding));
+    // words; the room opens above the buttons rather than below them.
+    const auto flow = flow_at(width());
+    auto at = flow.button;
+    auto beside = flow.ai_button;
+    const auto drop = height() - (compact_ ? 12.0 : card_padding) - at.bottom();
+    at.translate(0, drop);
+    beside.translate(0, drop);
     create_->setGeometry(at.toAlignedRect());
+    ai_->setText(flow.ai_short ? QStringLiteral("AI") : QStringLiteral("Create with AI"));
+    ai_->setGeometry(beside.toAlignedRect());
     if (demo_) {
         const auto top = flow_at(width()).icon_top;
         const auto room = std::max(0.0, at.top() - 8 - top);
@@ -129,6 +175,11 @@ void StartRouteCard::place_button() {
         const auto tall = std::min(room, wide * HomeLiveDemo::authored_height / HomeLiveDemo::authored_width);
         demo_->setGeometry(QRectF(card_padding, top + (room - tall) / 2, wide, tall).toAlignedRect());
     }
+}
+
+QRectF StartRouteCard::preview() const {
+    if (!demo_ || !demo_->shown()) return {};
+    return demo_->screen().translated(demo_->pos());
 }
 
 // The reference card. What a card is actually given is decided by the line the
@@ -153,26 +204,69 @@ void StartRouteCard::wear(ThemeId id) {
     if (demo_) demo_->wear(id);
     const auto& t = tokens(id);
     // Filled in the primary as the chosen sidebar row is, deepened where white
-    // on it would read under 4.5:1. Not yet available, it stands back with
-    // its card rather than being greyed past reading.
+    // on it would read under 4.5:1. On a card that cannot be taken yet it
+    // still looks the same, blue, so all three cards read alike (Zain,
+    // 2026-09-25); it is disabled all the same, so it does not answer, and its
+    // tooltip says why.
     const auto fill = chosen_row_fill(t);
     auto ring = t.primary_soft;
+    // Raised (Zain, 2026-09-25): a little lighter at its top than its foot,
+    // as a button standing up in the light is; the card draws its shadow.
+    const auto raised = QStringLiteral("qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 %1, stop:1 %2)");
+    const auto lit = raised.arg(blend(fill, Qt::white, 0.10).name(), fill.darker(106).name());
+    const auto lit_hover = raised.arg(fill.name(), fill.darker(116).name());
     create_->setStyleSheet(QStringLiteral(R"(
         QPushButton {
-            background: %1; color: %2; border: 2px solid %1; border-radius: %3px;
+            background: %1; color: %2; border: 2px solid %3; border-radius: %4px;
             font-size: 14px; font-weight: 600; padding: 0;
         }
-        QPushButton:hover { background: %4; border-color: %4; }
-        QPushButton:pressed { background: %5; border-color: %5; }
-        QPushButton:focus { border-color: %6; }
-        QPushButton:disabled { background: %7; color: %8; border: 1px solid %9; }
-    )").arg(fill.name(), readable_on(fill).name())
+        QPushButton:hover { background: %5; border-color: %6; }
+        QPushButton:pressed { background: %7; border-color: %7; }
+        QPushButton:focus { border-color: %8; }
+        QPushButton:disabled { background: %1; color: %2; border: 2px solid %3; }
+    )").arg(lit, readable_on(fill).name(), fill.darker(104).name())
        .arg(t.radius_button)
-       .arg(fill.darker(112).name(), fill.darker(124).name(), ring.name(),
-            t.surface.name(), t.text_muted.name(), t.border_soft.name()));
+       .arg(lit_hover, fill.darker(112).name(), fill.darker(124).name(), ring.name()));
     auto lettering = create_->font();
     lettering.setFamilies(t.family);
     create_->setFont(lettering);
+    // Create with AI is the second choice, so it is light: white, a fine
+    // pale-blue outline, navy words and a blue-to-violet spark. It is not yet
+    // built, so it is disabled on every card, but it looks as it will, as
+    // + Create does (Zain, 2026-09-25).
+    const auto outline = blend(t.surface, t.primary, 0.24);
+    const auto glassy = raised.arg(t.surface.name(), blend(t.surface, t.primary_soft, 0.75).name());
+    ai_->setStyleSheet(QStringLiteral(R"(
+        QPushButton {
+            background: %1; color: %2; border: 1px solid %3; border-radius: %4px;
+            font-size: 14px; font-weight: 600; padding: 0;
+        }
+        QPushButton:hover { background: %5; border-color: %6; }
+        QPushButton:pressed { background: %7; border-color: %6; }
+        QPushButton:focus { border: 2px solid %8; }
+        QPushButton:disabled { background: %1; color: %2; border: 1px solid %3; }
+    )").arg(glassy, t.text_heading.name(), outline.name())
+       .arg(t.radius_button)
+       .arg(t.hover_surface.name(), t.primary.name(), t.primary_soft.name(), ring.name()));
+    ai_->setFont(lettering);
+    // The spark is the icon set's own, filled, and shaded from the accent at
+    // its foot to violet at its tip.
+    QPixmap spark(QSize(spark_size + spark_space, spark_size) * 3);
+    spark.setDevicePixelRatio(3);
+    spark.fill(Qt::transparent);
+    {
+        QPainter into(&spark);
+        into.drawPixmap(0, 0, solid_pixmap(QStringLiteral("sparkles"), Qt::black, spark_size));
+        into.setCompositionMode(QPainter::CompositionMode_SourceIn);
+        QLinearGradient hue(QPointF(0, spark_size), QPointF(spark_size, 0));
+        hue.setColorAt(0.0, t.primary);
+        hue.setColorAt(1.0, violet_of(t.primary, id));
+        into.fillRect(QRectF(0, 0, spark_size, spark_size), hue);
+    }
+    QIcon marked;
+    marked.addPixmap(spark, QIcon::Normal);
+    marked.addPixmap(spark, QIcon::Disabled);
+    ai_->setIcon(marked);
     place_button();
     update();
 }
@@ -201,17 +295,16 @@ void StartRouteCard::paintEvent(QPaintEvent*) {
     const bool lit = isChecked();
     const bool hovered = under_pointer_ && isEnabled();
 
-    // A chosen card is bordered in the primary and filled a shade towards it.
-    // Never a dark filled card: the interface stays mostly white, and a card
-    // that inverts would shout over the others beside it.
-    // One that cannot be taken yet sits a shade off white, between the page
-    // and a card: set back, not greyed out, so it reads as not yet rather
-    // than as broken.
-    QColor fill = lit ? t.selected_card_surface : t.surface;
-    if (!isEnabled())
-        fill = QColor::fromRgbF((t.surface.redF() + t.window_background.redF()) / 2,
-                                (t.surface.greenF() + t.window_background.greenF()) / 2,
-                                (t.surface.blueF() + t.window_background.blueF()) / 2);
+    // Every card is the same pale glass (Zain, 2026-09-25): white with a
+    // breath of the accent, a little more of it towards the foot, a fine
+    // pale-blue edge, a catch of light along the top and a soft reflection in
+    // the top right corner. Never a dark filled card: the interface stays
+    // mostly white. A chosen card is told apart only gently -- a slightly
+    // firmer edge and a faint light at its top -- and one that cannot be taken
+    // yet says so with its badge and its words, not with its surface.
+    QLinearGradient glass(box.topLeft(), box.bottomLeft());
+    glass.setColorAt(0.0, blend(t.surface, t.primary_soft, 0.70));
+    glass.setColorAt(1.0, blend(t.primary_soft, t.primary, 0.035));
     QPainterPath shape;
     shape.addRoundedRect(box, t.radius_large_card, t.radius_large_card);
 
@@ -229,7 +322,7 @@ void StartRouteCard::paintEvent(QPaintEvent*) {
             painter.fillPath(under, wash);
         }
     }
-    painter.fillPath(shape, fill);
+    painter.fillPath(shape, glass);
     if (lit) {
         // The pale-blue highlight a chosen card carries, strongest at the top
         // and gone by the middle: a light on it, not a colour poured into it.
@@ -240,12 +333,63 @@ void StartRouteCard::paintEvent(QPaintEvent*) {
         light.setColorAt(1.0, clear);
         painter.fillPath(shape, light);
     }
-    const auto edge = !isEnabled() ? t.border_soft
-                    : lit ? t.primary
-                    : hovered ? own(QColor("#B8D8FB")) : t.border_soft;
-    painter.setPen(QPen(edge, lit ? 2.0 : 1.0));
+    {
+        // The reflection: a soft, tilted smear of white near the top right,
+        // clipped to the card. Painted, so there is nothing in it to press.
+        painter.save();
+        painter.setClipPath(shape);
+        painter.translate(box.right() - 50, box.top() + 14);
+        painter.rotate(-12);
+        painter.scale(1.0, 0.34);
+        QRadialGradient gleam(QPointF(0, 0), 56);
+        // Faint on a dark card, where white would glare.
+        const bool dark = t.surface.lightness() < 128;
+        gleam.setColorAt(0.0, QColor(255, 255, 255, dark ? 40 : 240));
+        gleam.setColorAt(0.5, QColor(255, 255, 255, dark ? 18 : 140));
+        gleam.setColorAt(1.0, QColor(255, 255, 255, 0));
+        painter.fillRect(QRectF(-56, -56, 112, 112), gleam);
+        painter.restore();
+    }
+    // Light caught along the top edge.
+    painter.setPen(QPen(QColor(255, 255, 255, t.surface.lightness() < 128 ? 40 : 235), 1.0));
+    painter.drawLine(QPointF(box.left() + t.radius_large_card, box.top() + 1.2),
+                     QPointF(box.right() - t.radius_large_card, box.top() + 1.2));
+    const auto edge = lit ? blend(t.surface, t.primary, 0.42)
+                    : hovered ? own(QColor("#B8D8FB")) : blend(t.surface, t.primary, 0.20);
+    painter.setPen(QPen(edge, lit ? 1.4 : 1.0));
     painter.setBrush(Qt::NoBrush);
     painter.drawPath(shape);
+
+    // Round the preview, the light and shadow the Home hero's welcome page
+    // floats on (Zain, 2026-09-25): a soft blue light all round it, and a
+    // shadow under it, so it stands out of the card rather than lying on it.
+    if (const auto screen = preview(); !screen.isEmpty()) {
+        painter.setPen(Qt::NoPen);
+        for (int spread = 10; spread >= 1; --spread) {
+            QPainterPath round;
+            round.addRoundedRect(screen.adjusted(-spread, -spread, spread, spread), 10 + spread, 10 + spread);
+            painter.fillPath(round, tint(t.primary, 5));
+        }
+        for (int spread = 9; spread >= 1; --spread) {
+            QPainterPath under;
+            under.addRoundedRect(screen.adjusted(-spread * 0.8, spread * 0.6 + 4, spread * 0.8, spread * 1.3 + 5),
+                                 10 + spread, 10 + spread);
+            painter.fillPath(under, tint(t.shadow_card.ink, 8));
+        }
+    }
+    // And under each button, a small soft shadow, so the two stand up off
+    // the card, each on its own: + Create's in its own blue.
+    for (auto* button : {static_cast<QWidget*>(create_), static_cast<QWidget*>(ai_)}) {
+        const QRectF under(button->geometry());
+        const auto shade = button == create_ ? tint(chosen_row_fill(t), 18) : tint(t.shadow_card.ink, 10);
+        painter.setPen(Qt::NoPen);
+        for (int spread = 5; spread >= 1; --spread) {
+            QPainterPath soft;
+            soft.addRoundedRect(under.adjusted(-spread * 0.6, spread * 0.5 + 1.5, spread * 0.6, spread * 0.9 + 2.5),
+                                t.radius_button + spread, t.radius_button + spread);
+            painter.fillPath(soft, shade);
+        }
+    }
 
     // The ring that says where the keyboard is. Drawn inside the border so a
     // focused card is never confused with a chosen one.
@@ -344,26 +488,34 @@ StartRouteCard::Flow StartRouteCard::flow_at(int card_width_now, bool compact) c
                         flow.icon_top + icon_height * icon_scale(card_width_now, compact)
                             + (compact ? 6 : 10),
                         what_.body);
+    // A card holding a preview draws no description, and keeps no room for
+    // one (Zain, 2026-09-25): its preview follows the badge row directly.
     if (demo_) {
-        flow.body = measure(flow.body_font, flow.badge.bottom() + (compact ? 4 : 8), what_.body);
-        flow.icon_top = flow.body.bottom() + 8;
+        flow.body = QRectF(card_padding, flow.badge.bottom(), room, 0);
+        flow.icon_top = flow.badge.bottom() + 8;
     }
     auto lettering = font();
     lettering.setFamilies(t.family);
     lettering.setPixelSize(14);
     lettering.setWeight(QFont::DemiBold);
-    const auto button_width = std::ceil(QFontMetricsF(lettering).horizontalAdvance("+ Create"))
-                            + button_padding * 2;
-    flow.button = QRectF(card_width_now / 2.0 - button_width / 2.0,
-                         flow.body.bottom() + (compact ? 8 : 14), button_width, button_height);
+    // + Create and Create with AI share one row, which runs between the card's
+    // margins and so is centred on it. Each is as wide as its words and an
+    // even share of what is left over. Where that would leave Create with AI
+    // too little room round its words, it says only "AI".
+    const QFontMetricsF lettered(lettering);
+    const auto create_words = std::ceil(lettered.horizontalAdvance("+ Create"));
+    const auto ai_words = [&](bool short_form) {
+        return spark_room + std::ceil(lettered.horizontalAdvance(short_form ? "AI" : "Create with AI"));
+    };
+    flow.ai_short = (room - button_gap - create_words - ai_words(false)) / 4 < least_button_padding;
+    const auto spare = std::max(0.0, room - button_gap - create_words - ai_words(flow.ai_short));
+    flow.button = QRectF(card_padding, flow.body.bottom() + (compact ? 8 : 14), create_words + spare / 2,
+                         button_height);
     if (demo_)
         flow.button.moveTop(flow.icon_top + (compact ? 120 : 160) + 8);
+    flow.ai_button = QRectF(flow.button.right() + button_gap, flow.button.top(),
+                            ai_words(flow.ai_short) + spare / 2, button_height);
     flow.bottom = flow.button.bottom() + (compact ? 12 : card_padding);
-    // Keep the previous responsive height budget so this presentation change
-    // cannot resize the other cards. Reclaim the unpainted description's room
-    // for the demo after the card/button measurements have been calculated.
-    if (demo_)
-        flow.icon_top = flow.badge.bottom() + 8;
     return flow;
 }
 

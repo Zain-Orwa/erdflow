@@ -1127,6 +1127,13 @@ outside the repository at `erdflow-notes/UI-AZURE-TASKS.md`. What is built:
   been saving that theme as the profile's choice, because the window
   remembers whatever theme it is given. The profile's own choice, or its
   having made none, is now put back after the window is built.
+- **No heading over the cards** (2026-09-25). *Create a new project* was
+  removed, put back, and removed again by Zain the same day. Each card's
+  own + Create says what it does. The heading's room is kept, since the
+  label is hidden but keeps its size, so the cards stand where they stood.
+  That room is also where the hero's pictures are measured to end clear
+  of. The gap under the subtitle is 74 px plus the kept room and 12 px; on
+  a short window, 14 px and 6 px.
 - **One page.** Everything on Home is on screen at once at the window's
   un-maximised size (1440 × 920), at the 1440 × 1080 reference, and at 1366 × 740,
   which the tests check. On a short window the spacing closes up first, then
@@ -1147,14 +1154,51 @@ outside the repository at `erdflow-notes/UI-AZURE-TASKS.md`. What is built:
   ten projects last opened, saved or created; Examples and Templates open the
   bundled University project untitled, which is what starting from a template
   is (ADR-016); Settings and Help open their menus beside the row.
-- The centre says **Welcome to ERDFlow** and *Design. Model. Convert.
-  Generate.* beside a **drawn illustration** (`WelcomeFlowIllustration`,
+- **The hero is three columns read as one line** (2026-09-25), spread over
+  about 90 % of the centre.
+  - *The middle, centred:* a small *Welcome to ERDFlow* in the accent between
+    two thin rules, then *Design. Convert. Generate.* at 31 px. "Design." is
+    navy, "Convert." is in the accent and "Generate." is in a deeper shade of
+    it. Under it, on one line, *Balance ideas, schemas, and SQL in one visual
+    workflow.*
+  - *The left:* a product page, turned 2.5° anticlockwise and a little away.
+    It floats in a faint blue light over a soft shadow and has a glass face.
+    It shows a window bar, *Welcome to ERDFlow*, *Turn your ideas into real
+    databases with the power of AI.* and four tiles: Design, Convert,
+    Generate and AI. It shows no tables or diagrams.
+  - *The right:* the database illustration, with a blue light behind it and
+    a shadow under its platform.
+  - *Sizing:* the page and the illustration get columns of the same width,
+    at most 320 px, on one level. A column is also kept small enough that the
+    illustration's top stays on the page and both pictures end clear of
+    *Create a new project*.
+  - *The line:* one smooth line joins them, running from a port on the
+    page's right edge to a port on the platform's near corner. It passes
+    under both ends of the subtitle, so it never crosses a word. It is a
+    rounded tube in one light blue (Zain, 2026-09-25): deeper at its edges,
+    paler towards its middle, with light along its centre, over a soft
+    glow. Nothing is fixed on it.
+    - *Electrons:* four coloured electrons travel along it on the
+      illustration's clock, cyan and violet going to the database, amber
+      and green coming back. They move when the orbit moves and rest where
+      it rests.
+    - *The page lights up:* when an electron coming back reaches the page,
+      the page glows in that electron's colour for a second and a half.
+    - *Cost:* only the pixels round each electron, and the page while it
+      glows, are redrawn each frame. The tube stays in the kept picture.
+  - *Stepping aside:* both pictures step aside on a short page, or where a
+    column beside the words would be under 150 px.
+  - *Drawing:* the page, rules, line and light are painted by
+    `HomeHeroBackdrop` in `home_page.cpp`, once into a kept picture per size,
+    scene and theme, in the theme's tokens (grey under Plain). The
+    illustration's own drawing is unchanged.
+- The welcome is set beside a **drawn illustration** (`WelcomeFlowIllustration`,
   ADR-022 §9.15): a large three-tier database on a rounded platform over a
   soft glow, with four panels around it, read by their marks: a structure of
   boxes, an entity–relationship–entity, a table on a blue panel and a page of
   SQL. Each panel leans towards the database; straight lines with two bends
-  join them to the platform (ADR-022 §9.17). It stands at the right of the welcome, its foot level with
-  *Create a new project*, up to 230 pixels tall, and steps aside on a short
+  join them to the platform (ADR-022 §9.17). It stands in the hero's right
+  column, as described above, and steps aside on a short
   or narrow page. It is painted, not loaded, in the theme's own tokens, at
   any size. It is a component: the panels are data (`HeroOrbitItem`), a
   caller can give it other words, and a panel given no ring is placed on one.
@@ -1206,9 +1250,67 @@ outside the repository at `erdflow-notes/UI-AZURE-TASKS.md`. What is built:
   its top (§9.15, §9.16). Each is a real
   control: it takes keyboard focus and is read out by name and description.
   Pressing a card **chooses** it and nothing more; the card's own **+ Create**,
-  centred at its foot, is what starts. A card reads top to bottom: title,
+  at its foot, is what starts. A card reads top to bottom: title,
   the *Coming soon* row (empty on a card that can be taken), drawing,
-  description, + Create. The helper line is no longer drawn.
+  description, then the buttons. The helper line is no longer drawn.
+- **+ Create and Create with AI, side by side on every card**
+  (2026-09-25). The two share one row at the card's foot, which runs
+  between the card's margins, so the pair is centred and all six buttons
+  stand on one line across the cards. Each is as wide as its words plus an
+  even share of what is left. Where a card is too narrow to leave 6 pixels
+  either side of *Create with AI*, the second button says only *AI*. This
+  happens below about 1366 pixels wide with the learning panel showing. Its
+  mark and its name read aloud are unchanged. With the ways between the
+  cards, that is at 1366 × 740 as well. *Create with AI* is white, with a
+  fine pale-blue outline and navy words. Its mark is Lucide's `sparkles`
+  (`assets/icons-outline/sparkles.svg`), drawn filled (`solid_pixmap`) and
+  shaded from the accent to a violet turned from it. AI is a later feature,
+  so the button is **disabled on every card**, and it says *Creating with AI
+  is coming soon.* when pointed at. Tab passes over it.
+- **Every card's buttons look the same, whether or not the card can be
+  taken yet** (Zain, 2026-09-25). + Create is blue and Create with AI white
+  on all three cards. On *Relational Schema* and *SQL Script (DDL)* both
+  buttons are still disabled: they do not answer, and their tooltips say
+  why. The *Coming soon* badge is what says a route is not built.
+- **The cards are pale glass** (2026-09-25). Each card is:
+  - white with a breath of the accent, a little more towards its foot;
+  - edged in a fine pale blue, with light caught along its top and a soft
+    reflection in its top right corner (faint on a dark theme);
+  - lifted off the page by a wide blue-grey shadow, over the faintest wash
+    of the accent across the row.
+
+  The chosen card is told apart only gently, by a slightly firmer edge and
+  a faint light at its top; it has no heavy blue outline. A card holding a
+  preview keeps no room for the description it does not draw, so its parts
+  sit close together.
+- **Each preview is a raised tile of tinted glass, like the hero's welcome
+  page** (Zain, 2026-09-25, chosen from three styles). Its face is a shade
+  lighter than the card, with a fine blue edge, light along its top and a
+  quiet header with its name. The glass shows a 9 px thickness under it. The
+  card draws a soft blue light round it and a shadow under it, 14 px from
+  the card's edges. What it shows (the Conceptual canvas, the tables, the
+  script) is drawn straight onto the glass, with no white page inside.
+- **The card buttons stand up** (2026-09-25). + Create and Create with AI
+  are each a little lighter at the top than the foot. The card draws a soft
+  shadow under each, + Create's in its own blue.
+- **The way between the cards** (`HomeFlowBridge`, 2026-09-25). Between
+  Conceptual and Relational: *Convert to Schema* over an arrow pointing on,
+  and an arrow pointing back over *Back to ERD*. Between Relational and SQL:
+  *Generate to SQL* and *Back to Schema*.
+  - *Drawing:* each arrow is a small 3D tube: a shaft shaded deeper at its
+    edges and lit along its top, a solid head lit from above, two beads
+    trailing from its tail, and a soft shadow under it.
+  - *Colour:* forward is the accent. Back is the violet turned from it,
+    the Create with AI spark's colour, a little lighter, with its words in
+    the same violet softened slightly. Grey under Plain.
+  - *Placement:* each stands in a column of its own in the card line,
+    62–92 px wide, never over a card. It sits level with the middle of the
+    previews either side.
+  - *Sizing:* on a wide window the columns widen to 92 px before the group
+    gains margins, and the cards still stop at 315 px.
+  - *Behaviour:* it is a sign and does nothing when pressed. The keyboard
+    passes over it, and it is read out as, for example, "Convert to Schema,
+    Back to ERD".
   *Relational Schema* and *SQL Project* are shown in their
   places, marked *Coming soon* and not enabled, each saying why in its
   tooltip: the first waits for ADR-021 Step B, the second for SQL to be

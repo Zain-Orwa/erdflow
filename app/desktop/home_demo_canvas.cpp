@@ -76,7 +76,8 @@ const CanvasPicture& conceptual_canvas_picture(ThemeId theme) {
     QPainter painter(&drawn.picture);
     painter.setRenderHint(QPainter::Antialiasing, true);
     painter.setRenderHint(QPainter::TextAntialiasing, true);
-    painter.fillRect(QRectF(QPointF(0, 0), drawn.source.size()), view.canvas_colour());
+    // No ground of its own: it is drawn straight onto the card's glass screen
+    // (Zain, 2026-09-25).
     view.render_diagram(painter, QRectF(QPointF(0, 0), drawn.source.size()), drawn.source);
     painter.end();
     return made.emplace(theme, std::move(drawn)).first->second;

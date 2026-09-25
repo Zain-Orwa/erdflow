@@ -490,9 +490,13 @@ int main(int argc, char** argv) {
                                     "The demo is contained inside its card");
                             require(demos[i]->geometry().bottom() < cards[i]->create_button()->y(),
                                     "The demo clears the Create button");
+                            // + Create and Create with AI stand side by side,
+                            // the pair centred (Zain, 2026-09-25).
+                            const auto pair = cards[i]->create_button()->geometry().united(
+                                cards[i]->ai_button()->geometry());
                             require(std::abs(demos[i]->x() + demos[i]->stage().center().x()
-                                             - cards[i]->create_button()->geometry().center().x()) <= 1.0,
-                                    "The demo and Create share the card's center line");
+                                             - (pair.left() + pair.width() / 2.0)) <= 1.0,
+                                    "The demo and the pair of buttons share the card's center line");
                             require(!cards[i]->accessibleDescription().isEmpty(),
                                     "The description is no longer drawn, but is still read out");
                             require(demos[i]->testAttribute(Qt::WA_TransparentForMouseEvents),
@@ -1515,10 +1519,61 @@ int main(int argc, char** argv) {
                 require(QRect(QPoint(), card->size()).contains(create->geometry())
                             && create->geometry().top() > card->height() * 0.75,
                         "Inside the card, at its foot");
-                require(std::abs(create->geometry().center().x() - card->width() / 2) <= 1,
-                        "And centred on it");
+                // Beside it, Create with AI (Zain, 2026-09-25): on every card,
+                // on the same line, the two together centred on the card.
+                auto* ai = card->ai_button();
+                require(ai != nullptr && ai->isVisible()
+                            && (ai->text() == "Create with AI" || ai->text() == "AI"),
+                        "Every card has its own Create with AI");
+                require(ai->y() == create->y() && ai->height() == create->height()
+                            && ai->x() > create->geometry().right(),
+                        "Level with + Create, to its right");
+                require(QRect(QPoint(), card->size()).contains(ai->geometry()), "Inside the card too");
+                const auto pair = create->geometry().united(ai->geometry());
+                require(std::abs(pair.left() + pair.width() / 2.0 - card->width() / 2.0) <= 1.0,
+                        "And the pair centred on it");
                 require(create->isEnabled() == card->isEnabled(),
                         "It can be pressed only where its card can be taken");
+                // AI is a later feature: shown, not yet pressable, and saying so.
+                require(!ai->isEnabled() && !ai->toolTip().isEmpty(),
+                        "Create with AI cannot be pressed yet, and says why");
+                require(ai->accessibleName() == "Create " + card->accessibleName() + " with AI",
+                        "It says what it would make to whatever reads the screen");
+            }
+            // All six buttons stand on one line across the cards.
+            for (auto* card : cards)
+                require(card->ai_button()->mapTo(home, QPoint()).y()
+                            == cards[0]->create_button()->mapTo(home, QPoint()).y(),
+                        "Every card's buttons share one baseline");
+            // No heading over the cards: each card's + Create says it (Zain,
+            // 2026-09-25). Its room is kept, so the cards stand where they did.
+            {
+                auto* section = home->findChild<QLabel*>("homeSectionTitle");
+                require(section && !section->isVisible(), "Nothing is shown over the cards");
+                require(section->height() > 0
+                            && section->mapTo(home, QPoint(0, section->height())).y()
+                                   <= cards[0]->mapTo(home, QPoint()).y(),
+                        "But its room is kept above them");
+            }
+            // Between each card and the next, the way on and the way back:
+            // in their own columns, never over a card, and only a sign.
+            {
+                const auto bridges = home->bridges();
+                require(bridges.size() == 2, "A way between each card and the next");
+                const QStringList said{"Convert to Schema, Back to ERD", "Generate to SQL, Back to Schema"};
+                for (std::size_t i = 0; i < bridges.size(); ++i) {
+                    auto* bridge = bridges[i];
+                    require(bridge->isVisible() && bridge->accessibleName() == said[static_cast<int>(i)],
+                            "Each says where it goes and where it comes back from");
+                    require(bridge->parentWidget() == cards[i]->parentWidget()
+                                && bridge->x() > cards[i]->geometry().right()
+                                && bridge->geometry().right() < cards[i + 1]->x(),
+                            "Standing in the gap between its two cards, over neither");
+                    require(bridge->width() >= 62, "With room for its words");
+                    require(bridge->focusPolicy() == Qt::NoFocus
+                                && bridge->testAttribute(Qt::WA_TransparentForMouseEvents),
+                            "A sign, which neither the keyboard nor the pointer stops at");
+                }
             }
             require(cards[0]->create_button()->accessibleName() == "Create Conceptual Design (ERD)",
                     "It says what it makes to whatever reads the screen");

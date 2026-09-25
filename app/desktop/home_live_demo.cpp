@@ -71,12 +71,19 @@ void HomeLiveDemo::set_real_canvas(bool on) {
 }
 
 namespace {
-// The screen's measurements, in pixels: room kept under it for its depth and
-// its shadow, its corners, its header, and the margin round what it shows.
-constexpr double screen_depth = 4;
-constexpr double screen_radius = 8;
+// The screen's measurements, in pixels: its header, and the margin round
+// what it shows.
 constexpr double screen_header = 16;
 constexpr double screen_margin = 4;
+// How thick its glass is, where its lower edge shows.
+constexpr double raised_thickness = 9;
+// Its corners, drawn as the welcome page's are.
+constexpr double glass_radius = 10;
+
+QColor with_alpha(QColor colour, int alpha) {
+    colour.setAlpha(alpha);
+    return colour;
+}
 
 QColor blend(const QColor& from, const QColor& to, double share) {
     return QColor::fromRgbF(static_cast<float>(from.redF() + (to.redF() - from.redF()) * share),
@@ -98,56 +105,51 @@ const char* heading_of(HomeDemoKind kind) {
 } // namespace
 
 QRectF HomeLiveDemo::screen() const {
-    return QRectF(rect()).adjusted(3, 2, -3, -(screen_depth + 6));
+    // Room is kept under the screen for what stands it off the card: the
+    // glass's own thickness, which shows, and its shadow.
+    return QRectF(rect()).adjusted(3, 2, -3, -(raised_thickness + 6));
 }
 
 QRectF HomeLiveDemo::screen_inside() const {
     return screen().adjusted(screen_margin, screen_header, -screen_margin, -screen_margin);
 }
 
-// A small screen raised off the card, drawn as the Home screen's own floating
-// panels are drawn: a pale face lit from above, a catch of light along its top
-// edge, a soft shadow under it -- and a few pixels of its own edge showing
-// beneath, which is what makes it stand out of the card rather than lie on it.
+// A small screen standing out of the card as a tile of tinted glass, drawn as
+// the Home hero's welcome page is (Zain, 2026-09-25): a glass face a shade
+// lighter than the card, a fine blue edge, light caught along its top, a
+// quiet header, and the thickness of its glass showing under it -- and what
+// it shows is drawn straight onto the glass, with no white page inside it.
+// The light round it and the shadow under it are the card's to draw, since
+// they reach past it. Zain chose this from three styles.
 void HomeLiveDemo::paint_screen(QPainter& painter) const {
     const auto& t = tokens(theme_);
     const auto own = [this](const QColor& colour) { return colourless(theme_) ? greyed(colour) : colour; };
     const auto blue = own(t.primary);
     const auto face = screen();
     painter.save();
-    for (int step = 3; step >= 1; --step) {
-        QPainterPath under;
-        under.addRoundedRect(face.adjusted(-step * 0.6, step * 2.0 + screen_depth, step * 0.6,
-                                           step * 2.4 + screen_depth),
-                             screen_radius + step, screen_radius + step);
-        auto wash = blue.darker(150);
-        wash.setAlphaF(0.05f);
-        painter.fillPath(under, wash);
+    painter.setPen(Qt::NoPen);
+    for (int layer = static_cast<int>(raised_thickness); layer >= 1; --layer) {
+        QPainterPath side;
+        side.addRoundedRect(face.translated(0, layer), glass_radius, glass_radius);
+        painter.fillPath(side, blend(blend(blue, Qt::white, 0.66), blue, 0.035 * layer));
     }
-    QPainterPath depth;
-    depth.addRoundedRect(face.translated(0, screen_depth), screen_radius, screen_radius);
-    painter.fillPath(depth, blend(blue, Qt::white, 0.62));
     QPainterPath shape;
-    shape.addRoundedRect(face, screen_radius, screen_radius);
-    QLinearGradient light(face.topLeft(), face.bottomLeft());
-    light.setColorAt(0.0, blend(blue, Qt::white, 0.965));
-    light.setColorAt(1.0, blend(blue, Qt::white, 0.90));
-    painter.fillPath(shape, light);
-    // What it shows, on the workspace's own ground: the canvas for a model,
-    // the editor's page for a script.
-    const auto inside = screen_inside();
-    QPainterPath well;
-    well.addRoundedRect(inside, 3, 3);
-    painter.fillPath(well, kind_ == HomeDemoKind::Sql ? t.surface : theme(theme_).canvas);
-    painter.setPen(QPen(blend(blue, Qt::white, 0.78), 0.8));
+    shape.addRoundedRect(face, glass_radius, glass_radius);
+    QLinearGradient glass(face.topLeft(), face.bottomRight());
+    glass.setColorAt(0.0, blend(t.surface, t.primary_soft, 0.45));
+    glass.setColorAt(1.0, blend(t.primary_soft, t.primary, 0.05));
+    painter.fillPath(shape, glass);
+    painter.setPen(QPen(with_alpha(blue, 60), 0.8));
     painter.setBrush(Qt::NoBrush);
-    painter.drawPath(well);
-    painter.setPen(QPen(blend(blue, Qt::white, 0.66), 1.0));
     painter.drawPath(shape);
-    painter.setPen(QPen(QColor(255, 255, 255, 220), 1.0));
-    painter.drawLine(QPointF(face.left() + screen_radius, face.top() + 1.2),
-                     QPointF(face.right() - screen_radius, face.top() + 1.2));
-    // The header: what is on the screen, small and quiet.
+    const bool dark = t.surface.lightness() < 128;
+    painter.setPen(QPen(QColor(255, 255, 255, dark ? 40 : 240), 1.0));
+    painter.drawLine(QPointF(face.left() + glass_radius, face.top() + 1.2),
+                     QPointF(face.right() - glass_radius, face.top() + 1.2));
+    // The header: what is on the screen, small and quiet, over a fine rule.
+    painter.setPen(QPen(with_alpha(blue, 36), 0.7));
+    painter.drawLine(QPointF(face.left() + 1, face.top() + screen_header),
+                     QPointF(face.right() - 1, face.top() + screen_header));
     auto lettering = font();
     lettering.setFamilies(t.family);
     lettering.setPixelSize(10);
@@ -157,9 +159,8 @@ void HomeLiveDemo::paint_screen(QPainter& painter) const {
     painter.drawText(QRectF(face.left() + 10, face.top(), face.width() - 20, screen_header),
                      Qt::AlignLeft | Qt::AlignVCenter, QString::fromLatin1(heading_of(kind_)));
     for (int dot = 0; dot < 3; ++dot) {
-        auto shade = blend(blue, Qt::white, 0.72);
         painter.setPen(Qt::NoPen);
-        painter.setBrush(shade);
+        painter.setBrush(blend(blue, Qt::white, 0.72));
         painter.drawEllipse(QPointF(face.right() - 12 - dot * 7.0, face.top() + screen_header / 2.0), 2.0, 2.0);
     }
     painter.restore();
@@ -194,8 +195,8 @@ void HomeLiveDemo::paintEvent(QPaintEvent*) {
         paint_demo_scene(painter, kind_, theme_, DemoMoment{step_, progress_});
         return;
     }
-    // Held in a card: shown on a small screen raised off the card, and fitted
-    // into it evenly, never stretched.
+    // Held in a card: shown on a small screen standing out of the card, and
+    // fitted into it evenly, never stretched.
     paint_screen(painter);
     const auto inside = screen_inside().adjusted(3, 3, -3, -3);
     painter.setClipRect(screen_inside());

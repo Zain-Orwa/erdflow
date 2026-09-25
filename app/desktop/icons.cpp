@@ -514,6 +514,24 @@ QPixmap outline_pixmap(const QString& name, const QColor& ink, int size) {
     return pixmap;
 }
 
+QPixmap solid_pixmap(const QString& name, const QColor& ink, int size) {
+    QFile file(QStringLiteral(":/erdflow/icons-outline/%1.svg").arg(name));
+    if (!file.open(QIODevice::ReadOnly)) return {};
+    // The file says its shapes are not filled; filled here in the one ink.
+    auto drawing = file.readAll();
+    drawing.replace("fill=\"none\"", "fill=\"currentColor\"");
+    drawing.replace("currentColor", ink.name().toLatin1());
+    QSvgRenderer renderer(drawing);
+    if (!renderer.isValid()) return {};
+    QPixmap pixmap(QSize(size, size) * 3);
+    pixmap.setDevicePixelRatio(3);
+    pixmap.fill(Qt::transparent);
+    QPainter painter(&pixmap);
+    painter.setRenderHint(QPainter::Antialiasing);
+    renderer.render(&painter, QRectF(0, 0, size, size));
+    return pixmap;
+}
+
 namespace {
 QIcon inked_icon(Glyph glyph, const Theme& colors, int size, IconMode mode) {
     if (mode == IconMode::Outline) {
