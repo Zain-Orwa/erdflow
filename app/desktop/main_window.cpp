@@ -948,6 +948,42 @@ private:
     std::function<void(QWidget*)> pressed_;
 };
 
+// A choice whose box is stretched across its row but whose list is only as
+// wide as its widest entry. Qt opens a combo box's list at least as wide as
+// the box, which for the type offered to every column sharing a name was most
+// of the window (Zain, 2026-09-26). The box stays as it is; only the list it
+// opens is narrowed, still from the box's left edge, and never below what its
+// entries need, so none of them is cut short.
+class SnugComboBox final : public QComboBox {
+public:
+    using QComboBox::QComboBox;
+    void showPopup() override {
+        QComboBox::showPopup();
+        auto* list = view();
+        auto* popup = list ? qobject_cast<QFrame*>(list->window()) : nullptr;
+        if (!popup || popup == window()) return;
+        // Measured from the words themselves, in the lettering each is drawn
+        // in. Where the list is drawn as a menu, as on macOS, an entry reports
+        // the width the list already has rather than its words', and a list
+        // sized by that cut every longer entry short. The room beside the
+        // words covers a menu entry's margins and the column it keeps for a
+        // check mark.
+        const QFontMetrics plain(list->font());
+        const QFontMetrics menu(QApplication::font("QComboMenuItem"));
+        int widest = 0;
+        for (int row = 0; row < count(); ++row) {
+            const auto words = itemText(row);
+            const auto own = itemData(row, Qt::FontRole);
+            widest = own.isValid()
+                ? std::max(widest, QFontMetrics(own.value<QFont>()).horizontalAdvance(words))
+                : std::max({widest, plain.horizontalAdvance(words), menu.horizontalAdvance(words)});
+        }
+        const auto wanted = widest + 48 + 2 * list->frameWidth() + 2 * popup->frameWidth()
+                          + style()->pixelMetric(QStyle::PM_ScrollBarExtent, nullptr, list);
+        if (wanted < popup->width()) popup->resize(wanted, popup->height());
+    }
+};
+
 void finish_field_edit() {
     auto* widget = QApplication::focusWidget();
     if (!qobject_cast<QLineEdit*>(widget) && !qobject_cast<QPlainTextEdit*>(widget)) return;
@@ -1427,7 +1463,11 @@ void MainWindow::build_shell() {
     // whole window the drawing tools are put away with the diagram they draw
     // on, and these three are what is still worth having: two of them undo
     // work that has just been done on the schema, and the other two are about
-    // looking at it. Hidden until then, because the toolbar already has them.
+    // looking at it. Undo and redo stand here whenever the schema is open,
+    // sharing the stage or not, so work done on it can always be taken back
+    // from beside it (Zain, 2026-09-25); the other two only while it has the
+    // whole window, since otherwise the diagram's own are showing.
+    // See place_schema_header_tools.
     schema_header_tools_ = new QWidget(header);
     schema_header_tools_->setObjectName("schemaHeaderTools");
     auto* header_tools = new QHBoxLayout(schema_header_tools_);
@@ -1633,6 +1673,29 @@ void MainWindow::build_shell() {
             show_result(editor_.set_table_naming(which), false);
         });
     }
+    // How much of each table is shown (Zain, 2026-09-27): everything, as it
+    // opens, or the columns' names alone, with no Type and no Constraints,
+    // for reading the shape of a schema at a glance. Remembered with the
+    // application, as the other ways of looking are.
+    menu_heading(appearing, "Table detail", "schemaDetailHeading");
+    auto* detail = new QActionGroup(this);
+    const auto names_only_now = QSettings().value("schemaNamesOnly", false).toBool();
+    static const std::array<std::pair<bool, const char*>, 2> details{{
+        {false, "Names, types and constraints"}, {true, "Compact schema"}}};
+    for (const auto& [names_only, label] : details) {
+        auto* choice = appearing->addAction(QLatin1String(label));
+        choice->setObjectName(names_only ? "schemaDetailNames" : "schemaDetailFull");
+        choice->setCheckable(true);
+        choice->setChecked(names_only == names_only_now);
+        choice->setActionGroup(detail);
+        choice->setToolTip(names_only ? "Show each table's key marks and column names only, without "
+                                        "types, constraints or table configuration options."
+                                      : "Show each column's name, type and constraints.");
+        connect(choice, &QAction::triggered, this, [this, names_only] {
+            QSettings().setValue("schemaNamesOnly", names_only);
+            if (schema_) schema_->set_names_only(names_only);
+        });
+    }
     appearance->setMenu(appearing);
     bar_layout->addWidget(appearance);
 
@@ -1702,6 +1765,7 @@ void MainWindow::build_shell() {
     schema_->arranged = [this](const application::EditResult& result) { show_result(result, false); };
     schema_->set_lines_give_way(QSettings().value("schemaLinesGiveWay", false).toBool());
     schema_->set_tables_resizable(QSettings().value("schemaTablesResizable", true).toBool());
+    schema_->set_names_only(QSettings().value("schemaNamesOnly", false).toBool());
     schema_->asked = [this](const SchemaView::Spot& spot) { offer_schema_actions(spot); };
     schema_->rules_asked = [this](const SchemaView::Constrained& hit, QPoint at) {
         offer_schema_rules(hit, at);
@@ -1766,6 +1830,13 @@ void MainWindow::build_shell() {
     panel_layout->addWidget(shared_names_);
 
     schema_panel_->hide();
+    // The stage changes width without the window changing size whenever a
+    // side panel is pulled wider or narrower, closed or opened, so the panel
+    // is laid out again whenever the stage is, not only with the window.
+    // Otherwise it keeps the width it had, and either leaves a strip of
+    // diagram showing beside it or runs on under the edge of the stage.
+    stage_ = stage;
+    stage_->installEventFilter(this);
 
     // Resizing. The share is remembered, so the panel opens again at whatever
     // height it was left at, and it is clamped so a panel can never be pulled
@@ -3971,8 +4042,9 @@ void MainWindow::apply_appearance(ThemeId id) {
     refreshing_ = true;
     refresh_properties();
     refreshing_ = was_refreshing;
-    // So are the History's fainter steps.
+    // So are the History's fainter steps, and the type families' titles.
     refresh_history(true);
+    refresh_shared_names();
 }
 
 void MainWindow::preview_theme(ThemeId id) {
@@ -4119,6 +4191,12 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
         && (event->type() == QEvent::Resize || event->type() == QEvent::Show
             || event->type() == QEvent::LayoutRequest)) {
         place_canvas_controls();
+        return false;
+    }
+    // The schema panel is laid over the stage by hand, so it is given the
+    // stage's new width whenever the stage has one.
+    if (stage_ && watched == stage_ && event->type() == QEvent::Resize) {
+        lay_out_schema();
         return false;
     }
     if (event->type() == QEvent::MouseButtonDblClick) {
@@ -5064,6 +5142,7 @@ void MainWindow::show_schema(bool shown) {
         schema_panel_->show();
         schema_panel_->raise();
     }
+    place_schema_header_tools();
     auto* rise = new QVariantAnimation(this);
     rise->setDuration(280);
     rise->setEasingCurve(QEasingCurve::OutCubic);
@@ -5080,6 +5159,13 @@ void MainWindow::show_schema(bool shown) {
     });
     rise->start(QAbstractAnimation::DeleteWhenStopped);
     if (auto* button = findChild<QPushButton*>("previewSchema")) button->setChecked(shown);
+}
+
+void MainWindow::place_schema_header_tools() {
+    if (!schema_header_tools_) return;
+    schema_header_tools_->setVisible(schema_open_);
+    if (schema_search_) schema_search_->setVisible(schema_full_);
+    if (schema_theme_) schema_theme_->setVisible(schema_full_);
 }
 
 // Nothing but the schema. The panel takes the whole stage and the surrounding
@@ -5140,13 +5226,11 @@ void MainWindow::set_schema_full(bool full) {
                 hidden_chrome_.push_back(furniture);
                 furniture->hide();
             }
-        if (schema_header_tools_) {
-            if (schema_theme_ && theme_button_) {
-                schema_theme_->setMenu(theme_button_->menu());
-                schema_theme_->setIcon(theme_button_->icon());
-            }
-            schema_header_tools_->show();
+        if (schema_theme_ && theme_button_) {
+            schema_theme_->setMenu(theme_button_->menu());
+            schema_theme_->setIcon(theme_button_->icon());
         }
+        place_schema_header_tools();
         // Relational Design is now the workspace in front, so the header says
         // so, and what only the diagram can take is put away with the diagram:
         // a picture is placed on the canvas, which cannot be seen. The ribbon's
@@ -5161,7 +5245,7 @@ void MainWindow::set_schema_full(bool full) {
         hidden_for_schema_.clear();
         for (const auto& furniture : hidden_chrome_) if (furniture) furniture->show();
         hidden_chrome_.clear();
-        if (schema_header_tools_) schema_header_tools_->hide();
+        place_schema_header_tools();
         set_workspace_in_front(false);
         schema_share_ = schema_share_before_full_;
     }
@@ -5703,13 +5787,23 @@ void MainWindow::refresh_shared_names() {
         auto* counted = new QLabel(QString("%1 columns").arg(group.columns), row);
         counted->setObjectName("sharedNameCount");
         row_layout->addWidget(counted);
-        auto* type = new QComboBox(row);
+        auto* type = new SnugComboBox(row);
         type->setObjectName("sharedNameType");
         type->addItem("Give them all a type…", QVariant());
+        // Each family's title is set a little bold and in the theme's quieter
+        // grey (Zain, 2026-09-26), so it reads as a heading over the types
+        // beneath it rather than as one more of them. The lettering is the
+        // list's own, only heavier, so a title is no bigger than a type.
+        auto title_font = QApplication::font("QComboMenuItem");
+        title_font.setWeight(QFont::DemiBold);
+        const QBrush title_ink(theme(theme_).muted);
         for (const auto& family : type_families())
             for (const auto entry : family.types) {
-                if (entry == family.types.front())
+                if (entry == family.types.front()) {
                     type->addItem(QString("— %1 —").arg(QString::fromLatin1(family.name)), QVariant());
+                    type->setItemData(type->count() - 1, title_font, Qt::FontRole);
+                    type->setItemData(type->count() - 1, title_ink, Qt::ForegroundRole);
+                }
                 type->addItem(type_label(entry), QVariant::fromValue(static_cast<int>(entry)));
             }
         type->installEventFilter(wheel_guard_);

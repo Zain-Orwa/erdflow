@@ -1371,10 +1371,12 @@ SchemaLayout arranged_with(const SchemaLayout& from, Change&& change) {
 } // namespace
 
 EditResult Editor::move_schema_tables(const std::map<ElementRef, Point>& places,
-                                      const std::vector<LinkSource>& give_way) {
+                                      const std::vector<LinkSource>& give_way,
+                                      const std::vector<std::pair<LinkSource, SchemaLine>>& carried) {
     return impl_->edit("Move on the schema", [&](Delta& delta) {
         auto value = arranged_with(project().schema_layout, [&](SchemaLayout& layout) {
             for (const auto& [table, at] : places) layout.tables[relation_from(table)] = at;
+            for (const auto& [link, shape] : carried) layout.lines[foreign_key_from(link)] = shape;
             for (const auto& link : give_way) layout.lines.erase(foreign_key_from(link));
         });
         if (value == project().schema_layout) return EditResult{};

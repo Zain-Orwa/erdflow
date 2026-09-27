@@ -25,6 +25,17 @@ not been built yet. Their presence in those documents is not a completion claim.
   and available through `set_ai_offered`, hidden by default. Existing preview
   scenes, animation controls, accessibility and route wiring are retained.
 
+- **Optional compact schema view** (2026-09-27). Under Relational Design →
+  Appearance → Table detail, **Compact schema** hides the Column/Type/Constraints
+  heading row, type and constraint columns, and table configuration footers,
+  retaining names, PK/FK
+  marks and relationship lines. The choice is remembered; full detail remains
+  the default. Compact tables fit their column and table names. Hand-set sizes
+  are preserved and restored when returning to **Names, types and constraints**.
+  A compact table's header carries its name alone: the *ENTITY …* / *BRIDGE
+  FOR …* tag, which could only be cut to a few letters and an ellipsis at that
+  width, is left out. While compact, tables are moved but not pulled by their
+  edges, so a size given there never folds the full view's columns.
 - **Create with AI is switched off for now** (2026-09-26). One constant,
   `create_with_ai_offered` in `start_route_card.hpp`, is `false`: every
   card still makes its Create with AI exactly as before, but does not show
@@ -42,6 +53,20 @@ not been built yet. Their presence in those documents is not a completion claim.
   styles the mark). Size, place, words, the spark, the pressed look and what
   pressing does are unchanged, and so is the card
   (`StartRouteCard::eventFilter`, the `lit` rules in `StartRouteCard::wear`).
+- **The shared-name type list is only as wide as its entries** (2026-09-26).
+  Under **Columns that share a name**, each name's **Give them all a type…**
+  box is stretched across its row, and Qt opened its list at least as wide as
+  the box, most of the window. The list now opens only as wide as its widest
+  entry (with room for its scrollbar and a menu entry's margins), from the
+  box's left edge; the box itself, the entries, their order and what
+  choosing one does are unchanged (`SnugComboBox` in `main_window.cpp`, used
+  for that box alone). The width is measured from the entries' words in the
+  lettering each is drawn in: on macOS the list is drawn as a menu, whose
+  entries report the list's width rather than their words', and the first
+  version, sized by that, cut longer entries short (fixed the same day). The
+  families' titles in that list (— Exact numerics — and so on) are set a
+  little bold and in the theme's grey, so they read as headings over the
+  types beneath them.
 - **Back to Home, always** (2026-09-26). **← Back to Home** stands first in
   the workspace's header whatever the project is and however it was opened,
   on the diagram and on the schema, whether the schema shares the stage or
@@ -870,6 +895,11 @@ their own and a history of their own — is still a later and separate thing.
   put to the user before the diagram is touched, and declining records the
   difference rather than refusing it. The panel says how far the two levels
   have come apart.
+- **Bold connectors** (2026-09-25). A line between tables is drawn at 2.6 px,
+  3.4 px under the pointer or when its table is picked out, and its
+  cardinality ends at 2.2 px, so connections read at a glance across a full
+  schema. Only the weight changed; routes, colours and notation are as
+  before. The diagram canvas is untouched.
 - **Connectors under the hand.** Orthogonal and row-exact, routed around the
   tables or straight through, kept apart in lanes and fanned where several
   land on one row. Any straight run can be pushed sideways; either end can be
@@ -1116,19 +1146,18 @@ they would read from.
   user-defined key only through a column added on the schema and made its
   primary key. ADR-021 §5b records this conflict, which is open and waiting
   for Zain's decision.
-- **A primary key is marked twice**, with the letters `PK` and a solid golden
-  key beside them, upright with its teeth pointing down. The key is artwork in
-  the icon set (`key.svg`) rather than a shape drawn in code, so it is a key
-  rather than an approximation of one, with a painted fallback for the sets that
-  have no file for it. It is filled rather than outlined for the reason the
-  diagram's padlock is: it is read at a glance in a small space, where a
-  hairline reads as a smudge. The gold keeps
-  the theme's warning hue and is raised in saturation and brightness until it
-  looks like a key, since an ink chosen to be read as words is a bronze on light
-  paper. The glyph comes from the icon set in use rather than being drawn into
-  the schema, so it follows the chosen artwork like every other icon, and the
-  key gutter is wide enough to hold both marks rather than the mark being shrunk
-  to fit.
+- **A primary key is marked twice**, with a golden key and the letters `PK`
+  (the key redrawn 2026-09-26, to Zain's reference). The key is a polished
+  golden key held bow up and pointing down, with the teeth at its foot: its
+  own vector drawing, `assets/marks/primary-key.svg`, with a gold gradient,
+  a darker gold edge, a hole that shows what is behind it, and a soft shine.
+  It is drawn through `primary_key_mark()` in `icons.cpp`, so a table can wear
+  the same key later. It is the same key whichever icon set is chosen, and it
+  goes grey, keeping its shading, under the Plain theme. It stands right
+  before `PK` so the two read as one mark beside the name. The row, its
+  height, the gutter and the letters are as they were. (Before, the key was
+  the icon set's key glyph, inked in the theme's warning hue raised to gold,
+  at the gutter's far left.)
 - **A foreign key is always marked `FK`, in green** (2026-09-24). This holds
   when the column is also part of a composite primary key, as the participant
   keys of a bridge are when somebody chooses them. The gutter never shows a
@@ -1540,6 +1569,24 @@ outside the repository at `erdflow-notes/UI-AZURE-TASKS.md`. What is built:
   What stays is its own: Arrange, Appearance, undo and redo, its search and
   the theme. The Conceptual workspace keeps Select, Entity, Attribute,
   Relationship, Specialization, Connect and Note.
+- **Undo and redo beside the schema whenever it is open** (2026-09-25).
+  The header's Undo and Redo, the same actions the Edit menu has, now show
+  whenever Relational Design is open, not only while it has the whole
+  window. Before, with the schema sharing the stage, the only Undo buttons
+  were on the ribbon's Home row, so with any other tab in front there was
+  none on screen. Its search and the theme still come out only in full
+  view, since otherwise the diagram's own are showing
+  (`MainWindow::place_schema_header_tools`). The keyboard's Undo reached the
+  schema in both layouts already.
+- **The schema panel is always the stage's width** (2026-09-26, fix). The
+  panel is laid over the stage by hand, and was laid out again only when the
+  window changed size. Pulling Properties (or Explorer) wider or narrower,
+  or closing and opening it, changes the stage without changing the window,
+  so the panel kept its old width: a strip of diagram showed between it and
+  Properties, or it ran on under the stage's edge. The stage is now watched
+  and the panel is laid out whenever the stage is resized, so it follows a
+  side panel's edge continuously while it is dragged. Only the panel's
+  width changes; the tables, their places and the zoom are untouched.
 - **Reference pictures and an audit** (`tests/visual_tests.cpp`, the `visual`
   suite). Home, the illustration on its own, a card at rest, under the
   pointer, chosen and *Coming soon*, a sidebar row under the pointer, and

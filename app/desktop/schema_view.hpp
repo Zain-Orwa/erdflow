@@ -89,6 +89,15 @@ public:
     // than one with a gap under its last row.
     void set_tables_resizable(bool resizable);
     [[nodiscard]] bool tables_resizable() const { return tables_resizable_; }
+    // Compact schema (Zain, 2026-09-27): every table shows its key marks and its
+    // columns' names and nothing more -- no heading row, no Type, no
+    // Constraints or configuration footer -- each table as wide as its names.
+    // Off unless chosen. While
+    // it is on, sizes given by hand are set aside and tables are not pulled
+    // about, so a narrow size given here never folds the columns of the full
+    // view; turned off, every table is exactly as it was.
+    void set_names_only(bool on);
+    [[nodiscard]] bool names_only() const { return names_only_; }
     [[nodiscard]] bool lines_give_way() const { return lines_give_way_; }
     [[nodiscard]] SchemaRouting routing() const { return routing_; }
     [[nodiscard]] Notation notation() const { return notation_; }
@@ -558,12 +567,25 @@ private:
     // and where the pointer was then. The table pressed, ordinarily; every
     // marked table when the one pressed is among several marked.
     std::vector<std::pair<domain::ElementRef, QPointF>> carried_;
+    // The lines shaped by hand that a drag carries whole, because both of
+    // their tables are among those carried, and how far the drag has taken
+    // them. Their corners, and any end left off its table, move the same
+    // distance as the tables, so the shape a hand gave a line travels with
+    // what it joins rather than being left behind (Zain, 2026-09-25). An end
+    // on its table already follows it, being kept as a place on the table.
+    std::vector<domain::LinkSource> carried_lines_;
+    QPointF carried_by_;
+    [[nodiscard]] static Shape moved_by(Shape shape, QPointF by);
+    [[nodiscard]] static domain::SchemaLine as_line(const Shape& shape);
     QPointF carried_from_;
     SchemaShowing showing_ = SchemaShowing::Everything;
     QString looking_for_;
     SchemaRouting routing_ = SchemaRouting::AroundTables;
     bool lines_give_way_ = false;
     bool tables_resizable_ = true;
+    bool names_only_ = false;
+    // How tall the row naming the columns is: none when only the names show.
+    [[nodiscard]] double heading_room() const;
     // What is marked. One is the ordinary case and behaves as it always did:
     // the table is ringed, what it is joined to is ringed with it, and the
     // rest of the schema fades. Several is a deliberate act -- a band drawn

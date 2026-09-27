@@ -239,8 +239,13 @@ public:
     // Moving tables, and giving back any lines the move displaced. The two
     // travel together because they are one thing the user did: a line handed
     // back in an edit of its own would leave undo taking them apart.
-    EditResult move_schema_tables(const std::map<domain::ElementRef, domain::Point>& places,
-                                  const std::vector<domain::LinkSource>& give_way = {});
+    // Lines shaped by hand whose two tables both moved travel with them: they
+    // arrive here already moved, and are written in the same edit, so one
+    // undo takes the tables and the lines back together.
+    EditResult move_schema_tables(
+        const std::map<domain::ElementRef, domain::Point>& places,
+        const std::vector<domain::LinkSource>& give_way = {},
+        const std::vector<std::pair<domain::LinkSource, domain::SchemaLine>>& carried = {});
     // Pulling tables by their edges. A table answers to all four of them and
     // to its corners, so a pull carries a width, a height, and -- where the
     // edge that was pulled is one that moves the table's top-left corner --

@@ -159,6 +159,9 @@ private:
     // derived from the model every time it is shown, and holds nothing.
     SchemaView* schema_ = nullptr;
     QWidget* schema_panel_ = nullptr;
+    // The area the diagram and the schema panel share. Watched, because it is
+    // resized by the side panels as well as by the window.
+    QWidget* stage_ = nullptr;
     QScrollArea* schema_scroll_ = nullptr;
     QLabel* schema_state_ = nullptr;
     // The schema's own settings, as groups of choices in its two menus
@@ -190,6 +193,9 @@ private:
     void show_schema(bool shown);
     // The whole window for the schema, and back again.
     void set_schema_full(bool full);
+    // What the header offers the schema: undo and redo while it is open,
+    // and its search and the theme too while it has the whole window.
+    void place_schema_header_tools();
     bool schema_full_ = false;
     bool laying_out_schema_ = false;
     // The diagram's own furniture, put away while the schema has the window.

@@ -33,6 +33,7 @@
 #include <QTreeWidget>
 #include <QLayout>
 #include <QEnterEvent>
+#include <QPointer>
 #include <QFontMetrics>
 #include <QGraphicsItem>
 #include <QGraphicsScene>
@@ -1668,6 +1669,38 @@ int main(int argc, char** argv) {
                     "Which is a new, empty conceptual project");
             require(cards[0]->isChecked(), "And the card it came from is the one chosen");
 
+            // The primary key's mark is a golden key held bow up and pointing
+            // down, from its own drawing (Zain, 2026-09-26).
+            {
+                const auto key = desktop::primary_key_mark(24, 1.0, false).toImage()
+                                     .convertToFormat(QImage::Format_ARGB32);
+                require(key.size() == QSize(24, 24), "Drawn at the size asked for");
+                int gold = 0;
+                for (int y = 0; y < key.height(); ++y)
+                    for (int x = 0; x < key.width(); ++x) {
+                        const auto ink = key.pixelColor(x, y);
+                        if (ink.alpha() > 200 && ink.red() > ink.blue() + 80 && ink.green() > ink.blue() + 30) ++gold;
+                    }
+                require(gold > 40, "It is golden");
+                // Across a band of rows: how wide what is drawn there is, and
+                // how far right it reaches.
+                const auto extent = [&](int from, int to) {
+                    int least = key.width(), most = -1;
+                    for (int y = from; y < to; ++y)
+                        for (int x = 0; x < key.width(); ++x)
+                            if (key.pixelColor(x, y).alpha() > 128) {
+                                least = std::min(least, x);
+                                most = std::max(most, x);
+                            }
+                    return std::pair{most - least + 1, most};
+                };
+                const auto bow = extent(4, 10);
+                const auto shaft = extent(13, 14);
+                const auto teeth = extent(19, 22);
+                require(bow.first > 2 * shaft.first, "Its ring is at the top");
+                require(teeth.second > shaft.second + 2, "And its teeth at the foot, so it points down");
+            }
+
             // Plain shows no colour at all (Zain, 2026-09-24): not in any
             // icon of any set -- the coloured artwork included -- and not in
             // anything the home screen draws for itself.
@@ -1682,6 +1715,10 @@ int main(int argc, char** argv) {
                                                         .toImage()) == 0,
                                     "Under Plain, every icon of every set is drawn without colour");
                     }
+                // The primary key's golden mark follows Plain too (Zain,
+                // 2026-09-26): its shape and shading, in greys.
+                require(coloured_pixels(desktop::primary_key_mark(19, 3.0, true).toImage()) == 0,
+                        "Under Plain, the primary key's mark is grey");
                 const auto wearing = window.canvas()->theme_id();
                 window.set_theme(desktop::ThemeId::Plain);
                 settle();
@@ -3939,6 +3976,14 @@ int main(int argc, char** argv) {
             settle_for(600);   // the panel rises over 280ms
             auto* grip = child<QWidget>(window, "schemaGrip");
             require(grip->isVisible(), "The panel wears a grip to resize it by");
+            // Sharing the stage with the diagram, the schema's work can be
+            // undone and redone from beside it, not only when it has the whole
+            // window (Zain, 2026-09-25).
+            require(child<QToolButton>(window, "schemaUndo")->isVisible()
+                        && child<QToolButton>(window, "schemaRedo")->isVisible()
+                        && child<QToolButton>(window, "schemaUndo")->defaultAction()
+                               == window.findChild<QAction*>("undoCommand"),
+                    "The open schema offers undo and redo, the same actions the menu has");
             // Pulled all the way up, the panel covers the diagram; pushed down,
             // it becomes a sliver and the diagram comes back.
             const auto* panel = child<QWidget>(window, "schemaPanel");
@@ -4010,10 +4055,67 @@ int main(int argc, char** argv) {
                         "Specialization, Connect and Note");
             require(explorer_dock->isVisible(), "Leaving it brings them back");
             require(child<QToolBar>(window, "modelTools")->isVisible(), "The drawing tools with them");
-            require(!kept->isVisible(), "And the header gives its own back");
+            // Undo and redo stay beside the schema while it is open, sharing
+            // the stage or not (Zain, 2026-09-25); its search and the theme go
+            // back, since the diagram's own are showing again.
+            require(kept->isVisible() && child<QToolButton>(window, "schemaUndo")->isVisible()
+                        && child<QToolButton>(window, "schemaRedo")->isVisible(),
+                    "Sharing the stage, the schema keeps its undo and redo");
+            require(!child<QLineEdit>(window, "schemaSearch")->isVisible()
+                        && !child<QToolButton>(window, "schemaTheme")->isVisible(),
+                    "And the header gives back the search and theme it had lent");
             require(child<QLabel>(window, "canvasInstructions")->isVisible(),
                     "And the furniture with them");
             require(full->text() == "Full", "And says so");
+
+            // The panel is the stage's width, whatever the side panels leave
+            // the stage. Narrowing Properties, closing it or opening it again
+            // changes the stage without changing the window, and the panel
+            // follows each time, with no strip of diagram showing beside it
+            // and nothing running under the panel beside it. Only the panel
+            // is resized: the tables stay the size and place they were.
+            {
+                auto* properties_dock = child<QDockWidget>(window, "propertiesDock");
+                auto* stage = child<QWidget>(window, "workspaceStage");
+                auto* schema = static_cast<desktop::SchemaView*>(child<QWidget>(window, "schemaView"));
+                const auto tables_before = schema->table_boxes();
+                const auto fills_stage = [&] {
+                    return panel->x() == 0 && panel->width() == stage->width();
+                };
+                require(fills_stage(), "Sharing the stage, the panel is as wide as the stage");
+                // Properties opens here at its narrowest, so it is widened
+                // first and then narrowed back.
+                auto stage_before = stage->width();
+                window.resizeDocks({properties_dock}, {properties_dock->width() + 120}, Qt::Horizontal);
+                settle();
+                require(stage->width() < stage_before, "Widening Properties narrows the stage");
+                require(fills_stage(), "And the panel narrows with it");
+                stage_before = stage->width();
+                window.resizeDocks({properties_dock}, {properties_dock->width() - 90}, Qt::Horizontal);
+                settle();
+                require(stage->width() > stage_before, "Narrowing Properties widens the stage");
+                require(fills_stage(), "And the panel widens with it, leaving no strip of diagram beside it");
+                properties_dock->hide();
+                settle();
+                require(fills_stage(), "Closing Properties gives the panel the room it leaves");
+                properties_dock->show();
+                settle();
+                require(fills_stage(), "And opening it again takes that room back");
+                require(panel->mapTo(&window, QPoint(panel->width(), 0)).x() <= properties_dock->x(),
+                        "Without the panel running under Properties");
+                const auto window_was = window.size();
+                window.resize(window_was.width() - 240, window_was.height());
+                settle();
+                require(fills_stage(), "A narrower window still leaves the panel the stage's width");
+                window.resizeDocks({properties_dock}, {properties_dock->width() + 60}, Qt::Horizontal);
+                settle();
+                require(fills_stage(), "And Properties is still followed after it");
+                window.resize(window_was);
+                settle();
+                require(fills_stage(), "As it is when the window is given its size back");
+                require(schema->table_boxes() == tables_before,
+                        "The tables are neither moved nor resized by the room the panel is given");
+            }
 
             // A name typed on the schema is the name on the diagram. Renaming
             // a table renames the entity it came from, so the two never come
@@ -4232,6 +4334,108 @@ int main(int argc, char** argv) {
                 }
             }
 
+            // The list a shared name's type is chosen from is only as wide as
+            // its entries (Zain, 2026-09-26), though the box it opens from is
+            // stretched across its row, and it is chosen from as before.
+            {
+                auto* head = child<QPushButton>(window, "schemaSharedNamesHead");
+                head->click();
+                settle();
+                auto* type = child<QComboBox>(window, "sharedNameType");
+                const auto box = type->size();
+                // Opening a list takes the keyboard, as any combo box's does;
+                // it is handed back afterwards, so what follows types where
+                // it would have.
+                QPointer<QWidget> keyboard = QApplication::focusWidget();
+                type->showPopup();
+                settle();
+                auto* popup = type->view()->window();
+                require(popup != &window && popup->isVisible(), "The list opens");
+                require(popup->width() < box.width(), "Narrower than the box it opens from");
+                int widest = 0;
+                for (int i = 0; i < type->count(); ++i) {
+                    const auto own = type->itemData(i, Qt::FontRole);
+                    const QFontMetrics lettering(own.isValid() ? own.value<QFont>() : type->view()->font());
+                    widest = std::max(widest, lettering.horizontalAdvance(type->itemText(i)));
+                }
+                require(type->view()->viewport()->width() > widest, "Yet wide enough for every entry, none cut short");
+                // The families' titles are a little bold and grey (Zain,
+                // 2026-09-26); the types beneath them are as they were.
+                int titles = 0;
+                for (int i = 0; i < type->count(); ++i) {
+                    const bool title = type->itemText(i).startsWith(QStringLiteral("— "));
+                    const auto own = type->itemData(i, Qt::FontRole);
+                    const auto ink = type->itemData(i, Qt::ForegroundRole);
+                    if (title) {
+                        ++titles;
+                        require(own.isValid() && own.value<QFont>().weight() >= QFont::DemiBold,
+                                "Each family's title is set a little bold");
+                        require(ink.isValid() && ink.value<QBrush>().color()
+                                                     == desktop::theme(window.canvas()->theme_id()).muted,
+                                "And in the theme's grey");
+                    } else {
+                        require(!own.isValid() && !ink.isValid(), "The types themselves are as they were");
+                    }
+                }
+                require(titles >= 8, "Every family has its title");
+                require(type->count() > 40, "With every entry it had");
+                require(type->size() == box, "The box itself is as it was");
+                type->hidePopup();
+                settle();
+                require(!popup->isVisible(), "And closes as before");
+                // Choosing from it gives every column of that name the type,
+                // in one edit, as it always has.
+                const auto revision = window.editor().revision();
+                int first_type = -1;
+                for (int i = 0; i < type->count() && first_type < 0; ++i)
+                    if (type->itemData(i).isValid()) first_type = i;
+                type->setCurrentIndex(first_type);
+                settle();
+                require(window.editor().revision() == revision + 1,
+                        "Choosing from it still answers every column of that name in one edit");
+                child<QAction>(window, "undoCommand")->trigger();
+                settle();
+                child<QPushButton>(window, "schemaSharedNamesHead")->click();
+                settle();
+                if (keyboard) keyboard->setFocus();
+                settle();
+            }
+
+            // Names only (Zain, 2026-09-27): chosen under Appearance, every
+            // table shows its key marks and its columns' names alone -- no
+            // row naming the columns, no Type, no Constraints -- and is as
+            // wide as its names. Not the default, and turned back, every
+            // table is exactly as it was.
+            {
+                auto* schema = static_cast<desktop::SchemaView*>(child<QWidget>(window, "schemaView"));
+                auto* names = child<QAction>(window, "schemaDetailNames");
+                auto* everything = child<QAction>(window, "schemaDetailFull");
+                require(everything->isChecked() && !names->isChecked() && !schema->names_only(),
+                        "Every table shows its types and constraints unless names only is chosen");
+                require(names->text() == "Compact schema", "The compact view has a descriptive label");
+                const auto whole = schema->table_boxes();
+                names->trigger();
+                settle();
+                require(schema->names_only() && QSettings().value("schemaNamesOnly").toBool(),
+                        "Names only is taken up, and remembered");
+                const auto named = schema->table_boxes();
+                require(named.size() == whole.size() && !named.empty(), "Every table is still there");
+                for (std::size_t i = 0; i < named.size(); ++i) {
+                    require(named[i].width() < whole[i].width(), "Each is narrower, holding only its names");
+                    require(named[i].height() < whole[i].height(),
+                            "Compact tables omit headings and configuration footers");
+                    const auto rows = schema->row_boxes()[i];
+                    if (!rows.empty())
+                        require(std::abs(named[i].bottom() - rows.back().bottom()) < 0.01,
+                                "Compact tables end at the last column without footer space");
+                }
+                everything->trigger();
+                settle();
+                require(!schema->names_only() && !QSettings().value("schemaNamesOnly").toBool(),
+                        "Turned back to everything");
+                require(schema->table_boxes() == whole, "Every table exactly as it was");
+            }
+
             // Closing the panel while it is full does not leave the window
             // stripped with nothing in it.
             full->click();
@@ -4239,6 +4443,8 @@ int main(int argc, char** argv) {
             child<QPushButton>(window, "previewSchema")->click();
             settle();
             require(explorer_dock->isVisible(), "Closing the schema gives the panels back too");
+            require(!child<QWidget>(window, "schemaHeaderTools")->isVisible(),
+                    "And its undo and redo go with it, the toolbar's being the diagram's");
             child<QPushButton>(window, "previewSchema")->click();
             settle_for(400);
             child<QPushButton>(window, "previewSchema")->click();
