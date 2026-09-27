@@ -2036,6 +2036,110 @@ int main(int argc, char** argv) {
         require(window.editor().project().entities.size() == example_entities + 3, "A locked tool keeps placing");
         require(window.canvas()->tool() == desktop::Tool::Entity,
                 "A locked tool stays selected");
+
+        // A click anywhere in the window outside the diagram puts the tool
+        // down, locked or not, and takes up Select (Zain, 2026-09-26). The
+        // diagram's own controls are part of the diagram, and a button that
+        // chooses a tool still chooses it.
+        {
+            const auto press_on = [](QWidget* target, QPoint at) {
+                // Delivered to whatever is deepest under the point, as a
+                // real click is.
+                if (auto* deepest = target->childAt(at)) {
+                    at = deepest->mapFrom(target, at);
+                    target = deepest;
+                }
+                const auto global = QPointF(target->mapToGlobal(at));
+                QMouseEvent press(QEvent::MouseButtonPress, QPointF(at), global, Qt::LeftButton,
+                                  Qt::LeftButton, Qt::NoModifier);
+                QApplication::sendEvent(target, &press);
+                QMouseEvent release(QEvent::MouseButtonRelease, QPointF(at), global, Qt::LeftButton,
+                                    Qt::NoButton, Qt::NoModifier);
+                QApplication::sendEvent(target, &release);
+                settle();
+            };
+            const auto lock_entity = [&] {
+                QMouseEvent twice(QEvent::MouseButtonDblClick, QPointF(5, 5), QPointF(5, 5),
+                                  Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+                QApplication::sendEvent(button, &twice);
+                settle();
+                require(window.canvas()->tool() == desktop::Tool::Entity && window.canvas()->tool_locked(),
+                        "The entity tool is locked again");
+            };
+            auto* explorer = child<QTreeView>(window, "explorer")->viewport();
+            auto* properties = child<QDockWidget>(window, "propertiesDock")->widget();
+
+            press_on(child<QWidget>(window, "canvasControlsGrip"), QPoint(4, 2));
+            require(window.canvas()->tool() == desktop::Tool::Entity && window.canvas()->tool_locked(),
+                    "A press on the diagram's own controls keeps the tool");
+            const auto placed = window.editor().project().entities.size();
+            click_canvas(*window.canvas(), QPointF(680, 250));
+            require(window.editor().project().entities.size() == placed + 1
+                        && window.canvas()->tool() == desktop::Tool::Entity,
+                    "And a click inside the diagram still places");
+
+            press_on(explorer, QPoint(10, explorer->height() - 6));
+            require(window.canvas()->tool() == desktop::Tool::Select && !window.canvas()->tool_locked(),
+                    "A click in the Explorer hands a locked tool back to Select");
+            require(child<QAction>(window, "toolSelect")->isChecked() && entity_tool->text() == "Entity",
+                    "And the toolbar says so, with the lock mark gone");
+
+            lock_entity();
+            press_on(properties, QPoint(6, 6));
+            require(window.canvas()->tool() == desktop::Tool::Select,
+                    "So does a click in Properties");
+
+            entity_tool->trigger();
+            settle();
+            require(window.canvas()->tool() == desktop::Tool::Entity && !window.canvas()->tool_locked(),
+                    "The entity tool, unlocked");
+            press_on(explorer, QPoint(10, explorer->height() - 6));
+            require(window.canvas()->tool() == desktop::Tool::Select, "An unlocked tool is put down the same way");
+
+            lock_entity();
+            auto* toolbar = child<QToolBar>(window, "modelTools");
+            press_on(toolbar->widgetForAction(child<QAction>(window, "toolRelationship")), QPoint(5, 5));
+            require(window.canvas()->tool() == desktop::Tool::Relationship,
+                    "A tool button outside the diagram chooses its tool rather than Select");
+            entity_tool->trigger();
+            lock_entity();
+        }
+
+        // Properties locks the attribute owner as the element's own menu does
+        // (Zain, 2026-09-26), and says which way it stands.
+        {
+            const domain::ElementRef owner = window.editor().project().entities.begin()->first;
+            window.canvas()->select_elements({owner});
+            settle();
+            auto* lock = child<QPushButton>(window, "attributeOwnerLock");
+            require(!lock->isChecked() && lock->text() == "Lock as attribute owner",
+                    "Properties offers to lock an entity as the attribute owner");
+            lock->click();
+            settle();
+            require(window.canvas()->attribute_owner() == owner, "Pressing it locks the entity");
+            lock = child<QPushButton>(window, "attributeOwnerLock");
+            require(lock->isChecked() && lock->text() == "Unlock attribute owner", "And the panel says it is held");
+            child<QAction>(window, "toolAttribute")->trigger();
+            // Put down on the entity itself, where nothing else is nearer and
+            // so nothing is asked.
+            const auto& body = window.editor().project().layout.at(owner);
+            click_canvas(*window.canvas(), QPointF(body.x + body.width / 2, body.y + body.height / 2));
+            const auto placed = window.canvas()->selected_elements();
+            require(placed.size() == 1 && std::holds_alternative<domain::AttributeId>(placed.front())
+                        && window.editor().project().attributes.at(std::get<domain::AttributeId>(placed.front())).owner
+                               == owner,
+                    "An attribute placed goes on the locked entity");
+            require(window.findChild<QPushButton*>("attributeOwnerLock") == nullptr,
+                    "A plain attribute, selected, offers no lock: it cannot hold attributes");
+            window.canvas()->select_elements({owner});
+            settle();
+            child<QPushButton>(window, "attributeOwnerLock")->click();
+            settle();
+            require(!window.canvas()->attribute_owner(), "Pressing it again releases it");
+            require(!child<QPushButton>(window, "attributeOwnerLock")->isChecked(), "And the panel says so");
+            child<QAction>(window, "undoCommand")->trigger();
+            settle();
+        }
         // ISA is one toolbar entry offering both directions; the dropdown picks
         // the mode and the button itself locks like every other tool.
         auto* isa = child<QAction>(window, "toolIsa");
@@ -2989,24 +3093,19 @@ int main(int argc, char** argv) {
                     "And shows it at the toolbar's size");
         }
 
-        // Where a new line joins each shape is chosen on Connect's own arrow,
-        // beside the line style, and the choice is remembered.
+        // A line Connect draws is never pinned where it was clicked (Zain,
+        // 2026-09-26): "Join where I click" is no longer offered, nor the
+        // choice it was one half of, and a choice remembered from before is
+        // not taken up. The line styles stay on Connect's arrow.
         {
+            require(window.findChild<QAction*>("joinWhereClicked") == nullptr
+                        && window.findChild<QAction*>("joinAutomatic") == nullptr,
+                    "Connect's menu no longer offers where a line joins");
+            require(window.canvas()->join_mode() == desktop::JoinMode::Automatic,
+                    "New lines are not pinned where they are clicked");
             auto* connect_menu = child<QToolButton>(window, "connectButton")->menu();
-            auto* clicked = child<QAction>(window, "joinWhereClicked");
-            auto* automatic = child<QAction>(window, "joinAutomatic");
-            require(connect_menu->actions().contains(clicked) && connect_menu->actions().contains(automatic),
-                    "Both join modes are on the Connect menu");
-            require(clicked->isChecked() && window.canvas()->join_mode() == desktop::JoinMode::WhereClicked,
-                    "New lines join where they are clicked unless told otherwise");
-            automatic->trigger();
-            settle();
-            require(window.canvas()->join_mode() == desktop::JoinMode::Automatic, "The menu changes the canvas");
-            require(automatic->isChecked() && !clicked->isChecked(), "And marks the mode in use");
-            require(QSettings().value("joinMode").toString() == "automatic", "The choice is remembered");
-            clicked->trigger();
-            settle();
-            require(window.canvas()->join_mode() == desktop::JoinMode::WhereClicked, "And back again");
+            require(connect_menu->actions().contains(child<QAction>(window, "lineElbow")),
+                    "The line styles are still there");
         }
 
         // An entity says in Properties whether it relates to itself, and

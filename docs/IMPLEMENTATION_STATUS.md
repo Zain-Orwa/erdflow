@@ -288,6 +288,56 @@ not been built yet. Their presence in those documents is not a completion claim.
   element and returns to Select. Double-clicking the tool locks it, marking the
   button with a padlock, so it keeps placing until another tool is chosen or
   Escape is pressed. Select cannot be locked.
+- An attribute placed with the Attribute tool stands on its own and is
+  connected by hand, whatever is selected (2026-09-26). It used to be joined
+  to a selected entity, relationship or composite attribute. To attach
+  attributes as they are placed, an owner is locked instead, in any of
+  three places: the open padlock an entity, relationship or composite
+  attribute wears in its top-left corner while it is selected; **Lock as
+  attribute owner** in its right-click menu; or the same button under its
+  name in Properties. The owner then wears a closed padlock there, and
+  every attribute placed is attached to it with its line drawn; with the
+  Attribute tool locked too, one after another. Pressing the closed padlock,
+  which also answers with the Attribute tool in hand, or **Unlock attribute
+  owner** in the other two places, lets it go, as does deleting the owner,
+  a composite being made plain, or another project being opened. Only one
+  owner is locked at a time. The lock is not saved in the file. Connecting
+  two entities still creates the relationship between them, as before.
+- An attribute put down within a short reach (100 units) of another
+  entity, relationship or composite attribute, and nearer to it than to the
+  locked owner, is asked about before anything is placed (2026-09-26): "You
+  are locked to Mentor, but this attribute is nearer Student." **Continue**
+  attaches it to the locked owner, and that element is not asked about
+  again while the lock lasts; **Unlock** lets the lock go and places the
+  attribute on its own, to be connected by hand; **Cancel** places nothing.
+- **An attribute's line leaves its owner from the middle of the side facing
+  it** (2026-09-26, replacing the sliding join and its stub). Every
+  attribute on one side of an entity, relationship or composite attribute
+  leaves from the same point (the middle of a box's edge, a diamond's point,
+  an ellipse's end), each by its own straight line in every line style,
+  with no stub, so lines never hook round or run across the body. Moving
+  an attribute about on that side leaves the point where it is; carried past
+  a corner, its line moves to the middle of the side it now faces (Zain
+  chose this over a point fixed wherever the attribute goes). Nothing is
+  stored, so the line stays unlocked; one pinned by hand, or dragged to a
+  point, is drawn straight from where it was pinned. Attributes placed on a
+  locked owner are unlocked like any other and follow the same rule (they
+  used to be pinned to a shared exit).
+- **Connect no longer pins a line where it was clicked** (2026-09-26).
+  "Join where I click", which was the default and pinned both ends there,
+  is gone from Connect's arrow, and with it the choice it was one half of;
+  a choice remembered from before is ignored. Every line Connect draws
+  starts unlocked. Lines already pinned in saved diagrams stay pinned until
+  unlocked by their padlock or right-click.
+- A click anywhere in the window outside the diagram puts down whatever
+  tool is in hand, locked or not, and takes up Select (2026-09-26): the
+  Explorer, Properties, the ribbon, the header, the Relational Design panel
+  and so on. Inside the diagram a click does what the tool does, placing
+  what it places. The diagram's own zoom controls and scrollbars count as
+  inside it, and a button that chooses a tool still chooses that tool.
+  The click itself still does its ordinary job, and the tool is put down
+  once it has, so a name being typed on the diagram is kept as before
+  (`MainWindow::pressed_outside_canvas`, watched by `PressWatch`).
 - Selecting an element draws every link touching it heavier and lifts it above
   the other links, so what it connects to can be read at a glance.
 - Single/multiple/rubber-band selection, Select All, zoom (mouse wheel, or a
@@ -374,7 +424,10 @@ not been built yet. Their presence in those documents is not a completion claim.
   there, and is then an element like any other to drag or place by its
   coordinates. The
   relationship, both of its sides and their joins are one edit, so one undo
-  takes the whole thing back.
+  takes the whole thing back. Its two lines start unlocked (2026-09-26):
+  neither end is pinned to where the entity was clicked, whatever Connect's
+  join setting, so each slides round its shapes as they move, until it is
+  locked by hand. Every other connection Connect makes is unchanged.
 - Weak entities and identifying relationships: an entity's **Kind** in
   Properties is Regular or Weak, and a relationship's is Regular, Identifying
   or Associative. A weak entity is drawn with a double border and its key

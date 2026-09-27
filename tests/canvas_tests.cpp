@@ -17,6 +17,8 @@
 #include <QLineEdit>
 #include <QContextMenuEvent>
 #include <QMenu>
+#include <QMessageBox>
+#include <QAbstractButton>
 #include <QMouseEvent>
 #include <QNativeGestureEvent>
 #include <QScrollBar>
@@ -31,6 +33,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <numbers>
 #include <iostream>
 #include <stdexcept>
 #include <vector>
@@ -315,17 +318,10 @@ void entity_to_entity_creates_a_relationship_tests() {
     key_to(field, Qt::Key_Return);
     require(editor.project().relationships.begin()->second.name == "Enrolled", "Typing names it");
 
-    // Each line is pinned to the point its entity was clicked, as any other
-    // connection made by clicking is.
-    const auto& shapes = editor.project().connectors;
-    require(shapes.size() == 2, "Both sides were pinned where they were clicked");
-    const auto direction_to = [](const QRectF& box, const QPointF& point) {
-        return std::atan2(point.y() - box.center().y(), point.x() - box.center().x());
-    };
-    const auto& student_side = shapes.at(domain::ConnectorRef{made.second.participants.front().id});
-    require(student_side.child_anchor && std::abs(*student_side.child_anchor - direction_to(first, on_student)) < 0.05,
-            "The student end where the student was clicked");
-    require(!student_side.owner_anchor, "And the relationship end left to route itself");
+    // Both lines start unlocked (Zain, 2026-09-26): neither end is pinned to
+    // where its entity was clicked, so each slides round its shapes as they
+    // move, until a hand locks it.
+    require(editor.project().connectors.empty(), "Neither line is pinned, at either end");
 
     // A second relationship between the same pair reads it another way, so it
     // steps aside rather than landing on the first, and is then an element
@@ -477,10 +473,28 @@ void lock_connector_tests() {
     };
     const auto meets = [&](const QPointF& point) { return link->shape().contains(link->mapFromScene(point)); };
     const auto attribute_centre = [&] { return find_node(view, "Born")->sceneBoundingRect().center(); };
+    // The middle of the side facing a point, each axis against its own half.
+    const auto middle_toward = [&](const QPointF& target) {
+        const auto across = (target.x() - body.center().x()) / (body.width() / 2);
+        const auto down = (target.y() - body.center().y()) / (body.height() / 2);
+        if (std::abs(down) >= std::abs(across))
+            return QPointF(body.center().x(), down < 0 ? body.top() : body.bottom());
+        return QPointF(across < 0 ? body.left() : body.right(), body.center().y());
+    };
 
-    // Unlocked, the join tracks the attribute wherever it goes.
-    const auto pinned_at = outline_toward(attribute_centre());
-    require(meets(pinned_at), "An unlocked join sits in the attribute's direction");
+    // Unlocked, the join is the middle of the side facing the attribute
+    // (Zain, 2026-09-26), and stays exactly there while the attribute moves
+    // about on that side: only the attribute's end of the line moves.
+    const auto pinned_at = middle_toward(attribute_centre());
+    require(meets(pinned_at), "An unlocked join sits at the middle of the side facing the attribute");
+    require(editor.move({{domain::ElementRef{born}, {-90, -200, 130, 54}}}), "Move the attribute along that side");
+    view.synchronize();
+    QApplication::processEvents();
+    require(middle_toward(attribute_centre()) == pinned_at && meets(pinned_at),
+            "Moving it along the same side leaves the join where it was");
+    require(editor.undo(), "Put it back");
+    view.synchronize();
+    QApplication::processEvents();
 
     // Lock it exactly where it is drawn, so locking itself moves nothing.
     const auto angle = std::atan2(pinned_at.y() - body.center().y(), pinned_at.x() - body.center().x());
@@ -504,7 +518,8 @@ void lock_connector_tests() {
     require(editor.project().connectors.empty(), "An unlocked, unbent connector stores nothing");
     view.synchronize();
     QApplication::processEvents();
-    require(meets(outline_toward(attribute_centre())), "Unlocking lets the join follow the attribute again");
+    require(meets(middle_toward(attribute_centre())) && middle_toward(attribute_centre()) != pinned_at,
+            "Unlocked again, the join is the middle of the side the attribute now faces");
 
     // A lock is an edit like any other.
     require(editor.undo(), "Undo the unlock");
@@ -778,7 +793,11 @@ void join_where_clicked_tests() {
     view.actual_size();
     view.centerOn(0, 80);
     QApplication::processEvents();
-    require(view.join_mode() == desktop::JoinMode::WhereClicked, "New lines join where they are clicked unless told otherwise");
+    // New lines are not pinned where they are clicked (Zain, 2026-09-26); the
+    // window no longer offers it. The canvas can still pin a join at a point,
+    // which is what follows here, so it is asked for.
+    require(view.join_mode() == desktop::JoinMode::Automatic, "New lines are not pinned where they are clicked");
+    view.set_join_mode(desktop::JoinMode::WhereClicked);
 
     // A node's bounding rect is padded a little for its selection outline; the
     // body itself is the shape, and the grips sit on the body's outline.
@@ -2210,6 +2229,227 @@ void tool_locking_tests() {
     require(!view.tool_locked(), "Select is never locked");
 }
 
+// An attribute placed is attached only to an owner locked by hand (Zain,
+// 2026-09-26). What happens to be selected is not a choice of owner.
+void attribute_owner_tests() {
+    SequentialIds ids;
+    application::Editor editor(ids);
+    const domain::ElementRef mentor = std::get<domain::RelationshipId>(
+        *editor.create_relationship("Mentor", {-60, -20, 180, 100}).created);
+    const domain::ElementRef student = std::get<domain::EntityId>(
+        *editor.create_entity("Student", {-420, -20, 160, 80}).created);
+    const auto address = std::get<domain::AttributeId>(*editor.create_attribute("Address", {260, -220, 150, 60}).created);
+    require(editor.set_attribute_kind(address, domain::AttributeKind::Composite), "Address is composite");
+    const domain::ElementRef phone = std::get<domain::AttributeId>(
+        *editor.create_attribute("Phone", {260, 200, 150, 60}).created);
+
+    desktop::DiagramView view(editor);
+    QString announced;
+    view.on_status = [&](const QString& message) { announced = message; };
+    int told = 0;
+    view.on_attribute_owner = [&] { ++told; };
+    view.resize(1100, 800);
+    view.show();
+    view.actual_size();
+    view.centerOn(0, 0);
+    QApplication::processEvents();
+    // A question put while placing is answered by the button named, and what
+    // it said is kept. One that was not expected is dismissed, so it is
+    // reported rather than left waiting for an answer forever.
+    QString asked;
+    const auto answering = [&](const char* button) {
+        asked.clear();
+        QTimer::singleShot(0, [&, button] {
+            auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+            if (!box) return;
+            asked = box->text();
+            if (auto* pressed = box->findChild<QAbstractButton*>(QString::fromLatin1(button))) pressed->click();
+            else box->reject();
+        });
+    };
+    // The attribute just placed is the one left selected.
+    const auto place = [&](const QPointF& at) {
+        answering("unexpected");
+        click(view, at);
+        require(asked.isEmpty(), "Nothing is asked when the attribute is put down beside nothing else");
+        const auto chosen = view.selected_elements();
+        require(chosen.size() == 1 && std::holds_alternative<domain::AttributeId>(chosen.front()),
+                "A click places an attribute");
+        return editor.project().attributes.at(std::get<domain::AttributeId>(chosen.front())).owner;
+    };
+
+    // Mentor selected, and the attribute still stands on its own.
+    view.select_elements({mentor});
+    view.set_tool(desktop::Tool::Attribute);
+    require(announced.contains("connect it by hand"), "The tool says an attribute is connected by hand");
+    require(!place(QPointF(0, -260)), "An attribute placed while Mentor is selected is not attached to it");
+    require(!view.attribute_owner(), "Nothing is locked to begin with");
+
+    // What can hold attributes is what can be locked.
+    require(view.can_own_attributes(mentor) && view.can_own_attributes(student)
+                && view.can_own_attributes(domain::ElementRef{address}),
+            "An entity, a relationship and a composite attribute can be locked");
+    require(!view.can_own_attributes(phone), "A plain attribute cannot");
+
+    // Locked from Mentor's own menu, every attribute placed goes on Mentor,
+    // whatever is selected, as many as a locked tool places.
+    const auto right_click = [&](const domain::ElementRef& on, const char* entry) {
+        view.select_elements({on});
+        QApplication::processEvents();
+        QTimer::singleShot(0, [&, entry] {
+            auto* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+            require(menu != nullptr, "A right-click opens a menu");
+            auto* action = menu->findChild<QAction*>(QString::fromLatin1(entry));
+            require(action != nullptr, "It offers to lock or release the attribute owner");
+            menu->close();
+            action->trigger();
+        });
+        const auto position = view.mapFromScene(find_node(view, QString::fromStdString(
+            domain::name(editor.project(), on)))->sceneBoundingRect().center());
+        QContextMenuEvent event(QContextMenuEvent::Mouse, position, view.viewport()->mapToGlobal(position));
+        QApplication::sendEvent(view.viewport(), &event);
+        QApplication::processEvents();
+    };
+    right_click(mentor, "contextLockOwner");
+    require(view.attribute_owner() == mentor, "Mentor is locked as the owner");
+    require(told == 1, "And the window is told");
+    require(announced.contains("go on Mentor"), "The status line says where attributes will go");
+    view.set_tool(desktop::Tool::Attribute, true);
+    view.select_elements({student});
+    std::vector<domain::AttributeId> fanned;
+    for (const auto& at : {QPointF(-120, -260), QPointF(60, -300), QPointF(140, -300)}) {
+        require(place(at) == mentor, "Each attribute placed goes on the locked owner, with its line drawn");
+        fanned.push_back(std::get<domain::AttributeId>(view.selected_elements().front()));
+    }
+    require(view.tool() == desktop::Tool::Attribute && view.tool_locked(), "And the tool stays locked");
+
+    // Every one is unlocked, and leaves Mentor from the middle of the side
+    // facing it: here Mentor's top point, shared by all three, each by its
+    // own straight line (Zain, 2026-09-26).
+    const auto& mentor_body = editor.project().layout.at(mentor);
+    const QPointF top_of_mentor(mentor_body.x + mentor_body.width / 2, mentor_body.y);
+    // A line from the point, running straight towards the attribute.
+    const auto leaves_from = [&](const domain::ElementRef& attribute, const QPointF& point) {
+        const auto& box = editor.project().layout.at(attribute);
+        const QPointF centre(box.x + box.width / 2, box.y + box.height / 2);
+        const auto along = point + (centre - point) * 0.3;
+        for (auto* item : view.scene()->items())
+            if (item->zValue() < 0 && item->toolTip().startsWith("Attribute ownership")
+                && item->shape().contains(item->mapFromScene(point))
+                && item->shape().contains(item->mapFromScene(along)))
+                return true;
+        return false;
+    };
+    for (const auto& id : fanned) {
+        require(!editor.project().connectors.contains(domain::ConnectorRef{id}), "Each line is unlocked");
+        require(leaves_from(domain::ElementRef{id}, top_of_mentor), "And leaves from Mentor's top point");
+    }
+    // Placing one is still one step of history.
+    const auto placed = editor.project().attributes.size();
+    require(editor.undo(), "The last placement undone");
+    view.synchronize();
+    require(editor.project().attributes.size() == placed - 1 && !editor.project().attributes.contains(fanned[2]),
+            "One undo takes back the last attribute and its line together");
+    require(editor.redo(), "And redone");
+    view.synchronize();
+    QApplication::processEvents();
+
+    // Put down beside Student while Mentor is locked, the attribute is asked
+    // about before anything is placed (Zain, 2026-09-26).
+    const QPointF beside_student(-340, 110);
+    answering("ownerContinue");
+    click(view, beside_student);
+    require(asked.contains("Mentor") && asked.contains("Student"),
+            "The question names the locked owner and the element the attribute is beside");
+    auto chosen = view.selected_elements();
+    require(chosen.size() == 1
+                && editor.project().attributes.at(std::get<domain::AttributeId>(chosen.front())).owner == mentor,
+            "Continuing attaches it to Mentor all the same");
+    require(place(QPointF(-300, 120)) == mentor, "And Student is not asked about again while the lock lasts");
+    // Locked afresh, it is asked about again; Cancel places nothing.
+    view.set_attribute_owner(std::nullopt);
+    view.set_attribute_owner(mentor);
+    auto count = editor.project().attributes.size();
+    answering("none, so Cancel");
+    click(view, beside_student);
+    require(!asked.isEmpty() && editor.project().attributes.size() == count, "Cancelled, nothing is placed");
+    require(view.attribute_owner() == mentor, "And the lock stays");
+    // Unlock lets the lock go and places the attribute on its own, to be
+    // connected to Student by hand.
+    answering("ownerUnlock");
+    click(view, beside_student);
+    require(!asked.isEmpty() && !view.attribute_owner(), "Unlocking lets the lock go");
+    chosen = view.selected_elements();
+    require(editor.project().attributes.size() == count + 1 && chosen.size() == 1
+                && !editor.project().attributes.at(std::get<domain::AttributeId>(chosen.front())).owner,
+            "And the attribute is placed on its own");
+    view.set_attribute_owner(mentor);
+
+    // A plain attribute is not taken as an owner, and the lock held stays.
+    view.set_attribute_owner(phone);
+    require(view.attribute_owner() == mentor, "Asking for a plain attribute leaves the lock where it was");
+    // Another owner moves the lock.
+    view.set_attribute_owner(domain::ElementRef{address});
+    require(place(QPointF(420, -320)) == domain::ElementRef{address}, "A composite attribute takes its parts");
+    const auto part = view.selected_elements().front();
+    // Unlocked from its menu, attributes stand on their own again.
+    view.set_tool(desktop::Tool::Select);
+    right_click(domain::ElementRef{address}, "contextUnlockOwner");
+    require(!view.attribute_owner(), "Unlocking lets the lock go");
+    view.set_tool(desktop::Tool::Attribute);
+    require(!place(QPointF(-300, 260)), "And an attribute is placed on its own again");
+
+    // The padlock on the element does the same without a menu: open on one
+    // that is selected, closed on the owner.
+    const auto padlock = [&](const QString& named) {
+        constexpr auto middle = 7 + 6 * desktop::connector_scale;
+        return find_node(view, named)->mapToScene(QPointF(middle, middle));
+    };
+    view.set_tool(desktop::Tool::Select);
+    view.select_elements({});
+    click(view, padlock("Student"));
+    require(!view.attribute_owner(), "An element not selected has no padlock to press");
+    require(view.selected_elements() == std::vector<domain::ElementRef>{student}, "So the press selects it");
+    click(view, padlock("Student"));
+    require(view.attribute_owner() == student, "Selected, its open padlock locks it");
+    click(view, padlock("Student"));
+    require(!view.attribute_owner(), "And the closed padlock unlocks it");
+    click(view, padlock("Student"));
+    view.set_tool(desktop::Tool::Attribute, true);
+    const auto before_padlock = editor.project().attributes.size();
+    click(view, padlock("Student"));
+    require(!view.attribute_owner() && editor.project().attributes.size() == before_padlock,
+            "With the Attribute tool in hand, the owner's padlock unlocks it rather than placing one");
+    // Locked again later, the owner's attributes leave from the point they
+    // already share.
+    view.set_attribute_owner(mentor);
+    click(view, QPointF(-200, -330));
+    QApplication::processEvents();
+    require(leaves_from(view.selected_elements().front(), top_of_mentor),
+            "Mentor locked again, a new attribute above leaves from the same point");
+    view.set_attribute_owner(std::nullopt);
+
+    // The lock goes with its owner, and stays gone when the owner comes back.
+    view.set_attribute_owner(student);
+    require(editor.erase({student}), "Student deleted");
+    view.synchronize();
+    require(!view.attribute_owner(), "Deleting the owner lets the lock go");
+    require(editor.undo(), "Student restored");
+    view.synchronize();
+    require(!view.attribute_owner(), "Undoing the deletion does not lock it again");
+    // As it does with a composite that stops being one.
+    view.set_attribute_owner(domain::ElementRef{address});
+    require(editor.erase({part}), "Its part taken off, since a composite with parts cannot be made plain");
+    require(editor.set_attribute_kind(address, domain::AttributeKind::Normal), "Address made plain");
+    view.synchronize();
+    require(!view.attribute_owner(), "A composite made plain lets the lock go");
+    // And with the project: another one is not this one.
+    view.set_attribute_owner(mentor);
+    editor.new_project();
+    view.synchronize();
+    require(!view.attribute_owner(), "A new project starts with nothing locked");
+}
+
 // The triangle is placed like any other element and wired up by hand. The first
 // entity connected is what it generalises; every one after that is a subtype.
 void inheritance_connection_tests() {
@@ -2454,44 +2694,39 @@ void attribute_trunk_and_line_style_tests() {
                 return item;
         throw std::runtime_error("Missing attribute link");
     };
-    // A link meets the body where its own attribute lies, rather than at the
-    // middle of whichever face is nearest. Anchoring to a face's midpoint is
-    // what made a dragged attribute's line jump: the join held still, then
-    // leapt the width of the body the moment the nearest face changed.
+    // A link leaves the body from the middle of the side facing its attribute
+    // (Zain, 2026-09-26), so every attribute on one side leaves from the same
+    // point, each by its own straight line, and moving an attribute about on
+    // that side leaves the point where it is. (It used to slide along the
+    // outline with the attribute; Zain chose the fixed point, knowing that a
+    // line carried past a corner moves to the next side's middle at once.)
     const auto body = find_node(view, "Person")->sceneBoundingRect();
     const QPointF above{body.center().x(), body.top()};
     const QPointF beside{body.left(), body.center().y()};
-    const auto exit_toward = [](const QRectF& owner, const QPointF& target) {
-        const auto centre = owner.center();
-        const auto delta = target - centre;
-        const auto divisor = std::max(std::abs(delta.x()) / (owner.width() / 2),
-                                      std::abs(delta.y()) / (owner.height() / 2));
-        return centre + delta / divisor;
-    };
-    std::vector<QPointF> exits;
     for (const auto& attribute : {QStringLiteral("First"), QStringLiteral("Last"), QStringLiteral("Born")}) {
         auto* link = edge_for(attribute);
-        const auto exit = exit_toward(body, find_node(view, attribute)->sceneBoundingRect().center());
-        require(link->shape().contains(link->mapFromScene(exit)),
-                "A link leaves the body in its own attribute's direction");
-        require(std::abs(exit.y() - body.top()) < 1.0, "An attribute above still leaves by the top");
-        exits.push_back(exit);
+        require(link->shape().contains(link->mapFromScene(above)),
+                "Every attribute above leaves from the middle of the top");
     }
-    // The outer two sit far apart along that same top edge. Were the anchor
-    // still snapping to the face's midpoint, all three would coincide.
-    require(std::abs(exits.front().x() - exits.back().x()) > 20.0,
-            "Attributes spread along a side do not collapse onto one exit point");
-    // Moving an attribute a little must move its join a little. This is the
-    // property the old midpoint anchor lacked, and the reason the line jumped.
-    const auto before = exit_toward(body, find_node(view, "Last")->sceneBoundingRect().center());
-    const auto nudged = exit_toward(body, find_node(view, "Last")->sceneBoundingRect().center() + QPointF(6, 0));
-    const auto shift = std::hypot(nudged.x() - before.x(), nudged.y() - before.y());
-    require(shift > 0.0 && shift < 12.0, "A small move of an attribute slides its join a small amount");
+    const auto called = [&](const std::string& name) {
+        for (const auto& [id, each] : editor.project().attributes)
+            if (each.name == name) return domain::ElementRef{id};
+        throw std::runtime_error("Missing attribute");
+    };
+    require(editor.move({{called("Last"), {290, 20, 130, 54}}}), "Move Last a little along the top");
+    view.synchronize();
+    QApplication::processEvents();
+    auto* moved_last = edge_for(QStringLiteral("Last"));
+    require(moved_last->shape().contains(moved_last->mapFromScene(above)),
+            "Moved along the same side, its line still leaves from the same point");
+    require(editor.undo(), "Put it back");
+    view.synchronize();
+    QApplication::processEvents();
     auto* sideways = edge_for(QStringLiteral("Ident"));
     require(sideways->shape().contains(sideways->mapFromScene(beside)),
-            "A link on another side uses that side's exit point");
+            "An attribute on another side leaves from that side's middle");
     require(!sideways->shape().contains(sideways->mapFromScene(above)),
-            "It does not run back across the body to the shared point above");
+            "It does not run back across the body to the point above");
 
     const auto render = [&] {
         QApplication::processEvents();
@@ -2501,19 +2736,18 @@ void attribute_trunk_and_line_style_tests() {
     view.set_line_style(desktop::LineStyle::Straight);
     require(view.line_style() == desktop::LineStyle::Straight, "The chosen style is kept");
     const auto straight = render();
-    require(curved != straight, "The two line styles draw differently");
+    require(curved == straight, "An attribute's line is straight in every line style, from its shared point");
     view.set_line_style(desktop::LineStyle::Curved);
     require(render() == curved, "Returning to a style reproduces its drawing");
 
-    // The exit point follows the owner as it moves, and is recomputed against
-    // where the attribute now lies rather than staying on the face it left by.
+    // The point goes with the owner when the owner moves.
     require(editor.move({{domain::ElementRef{person}, {620, 330, 160, 80}}}), "Move the owner");
     view.synchronize();
     QApplication::processEvents();
     const auto moved = find_node(view, "Person")->sceneBoundingRect();
     auto* link = edge_for(QStringLiteral("Last"));
-    const auto moved_exit = exit_toward(moved, find_node(view, "Last")->sceneBoundingRect().center());
-    require(link->shape().contains(link->mapFromScene(moved_exit)), "The exit point moves with the owner");
+    require(link->shape().contains(link->mapFromScene(QPointF(moved.center().x(), moved.top()))),
+            "The exit point moves with the owner");
 }
 
 // Selecting an element must show what it connects to, so its links are drawn
@@ -3526,6 +3760,7 @@ int main(int argc, char** argv) {
         attribute_trunk_and_line_style_tests();
         selection_highlight_tests();
         tool_locking_tests();
+        attribute_owner_tests();
         inheritance_connection_tests();
         inheritance_deletion_tests();
         inheritance_orientation_tests();

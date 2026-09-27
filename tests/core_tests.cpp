@@ -1167,6 +1167,24 @@ void connections_can_be_pinned_as_they_are_made() {
     CHECK(!editor.project().attributes.at(born).owner);
     CHECK(editor.project().connectors.size() == 1);
     CHECK(!blocks(editor.project()));
+
+    // An attribute placed on its owner can be pinned as it is made, in the
+    // same step of history, which is how the attributes placed on a locked
+    // owner all leave it from one point.
+    Connector exit;
+    exit.owner_anchor = -1.2;
+    const auto placed = editor.create_attribute("Grade", {0, -200, 150, 60}, AttributeOwner{ElementRef{student}}, exit);
+    CHECK(placed && placed.created);
+    const auto grade = std::get<AttributeId>(*placed.created);
+    CHECK(editor.project().connectors.at(ConnectorRef{grade}) == exit);
+    CHECK(editor.undo_label() == "Create attribute");
+    CHECK(editor.undo());
+    CHECK(!editor.project().attributes.contains(grade));
+    CHECK(!editor.project().connectors.contains(ConnectorRef{grade}));
+    // With no owner there is no link, so the shape is not stored.
+    const auto alone = editor.create_attribute("Alone", {0, 200, 150, 60}, std::nullopt, exit);
+    CHECK(alone && !editor.project().connectors.contains(ConnectorRef{std::get<AttributeId>(*alone.created)}));
+    CHECK(!blocks(editor.project()));
 }
 
 // A picture and a note are placed elements without being database objects:

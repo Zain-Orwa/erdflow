@@ -409,6 +409,8 @@ private:
     void build_shell();
     void build_actions();
     void choose_tool(Tool tool, bool locked);
+    // Back to Select after a click outside the diagram.
+    void pressed_outside_canvas(QWidget* pressed);
     void choose_line_style(LineStyle style);
     void refresh_tool_labels();
     void refresh_icons();

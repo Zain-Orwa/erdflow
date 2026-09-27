@@ -389,11 +389,13 @@ EditResult Editor::create_entity(std::string name, Rect rect) {
         return EditResult{true, {}, ElementRef{id}, {}};
     });
 }
-EditResult Editor::create_attribute(std::string name, Rect rect, std::optional<AttributeOwner> owner) {
+EditResult Editor::create_attribute(std::string name, Rect rect, std::optional<AttributeOwner> owner,
+                                   Connector shape) {
     return impl_->edit("Create attribute", [&](Delta& delta) {
         const AttributeId id{impl_->next_id()};
         delta.attributes.put(id, Attribute{.id = id, .name = std::move(name), .kind = AttributeKind::Normal, .owner = owner});
         delta.layout.put(ElementRef{id}, rect);
+        if (owner && !shape.automatic()) delta.connectors.put(ConnectorRef{id}, std::move(shape));
         return EditResult{true, {}, ElementRef{id}, {}};
     });
 }

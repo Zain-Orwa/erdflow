@@ -53,8 +53,12 @@ public:
     EditResult rename_project(std::string name);
     EditResult describe_project(std::string description);
     EditResult create_entity(std::string name, domain::Rect rect);
+    // A shape for the link to its owner can be given with it, as for
+    // set_attribute_owner, so an attribute placed pinned to a point on its
+    // owner is one step of history.
     EditResult create_attribute(std::string name, domain::Rect rect,
-                                std::optional<domain::AttributeOwner> owner = {});
+                                std::optional<domain::AttributeOwner> owner = {},
+                                domain::Connector shape = {});
     EditResult create_relationship(std::string name, domain::Rect rect);
     // An ISA triangle: one supertype, and the subtypes attached to it. The
     // constraint and completeness decide how it converts to relations later.

@@ -11,6 +11,8 @@
 #include <QIcon>
 #include <QContextMenuEvent>
 #include <QMenu>
+#include <QMessageBox>
+#include <QPushButton>
 #include <QGraphicsItem>
 #include <QGraphicsScene>
 #include <QKeyEvent>
@@ -35,6 +37,7 @@
 #include <cmath>
 #include <limits>
 #include <map>
+#include <numbers>
 #include <set>
 #include <utility>
 
@@ -275,6 +278,13 @@ public:
     // ring says which of the things still at full strength were asked for and
     // which are only there because they are next to one.
     bool found = false;
+    // Whether this is the element new attributes are attached to, locked by
+    // hand. Marked with a closed padlock, so it is plain where they will go.
+    bool owner_lock = false;
+    // Whether it could be: an entity, a relationship or a composite attribute.
+    // Selected, one of these wears an open padlock that locks it when pressed.
+    bool can_own = false;
+    [[nodiscard]] bool shows_owner_lock() const { return owner_lock || (can_own && isSelected()); }
     // A note's text, drawn beneath its title.
     QString body;
     // A plain note is one character standing on its own, drawn as the
@@ -538,30 +548,20 @@ public:
     // the body they belong to rather than each being routed on its own.
     std::vector<NodeItem*> attribute_children;
 
-    // Where a link to an attribute leaves this body, and the point just outside
-    // it where the line straightens out.
+    // Where a link to an attribute leaves this body (Zain, 2026-09-26): the
+    // middle of the side facing the attribute, so every attribute on one side
+    // leaves from the same point, each by a straight line of its own. Moving
+    // an attribute about on that side leaves the point where it is; carried
+    // past a corner, its line moves to the middle of the side it now faces.
+    // Nothing is stored for it, so the line stays unlocked. A join pinned by
+    // hand is where it was pinned.
     //
-    // The anchor rides the outline itself, at whatever point the attribute's own
-    // direction crosses it, so moving the attribute slides the join smoothly
-    // around the body and carries it around the corners. Snapping to the middle
-    // of whichever face is nearest is what made the line jump: the anchor would
-    // sit still while the attribute moved, then leap the width of the body the
-    // moment the nearest face changed.
-    void attribute_trunk(const NodeItem* child, const std::optional<double>& pinned,
-                         QPointF& anchor, QPointF& junction) const {
-        const QPointF centre = scenePos() + bounds_.center();
-        anchor = pinned ? boundary_at(*pinned)
-                        : boundary_toward(child->scenePos() + child->bounds_.center());
-        // The stub leaves along the outline's own outward direction rather than
-        // pointing straight back at the attribute, so the line looks like it
-        // leaves the body squarely and still has somewhere to curve from.
-        // Dividing each axis by its own radius turns the corners smoothly
-        // instead of snapping between four fixed headings.
-        const auto rx = std::max(bounds_.width() / 2, 0.001);
-        const auto ry = std::max(bounds_.height() / 2, 0.001);
-        QPointF out{(anchor.x() - centre.x()) / (rx * rx), (anchor.y() - centre.y()) / (ry * ry)};
-        const auto length = std::hypot(out.x(), out.y());
-        junction = anchor + (length > 0.000001 ? out / length : QPointF(1, 0)) * 22;
+    // It used to ride the outline at whatever point the attribute's direction
+    // crossed it, then leave by a short stub square to the outline. With the
+    // join pinned on a side facing away from its attribute, the stub turned
+    // back on itself, and the line hooked round or ran across the body.
+    [[nodiscard]] QPointF attribute_exit(const NodeItem* child, const std::optional<double>& pinned) const {
+        return boundary_at(pinned ? *pinned : middle_facing(child->scenePos() + child->bounds_.center()));
     }
 
     // The ISA triangle attaches at fixed points rather than wherever a ray
@@ -582,6 +582,17 @@ public:
     [[nodiscard]] double direction_of(const QPointF& point) const {
         const QPointF centre = scenePos() + bounds_.center();
         return std::atan2(point.y() - centre.y(), point.x() - centre.x());
+    }
+    // The middle of whichever side faces a point, as a direction: the top,
+    // right, bottom or left of the box, which is where a diamond has its
+    // points and an ellipse its ends. Each axis is measured against its own
+    // half of the box, so a wide entity is not taken to face sideways.
+    [[nodiscard]] double middle_facing(const QPointF& point) const {
+        const QPointF centre = scenePos() + bounds_.center();
+        const auto across = (point.x() - centre.x()) / std::max(bounds_.width() / 2, 0.001);
+        const auto down = (point.y() - centre.y()) / std::max(bounds_.height() / 2, 0.001);
+        if (std::abs(down) >= std::abs(across)) return down < 0 ? -std::numbers::pi / 2 : std::numbers::pi / 2;
+        return across < 0 ? std::numbers::pi : 0.0;
     }
     // Intersection of a ray from the node center with its actual Chen shape.
     QPointF boundary_toward(const QPointF& target) const {
@@ -837,6 +848,7 @@ public:
                               disjoint ? QStringLiteral("d") : QStringLiteral("o"));
         }
         paint_comment_badge(painter);
+        paint_owner_lock(painter);
         paint_found_ring(painter);
         // Last, so that a handle in the corner is never hidden under the mark
         // for a remark that happens to sit there.
@@ -866,6 +878,32 @@ public:
         if (comments <= 0 || !colors_) return;
         draw_comment_badge(painter, QPointF(bounds_.right() - comment_badge_size - 3, bounds_.top() + 3),
                            colors_->warning, comments_to_show > 0);
+    }
+    // In the top-left of the box: the corner opposite the remark mark, empty
+    // inside an ellipse or a diamond, and clear of a rectangle's centred name.
+    // Set in from the corner far enough to clear the resize grip there.
+    [[nodiscard]] QRectF owner_lock_rect() const {
+        constexpr qreal side = 12 * connector_scale;
+        return {bounds_.left() + 7, bounds_.top() + 7, side, side};
+    }
+    // The padlock a line wears, and read the same way: closed and filled on
+    // the owner, open and hollow on an element that could be one.
+    void paint_owner_lock(QPainter* painter) const {
+        if (!shows_owner_lock()) return;
+        const auto lock = owner_lock_rect();
+        const QRectF body(lock.left(), lock.center().y() - connector_scale, lock.width(),
+                          lock.height() / 2 + connector_scale);
+        const QRectF shackle(lock.left() + lock.width() * 0.22, lock.top(), lock.width() * 0.56,
+                             lock.height() * 0.62);
+        painter->save();
+        painter->setRenderHint(QPainter::Antialiasing);
+        painter->setPen(QPen(selection_, 1.4 * connector_scale));
+        painter->setBrush(Qt::NoBrush);
+        painter->drawArc(owner_lock ? shackle : shackle.translated(2.5 * connector_scale, -1.5 * connector_scale),
+                         0, 180 * 16);
+        painter->setBrush(owner_lock ? selection_ : (colors_ ? colors_->canvas : fill_));
+        painter->drawRoundedRect(body, 1.5 * connector_scale, 1.5 * connector_scale);
+        painter->restore();
     }
 protected:
     QVariant itemChange(GraphicsItemChange change, const QVariant& value) override {
@@ -1213,24 +1251,17 @@ public:
         const bool owned_attribute = std::holds_alternative<AttributeId>(descriptor.key)
             && std::holds_alternative<AttributeId>(descriptor.from);
         if (owned_attribute) {
-            QPointF anchor;
-            QPointF junction;
-            target->attribute_trunk(source, descriptor.owner_anchor, anchor, junction);
+            // One straight line from its owner's point to the attribute, in
+            // every line style, so lines sharing a point leave it each on its
+            // own rather than running together and branching (Zain,
+            // 2026-09-26).
+            const auto anchor = target->attribute_exit(source, descriptor.owner_anchor);
             end = descriptor.child_anchor ? source->boundary_at(*descriptor.child_anchor)
-                                          : source->boundary_toward(junction);
+                                          : source->boundary_toward(anchor);
             owner_join_ = anchor;
             child_join_ = end;
             path_ = QPainterPath(anchor);
-            path_.lineTo(junction);
-            if (style != LineStyle::Curved) {
-                path_.lineTo(end);
-            } else {
-                const auto reach = std::clamp(std::hypot(end.x() - junction.x(), end.y() - junction.y()) * 0.45, 18.0, 90.0);
-                const auto out = junction - anchor;
-                const auto length = std::hypot(out.x(), out.y());
-                const auto lead = length > 0.01 ? out / length : QPointF(0, -1);
-                path_.cubicTo(junction + lead * reach, end + normal(lead) * 0, end);
-            }
+            path_.lineTo(end);
             bend = path_.pointAtPercent(0.5);
             midpoint_ = bend;
             perpendicular_ = normal(end - anchor);
@@ -1526,8 +1557,98 @@ struct DiagramView::Impl {
     ThemeId theme_id = ThemeId::OfficeLight;
     Notation notation = Notation::CrowsFoot;
     LineStyle style = LineStyle::Elbow;
-    JoinMode join_mode = JoinMode::WhereClicked;
+    JoinMode join_mode = JoinMode::Automatic;
     bool tool_locked = false;
+    // The element attributes placed are attached to, and the project it was
+    // locked in: element identities are only unique within a project.
+    std::optional<ElementRef> attribute_owner;
+    domain::ProjectId owner_project;
+    [[nodiscard]] bool can_own_attributes(const ElementRef& ref) const {
+        const auto& project = editor.project();
+        if (!exists(project, ref)) return false;
+        if (std::holds_alternative<EntityId>(ref) || std::holds_alternative<RelationshipId>(ref)) return true;
+        const auto* attribute = std::get_if<AttributeId>(&ref);
+        return attribute && project.attributes.at(*attribute).kind == AttributeKind::Composite;
+    }
+    // Lets the lock go once it no longer names something that can hold
+    // attributes here, and marks whichever element holds it, and which could.
+    void refresh_owner_lock() {
+        if (attribute_owner
+            && (editor.project().id != owner_project || !can_own_attributes(*attribute_owner))) {
+            attribute_owner.reset();
+            answered_near.clear();
+        }
+        for (auto& [ref, node] : nodes) {
+            const bool marked = attribute_owner && ref == *attribute_owner;
+            const bool could = can_own_attributes(ref);
+            if (node->owner_lock == marked && node->can_own == could) continue;
+            node->owner_lock = marked;
+            node->can_own = could;
+            node->update();
+        }
+    }
+    // An attribute put down beside one element while another is locked may
+    // be meant for the one it is beside, the lock forgotten (Zain,
+    // 2026-09-26). This finds that element: one that could hold it, within a
+    // short reach of where it was put, and nearer than the owner. Distances
+    // are to each body's box, and nothing already answered for during this
+    // lock is asked about again.
+    std::set<ElementRef> answered_near;
+    [[nodiscard]] std::optional<ElementRef> nearer_owner(const ElementRef& locked, const QPointF& at) const {
+        constexpr qreal reach = 100;
+        const auto distance = [&at](const NodeItem* node) {
+            const auto box = node->mapRectToScene(node->body_rect());
+            const auto across = std::max({box.left() - at.x(), 0.0, at.x() - box.right()});
+            const auto down = std::max({box.top() - at.y(), 0.0, at.y() - box.bottom()});
+            return std::hypot(across, down);
+        };
+        const auto owner = nodes.find(locked);
+        if (owner == nodes.end()) return std::nullopt;
+        const auto to_owner = distance(owner->second);
+        std::optional<ElementRef> nearest;
+        auto best = reach;
+        for (const auto& [ref, node] : nodes) {
+            if (ref == locked || answered_near.contains(ref) || !node->isVisible() || !can_own_attributes(ref)) continue;
+            const auto away = distance(node);
+            if (away <= best && away < to_owner) {
+                best = away;
+                nearest = ref;
+            }
+        }
+        return nearest;
+    }
+    enum class OwnerAnswer { Attach, Unlock, Cancel };
+    [[nodiscard]] OwnerAnswer ask_about_owner(const ElementRef& locked, const ElementRef& near) {
+        const auto owner = QString::fromStdString(name(editor.project(), locked));
+        const auto beside = QString::fromStdString(name(editor.project(), near));
+        QMessageBox box(&view);
+        box.setObjectName("ownerLockQuestion");
+        box.setIcon(QMessageBox::Question);
+        box.setWindowTitle(QStringLiteral("Attribute owner is locked"));
+        box.setText(QStringLiteral("You are locked to %1, but this attribute is nearer %2.").arg(owner, beside));
+        box.setInformativeText(QStringLiteral("Continue to attach it to %1. Unlock to place it on its own, "
+                                              "then connect it to %2 by hand.").arg(owner, beside));
+        auto* attach = box.addButton(QStringLiteral("Continue"), QMessageBox::AcceptRole);
+        attach->setObjectName("ownerContinue");
+        auto* unlock = box.addButton(QStringLiteral("Unlock"), QMessageBox::DestructiveRole);
+        unlock->setObjectName("ownerUnlock");
+        auto* cancel = box.addButton(QMessageBox::Cancel);
+        box.setDefaultButton(attach);
+        box.setEscapeButton(cancel);
+        box.exec();
+        if (box.clickedButton() == attach) return OwnerAnswer::Attach;
+        if (box.clickedButton() == unlock) return OwnerAnswer::Unlock;
+        return OwnerAnswer::Cancel;
+    }
+    // The element whose padlock is under the pointer, when one is showing.
+    [[nodiscard]] NodeItem* owner_lock_at(const QPoint& viewport_position) const {
+        const auto at = view.mapToScene(viewport_position);
+        for (const auto& [ref, node] : nodes)
+            if (node->isVisible() && node->shows_owner_lock()
+                && node->mapRectToScene(node->owner_lock_rect()).contains(at))
+                return node;
+        return nullptr;
+    }
     bool grid = true;
     // The paper as the projection has it, and the picture decoded from it once
     // rather than on every repaint.
@@ -2425,17 +2546,17 @@ struct DiagramView::Impl {
         if (std::holds_alternative<SpecializationId>(from) || std::holds_alternative<SpecializationId>(to)) return {};
         // Two entities have no line of their own in Chen notation: they are
         // read through a relationship. Rather than refuse the pair, the
-        // relationship they obviously mean is made between them, midway, with
-        // each line joined to the entity where it was clicked.
+        // relationship they obviously mean is made between them, midway.
+        // Its two lines start unlocked (Zain, 2026-09-26): neither end is
+        // pinned to where it was clicked, so each slides round its shapes as
+        // they are moved, and a hand that wants them fixed locks them.
         if (std::holds_alternative<EntityId>(from) && std::holds_alternative<EntityId>(to)) {
-            return Plan{[this, first = std::get<EntityId>(from), second = std::get<EntityId>(to)]
-                        (Joins from_join, Joins to_join) {
+            return Plan{[this, first = std::get<EntityId>(from), second = std::get<EntityId>(to)](Joins, Joins) {
                 // Asked for as the edit is made rather than as the plan is
                 // built, so a pair connected twice in a row steps the second
                 // diamond past the first.
                 const auto place = relationship_place(ElementRef{first}, ElementRef{second});
-                return editor.relate(first, second, centred(place, relationship_body), "Relationship",
-                                     joined(std::nullopt, from_join), joined(std::nullopt, to_join));
+                return editor.relate(first, second, centred(place, relationship_body), "Relationship");
             }};
         }
         if (std::holds_alternative<AttributeId>(from) && std::holds_alternative<AttributeId>(to)
@@ -2726,6 +2847,7 @@ void DiagramView::synchronize() {
     }
     // An element can disappear under an open editor through undo or a reload.
     if (impl_->renaming && !exists(project, *impl_->renaming)) impl_->cancel_inline_edit();
+    impl_->refresh_owner_lock();
     impl_->place_inline_editor();
     // Also reapplies the highlight to whatever items this projection rebuilt.
     impl_->selection_changed();
@@ -2753,7 +2875,14 @@ void DiagramView::set_tool(Tool tool, bool locked) {
         break;
     }
     case Tool::Entity: impl_->status(QStringLiteral("Click the canvas to create an entity.")); break;
-    case Tool::Attribute: impl_->status(QStringLiteral("Click to add an attribute to the selected owner, or an unattached attribute.")); break;
+    case Tool::Attribute:
+        if (const auto owner = attribute_owner())
+            impl_->status(QStringLiteral("Click to place an attribute on %1, the locked owner.")
+                              .arg(QString::fromStdString(name(impl_->editor.project(), *owner))));
+        else
+            impl_->status(QStringLiteral("Click to place an attribute, then connect it by hand. To attach each one "
+                                         "as it is placed, select its owner and press the padlock on it."));
+        break;
     case Tool::Relationship: impl_->status(QStringLiteral("Click the canvas to create a relationship, then use Connect to add participants.")); break;
     case Tool::Specialization: impl_->status(QStringLiteral("Click the canvas to place an ISA triangle pointing down, then connect its supertype and subtypes.")); break;
     case Tool::Generalization: impl_->status(QStringLiteral("Click the canvas to place an ISA triangle pointing up, then connect its supertype and subtypes.")); break;
@@ -2768,6 +2897,29 @@ void DiagramView::set_tool(Tool tool, bool locked) {
 }
 bool DiagramView::tool_locked() const { return impl_->tool_locked; }
 Tool DiagramView::tool() const { return impl_->active_tool; }
+
+void DiagramView::set_attribute_owner(std::optional<ElementRef> owner) {
+    // Something that cannot hold attributes is not locked, and the lock
+    // already held is kept rather than lost to the attempt.
+    if (owner && !impl_->can_own_attributes(*owner)) return;
+    if (owner == attribute_owner()) return;
+    impl_->attribute_owner = owner;
+    impl_->owner_project = impl_->editor.project().id;
+    impl_->answered_near.clear();
+    impl_->refresh_owner_lock();
+    impl_->status(owner
+        ? QStringLiteral("Attributes placed now go on %1. Unlock it with its padlock, its right-click menu or Properties.")
+              .arg(QString::fromStdString(name(impl_->editor.project(), *owner)))
+        : QStringLiteral("Attributes placed now stand on their own. Connect each one by hand."));
+    if (on_attribute_owner) on_attribute_owner();
+}
+std::optional<ElementRef> DiagramView::attribute_owner() const {
+    const auto& owner = impl_->attribute_owner;
+    if (!owner || impl_->editor.project().id != impl_->owner_project || !impl_->can_own_attributes(*owner))
+        return std::nullopt;
+    return owner;
+}
+bool DiagramView::can_own_attributes(const ElementRef& ref) const { return impl_->can_own_attributes(ref); }
 
 std::vector<ElementRef> DiagramView::selected_elements() const {
     std::vector<ElementRef> selected;
@@ -3307,6 +3459,21 @@ void DiagramView::contextMenuEvent(QContextMenuEvent* event) {
     // a region at a time rather than one line at a time.
     const auto lines = impl_->connectors_of(chosen);
     impl_->add_lock_entries(menu, lines, lines.size() == 1 ? "this connector" : "these connectors");
+    // What attributes are attached to as they are placed (Zain, 2026-09-26),
+    // offered on one element that can hold them.
+    QAction* owner_entry = nullptr;
+    const bool holding = !several && attribute_owner() == chosen.front();
+    if (!several && can_own_attributes(chosen.front())) {
+        menu.addSeparator();
+        owner_entry = menu.addAction(holding ? "Unlock attribute owner" : "Lock as attribute owner");
+        owner_entry->setObjectName(holding ? "contextUnlockOwner" : "contextLockOwner");
+        owner_entry->setToolTip(holding
+            ? QStringLiteral("Stop attaching attributes to this. Each one placed then stands on its own.")
+            : QStringLiteral("Attach every attribute placed from now on to this, with its line drawn."));
+        connect(owner_entry, &QAction::triggered, this, [this, holding, target = chosen.front()] {
+            set_attribute_owner(holding ? std::nullopt : std::optional<ElementRef>{target});
+        });
+    }
     menu.addSeparator();
     impl_->add_insert_menu(menu, mapToScene(event->pos()));
 
@@ -3315,6 +3482,8 @@ void DiagramView::contextMenuEvent(QContextMenuEvent* event) {
     // nothing left to do for them here.
     if (!picked || picked->objectName().startsWith("contextInsert")
         || picked->objectName().endsWith("Connectors")) return;
+    // So does the attribute owner's.
+    if (owner_entry && picked == owner_entry) return;
     if (picked == comment) {
         if (on_comment) {
             std::vector<CommentTarget> targets;
@@ -3457,6 +3626,16 @@ void DiagramView::mousePressEvent(QMouseEvent* event) {
         return;
     }
     if (event->button() != Qt::LeftButton) { QGraphicsView::mousePressEvent(event); return; }
+    // The padlock on an element locks it as the attribute owner, and unlocks
+    // it again (Zain, 2026-09-26). Answered with the Attribute tool in hand
+    // as well, before it places anything, since that is when an owner is
+    // being worked with.
+    if (impl_->active_tool == Tool::Select || impl_->active_tool == Tool::Attribute)
+        if (auto* node = impl_->owner_lock_at(event->position().toPoint())) {
+            set_attribute_owner(node->owner_lock ? std::nullopt : std::optional<ElementRef>{node->ref});
+            event->accept();
+            return;
+        }
     if (impl_->active_tool == Tool::Connect) {
         impl_->connect_node(impl_->node_at(event->position().toPoint()), mapToScene(event->position().toPoint()));
         // Arming a source starts carrying a preview line. Releasing over another
@@ -3501,13 +3680,29 @@ void DiagramView::mousePressEvent(QMouseEvent* event) {
             event->accept();
             return;
         } else {
+            // Attached only to an owner locked by hand (Zain, 2026-09-26).
+            // Whatever happens to be selected is not a choice of owner: an
+            // attribute placed with Mentor selected was joined to Mentor, and
+            // had to be taken off it again by hand.
             std::optional<AttributeOwner> owner;
-            const auto selection = selected_elements();
-            if (selection.size() == 1 && exists(impl_->editor.project(), selection.front())
-                && !is_figure(selection.front())) {
-                const auto* attribute = std::get_if<AttributeId>(&selection.front());
-                if (!attribute || impl_->editor.project().attributes.at(*attribute).kind == AttributeKind::Composite) owner = selection.front();
-            }
+            // Put down nearer another element than the one locked, it is
+            // asked about before anything is placed: go on to the locked one,
+            // or unlock and place it on its own. Continuing is remembered for
+            // that element until the lock changes.
+            if (const auto locked = attribute_owner())
+                if (const auto near = impl_->nearer_owner(*locked, center)) {
+                    const auto answer = impl_->ask_about_owner(*locked, *near);
+                    if (answer == Impl::OwnerAnswer::Cancel) {
+                        event->accept();
+                        return;
+                    }
+                    if (answer == Impl::OwnerAnswer::Unlock) set_attribute_owner(std::nullopt);
+                    else impl_->answered_near.insert(*near);
+                }
+            // Its line is unlocked like any other, and so leaves the owner
+            // from the middle of the side facing it, which every attribute
+            // placed on that side shares (Zain, 2026-09-26).
+            if (const auto locked = attribute_owner()) owner = *locked;
             result = impl_->editor.create_attribute("Attribute", centred(center, attribute_body), owner);
         }
         impl_->publish(result);
@@ -3698,6 +3893,14 @@ bool DiagramView::eventFilter(QObject* watched, QEvent* event) {
 }
 
 void DiagramView::mouseDoubleClickEvent(QMouseEvent* event) {
+    // A second quick press on a padlock is a second press, not a rename.
+    if (event->button() == Qt::LeftButton
+        && (impl_->active_tool == Tool::Select || impl_->active_tool == Tool::Attribute))
+        if (auto* node = impl_->owner_lock_at(event->position().toPoint())) {
+            set_attribute_owner(node->owner_lock ? std::nullopt : std::optional<ElementRef>{node->ref});
+            event->accept();
+            return;
+        }
     // Double-clicking an element renames it in place; double-clicking a
     // connector restores its automatic routing.
     if (event->button() == Qt::LeftButton && impl_->active_tool == Tool::Select) {
@@ -3874,7 +4077,8 @@ void DiagramView::mouseMoveEvent(QMouseEvent* event) {
                                 || cursor().shape() == Qt::SizeHorCursor
                                 || cursor().shape() == Qt::SizeVerCursor;
         if (handle >= 0) setCursor(NodeItem::cursor_for(handle));
-        else if (sizing_cursor) setCursor(Qt::ArrowCursor);
+        else if (impl_->owner_lock_at(event->position().toPoint())) setCursor(Qt::PointingHandCursor);
+        else if (sizing_cursor || cursor().shape() == Qt::PointingHandCursor) setCursor(Qt::ArrowCursor);
     }
     QGraphicsView::mouseMoveEvent(event);
 }
