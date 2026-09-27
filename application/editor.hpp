@@ -6,6 +6,7 @@
 // covered by this — fix it and say what was wrong. Full rule: CLAUDE.md.
 #pragma once
 
+#include "application/history.hpp"
 #include "domain/model.hpp"
 
 #include <cstdint>
@@ -46,6 +47,17 @@ public:
     [[nodiscard]] std::string undo_label() const;
     [[nodiscard]] std::string redo_label() const;
     [[nodiscard]] std::size_t history_bytes() const;
+    // The History (Zain, 2026-09-26): every step still kept, oldest first,
+    // each described in words. The first history_position() of them are in
+    // effect; the rest have been undone and wait to be redone, until a new
+    // edit takes their place, exactly as Undo and Redo have always had them.
+    [[nodiscard]] std::vector<HistoryEntry> history() const;
+    [[nodiscard]] std::size_t history_position() const;
+    // Undoes or redoes, one step at a time, until that many steps are in
+    // effect: 0 is the project as it was before the oldest step kept. The
+    // steps themselves are unchanged by the move, so Undo and Redo carry on
+    // from wherever it lands.
+    EditResult go_to(std::size_t position);
 
     void new_project();
     EditResult replace_project(domain::Project project);

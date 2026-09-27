@@ -30,6 +30,7 @@
 #include <QComboBox>
 #include <QDialog>
 #include <QDockWidget>
+#include <QTreeWidget>
 #include <QEnterEvent>
 #include <QFontMetrics>
 #include <QGraphicsItem>
@@ -2139,6 +2140,66 @@ int main(int argc, char** argv) {
             require(!child<QPushButton>(window, "attributeOwnerLock")->isChecked(), "And the panel says so");
             child<QAction>(window, "undoCommand")->trigger();
             settle();
+        }
+
+        // The History (Zain, 2026-09-26): a panel opened from the end of
+        // View, one row for each step Undo could take back, in order and in
+        // words; pressing a row goes back or forward to just after it.
+        {
+            auto* toggle = child<QAction>(window, "viewHistory");
+            require(child<QMenu>(window, "viewMenu")->actions().last() == toggle,
+                    "History is the last entry in View, after everything already there");
+            auto* dock = child<QDockWidget>(window, "historyDock");
+            require(!dock->isVisible(), "It is closed until it is opened");
+            toggle->trigger();
+            settle();
+            require(dock->isVisible(), "View opens it");
+            auto* list = child<QTreeWidget>(window, "historyList");
+            require(list->topLevelItemCount() == static_cast<int>(window.editor().history().size()) + 1
+                        && list->topLevelItem(0)->text(0) == "Start",
+                    "It shows where the history starts and one row for each step since");
+            // A step made is added after the last one in effect, taking the
+            // place of any that had been undone, said in words, and is where
+            // the history stands.
+            const auto steps = static_cast<int>(window.editor().history_position());
+            child<QAction>(window, "toolEntity")->trigger();
+            const auto& first = window.editor().project().layout.begin()->second;
+            click_canvas(*window.canvas(), QPointF(first.x - 600, first.y - 600));
+            require(list->topLevelItemCount() == steps + 2, "The new step is added");
+            auto* made = list->topLevelItem(steps + 1);
+            require(made->text(0) == "Created Entity \"Entity\"", "In words");
+            require(!made->text(1).isEmpty(), "With the time it was made");
+            require(list->currentItem() == made, "And it is where the history stands");
+            // Pressing the row before it goes back to just after that step.
+            const auto entities = window.editor().project().entities.size();
+            const auto press = [&](QTreeWidgetItem* item) {
+                list->scrollToItem(item);
+                const auto at = list->visualItemRect(item).center();
+                QMouseEvent down(QEvent::MouseButtonPress, QPointF(at), QPointF(list->viewport()->mapToGlobal(at)),
+                                 Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+                QApplication::sendEvent(list->viewport(), &down);
+                QMouseEvent up(QEvent::MouseButtonRelease, QPointF(at), QPointF(list->viewport()->mapToGlobal(at)),
+                               Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+                QApplication::sendEvent(list->viewport(), &up);
+                settle();
+            };
+            press(list->topLevelItem(steps));
+            require(window.editor().project().entities.size() == entities - 1, "Going back takes the entity away");
+            require(list->topLevelItemCount() == steps + 2, "The step stays in the history");
+            made = list->topLevelItem(steps + 1);
+            require(made->font(0).italic(), "Shown as undone");
+            require(child<QAction>(window, "redoCommand")->isEnabled(), "And Redo can bring it back");
+            // Pressing it again goes forward to it.
+            press(made);
+            require(window.editor().project().entities.size() == entities, "Going forward brings it back");
+            require(!list->topLevelItem(steps + 1)->font(0).italic(), "In effect again");
+            // Undo and the History are one history.
+            child<QAction>(window, "undoCommand")->trigger();
+            settle();
+            require(list->currentItem() == list->topLevelItem(steps), "Undo moves where the history stands");
+            toggle->trigger();
+            settle();
+            require(!dock->isVisible(), "And View closes it again");
         }
         // ISA is one toolbar entry offering both directions; the dropdown picks
         // the mode and the button itself locks like every other tool.

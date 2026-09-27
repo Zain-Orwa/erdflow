@@ -1190,6 +1190,88 @@ void connections_can_be_pinned_as_they_are_made() {
 // A picture and a note are placed elements without being database objects:
 // named, described, moved, coloured, copied and deleted through the same
 // commands as everything else, owning nothing and connected to nothing.
+// The History is the undo history, each step described in words (Zain,
+// 2026-09-26), and moving through it is undoing and redoing.
+void history_tells_what_was_done() {
+    TestIds ids;
+    Editor editor(ids);
+    CHECK(editor.history().empty() && editor.history_position() == 0);
+    const auto said = [&] { return editor.history().back().description; };
+
+    const auto made = editor.create_entity("Entity", {0, 0, 160, 80});
+    const ElementRef student = *made.created;
+    CHECK(said() == "Created Entity \"Entity\"");
+    CHECK(editor.history().back().label == "Create entity");
+    CHECK(editor.rename(student, "Student"));
+    CHECK(said() == "Renamed Entity \"Entity\" to \"Student\"");
+    const auto id = std::get<AttributeId>(*editor.create_attribute("student_id", {0, -120, 150, 60},
+                                                                   AttributeOwner{student}).created);
+    CHECK(said() == "Added Attribute \"student_id\" to \"Student\"");
+    CHECK(editor.move({{student, {40, 0, 160, 80}}}));
+    CHECK(said() == "Moved Entity \"Student\"");
+    // Carrying its attribute along, it is still the entity that was moved.
+    CHECK(editor.move({{student, {80, 0, 160, 80}}, {ElementRef{id}, {80, -120, 150, 60}}}));
+    CHECK(said() == "Moved Entity \"Student\"");
+    CHECK(editor.resize_entities({{student, {80, 0, 200, 100}}}));
+    CHECK(said() == "Resized Entity \"Student\"");
+    CHECK(editor.set_attribute_kind(id, AttributeKind::Key));
+    CHECK(said() == "Changed attribute kind: Attribute \"student_id\"");
+
+    const auto enrolls = relationship(editor, "Enrolls");
+    CHECK(said() == "Created Relationship \"Enrolls\"");
+    const auto side = connect(editor, enrolls, std::get<EntityId>(student));
+    CHECK(said() == "Connected \"Student\" to Relationship \"Enrolls\"");
+    CHECK(editor.disconnect(enrolls, side));
+    CHECK(said() == "Disconnected \"Student\" from Relationship \"Enrolls\"");
+    CHECK(editor.erase({ElementRef{enrolls}}));
+    CHECK(said() == "Deleted Relationship \"Enrolls\"");
+
+    // On the schema: a table renamed is the entity renamed, told as the table.
+    CHECK(editor.rename_table(student, "Students"));
+    CHECK(said() == "Renamed Table \"Student\" to \"Students\"");
+    CHECK(editor.add_schema_column(student, "grade"));
+    CHECK(said().rfind("Added Column \"grade\" to \"", 0) == 0);
+    CHECK(editor.move_schema_tables({{student, Point{300, 40}}}));
+    CHECK(said().rfind("Moved Table \"", 0) == 0);
+
+    // Deleting an entity takes its attributes, and says so.
+    const auto course = entity(editor, "Course");
+    attribute(editor, "title", AttributeOwner{ElementRef{course}});
+    attribute(editor, "code", AttributeOwner{ElementRef{course}});
+    CHECK(editor.erase({ElementRef{course}}));
+    CHECK(said() == "Deleted Entity \"Course\" with its 2 attributes");
+
+    // In order, oldest first, each with the time it was made.
+    const auto all = editor.history();
+    CHECK(all.size() == editor.history_position());
+    CHECK(all.front().description == "Created Entity \"Entity\"");
+    CHECK(std::is_sorted(all.begin(), all.end(), [](const auto& a, const auto& b) { return a.when < b.when; }));
+    CHECK(std::all_of(all.begin(), all.end(), [](const auto& entry) { return entry.in_effect; }));
+
+    // Going back to a step is undoing everything after it; the steps stay,
+    // marked as undone, and going forward again is redoing them.
+    const auto everything = editor.project();
+    CHECK(editor.go_to(2));
+    CHECK(editor.history_position() == 2);
+    CHECK(editor.project().entities.at(std::get<EntityId>(student)).name == "Student");
+    CHECK(!editor.project().attributes.contains(id));
+    const auto back = editor.history();
+    CHECK(back.size() == all.size());
+    CHECK(back[1].in_effect && !back[2].in_effect);
+    CHECK(editor.can_redo() && editor.redo_label() == "Create attribute");
+    CHECK(editor.go_to(all.size()));
+    CHECK(editor.project() == everything);
+    CHECK(editor.go_to(0));
+    CHECK(editor.project().entities.empty());
+    CHECK(!editor.go_to(all.size() + 1));
+    // A new step made from an earlier point takes the place of what was
+    // undone, as it always has for Undo.
+    CHECK(editor.go_to(1));
+    entity(editor, "Professor");
+    CHECK(editor.history().size() == 2 && editor.history_position() == 2);
+    CHECK(said() == "Created Entity \"Professor\"");
+}
+
 // The first time an entity, relationship or attribute is made another size by
 // hand, the size it had is kept as the size its name is drawn for, and the
 // name follows the box from there (Zain, 2026-09-26). Nothing else keeps one.
@@ -2689,6 +2771,7 @@ int main() {
         {"connections can be pinned as they are made", connections_can_be_pinned_as_they_are_made},
         {"pictures and notes are placed like elements", pictures_and_notes_are_placed_like_elements},
         {"lettering follows resizing by hand", lettering_follows_resizing_by_hand},
+        {"history tells what was done", history_tells_what_was_done},
         {"relating two entities is one edit", relating_two_entities_is_one_edit},
         {"weak entities and identifying relationships", weak_entities_and_identifying_relationships},
         {"hostile connector shapes", hostile_connector_shapes_are_rejected},

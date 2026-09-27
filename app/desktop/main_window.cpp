@@ -69,6 +69,8 @@
 #include <QToolBar>
 #include <QToolButton>
 #include <QTreeView>
+#include <QTreeWidget>
+#include <QDateTime>
 #include <QVariantAnimation>
 #include <QEasingCurve>
 #include <QVBoxLayout>
@@ -975,6 +977,7 @@ MainWindow::MainWindow(application::Editor& editor, application::ProjectStore& s
     setMinimumSize(560, 460);
     build_shell();
     build_actions();
+    build_history();
     // The tabs go on once every action and menu they are built from exists.
     ribbon_ = new Ribbon(*this);
     wire_home();
@@ -2727,6 +2730,7 @@ void MainWindow::refresh() {
     refresh_explorer();
     refresh_properties();
     refresh_validation();
+    refresh_history();
     undo_->setEnabled(editor_.can_undo());
     redo_->setEnabled(editor_.can_redo());
     undo_->setText(editor_.can_undo() ? "Undo " + text(editor_.undo_label()) : "Undo");
@@ -3597,6 +3601,90 @@ void MainWindow::build_comment_section(QWidget* panel, QVBoxLayout* layout) {
     }
 }
 
+// The History, as a panel of its own beside the others (Zain, 2026-09-26):
+// every step Undo can take back, oldest first, said in words, with the time it
+// was made. Pressing one goes back or forward to just after it, by undoing or
+// redoing; pressing Start goes back to before the oldest step kept. Steps
+// that have been undone stay, fainter, until a new edit takes their place.
+// It is closed until opened, and its entry goes at the end of View, after
+// everything already there, so nothing there moves to make room for it.
+void MainWindow::build_history() {
+    history_dock_ = new QDockWidget("History", this);
+    history_dock_->setObjectName("historyDock");
+    history_list_ = new QTreeWidget(history_dock_);
+    history_list_->setObjectName("historyList");
+    history_list_->setAccessibleName("History");
+    history_list_->setColumnCount(2);
+    history_list_->setHeaderHidden(true);
+    history_list_->setRootIsDecorated(false);
+    history_list_->setUniformRowHeights(true);
+    history_list_->setSelectionMode(QAbstractItemView::SingleSelection);
+    history_list_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    history_list_->header()->setStretchLastSection(false);
+    history_list_->header()->setSectionResizeMode(0, QHeaderView::Stretch);
+    history_list_->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    history_dock_->setWidget(history_list_);
+    addDockWidget(Qt::RightDockWidgetArea, history_dock_);
+    history_dock_->hide();
+    // A press and an activation can both arrive for one click; the second
+    // finds the history already where it was asked to be, and does nothing.
+    const auto go_to = [this](QTreeWidgetItem* item) {
+        if (!item) return;
+        const auto row = history_list_->indexOfTopLevelItem(item);
+        if (row < 0 || static_cast<std::size_t>(row) == editor_.history_position()) return;
+        if (notice_) notice_->put_away();
+        finish_field_edit();
+        canvas_->cancel_interaction();
+        show_result(editor_.go_to(static_cast<std::size_t>(row)));
+    };
+    connect(history_list_, &QTreeWidget::itemClicked, this, [go_to](QTreeWidgetItem* item) { go_to(item); });
+    connect(history_list_, &QTreeWidget::itemActivated, this, [go_to](QTreeWidgetItem* item) { go_to(item); });
+    // Kept up to date only while it can be seen, and brought up to date the
+    // moment it can.
+    connect(history_dock_, &QDockWidget::visibilityChanged, this, [this](bool shown) {
+        if (shown) refresh_history(true);
+    });
+    if (auto* view = findChild<QMenu*>("viewMenu")) {
+        view->addSeparator();
+        auto* toggle = history_dock_->toggleViewAction();
+        toggle->setObjectName("viewHistory");
+        toggle->setToolTip("Every change made, in order. Press one to go back to it.");
+        view->addAction(toggle);
+    }
+}
+
+void MainWindow::refresh_history(bool again) {
+    if (!history_list_ || !history_dock_->isVisible()) return;
+    if (!again && history_shown_ == editor_.revision()) return;
+    history_shown_ = editor_.revision();
+    const auto entries = editor_.history();
+    const auto& colors = theme(theme_);
+    const QSignalBlocker quiet(history_list_);
+    history_list_->clear();
+    auto* start = new QTreeWidgetItem(history_list_, QStringList{"Start", QString{}});
+    start->setToolTip(0, "The project as it was before the oldest change kept here: as it was opened or created.");
+    for (const auto& entry : entries) {
+        const auto when = QDateTime::fromMSecsSinceEpoch(
+            std::chrono::duration_cast<std::chrono::milliseconds>(entry.when.time_since_epoch()).count());
+        auto* item = new QTreeWidgetItem(history_list_,
+                                         QStringList{text(entry.description), when.toString("HH:mm:ss")});
+        item->setToolTip(0, text(entry.description) + "\n" + text(entry.label) + " · "
+                                + QLocale().toString(when, QLocale::ShortFormat)
+                                + (entry.in_effect ? QString{} : QStringLiteral("\nUndone. Press it to redo it.")));
+        item->setTextAlignment(1, Qt::AlignRight | Qt::AlignVCenter);
+        item->setForeground(1, colors.muted);
+        if (!entry.in_effect) {
+            auto font = item->font(0);
+            font.setItalic(true);
+            item->setFont(0, font);
+            item->setForeground(0, colors.muted);
+        }
+    }
+    auto* current = history_list_->topLevelItem(static_cast<int>(editor_.history_position()));
+    history_list_->setCurrentItem(current);
+    history_list_->scrollToItem(current);
+}
+
 void MainWindow::refresh_validation() {
     issue_model_->clear();
     issue_model_->setHorizontalHeaderLabels({"Level", "Object", "Message"});
@@ -3873,6 +3961,8 @@ void MainWindow::apply_appearance(ThemeId id) {
     refreshing_ = true;
     refresh_properties();
     refreshing_ = was_refreshing;
+    // So are the History's fainter steps.
+    refresh_history(true);
 }
 
 void MainWindow::preview_theme(ThemeId id) {

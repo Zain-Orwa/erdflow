@@ -42,6 +42,26 @@ not been built yet. Their presence in those documents is not a completion claim.
   styles the mark). Size, place, words, the spark, the pressed look and what
   pressing does are unchanged, and so is the card
   (`StartRouteCard::eventFilter`, the `lit` rules in `StartRouteCard::wear`).
+- **History** (2026-09-26). **View → History**, the last entry in View (and
+  so the last button on the ribbon's View row), opens a panel on the right
+  listing every step Undo can take back, oldest first, each said in words
+  with the time it was made: *Created Entity "Student"*, *Added Attribute
+  "student_id" to "Student"*, *Moved Entity "Course"*, *Deleted Relationship
+  "Enrolls"*, *Renamed Table "Student" to "Students"*, *Added Column "grade"
+  to "Students"*, *Deleted Entity "Course" with its 2 attributes*. The first
+  row, **Start**, is the project before the oldest step kept. Pressing a row
+  goes to just after that step by undoing or redoing; steps undone stay in
+  the list, fainter and in italics, until a new edit takes their place,
+  exactly as Redo has them. It is the undo history itself, not a second
+  record, so the two always agree, and like it it starts again when a
+  project is opened or created and keeps what the 32 MiB budget keeps. Each
+  step's words are worked out as it is made, from what it changed
+  (`application/history.hpp`: `HistoryEntry`, `HistoryChange`, `describe`;
+  `Editor::history`, `history_position`, `go_to`), and each keeps the list of
+  things it changed so a fuller account can be given later. Who made a step
+  is not recorded yet; the entry is where it will go once there are accounts
+  and several people and agents at work.
+
 - Attributes can be resized by their edges and corners, as entities are
   (2026-09-26, fix). Their eight handles were drawn, but a drag was sized by
   the symbol's corner-only rule, and letting go sent the new size to the
