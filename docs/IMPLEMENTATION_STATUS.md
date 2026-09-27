@@ -7,7 +7,7 @@
 > look like afterwards, and whether it is a gain or a loss. He decides.
 > Full rule: [CLAUDE.md](../CLAUDE.md).
 
-**Updated:** 2026-09-23
+**Updated:** 2026-09-27
 
 **Scope:** Part 1 — a single-page Conceptual ERD editor foundation.
 
@@ -17,6 +17,31 @@ not been built yet. Their presence in those documents is not a completion claim.
 
 ## What works
 
+- **Approved full-window start cards** (2026-09-27). The raised pale-blue
+  window is now the whole card, including its title, three dots, preview and
+  centered blue **+ Create** button. The inner preview window and its shadow
+  are removed; no divider separates the preview from the action. SQL retains
+  its Coming soon badge and disabled route. Create with AI remains constructed
+  and available through `set_ai_offered`, hidden by default. Existing preview
+  scenes, animation controls, accessibility and route wiring are retained.
+
+- **Create with AI is switched off for now** (2026-09-26). One constant,
+  `create_with_ai_offered` in `start_route_card.hpp`, is `false`: every
+  card still makes its Create with AI exactly as before, but does not show
+  it, and **+ Create** stands alone in the middle of the card at the size
+  it has beside it. Setting the constant to `true` brings the pair back
+  exactly as it was, + Create on the left and Create with AI on the right,
+  the two centred together (`StartRouteCard::set_ai_offered` does the same
+  for one card). The card's size and content are unchanged.
+- **A Home card's two actions light up under the pointer** (2026-09-26).
+  Pointed at, **+ Create** is drawn brighter with a pale edge, and **Create
+  with AI** takes a soft blue tint and an accent outline; each lights alone,
+  and is exactly as it was at rest once the pointer leaves. Create with AI
+  lights up though it is disabled (a style sheet gives a disabled button no
+  hover, so the card marks it `lit` as the pointer enters and leaves, and
+  styles the mark). Size, place, words, the spark, the pressed look and what
+  pressing does are unchanged, and so is the card
+  (`StartRouteCard::eventFilter`, the `lit` rules in `StartRouteCard::wear`).
 - The diagram has paper of its own, chosen under **View → Background** and so
   also on the Design row: **None**, the plain canvas its theme gives it;
   **Squares**, like graph paper; **Lines**, ruled like a notebook; **Dots**; or
@@ -1114,11 +1139,13 @@ outside the repository at `erdflow-notes/UI-AZURE-TASKS.md`. What is built:
   the work.
 - **The top of Home.** The native menu bar (File · Home · Edit · Insert ·
   Design · View · Help) stays on Home. The ribbon's rows give way, while Home
-  is up, to a slim bar (`AppTopBar`) carrying only the ERDFlow mark, a
-  **Settings** button and a **Theme ▼** control, as Zain settled (ADR-022
-  §9.14). Theme opens the window's own theme menu, with its preview on hover.
-  Settings holds the window's own Theme, Icons and Notation menus. The ribbon
-  row that was in front comes back when Home is left. The status line stays.
+  is up, to a slim bar (`AppTopBar`) carrying only the ERDFlow mark and a
+  **Theme ▼** control (ADR-022 §9.14). Theme opens the window's own theme
+  menu, with its preview on hover. The bar's own Settings gear, and the
+  divider between it and Theme, were taken out on 2026-09-26 (Zain: one
+  Settings, not two); Settings is the sidebar's row, which holds the
+  window's own Theme, Icons and Notation menus. The ribbon row that was in
+  front comes back when Home is left. The status line stays.
 - **Opens filling the screen.** An ordinary launch shows the window
   maximised. 1440 × 920 is the size it returns to when un-maximised, and a
   run with `--screenshot` or `--size` is shown at that size, or the one asked
@@ -1172,16 +1199,17 @@ outside the repository at `erdflow-notes/UI-AZURE-TASKS.md`. What is built:
     at most 320 px, on one level. A column is also kept small enough that the
     illustration's top stays on the page and both pictures end clear of
     *Create a new project*.
-  - *The line:* one smooth line joins them, running from a port on the
-    page's right edge to a port on the platform's near corner. It passes
-    under both ends of the subtitle, so it never crosses a word. It is a
-    rounded tube in one light blue (Zain, 2026-09-25): deeper at its edges,
-    paler towards its middle, with light along its centre, over a soft
-    glow. Nothing is fixed on it.
+  - *The line:* one smooth line joins them. It comes out from under the
+    page's right edge and goes in under the platform, past its near corner,
+    with nothing fixed at either end. It passes under both ends of the
+    subtitle, so it never crosses a word. It is a rounded tube in one light
+    blue (Zain, 2026-09-25): deeper at its edges, paler towards its middle,
+    with light along its centre, over a soft glow. Nothing is fixed on it.
     - *Electrons:* four coloured electrons travel along it on the
       illustration's clock, cyan and violet going to the database, amber
       and green coming back. They move when the orbit moves and rest where
-      it rests.
+      it rests. They are hidden inside the page and under the platform,
+      so they come out of one and go into the other.
     - *The page lights up:* when an electron coming back reaches the page,
       the page glows in that electron's colour for a second and a half.
     - *Cost:* only the pixels round each electron, and the page while it
@@ -1280,7 +1308,10 @@ outside the repository at `erdflow-notes/UI-AZURE-TASKS.md`. What is built:
     of the accent across the row.
 
   The chosen card is told apart only gently, by a slightly firmer edge and
-  a faint light at its top; it has no heavy blue outline. A card holding a
+  a faint light at its top; it has no heavy blue outline. A card that can
+  be taken, while pointed at or reached by the keyboard, is coloured a
+  little deeper than the others and than itself at rest: the hover colour
+  carried towards the accent, with the hover edge (Zain, 2026-09-25). A card holding a
   preview keeps no room for the description it does not draw, so its parts
   sit close together.
 - **Each preview is a raised tile of tinted glass, like the hero's welcome
