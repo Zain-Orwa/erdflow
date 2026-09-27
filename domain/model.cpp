@@ -62,11 +62,13 @@ constexpr std::uint8_t foreign_key_kind = 0x4b;   // 'K'
 } // namespace
 
 RelationId relation_from(const ElementRef& origin) {
+    if (const auto* id = std::get_if<RelationId>(&origin)) return *id;
     return RelationId{derived(uuid(origin),
                               static_cast<std::uint8_t>(relation_kind + origin.index()))};
 }
 
 ForeignKeyId foreign_key_from(const LinkSource& origin) {
+    if (const auto* id = std::get_if<ForeignKeyId>(&origin)) return *id;
     const auto value = std::visit([](const auto& id) { return id.value; }, origin);
     return ForeignKeyId{derived(value,
                                 static_cast<std::uint8_t>(foreign_key_kind + origin.index()))};
@@ -92,6 +94,9 @@ template<class Visitor> auto visit_element(const Project& project, const Element
         } else if constexpr (std::is_same_v<T, NoteId>) {
             const auto found = project.notes.find(id);
             return visitor(found == project.notes.end() ? nullptr : &found->second);
+        } else if constexpr (std::is_same_v<T, RelationId>) {
+            const auto found = project.schema.relations.find(id);
+            return visitor(found == project.schema.relations.end() ? nullptr : &found->second);
         } else {
             const auto found = project.specializations.find(id);
             return visitor(found == project.specializations.end() ? nullptr : &found->second);
@@ -231,6 +236,7 @@ bool connector_exists(const Project& project, const ConnectorRef& ref) {
 // pointing at its parent. The first two are connectors under another name, so
 // they are asked through the same question rather than a second copy of it.
 bool link_exists(const Project& project, const LinkSource& link) {
+    if (const auto* id = std::get_if<ForeignKeyId>(&link)) return project.schema.foreign_keys.contains(*id);
     if (const auto* entity = std::get_if<EntityId>(&link)) return project.entities.contains(*entity);
     if (const auto* attribute = std::get_if<AttributeId>(&link))
         return connector_exists(project, ConnectorRef{*attribute});
@@ -318,6 +324,7 @@ namespace {
 // a remnant a remnant.
 std::set<RelationId> possible_relations(const Project& project) {
     std::set<RelationId> possible;
+    for (const auto& [id, table] : project.schema.relations) { (void)table; possible.insert(id); }
     for (const auto& [id, entity] : project.entities) { (void)entity; possible.insert(relation_from(ElementRef{id})); }
     for (const auto& [id, attribute] : project.attributes) { (void)attribute; possible.insert(relation_from(ElementRef{id})); }
     for (const auto& [id, relationship] : project.relationships) { (void)relationship; possible.insert(relation_from(ElementRef{id})); }
@@ -326,6 +333,7 @@ std::set<RelationId> possible_relations(const Project& project) {
 
 std::set<ForeignKeyId> possible_foreign_keys(const Project& project) {
     std::set<ForeignKeyId> possible;
+    for (const auto& [id, key] : project.schema.foreign_keys) { (void)key; possible.insert(id); }
     for (const auto& [id, attribute] : project.attributes) { (void)attribute; possible.insert(foreign_key_from(LinkSource{id})); }
     for (const auto& [id, entity] : project.entities) { (void)entity; possible.insert(foreign_key_from(LinkSource{id})); }
     for (const auto& [id, relationship] : project.relationships) {
@@ -379,6 +387,44 @@ std::vector<Issue> validate(const Project& project) {
         if (words.size() > max_comment_bytes || !valid_text(words, true))
             error("text.comment.invalid", "Comments must be valid UTF-8 and fit in 16,384 bytes.", ref);
     };
+    if (project.schema.relations.size() > max_elements || project.schema.foreign_keys.size() > max_elements)
+        error("schema.limit", "The schema exceeds the table or foreign key limit.");
+    if (!project.schema.standalone && (!project.schema.relations.empty() || !project.schema.foreign_keys.empty()))
+        error("schema.mode", "Native tables require a Relational Schema project.");
+    if (project.schema.standalone && (!project.entities.empty() || !project.attributes.empty()
+        || !project.relationships.empty() || !project.specializations.empty()))
+        error("schema.mode", "A standalone schema cannot contain conceptual elements.");
+    for (const auto& [id, table] : project.schema.relations) {
+        identity(id.value, ElementRef{id});
+        if (table.id != id) error("schema.identity", "A relation key and identity differ.");
+        text_fields(table.name, table.description, ElementRef{id});
+        schema_comment(table.comment, ElementRef{id});
+    }
+    const auto native_column = [&](RelationId table, SchemaColumnId id) -> const SchemaColumn* {
+        const auto found = project.schema.added.find(table);
+        if (found == project.schema.added.end()) return nullptr;
+        for (const auto& column : found->second) if (column.id == id) return &column;
+        return nullptr;
+    };
+    std::set<SchemaColumnId> referenced;
+    for (const auto& [id, key] : project.schema.foreign_keys) {
+        identity(id.value);
+        if (key.id != id) error("schema.key.identity", "A foreign key and identity differ.");
+        const auto* from = native_column(key.from, key.column);
+        const auto* to = native_column(key.to, key.target);
+        if (!project.schema.relations.contains(key.from) || !project.schema.relations.contains(key.to) || !from || !to) {
+            error("schema.key.missing", "A foreign key must reference existing tables and columns.");
+            continue;
+        }
+        if (!referenced.insert(key.column).second)
+            error("schema.key.duplicate", "A column already has a foreign key.");
+        const auto& targets = project.schema.added.at(key.to);
+        const auto primary_count = std::count_if(targets.begin(), targets.end(), [](const auto& c) { return c.identifier; });
+        if (!to->unique && !(to->identifier && primary_count == 1))
+            error("schema.key.target", "Select a unique column or a single-column primary key as the reference.");
+        if (from->logical_type != to->logical_type || from->length != to->length || from->scale != to->scale)
+            error("schema.key.type", "Foreign key columns must have matching types and sizes.");
+    }
     identity(project.id.value);
     text_fields(project.name, project.description);
     for (const auto& [id, entity] : project.entities) {
@@ -837,6 +883,18 @@ std::vector<Issue> validate(const Project& project) {
         for (const auto& relation : project.schema.counting_keys)
             if (!relations.contains(relation))
                 error("schema.counting_key.missing", "A counting key refers to a missing element.");
+        // A name typed over a foreign key's belongs to a key the model can
+        // still make, and is text like any other name.
+        if (project.schema.foreign_key_names.size() > max_elements)
+            error("schema.foreign_key_name.limit", "The foreign key names exceed the element limit.");
+        for (const auto& [column, chosen] : project.schema.foreign_key_names) {
+            if (!foreign_keys.contains(column.key))
+                error("schema.foreign_key_name.missing", "A foreign key name refers to a missing key.");
+            if (column.part >= max_elements)
+                error("schema.foreign_key_name.part", "A foreign key name refers to a missing column.");
+            if (chosen.size() > max_name_bytes || !valid_text(chosen, false) || empty_name(chosen))
+                error("schema.foreign_key_name.invalid", "A foreign key name must be valid text.");
+        }
     }
     // An attribute with no logical type yet has not answered a question that
     // conversion will ask. That is a matter of readiness rather than validity:

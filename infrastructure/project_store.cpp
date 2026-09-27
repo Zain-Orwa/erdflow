@@ -58,8 +58,11 @@ namespace {
 // gives generated relations stable identities of their own; version 27 adds
 // the description captured with a project's other creation details; version
 // 28 records which bridges were chosen to be keyed by their participants'
-// foreign keys; version 29 keeps the size an element's name is drawn for.
-constexpr int current_format_version = 29;
+// foreign keys; version 29 keeps the size an element's name is drawn for;
+// version 30 holds tables and foreign keys made on the schema itself, in a
+// project that starts from its schema; version 31 keeps a name typed over a
+// foreign key the conversion made.
+constexpr int current_format_version = 31;
 QString text(const std::string& value) { return QString::fromUtf8(value.data(), static_cast<qsizetype>(value.size())); }
 Uuid bytes_of(const QUuid& value) {
     Uuid result;
@@ -103,6 +106,7 @@ QJsonObject reference(const ElementRef& ref) {
         : std::holds_alternative<AttributeId>(ref) ? "attribute"
         : std::holds_alternative<SpecializationId>(ref) ? "specialization"
         : std::holds_alternative<PictureId>(ref) ? "picture"
+        : std::holds_alternative<RelationId>(ref) ? "relation"
         : std::holds_alternative<NoteId>(ref) ? "note" : "relationship";
     return {{"type", QLatin1String(type)}, {"id", uuid_text(uuid(ref))}};
 }
@@ -323,6 +327,13 @@ bool parse_flag(const QJsonValue& value, const char* what) {
 // cannot settle, and these are somebody editing its result. A file from before
 // this existed simply has no section, which reads as no differences at all.
 QJsonObject encode_schema(const SchemaOverrides& schema) {
+    QJsonArray relations, foreign_keys;
+    for (const auto& [id, table] : schema.relations)
+        relations.append(QJsonObject{{"id", uuid_text(id.value)}, {"name", text(table.name)},
+            {"description", text(table.description)}, {"comment", text(table.comment)}});
+    for (const auto& [id, key] : schema.foreign_keys)
+        foreign_keys.append(QJsonObject{{"id", uuid_text(id.value)}, {"from", uuid_text(key.from.value)},
+            {"to", uuid_text(key.to.value)}, {"column", uuid_text(key.column.value)}, {"target", uuid_text(key.target.value)}});
     QJsonArray added;
     for (const auto& [relation, columns] : schema.added) {
         QJsonArray of_table;
@@ -343,16 +354,40 @@ QJsonObject encode_schema(const SchemaOverrides& schema) {
         keys.append(QJsonObject{{"relation", uuid_text(relation.value)}, {"name", text(chosen)}});
     QJsonArray counting;
     for (const auto& relation : schema.counting_keys) counting.append(uuid_text(relation.value));
+    QJsonArray key_names;
+    for (const auto& [column, chosen] : schema.foreign_key_names)
+        key_names.append(QJsonObject{{"key", uuid_text(column.key.value)},
+                                     {"part", static_cast<double>(column.part)}, {"name", text(chosen)}});
     return QJsonObject{{"added", added}, {"hidden", hidden}, {"keys", keys},
-                       {"counting_keys", counting}};
+                       {"counting_keys", counting}, {"standalone", schema.standalone},
+                       {"relations", relations}, {"foreign_keys", foreign_keys},
+                       {"foreign_key_names", key_names}};
 }
 
 SchemaOverrides parse_schema(const QJsonValue& value, bool named_keys, bool counted,
-                            bool relational) {
-    auto o = counted ? object(value, {"added", "hidden", "keys", "counting_keys"})
+                            bool relational, bool native, bool renamed_keys) {
+    auto o = renamed_keys ? object(value, {"added", "hidden", "keys", "counting_keys", "standalone", "relations",
+                                           "foreign_keys", "foreign_key_names"})
+           : native ? object(value, {"added", "hidden", "keys", "counting_keys", "standalone", "relations", "foreign_keys"})
+           : counted ? object(value, {"added", "hidden", "keys", "counting_keys"})
            : named_keys ? object(value, {"added", "hidden", "keys"})
                         : object(value, {"added", "hidden"});
     SchemaOverrides schema;
+    if (native) {
+        schema.standalone = parse_flag(o["standalone"], "standalone");
+        for (const auto& item : array(o["relations"])) {
+            const auto row = object(item, {"id", "name", "description", "comment"});
+            Relation table{RelationId{parse_id(row["id"])}, string(row["name"]),
+                string(row["description"], max_description_bytes), string(row["comment"], max_comment_bytes)};
+            if (!schema.relations.emplace(table.id, table).second) invalid("Duplicate relation identity.");
+        }
+        for (const auto& item : array(o["foreign_keys"])) {
+            const auto row = object(item, {"id", "from", "to", "column", "target"});
+            SchemaForeignKey key{ForeignKeyId{parse_id(row["id"])}, RelationId{parse_id(row["from"])},
+                RelationId{parse_id(row["to"])}, SchemaColumnId{parse_id(row["column"])}, SchemaColumnId{parse_id(row["target"])} };
+            if (!schema.foreign_keys.emplace(key.id, key).second) invalid("Duplicate foreign key identity.");
+        }
+    }
     for (const auto& item : array(o["added"])) {
         auto entry = relational ? object(item, {"relation", "columns"})
                                 : object(item, {"element", "columns"});
@@ -396,6 +431,15 @@ SchemaOverrides parse_schema(const QJsonValue& value, bool named_keys, bool coun
             if (!schema.counting_keys.insert(relational ? RelationId{parse_id(item)}
                                                         : relation_from(parse_ref(item))).second)
                 invalid("Duplicate counting key.");
+    // Version 31 keeps the names typed over foreign keys the conversion made.
+    if (renamed_keys)
+        for (const auto& item : array(o["foreign_key_names"])) {
+            const auto entry = object(item, {"key", "part", "name"});
+            const ForeignKeyColumn column{ForeignKeyId{parse_id(entry["key"])},
+                                          parse_length(entry["part"])};
+            if (!schema.foreign_key_names.emplace(column, string(entry["name"])).second)
+                invalid("Duplicate foreign key name.");
+        }
     return schema;
 }
 QJsonObject comment_target(const CommentTarget& target) {
@@ -429,6 +473,7 @@ ElementRef parse_ref(const QJsonValue& value) {
     if (type == "specialization") return SpecializationId{id};
     if (type == "picture") return PictureId{id};
     if (type == "note") return NoteId{id};
+    if (type == "relation") return RelationId{id};
     invalid("Unsupported element type.");
 }
 // A picture's bytes travel as base64 text. Anything that is not base64, or
@@ -496,6 +541,8 @@ double number(const QJsonValue& value) {
 // the three things put the foreign key there, so the kind is written beside
 // the identifier and read back the same way.
 QJsonObject encode_link(const LinkSource& link) {
+    if (const auto* id = std::get_if<ForeignKeyId>(&link))
+        return {{"kind", QLatin1String("foreign_key")}, {"id", uuid_text(id->value)}};
     if (std::holds_alternative<ParticipantId>(link))
         return {{"kind", QLatin1String("participant")},
                 {"id", uuid_text(std::get<ParticipantId>(link).value)}};
@@ -512,6 +559,7 @@ LinkSource parse_link(const QJsonValue& value) {
     if (kind == "participant") return LinkSource{ParticipantId{id}};
     if (kind == "attribute") return LinkSource{AttributeId{id}};
     if (kind == "subtype") return LinkSource{EntityId{id}};
+    if (kind == "foreign_key") return LinkSource{ForeignKeyId{id}};
     invalid("Unsupported schema link kind.");
 }
 
@@ -1259,7 +1307,8 @@ application::LoadResult ErdxProjectStore::decode(const QByteArray& input) {
             if (named != "convertible" && named != "basic") invalid("Unsupported conceptual mode.");
         }
         if (catalogued) project.decisions = parse_decisions(data["decisions"], relational, number_version >= 28);
-        if (diverged) project.schema = parse_schema(data["schema"], named_keys, generated, relational);
+        if (diverged) project.schema = parse_schema(data["schema"], named_keys, generated, relational, number_version >= 30,
+                                                         number_version >= 31);
         if (arranged) project.schema_layout = parse_layout(data["schema_layout"], pulled_tables, relational);
         if (papered) {
             const auto o = object(data["background"], {"style", "strength", "image"});

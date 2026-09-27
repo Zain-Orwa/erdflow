@@ -1546,6 +1546,21 @@ private:
 
 } // namespace
 
+// Measured the way a name is drawn: the same lettering and weight, and the
+// same room left inside the shape -- 15 at either side of a box or an oval,
+// and a fifth and more of a diamond's width at either point.
+double width_for_name(NamedShape shape, const QString& name, const QFont& base) {
+    auto font = lettered(base, 12.5);
+    font.setWeight(shape == NamedShape::Entity ? QFont::Bold : QFont::Medium);
+    const auto words = QFontMetricsF(font).horizontalAdvance(name) + 6;
+    switch (shape) {
+    case NamedShape::Entity: return std::max(entity_body.width, std::ceil(words + 30));
+    case NamedShape::Attribute: return std::max(attribute_body.width, std::ceil(words + 30));
+    case NamedShape::Relationship: return std::max(relationship_body.width, std::ceil(words / 0.56));
+    }
+    return entity_body.width;
+}
+
 struct DiagramView::Impl {
     DiagramView& view;
     application::Editor& editor;

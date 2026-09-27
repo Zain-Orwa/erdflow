@@ -20,7 +20,13 @@ namespace erdflow::desktop {
 enum class Glyph {
     New, Open, Save, Undo, Redo, Select, Entity, Attribute, Relationship,
     Isa, Connect, Pan, Fit, Check, Duplicate, Rename, Delete, Theme,
-    Picture, Note, FullView, Dismiss, Symbols, Export, Search, Key
+    Picture, Note, FullView, Dismiss, Symbols, Export, Search, Key,
+    // A table, the element a Relational Design is drawn with (Zain,
+    // 2026-09-27), as Entity is the Conceptual design's.
+    Table,
+    // The schema's Arrange and Appearance menus, in the header of a schema
+    // drawn by hand (Zain, 2026-09-27).
+    Arrange, Appearance
 };
 
 // Which set a glyph is taken from. Painted follows the theme's colours and

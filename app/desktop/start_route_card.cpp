@@ -89,9 +89,7 @@ const std::vector<StartRouteDefinition>& start_routes() {
         {StartRoute::RelationalDesign, "startRouteRelational",
          "Relational Schema",
          "Start directly with tables, columns, keys and constraints.",
-         "Best when you already know your data structure.", false, "Coming soon",
-         "Starting directly from a relational schema is not enabled yet. "
-         "It needs relations that can be made by hand, which is still being built."},
+         "Best when you already know your data structure.", true, nullptr, nullptr},
         {StartRoute::Sql, "startRouteSql",
          "SQL Script (DDL)",
          "Write, paste or import SQL to build the relational design.",

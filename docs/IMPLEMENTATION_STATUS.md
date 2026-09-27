@@ -36,6 +36,131 @@ not been built yet. Their presence in those documents is not a completion claim.
   FOR …* tag, which could only be cut to a few letters and an ellipsis at that
   width, is left out. While compact, tables are moved but not pulled by their
   edges, so a size given there never folds the full view's columns.
+- **A project can start from its schema** (2026-09-27, ADR-021 Step B). Home's
+  *Relational Schema* card is enabled: its **+ Create** opens an untitled
+  project whose Relational Design fills the window, with no diagram behind it
+  (`Editor::new_schema_project`, `SchemaOverrides::standalone`). While it
+  starts from its schema, Full, Close and the header's *Relational Design*
+  button are put away, since there is no diagram to go back to, and the
+  narrowing chips too, since every table came from here. The status line says
+  how many tables there are and that there is no diagram yet, and columns are
+  drawn upright rather than in the italic that means "not on the diagram".
+  - *Its tools are in the header* (2026-09-27). The bar the schema carries in
+    a diagram project -- its title, its state, Arrange and Appearance -- is
+    put away, since the header already says *Relational Design*, and the
+    header carries instead **Table** (the table mark, from each icon set:
+    *schema* in the coloured set, *relational* in the line art, drawn in the
+    painted one), **Connect ▾**, **Arrange ▾** and **Appearance ▾**, the last
+    two opening the very menus the schema's bar opens. What the bar said
+    (*2 tables · no diagram yet*, types open, ends not connected) is said in
+    the status line where a diagram's counts are. The title gives way before
+    the tools do and is said whole on hover, so the header fits a window 1440
+    wide. **Convert to Conceptual Design** stands in the Conceptual preview's
+    bar beside Close, and on the Design menu. Converting gives the tools back
+    to the schema's own bar.
+  - *The header reads as groups* (2026-09-27): **← Home**; a two-part switch
+    **Schema | Conceptual**, Schema first and lit in the accent, in place of
+    the *RELATIONAL DESIGN* badge (Conceptual is the button that raises the
+    preview, and lights softly while it is up; Schema puts the preview away);
+    a hairline; the title with a pencil that asks for the project's name as
+    the Explorer does; room; **Table**, **Connect ▾**, **Arrange ▾** (layers
+    mark) and **Appearance ▾** (its own mark) on one quiet, rounded style; a
+    hairline; **Undo** and **Redo**, lighter; a hairline; the search, with a
+    glass, *Search schema design…*, 240 wide where there is room and down to
+    150 where there is not; **Theme ▾**. Nothing in it says *Relational*.
+    The title keeps its width up to 140 so the search narrows first. The
+    empty schema says *Create a table to start designing your schema.*
+    Dressed by stylesheet rules keyed on the header's `schemaFirst`
+    property (`MainWindow::wear_schema_first_header`); converting puts the
+    diagram's header back exactly as it was.
+  - *Connect* is the diagram's tool with its own mark: pressed, a press
+    anywhere on a column's row (not only its key gutter) draws a foreign key,
+    and letting go anywhere on a table points at that table's primary key
+    where it has one key column (`SchemaView::set_connecting`). Used once it
+    is put down again; a double click locks it (*Connect 🔒*); Escape or a
+    second press puts it down. Its arrow carries how the lines run -- *Around
+    the tables* or *Straight there*, the same entries as in Arrange.
+  - *Tables* are made by **Table** in the header, by a double
+    click on the empty schema, or by *Add table here* on its right-click
+    menu. A table is put where it was asked for and its name opened for
+    typing; it starts with one column, an `int` primary key named for the
+    table -- `TableID`, and `StudentID` once the table is named `Student`
+    (`Editor::create_relation`). A key still called by the table's old name
+    follows a rename in the same edit; a key named by hand keeps its name
+    (`Editor::rename_table`; Zain, 2026-09-27, replacing the plain `ID`). Columns are added from the slot under a
+    table, as on any schema, and named in their row. A column is made the
+    primary key, or taken off it, from its right-click menu. A table is
+    deleted from its menu or with Delete, taking its foreign keys with it,
+    and the History says *Deleted Table "Employee" with its 3 columns*.
+  - *A foreign key* is drawn by pressing a column's key gutter (where `PK` and
+    `FK` are written) and letting go on the primary-key row it points at, in
+    another table or its own; the line follows the pointer, and the row under
+    it is washed in the accent where it can be pointed at. The column's menu
+    offers the same as *References ▸ Table.Column*, and *Remove the foreign
+    key*. The column takes the key's type in the same edit, and a change to
+    the key's type or size is carried to every foreign key pointing at it.
+    Let go anywhere else, or on a column that is not a key, it says why where
+    the hand let go. A foreign key's own type, and taking the key off a
+    column something points at, are refused with the reason
+    (`Editor::add_foreign_key`, `SchemaView::linked`).
+  - *The schema is the main surface, and the Conceptual Design rises from
+    below it* (2026-09-27) -- a diagram and its schema turned the other way
+    up. The schema fills the stage from the top with no grip at its top edge,
+    since it is not a curtain raised over anything. The header's
+    **Conceptual Design** button, in the place a diagram's *Relational
+    Design* button stands, raises a panel from the bottom of the stage over
+    the lower part of the schema: a grip at its top (drag, arrow keys, double
+    click for half or full, the height remembered), its title, what it shows
+    (*2 entities · 1 relationship · preview only*, and how many things the
+    rules could not carry exactly, listed on hover), and **Close**. It shows
+    the diagram **Convert** would draw -- the same rules, from the same table
+    places and element sizes (`MainWindow::schema_conversion_inputs`) -- on a
+    canvas of its own over an editor of its own, worked out again whenever
+    the schema changes, and fitted to the diagram when it opens. Nothing is
+    converted and nothing is written to the project. It is panned and zoomed;
+    anything that would change it (a double click, a right click, Delete,
+    typing) is turned away with the reason beside the pointer and in the
+    status line, since a change there would be lost with the next edit to the
+    schema. Converting puts the preview and its button away and gives the
+    schema back its grip; Undo brings them back.
+- **A schema drawn by hand converts into its diagram** (2026-09-27).
+  **Convert to Conceptual Design** (in the Conceptual preview's bar and on
+  the Design menu) draws, in one edit,
+  every table as an entity and every foreign key as a relationship, by the
+  course rules run backwards (`domain::diagram_from_schema`,
+  `Editor::convert_schema_to_diagram`): a table's primary key columns become
+  its key attributes (ADR-021 §5a); a foreign key is one-to-many from the
+  table it points at, one-to-one where it is `UNIQUE`, the side pointed at
+  taking part totally where it is `NOT NULL`; a key into the same table is a
+  relationship of the entity with itself, its two sides given roles (the
+  key's word, *Manager*, and the table's, *Employee*); and a join table --
+  two `NOT NULL` foreign keys into tables that nothing points back at, keyed
+  by the pair, by a whole-number key of its own, or by nothing -- is a
+  many-to-many relationship with its other columns as attributes. A
+  relationship is named for the role a foreign key plays where its name says
+  one, and *Has* otherwise. Afterwards the diagram is the model and the
+  schema is worked out from it, as in a project begun as a diagram, so edits
+  on either side reach the other (Zain chose this over an unlinked copy).
+  Table names (the project's naming is set to *As the diagram draws them*),
+  column names, types and sizes, `NOT NULL`, `UNIQUE`, `IDENTITY`, what every
+  foreign key points at and what it was called, each table's place and size,
+  hand-shaped lines, colours and comments are carried across, so the schema
+  reads the same. The diagram keeps the schema's arrangement, left to right
+  and top to bottom, with each entity's attributes above and below it and
+  each relationship placed clear of them; an element whose name would be cut
+  short is made wide enough for it (`width_for_name`), and every other is
+  made at its default size. What the rules cannot say exactly -- foreign keys
+  listed after a table's other columns, a key made for a table that had
+  none, a foreign key that was part of a primary key -- is said in the status
+  line and beside the diagram. The diagram comes in front with the schema
+  open beneath it; one Undo gives the schema drawn by hand back.
+- **A foreign key can be renamed on any schema** (2026-09-27). Double-clicking
+  a foreign key the conversion made opens its name for typing, as every other
+  column's does. A typed name is kept (`SchemaOverrides::foreign_key_names`,
+  `Editor::rename_foreign_key`) and no longer follows the key it points at, as
+  a typed table name no longer follows its entity; clearing it hands the name
+  back to the rule. Its hint says so. This replaces the refusal "A foreign key
+  is named for the key it points at", by Zain's choice.
 - **Create with AI is switched off for now** (2026-09-26). One constant,
   `create_with_ai_offered` in `start_route_card.hpp`, is `false`: every
   card still makes its Create with AI exactly as before, but does not show
@@ -1064,7 +1189,8 @@ their own and a history of their own — is still a later and separate thing.
 
   Behaviour is unchanged by design. Relations made by hand, schema-first
   projects, SQL import and three-way reconciliation are the next steps and are
-  not built.
+  not built. (Relations made by hand and schema-first projects, with their
+  conversion into a diagram, were built on 2026-09-27; see *What works*.)
 
 **Not implemented.** `readiness()` itself and the gate it feeds (Phase 14);
 relational objects with identities of their own, and editing them as such
@@ -1261,7 +1387,9 @@ renamed to; version 21 records where the schema differs from the diagram;
 version 22 records how it has been arranged; version 23 records how tall a
 table has been pulled as well as how wide; version 28 records which bridges
 somebody chose to key by their participants' foreign keys; version 29 keeps the
-size an element's name is drawn for. Older files open,
+size an element's name is drawn for; version 30 holds a schema drawn by hand --
+its tables and the foreign keys between them -- in a project that starts from
+its schema; version 31 keeps a name typed over a foreign key. Older files open,
 and read correctly as having none of these.
 
 The Part 1 checklist is a coverage inventory, not a replacement for semantic
@@ -1494,10 +1622,11 @@ outside the repository at `erdflow-notes/UI-AZURE-TASKS.md`. What is built:
   - *Behaviour:* it is a sign and does nothing when pressed. The keyboard
     passes over it, and it is read out as, for example, "Convert to Schema,
     Back to ERD".
-  *Relational Schema* and *SQL Project* are shown in their
-  places, marked *Coming soon* and not enabled, each saying why in its
-  tooltip: the first waits for ADR-021 Step B, the second for SQL to be
-  parsed into Relational Design and round-tripped (ADR-022 §9.2).
+  *SQL Project* is shown in its place, marked *Coming soon* and not
+  enabled, saying why in its tooltip: it waits for SQL to be parsed into
+  Relational Design and round-tripped (ADR-022 §9.2). *Relational Schema*
+  was marked the same way until 2026-09-27, when ADR-021 Step B was built;
+  its **+ Create** now opens a project that starts from its schema.
 - **Nothing is asked under the cards** (ADR-022 §9.19): the page ends with
   them. Conceptual's **+ Create** opens a new, untitled conceptual project,
   as File › New project does, and nothing is written until it is saved.
@@ -1616,8 +1745,10 @@ Not built yet, though some of it is on screen:
   today, behind one function where a native reading would plug in (ADR-022
   §9.9).
 - Relational Design is still a panel over the diagram rather than a
-  workspace of its own. It cannot yet make a table by hand (ADR-021 Step B),
-  so it has no Table tool to offer, and Insert has no relational entries.
+  workspace of its own. In a project that starts from its schema it makes
+  tables by hand (2026-09-27), from its own bar; the ribbon has no Table tool
+  and Insert has no relational entries yet. A schema worked out from a
+  diagram still gains tables only from the diagram.
   SQL and Data are not built, so there is nothing of theirs to dress.
 - Reference pictures exist for one system and release. The audit is
   offscreen and does not prove what a real screen reader announces.

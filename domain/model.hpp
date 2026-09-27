@@ -52,7 +52,7 @@ using ForeignKeyId = Id<struct ForeignKeyTag>;
 // on the canvas and the constraints that decide how it converts to relations.
 // A picture and a note are placed elements too, though not database objects:
 // see Picture below for what that means.
-using ElementRef = std::variant<EntityId, AttributeId, RelationshipId, SpecializationId, PictureId, NoteId>;
+using ElementRef = std::variant<EntityId, AttributeId, RelationshipId, SpecializationId, PictureId, NoteId, RelationId>;
 // An attribute belongs to an entity, a relationship, or a composite attribute;
 // never to a specialization, which owns no data of its own.
 using AttributeOwner = ElementRef;
@@ -478,7 +478,7 @@ struct SchemaColumn {
 // three are between them every foreign key there is: a participant carries a
 // relationship's key, a multivalued attribute's table points home, and a
 // subtype points at its parent.
-using LinkSource = std::variant<ParticipantId, AttributeId, EntityId>;
+using LinkSource = std::variant<ParticipantId, AttributeId, EntityId, ForeignKeyId>;
 
 // Which rule of the conversion produced a relation.
 //
@@ -581,7 +581,36 @@ struct SchemaTableBox {
     auto operator<=>(const SchemaTableBox&) const = default;
 };
 
+struct Relation {
+    RelationId id;
+    std::string name;
+    std::string description;
+    std::string comment;
+    auto operator<=>(const Relation&) const = default;
+};
+
+struct SchemaForeignKey {
+    ForeignKeyId id;
+    RelationId from;
+    RelationId to;
+    SchemaColumnId column;
+    SchemaColumnId target;
+    auto operator<=>(const SchemaForeignKey&) const = default;
+};
+
+// One column of a foreign key the conversion made: which key, and which of the
+// columns of the key it points at. A key of one column has only part 0; a key
+// pointing at a composite primary key has one part for each of its columns.
+struct ForeignKeyColumn {
+    ForeignKeyId key;
+    std::uint32_t part = 0;
+    auto operator<=>(const ForeignKeyColumn&) const = default;
+};
+
 struct SchemaOverrides {
+    bool standalone = false;
+    std::map<RelationId, Relation> relations;
+    std::map<ForeignKeyId, SchemaForeignKey> foreign_keys;
     // Columns added to one table at the schema level only, in the order they
     // were added, under the element whose table they were added to.
     std::map<RelationId, std::vector<SchemaColumn>> added;
@@ -602,8 +631,18 @@ struct SchemaOverrides {
     // of all to want it -- a table with nothing to identify it is given a
     // surrogate, and a surrogate is what IDENTITY is for.
     std::set<RelationId> counting_keys;
+    // What a foreign key the conversion made is called, where the name the
+    // rule gives it was not wanted (Zain, 2026-09-27). The rule names a key
+    // for what it points at, and a name somebody typed -- ManagerID for a key
+    // into the same table's EmpID -- says what the rule cannot. A typed name
+    // is kept and no longer follows the key it points at, as a typed table
+    // name no longer follows its entity; taking it away hands the name back
+    // to the rule. It is also how a schema converted into a diagram keeps the
+    // foreign key names it was drawn with.
+    std::map<ForeignKeyColumn, std::string> foreign_key_names;
     [[nodiscard]] bool empty() const {
-        return added.empty() && hidden.empty() && key_names.empty() && counting_keys.empty();
+        return !standalone && relations.empty() && foreign_keys.empty() && added.empty() && hidden.empty()
+            && key_names.empty() && counting_keys.empty() && foreign_key_names.empty();
     }
     auto operator<=>(const SchemaOverrides&) const = default;
 };

@@ -7,6 +7,7 @@
 #pragma once
 
 #include "application/history.hpp"
+#include "domain/diagram_from_schema.hpp"
 #include "domain/model.hpp"
 
 #include <cstdint>
@@ -60,6 +61,32 @@ public:
     EditResult go_to(std::size_t position);
 
     void new_project();
+    // A project that starts from its schema (Zain, 2026-09-27): no diagram,
+    // and tables made on the schema itself until it is converted into one.
+    // Like new_project it is a fresh start rather than an edit, so undo does
+    // not reach back past it.
+    void new_schema_project();
+    // Tables made by hand, in a project that starts from its schema. A new
+    // table is put where it is asked for, and begins with one column, ID, its
+    // primary key, so there is a row to type over and a key to point at.
+    EditResult create_relation(std::string name, std::optional<domain::Point> at = {});
+    EditResult erase_relation(domain::RelationId id);
+    // One column made to point at a table's primary key -- another table's,
+    // or its own table's, as a manager's is. The column takes the key's type
+    // in the same edit, since a foreign key and what it points at must agree.
+    // A column already pointing somewhere keeps its foreign key, pointed
+    // at the new place.
+    EditResult add_foreign_key(domain::RelationId from, domain::SchemaColumnId column,
+                               domain::RelationId to, domain::SchemaColumnId target);
+    EditResult erase_foreign_key(domain::ForeignKeyId id);
+    // The schema drawn as the Conceptual ERD it would have come from, in one
+    // edit (Zain, 2026-09-27). Afterwards the diagram is the model and the
+    // schema follows from it, as in a project begun as a diagram. `tables` is
+    // where each table sits on the schema now, where it stays; what could not
+    // be carried across exactly is told in `notes`, one sentence each.
+    EditResult convert_schema_to_diagram(const std::map<domain::RelationId, domain::Point>& tables,
+                                         const domain::DiagramSizes& sizes,
+                                         std::vector<std::string>* notes = nullptr);
     EditResult replace_project(domain::Project project);
     void mark_saved(std::uint64_t revision);
     EditResult rename_project(std::string name);
@@ -227,6 +254,10 @@ public:
     // given a name of its own, remembered against the table it belongs to.
     EditResult rename_table(domain::ElementRef ref, std::string name);
     EditResult rename_schema_key(domain::ElementRef table, std::string chosen);
+    // A name typed over a foreign key the conversion made (Zain,
+    // 2026-09-27). It is kept, and no longer follows the key it points at;
+    // empty hands the name back to the rule.
+    EditResult rename_foreign_key(domain::ForeignKeyColumn column, std::string chosen);
     EditResult rename_schema_column(domain::SchemaColumnId id, std::string name);
     EditResult set_schema_column_type(domain::SchemaColumnId id, domain::LogicalType type);
     EditResult erase_schema_column(domain::SchemaColumnId id);

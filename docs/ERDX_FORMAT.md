@@ -117,6 +117,19 @@ required `lettering` array, which may be empty; earlier versions must not
 carry it, and every name in such a file is drawn at its ordinary size. (The
 versions between 15 and 28 are not yet written up here.)
 
+**Version 30** holds a schema drawn by hand, in a project that starts from its
+schema rather than from a diagram (2026-09-27). The `schema` object gains a
+required `standalone` boolean and required `relations` and `foreign_keys`
+arrays, which may be empty; an element reference may name a `relation`, and a
+schema line's link may be a `foreign_key`. Earlier versions must not carry
+them, and open as projects begun as diagrams, which is all they could be. See
+[The schema drawn by hand](#the-schema-drawn-by-hand).
+
+**Version 31** keeps a name typed over a foreign key the conversion made. The
+`schema` object gains a required `foreign_key_names` array, which may be empty;
+earlier versions must not carry it, and every foreign key in such a file is
+named by the rule, which is all it could be.
+
 **Version 13** adds weak entities and identifying relationships. An entity
 object gains a required `weak` boolean and a relationship object a required
 `identifying` boolean; earlier versions must not carry them, and read as
@@ -275,6 +288,34 @@ are stored with the model rather than treated as display state.
 A specialization holds no attributes of its own; an attribute owned by one is
 rejected. Deleting a supertype removes the specialization with it, and deleting
 a subtype detaches it from the specializations that survive.
+
+## The schema drawn by hand
+
+A project that starts from its schema has `standalone: true` in its `schema`
+object, holds no entities, attributes, relationships or specializations, and
+keeps its tables as relations:
+
+```json
+{"id": "019947b9-7111-7000-8000-000000000010", "name": "Employee",
+ "description": "", "comment": ""}
+```
+
+Each relation's columns are the schema's added columns under that relation's
+identity, in their order, exactly as columns added to a derived table are. A
+**foreign key** has exactly `id`, `from`, `to`, `column` and `target`: the
+relation holding the key and the relation it points at, and the column in
+each. The target is its table's only primary key column, or a unique one; the
+two columns have the same type, length and scale; and a column carries at most
+one foreign key. A relation or foreign key may appear only where `standalone`
+is `true`.
+
+Converting such a project into a diagram leaves `standalone` `false` and the
+two arrays empty: the tables are worked out from the diagram from then on.
+
+A **foreign key name** has exactly `key`, `part` and `name`: the identity of a
+foreign key the conversion made, which column of the key it points at (`0` for
+a key of one column), and the name typed over the one the rule gives it. The
+key must be one the project can make; at most one name per `key` and `part`.
 
 ## Pictures and notes
 

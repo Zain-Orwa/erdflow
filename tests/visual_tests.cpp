@@ -321,7 +321,8 @@ int main(int argc, char** argv) {
         check_picture("card-rest", card_picture(routes[0], false, false));
         check_picture("card-hover", card_picture(routes[0], false, true));
         check_picture("card-selected", card_picture(routes[0], true, false));
-        // SQL Project, a card still coming.
+        // SQL Project, the card still coming; Relational Schema can be taken
+        // now (Zain, 2026-09-27).
         check_picture("card-coming-soon", card_picture(routes[2], false, false));
 
         // A sidebar row under the pointer.

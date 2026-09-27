@@ -329,6 +329,37 @@ std::vector<std::size_t> key_columns(const PreviewTable& table) {
 
 SchemaPreview schema_preview(const Project& project) {
     SchemaPreview preview;
+    if (project.schema.standalone) {
+        std::map<RelationId, std::size_t> positions;
+        for (const auto& [id, relation] : project.schema.relations) {
+            PreviewTable table;
+            table.id = id;
+            table.origin = ElementRef{id}; // editable object, not conceptual provenance
+            table.name = relation.name;
+            add_schema_only(project, ElementRef{id}, table.columns);
+            positions[id] = preview.tables.size();
+            preview.tables.push_back(std::move(table));
+        }
+        for (const auto& [id, key] : project.schema.foreign_keys) {
+            if (!positions.contains(key.from) || !positions.contains(key.to)) continue;
+            auto& from = preview.tables[positions.at(key.from)];
+            const auto& to = preview.tables[positions.at(key.to)];
+            for (auto& column : from.columns) {
+                if (column.added != key.column) continue;
+                for (std::size_t i = 0; i < to.columns.size(); ++i) {
+                    if (to.columns[i].added != key.target) continue;
+                    column.foreign_key = true;
+                    column.references = positions.at(key.to);
+                    column.references_column = i;
+                    column.link = LinkSource{id};
+                    column.key_id = id;
+                    column.optional_link = !column.required;
+                    column.one_to_one = column.unique || column.primary_key;
+                }
+            }
+        }
+        return preview;
+    }
     std::map<ElementRef, std::size_t> table_of;   // which table an element became
 
     // 1. A table for each entity, carrying its attributes.
@@ -423,15 +454,21 @@ SchemaPreview schema_preview(const Project& project) {
                                      LinkSource link, const std::string& role = {}, bool key_part = false) {
         const auto keys = key_columns(preview.tables[target]);
         if (keys.empty()) return;
-        for (const auto key : keys) {
+        for (std::size_t part = 0; part < keys.size(); ++part) {
+            const auto key = keys[part];
             PreviewColumn column;
             const auto& key_name = preview.tables[target].columns[key].name;
+            // A name typed over this one wins over every rule below, and is
+            // kept as it was typed (Zain, 2026-09-27).
+            const auto typed = project.schema.foreign_key_names.find(
+                ForeignKeyColumn{foreign_key_from(link), static_cast<std::uint32_t>(part)});
+            if (typed != project.schema.foreign_key_names.end()) column.name = typed->second;
             // The role the side was given names the key, which is the only
             // thing that can tell two links to the same table apart. A flight's
             // departure and arrival airports are both AirportID without it, and
             // naming one of them after the table it points at says nothing
             // about which is which.
-            if (!role.empty()) column.name = role + key_name;
+            else if (!role.empty()) column.name = role + key_name;
             // A key pointing back into its own table cannot share the name it
             // points at, or a table would hold the same column twice.
             else if (into == target) column.name = "Parent" + key_name;
@@ -450,7 +487,7 @@ SchemaPreview schema_preview(const Project& project) {
                 return std::any_of(preview.tables[into].columns.begin(), preview.tables[into].columns.end(),
                                    [&](const PreviewColumn& existing) { return existing.name == wanted; });
             };
-            if (taken_already(column.name)) {
+            if (typed == project.schema.foreign_key_names.end() && taken_already(column.name)) {
                 const auto qualified = preview.tables[target].name + column.name;
                 column.name = qualified;
                 for (int attempt = 2; taken_already(column.name); ++attempt)
@@ -475,6 +512,7 @@ SchemaPreview schema_preview(const Project& project) {
             column.one_to_one = one_to_one;
             column.link = link;
             column.key_id = foreign_key_from(link);
+            column.reference_part = static_cast<std::uint32_t>(part);
             preview.tables[into].columns.push_back(column);
         }
     };

@@ -32,12 +32,13 @@ enum class StartRoute { Conceptual, RelationalDesign, Sql };
 
 // What a card says, and whether it may yet be taken.
 //
-// `Relational Schema` and `SQL Project` are here from the first
-// day the screen exists and are deliberately not enabled: the route behind the first
-// needs relations made by hand, which ADR-021 calls Step B, and the route
-// behind the second needs SQL parsed into Relational Design and back
-// (ADR-022 sections 5 and 9.2). Showing where the product is going is worth
-// doing; promising a route that cannot finish is not.
+// `Relational Schema` and `SQL Project` are here from the first day the
+// screen exists. `Relational Schema` was held back until relations could be
+// made by hand, which ADR-021 calls Step B, and is enabled now that they can
+// (Zain, 2026-09-27). `SQL Project` is deliberately not enabled yet: its route
+// needs SQL parsed into Relational Design and back (ADR-022 sections 5 and
+// 9.2). Showing where the product is going is worth doing; promising a route
+// that cannot finish is not.
 struct StartRouteDefinition {
     StartRoute route;
     const char* object_name;

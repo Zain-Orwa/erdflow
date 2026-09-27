@@ -105,6 +105,15 @@ inline constexpr double scaled_whole(double measure) {
 inline constexpr BodySize symbol_body{scaled_whole(56), scaled_whole(56)};
 inline constexpr double symbol_step = 1.25;
 
+// How wide a new entity, attribute or relationship has to be for its name to
+// be written whole on the canvas, at the lettering the canvas uses: the
+// default above where that is wide enough, and more where it is not. The
+// defaults are unchanged by it; it is for a diagram drawn from something else
+// -- a schema converted into one -- so it does not open on names cut short,
+// as the template's wider diamond does not (Zain, 2026-09-27).
+enum class NamedShape { Entity, Attribute, Relationship };
+[[nodiscard]] double width_for_name(NamedShape shape, const QString& name, const QFont& base);
+
 // What a search is looking for. Everything is the ordinary state, and the rest
 // narrow it to one kind, so "only the entities" is asked for by choosing a kind
 // and typing nothing at all.

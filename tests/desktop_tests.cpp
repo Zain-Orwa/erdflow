@@ -441,16 +441,14 @@ int main(int argc, char** argv) {
             for (auto* card : cards)
                 require(card->focusPolicy() == Qt::StrongFocus, "Every card takes focus");
 
-            // Relational Schema and SQL Project are shown and deliberately
-            // not enabled, because the routes behind them are not built. They
-            // keep their places in the row rather than being left out.
-            for (const std::size_t unbuilt : {std::size_t{1}, std::size_t{2}}) {
-                require(!cards[unbuilt]->isEnabled(), "A route that is not built is not yet enabled");
-                require(cards[unbuilt]->isVisible(), "But it is shown, in its own place");
-                require(!cards[unbuilt]->toolTip().isEmpty(), "And says why it cannot be taken");
-            }
-            require(cards[1]->toolTip() != cards[2]->toolTip(), "Each in its own words");
-            require(cards[0]->isEnabled(), "The route that can be taken is enabled");
+            // SQL Project is shown and deliberately not enabled, because the
+            // route behind it is not built. It keeps its place in the row
+            // rather than being left out. Relational Schema can be taken now
+            // that tables can be made by hand (Zain, 2026-09-27).
+            require(!cards[2]->isEnabled(), "A route that is not built is not yet enabled");
+            require(cards[2]->isVisible(), "But it is shown, in its own place");
+            require(!cards[2]->toolTip().isEmpty(), "And says why it cannot be taken");
+            require(cards[0]->isEnabled() && cards[1]->isEnabled(), "The routes that can be taken are enabled");
 
             // The cards share one line and never wrap, at any width the window
             // can have; each narrows to make room rather than one dropping.
@@ -1655,7 +1653,7 @@ int main(int argc, char** argv) {
             }
             require(cards[0]->create_button()->accessibleName() == "Create Conceptual Design (ERD)",
                     "It says what it makes to whatever reads the screen");
-            require(!cards[1]->create_button()->toolTip().isEmpty(),
+            require(!cards[2]->create_button()->toolTip().isEmpty(),
                     "And, where it cannot be pressed yet, why");
 
             // Pressing it opens a new conceptual project, untitled, as New
@@ -6029,6 +6027,401 @@ int main(int argc, char** argv) {
             window.load_example();
             settle();
             require(child<QAction>(window, "exportPng")->isEnabled(), "And a drawn one has something again");
+        }
+
+
+        // A project that starts from its schema (Zain, 2026-09-27): Home's
+        // Relational Schema card makes one, tables and a foreign key are drawn
+        // on the schema by hand, and the whole converts into its diagram, which
+        // is the model from then on.
+        {
+            editor.mark_saved(editor.revision());
+            window.show_home(true);
+            settle();
+            auto* home = static_cast<desktop::HomePage*>(window.findChild<QWidget*>("homePage"));
+            auto* relational = home->cards()[1];
+            require(relational->isEnabled(), "The Relational Schema card can be taken");
+            relational->create_button()->click();
+            settle_for(700);
+            require(!window.showing_home(), "Its + Create leaves Home");
+            require(editor.project().schema.standalone && editor.project().schema.relations.empty(),
+                    "For an empty project that starts from its schema");
+            auto* schema = static_cast<desktop::SchemaView*>(child<QWidget>(window, "schemaView"));
+            require(schema->isVisible(), "Relational Design is in front");
+            require(child<QPushButton>(window, "schemaFull")->isHidden()
+                        && child<QPushButton>(window, "schemaClose")->isHidden()
+                        && child<QPushButton>(window, "previewSchema")->isHidden(),
+                    "And nothing offers to put it away onto a diagram that is not there");
+            // Its tools are up in the header, where it already says Relational
+            // Design, and the bar on the schema that held them is put away
+            // (Zain, 2026-09-27).
+            auto* add_table = child<QToolButton>(window, "schemaAddTable");
+            auto* convert = child<QPushButton>(window, "schemaConvert");
+            auto* header_tools = child<QWidget>(window, "schemaTopTools");
+            require(header_tools->isVisible() && add_table->isVisible() && add_table->text() == "Table"
+                        && child<QToolButton>(window, "schemaConnect")->isVisible()
+                        && child<QToolButton>(window, "schemaTopArrange")->isVisible()
+                        && child<QToolButton>(window, "schemaTopAppearance")->isVisible(),
+                    "The header offers Table, Connect, Arrange and Appearance");
+            require(add_table->parentWidget() == header_tools, "Table is in the header, not on the schema");
+            require(header_tools->parentWidget()->minimumSizeHint().width() <= 1440,
+                    "And the header still fits a window 1440 wide, whatever the project is called");
+            require(child<QWidget>(window, "schemaBar")->isHidden(), "And the schema's own bar is put away");
+            require(child<QToolButton>(window, "schemaTopArrange")->menu()
+                        == child<QToolButton>(window, "schemaArrange")->menu()
+                        && child<QToolButton>(window, "schemaTopAppearance")->menu()
+                               == child<QToolButton>(window, "schemaAppearance")->menu(),
+                    "Arrange and Appearance up there open the schema's own menus");
+            require(child<QAction>(window, "designConvert")->isVisible() && !convert->isHidden()
+                        && convert->parentWidget() == child<QWidget>(window, "conceptualPanel")
+                                                          ->findChild<QWidget*>("conceptualBar"),
+                    "Convert is on the Design menu and in the Conceptual preview's bar");
+            // The header of a schema drawn by hand (Zain, 2026-09-27): Home, the
+            // switch between Schema and Conceptual with Schema first and lit, the
+            // title with its pencil, the tools, history, search and theme -- and
+            // nowhere the word Relational.
+            auto* modes = child<QWidget>(window, "schemaModeSwitch");
+            auto* schema_mode = child<QPushButton>(window, "schemaModeSchema");
+            require(modes->isVisible() && schema_mode->isChecked() && schema_mode->text() == "Schema"
+                        && child<QPushButton>(window, "previewConceptual")->text() == "Conceptual"
+                        && child<QPushButton>(window, "previewConceptual")->parentWidget() == modes
+                        && schema_mode->x() < child<QPushButton>(window, "previewConceptual")->x(),
+                    "Schema | Conceptual, Schema first and chosen");
+            require(child<QLabel>(window, "workspaceBadge")->isHidden()
+                        && child<QPushButton>(window, "backToHome")->text() == "← Home"
+                        && child<QToolButton>(window, "renameDocument")->isVisible(),
+                    "The switch stands in place of the badge, after Home, and the title has its pencil");
+            {
+                auto* header = child<QWidget>(window, "workspaceHeader");
+                QStringList said;
+                for (auto* button : header->findChildren<QAbstractButton*>())
+                    if (button->isVisible()) said << button->text();
+                for (auto* label : header->findChildren<QLabel*>())
+                    if (label->isVisible()) said << label->text();
+                for (auto* field : header->findChildren<QLineEdit*>())
+                    if (field->isVisible()) said << field->placeholderText();
+                if (said.join(' ').contains("Relational", Qt::CaseInsensitive)) qWarning() << said;
+                require(!said.join(' ').contains("Relational", Qt::CaseInsensitive),
+                        "Nothing in the header says Relational");
+                require(child<QLineEdit>(window, "schemaSearch")->placeholderText().contains("schema"),
+                        "The search is named for the schema");
+            }
+            // Stage 1: the Schema workspace has an Explorer and Properties either
+            // side of it, in the same docks the diagram's are held in, with the
+            // schema's own words in them and nothing of the diagram's.
+            auto* explorer_dock = child<QDockWidget>(window, "explorerDock");
+            auto* properties_dock = child<QDockWidget>(window, "propertiesDock");
+            auto* schema_explorer = child<QTreeView>(window, "schemaExplorer");
+            require(explorer_dock->isVisible() && explorer_dock->widget() == schema_explorer
+                        && properties_dock->isVisible()
+                        && properties_dock->widget() == child<QWidget>(window, "schemaProperties"),
+                    "Explorer and Properties stand either side of the schema");
+            const auto explorer_rows = [&] {
+                QStringList rows;
+                const auto* model = schema_explorer->model();
+                const auto root = model->index(0, 0);
+                rows << root.data().toString();
+                for (int r = 0; r < model->rowCount(root); ++r) rows << model->index(r, 0, root).data().toString();
+                return rows;
+            };
+            require(explorer_rows() == QStringList{"Schema", "Tables", "Relationships"},
+                    "The Explorer's frame is the schema's: Schema, Tables, Relationships");
+            const auto properties_say = [&] {
+                QStringList said;
+                for (auto* label : properties_dock->widget()->findChildren<QLabel*>())
+                    if (label->isVisible()) said << label->text();
+                return said;
+            };
+            require(properties_say() == QStringList{"Schema", "No object selected."},
+                    "With nothing chosen, Properties says so");
+
+            // A table, named where it appears.
+            add_table->click();
+            settle();
+            auto* field = child<QLineEdit>(window, "schemaName");
+            require(field->isVisible() && field->text() == "Table",
+                    "Add table makes a table and opens its name for typing");
+            const auto type_name = [&](const QString& name) {
+                field->setText(name);
+                QKeyEvent done(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+                QApplication::sendEvent(field, &done);
+                settle();
+            };
+            type_name("Employee");
+            require(schema->preview().tables.size() == 1 && schema->preview().tables[0].name == "Employee",
+                    "Named as it was typed");
+            require(schema->preview().tables[0].columns.size() == 1
+                        && schema->preview().tables[0].columns[0].primary_key,
+                    "And starting with its key");
+            require(schema->preview().tables[0].columns[0].name == "EmployeeID",
+                    "Which is named for the table, EmployeeID rather than ID");
+            const auto mouse = [&](QEvent::Type type, QPointF at, Qt::MouseButtons held) {
+                QMouseEvent event(type, at, schema->mapToGlobal(at.toPoint()),
+                                  type == QEvent::MouseMove ? Qt::NoButton : Qt::LeftButton, held, Qt::NoModifier);
+                QApplication::sendEvent(schema, &event);
+            };
+            // Another column, from the slot under it, named in its row.
+            auto box = schema->table_boxes().front();
+            const QPointF slot(box.center().x(), box.bottom() + 10);
+            mouse(QEvent::MouseMove, slot, Qt::NoButton);
+            mouse(QEvent::MouseButtonPress, slot, Qt::LeftButton);
+            settle();
+            require(field->isVisible(), "The slot makes a column and opens its name");
+            type_name("ManagerID");
+            require(schema->preview().tables[0].columns.size() == 2, "The table has its second column");
+
+            // A foreign key drawn by hand, from ManagerID's key gutter onto the
+            // table's own key.
+            box = schema->table_boxes().front();
+            auto rows = schema->row_boxes().front();
+            const QPointF from(rows[1].left() + 22, rows[1].center().y());
+            const QPointF onto_key(rows[0].center().x(), rows[0].center().y());
+            mouse(QEvent::MouseButtonPress, from, Qt::LeftButton);
+            mouse(QEvent::MouseMove, (from + onto_key) / 2, Qt::LeftButton);
+            mouse(QEvent::MouseMove, onto_key, Qt::LeftButton);
+            mouse(QEvent::MouseButtonRelease, onto_key, Qt::NoButton);
+            settle();
+            const auto& manager = schema->preview().tables[0].columns[1];
+            require(manager.foreign_key && manager.references == std::size_t{0} && manager.references_column == 0,
+                    "Dragging from a key gutter onto a key makes a foreign key");
+            require(manager.type == domain::LogicalType::Int, "Which takes the key's type");
+            require(schema->table_boxes().front().topLeft() == box.topLeft(), "And does not move the table");
+
+            // The schema is the main surface while it is drawn by hand, and
+            // the Conceptual Design it becomes rises from below it, the other
+            // way up from a diagram with its schema (Zain, 2026-09-27).
+            auto* stage = child<QWidget>(window, "workspaceStage");
+            require(child<QWidget>(window, "schemaPanel")->y() == 0
+                        && child<QWidget>(window, "schemaGrip")->isHidden(),
+                    "The schema fills the stage from the top, with no grip to be pulled by");
+            auto* to_conceptual = child<QPushButton>(window, "previewConceptual");
+            require(to_conceptual->isVisible(), "The header offers the Conceptual Design it becomes");
+            to_conceptual->click();
+            settle_for(700);
+            auto* conceptual = child<QWidget>(window, "conceptualPanel");
+            auto* conceptual_state = child<QLabel>(window, "conceptualState");
+            require(conceptual->isVisible() && to_conceptual->isChecked() && conceptual->y() > 0
+                        && conceptual->y() + conceptual->height() == stage->height(),
+                    "It rises from the bottom of the stage, over the lower part of the schema");
+            require(conceptual_state->text().startsWith("1 entity · 1 relationship"),
+                    "It shows the diagram Convert would draw: a table and its reference to itself");
+            auto* drawn = static_cast<desktop::DiagramView*>(child<QWidget>(window, "conceptualPreview"));
+            require(!drawn->diagram_bounds().isEmpty(), "Drawn on a canvas of its own");
+            require(editor.project().schema.standalone && editor.project().entities.empty(),
+                    "Nothing is converted and nothing is written");
+            // A preview is looked at; changing it is turned away and says why.
+            const auto held = editor.revision();
+            const QPoint middle = drawn->viewport()->rect().center();
+            QMouseEvent twice(QEvent::MouseButtonDblClick, QPointF(middle), drawn->viewport()->mapToGlobal(QPointF(middle)),
+                              Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+            QApplication::sendEvent(drawn->viewport(), &twice);
+            settle();
+            require(window.statusBar()->currentMessage().contains("only for looking at")
+                        && editor.revision() == held,
+                    "A double click on the preview says it is only for looking at, and changes nothing");
+
+            // A table where the empty schema is double-clicked.
+            const QPointF empty(box.right() + 260, box.top() + 30);
+            mouse(QEvent::MouseButtonDblClick, empty, Qt::LeftButton);
+            settle();
+            require(schema->preview().tables.size() == 2 && field->isVisible(),
+                    "A double click on the empty schema makes a table there, ready to be named");
+            type_name("Department");
+            require(conceptual_state->text().startsWith("2 entities · 1 relationship"),
+                    "The preview follows the schema as it is drawn");
+            child<QPushButton>(window, "conceptualClose")->click();
+            settle_for(700);
+            require(conceptual->isHidden() && !to_conceptual->isChecked(), "And Close puts it away again");
+            // Schema, in the switch, puts it away too, and stays the one chosen.
+            to_conceptual->click();
+            settle_for(700);
+            require(conceptual->isVisible() && to_conceptual->isChecked() && schema_mode->isChecked(),
+                    "Conceptual raises the preview, with Schema still the design being drawn");
+            schema_mode->click();
+            settle_for(700);
+            require(conceptual->isHidden() && !to_conceptual->isChecked() && schema_mode->isChecked(),
+                    "And Schema puts it away again");
+
+            // Connect, up in the header, draws a foreign key from anywhere on a
+            // row, not only its key gutter, to anywhere on the table it points
+            // at, which means that table's primary key; then it is put down.
+            auto* connect_tool = child<QAction>(window, "schemaConnectTool");
+            connect_tool->trigger();
+            settle();
+            require(connect_tool->isChecked() && schema->connecting(), "Connect is taken up for the schema");
+            std::size_t employee = 0;
+            std::size_t department = 0;
+            for (std::size_t t = 0; t < schema->preview().tables.size(); ++t)
+                (schema->preview().tables[t].name == "Employee" ? employee : department) = t;
+            {
+                rows = schema->row_boxes()[employee];
+                const QPointF on_name(rows[1].left() + 90, rows[1].center().y());
+                const auto target = schema->table_boxes()[department];
+                const QPointF on_heading(target.center().x(), target.top() + 8);
+                mouse(QEvent::MouseButtonPress, on_name, Qt::LeftButton);
+                mouse(QEvent::MouseMove, (on_name + on_heading) / 2, Qt::LeftButton);
+                mouse(QEvent::MouseMove, on_heading, Qt::LeftButton);
+                mouse(QEvent::MouseButtonRelease, on_heading, Qt::NoButton);
+                settle();
+            }
+            const auto& repointed = schema->preview().tables[employee].columns[1];
+            require(repointed.foreign_key && repointed.references == department && repointed.references_column == 0,
+                    "Pressed on a column's name and let go on a table's heading, it points at that table's key");
+            require(!connect_tool->isChecked() && !schema->connecting(), "And Connect is put down after one line");
+            child<QAction>(window, "undoCommand")->trigger();
+            settle();
+            require(schema->preview().tables[employee].columns[1].references == employee,
+                    "One undo takes the line back");
+            // Escape puts it down too.
+            connect_tool->trigger();
+            settle();
+            QKeyEvent escape(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+            QApplication::sendEvent(schema, &escape);
+            settle();
+            require(!connect_tool->isChecked() && !schema->connecting(), "Escape puts Connect down");
+
+            // Stage 1: what is pressed on the schema is what is chosen, kept by
+            // the schema's own identities, shown in Properties, and never an
+            // edit: choosing four times adds nothing to Undo.
+            {
+                const auto revision = editor.revision();
+                const auto undo_label = editor.undo_label();
+                const auto& employee_table = schema->preview().tables[employee];
+                const auto employee_id = employee_table.id;
+                const auto press_at = [&](QPointF at) {
+                    mouse(QEvent::MouseButtonPress, at, Qt::LeftButton);
+                    mouse(QEvent::MouseButtonRelease, at, Qt::NoButton);
+                    settle();
+                };
+                const auto heading_box = schema->table_boxes()[employee];
+                press_at(QPointF(heading_box.center().x(), heading_box.top() + 8));
+                const auto now_table = schema->selection_now();
+                require(std::holds_alternative<desktop::ChosenTable>(now_table)
+                            && std::get<desktop::ChosenTable>(now_table).table == employee_id,
+                        "A table's heading chooses the table, by its own identity");
+                require(properties_say() == QStringList{"Table", "Employee"}, "Properties says Table, Employee");
+
+                rows = schema->row_boxes()[employee];
+                press_at(QPointF(rows[1].left() + 90, rows[1].center().y()));
+                const auto now_column = schema->selection_now();
+                require(std::holds_alternative<desktop::ChosenColumn>(now_column)
+                            && std::get<desktop::ChosenColumn>(now_column).column.table == employee_id,
+                        "A row chooses its column");
+                const auto said_column = properties_say();
+                require(said_column.size() == 3 && said_column[0] == "Column" && said_column[1] == "ManagerID"
+                            && said_column[2].contains("Foreign key"),
+                        "Properties says Column, ManagerID, and that it is a foreign key");
+                window.grab().save("/private/tmp/claude-501/-Users-zain-Developer-erdflow/36719c6f-b8db-410f-a4c1-6d937eaeb90b/scratchpad/stage1-column.png"); // TEMPORARY
+
+                // A line, pressed in the middle of its longest run.
+                const auto shapes = schema->line_shapes();
+                require(!shapes.empty(), "The foreign key is drawn as a line");
+                QPointF on_line;
+                double longest = -1;
+                for (std::size_t i = 1; i < shapes.front().size(); ++i) {
+                    const auto a = shapes.front()[i - 1], b = shapes.front()[i];
+                    const auto length = std::hypot(b.x() - a.x(), b.y() - a.y());
+                    if (length > longest) { longest = length; on_line = (a + b) / 2; }
+                }
+                press_at(on_line);
+                const auto now_line = schema->selection_now();
+                require(std::holds_alternative<desktop::ChosenForeignKey>(now_line),
+                        "Pressing the line chooses the foreign key it stands for");
+                const auto said_line = properties_say();
+                require(said_line.size() == 2 && said_line[0] == "Relationship"
+                            && said_line[1].contains("Employee.ManagerID → Employee.EmployeeID"),
+                        "Properties says Relationship, and which key points at which");
+                window.grab().save("/private/tmp/claude-501/-Users-zain-Developer-erdflow/36719c6f-b8db-410f-a4c1-6d937eaeb90b/scratchpad/stage1-line.png"); // TEMPORARY
+
+                const auto empty_at = QPointF(schema->table_boxes()[department].right() + 200,
+                                              schema->table_boxes()[department].bottom() + 200);
+                press_at(empty_at);
+                require(std::holds_alternative<desktop::NothingChosen>(schema->selection_now())
+                            && properties_say() == QStringList{"Schema", "No object selected."},
+                        "The empty schema puts it all down");
+                require(editor.revision() == revision && editor.undo_label() == undo_label,
+                        "Choosing is not an edit: nothing reaches the history");
+
+                // Kept by identity, so a rename does not lose it.
+                const auto renamed_at = QPointF(heading_box.center().x(), heading_box.top() + 8);
+                press_at(renamed_at);
+                mouse(QEvent::MouseButtonDblClick, renamed_at, Qt::LeftButton);
+                settle();
+                require(field->isVisible(), "The table's name opens for typing");
+                type_name("Worker");
+                require(std::holds_alternative<desktop::ChosenTable>(schema->selection_now())
+                            && std::get<desktop::ChosenTable>(schema->selection_now()).table == employee_id
+                            && properties_say() == QStringList{"Table", "Worker"},
+                        "The table chosen is still chosen after it is renamed, under its new name");
+                child<QAction>(window, "undoCommand")->trigger();
+                settle();
+                schema->choose(desktop::NothingChosen{});
+                settle();
+            }
+
+            // Converted, the diagram is the model and the schema follows it.
+            child<QAction>(window, "designConvert")->trigger();
+            settle_for(700);
+            const auto& converted = editor.project();
+            require(!converted.schema.standalone && converted.entities.size() == 2
+                        && converted.relationships.size() == 1,
+                    "Convert draws each table as an entity and the foreign key as a relationship");
+            require(!convert->isVisible() && !add_table->isVisible()
+                        && child<QPushButton>(window, "schemaFull")->isVisible(),
+                    "The schema is worked out from the diagram again, and can be put away again");
+            require(schema->isVisible(), "And stays open beneath the diagram");
+            require(to_conceptual->isHidden() && !child<QWidget>(window, "schemaGrip")->isHidden(),
+                    "The diagram is the surface again: no Conceptual preview, and the schema has its grip back");
+            require(explorer_dock->widget() == child<QTreeView>(window, "explorer")
+                        && properties_dock->widget() != child<QWidget>(window, "schemaProperties"),
+                    "Converted, the docks hold the diagram's own Explorer and Properties again");
+            require(header_tools->isHidden() && child<QWidget>(window, "schemaBar")->isVisible()
+                        && !child<QAction>(window, "designConvert")->isVisible(),
+                    "Its tools go back to the schema's own bar, and Convert off the Design menu");
+            require(modes->isHidden() && child<QLabel>(window, "workspaceBadge")->isVisible()
+                        && child<QPushButton>(window, "backToHome")->text() == "← Back to Home"
+                        && child<QLineEdit>(window, "schemaSearch")->placeholderText() == "Search Relational Design",
+                    "And the header is a diagram's header again, exactly as it was");
+            const auto foreign_key_at = [&]() -> std::pair<std::size_t, std::size_t> {
+                for (std::size_t t = 0; t < schema->preview().tables.size(); ++t)
+                    for (std::size_t c = 0; c < schema->preview().tables[t].columns.size(); ++c)
+                        if (schema->preview().tables[t].columns[c].foreign_key) return {t, c};
+                throw std::runtime_error("no foreign key");
+            };
+            auto [table_at, column_at] = foreign_key_at();
+            require(schema->preview().tables[table_at].columns[column_at].name == "ManagerID",
+                    "The foreign key keeps the name it was drawn with");
+
+            // One step: undone it is the schema drawn by hand again, and redone
+            // the diagram once more.
+            child<QAction>(window, "undoCommand")->trigger();
+            settle_for(700);
+            require(editor.project().schema.standalone && !convert->isHidden()
+                        && child<QAction>(window, "designConvert")->isVisible(),
+                    "Undo takes it back to the schema drawn by hand");
+            require(header_tools->isVisible() && child<QWidget>(window, "schemaBar")->isHidden(),
+                    "With its tools up in the header again");
+            require(to_conceptual->isVisible() && child<QWidget>(window, "schemaGrip")->isHidden(),
+                    "Where the schema is the surface again, and the preview is offered again");
+            child<QAction>(window, "redoCommand")->trigger();
+            settle_for(700);
+            require(!editor.project().schema.standalone, "And redo converts it again");
+
+            // A foreign key the conversion made is renamed where it is shown.
+            std::tie(table_at, column_at) = foreign_key_at();
+            rows = schema->row_boxes()[table_at];
+            const QPointF name_at(rows[column_at].left() + 70, rows[column_at].center().y());
+            mouse(QEvent::MouseButtonDblClick, name_at, Qt::LeftButton);
+            settle();
+            require(field->isVisible() && field->text() == "ManagerID", "A foreign key's name opens for typing");
+            type_name("BossID");
+            std::tie(table_at, column_at) = foreign_key_at();
+            require(schema->preview().tables[table_at].columns[column_at].name == "BossID",
+                    "And keeps the name typed over it");
+
+            editor.mark_saved(editor.revision());
+            window.load_example();
+            settle();
         }
 
         window.close(); // The example was reloaded clean, so no discard dialog.
