@@ -1232,12 +1232,15 @@ bool HomePage::centre_needs_scrolling() const {
 void HomePage::showEvent(QShowEvent* event) {
     QWidget::showEvent(event);
     // The keyboard starts on the chosen card's + Create, so Return starts it.
-    // Left to Qt it lands on whatever was made first, which is Theme, now
+    // Left to Qt it lands on whatever was made first, which is the bar's way
+    // back into the workspace when it is showing, and Theme otherwise, now
     // that Settings is only the sidebar's row.
     QTimer::singleShot(0, this, [this] {
         if (!isVisible()) return;
         const auto* holder = QApplication::focusWidget();
-        if (holder && isAncestorOf(holder) && holder != top_bar_->theme_button()) return;
+        if (holder && isAncestorOf(holder) && holder != top_bar_->theme_button()
+            && holder != top_bar_->return_button())
+            return;
         for (auto* card : cards_)
             if (card->route() == chosen_) card->create_button()->setFocus(Qt::OtherFocusReason);
     });

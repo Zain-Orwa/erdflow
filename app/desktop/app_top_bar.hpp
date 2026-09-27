@@ -11,13 +11,14 @@
 #include <QWidget>
 
 class QMenu;
+class QPushButton;
 class QToolButton;
 
 namespace erdflow::desktop {
 
 // The Home screen's slim bar: the ERDFlow mark on the left, and Theme on the
-// right. Nothing else. (Settings, first here too, is the sidebar's row alone
-// since 2026-09-26.)
+// right, with the way back into the workspace beside it once there is one.
+// (Settings, first here too, is the sidebar's row alone since 2026-09-26.)
 //
 // Zain settled its shape on 2026-09-23 (ADR-022 section 9.14). The window keeps
 // its native frame (section 9.7) and its native menu bar -- File, Home, Edit,
@@ -36,6 +37,12 @@ public:
     // window's own menu and can never disagree with it. Settings has no
     // control here: it is the sidebar's row (Zain, 2026-09-26).
     void attach_theme_menu(QMenu* menu);
+    // The way back into the workspace Home was come to from (Zain,
+    // 2026-09-27), the other half of the workspace's Back to Home: beside
+    // Theme, naming the workspace it returns to. Empty hides it, for a Home
+    // with no workspace yet to return to.
+    void set_return_to(const QString& workspace);
+    [[nodiscard]] QPushButton* return_button() const { return return_; }
 
     [[nodiscard]] QToolButton* brand_button() const { return brand_; }
     [[nodiscard]] QToolButton* theme_button() const { return theme_button_; }
@@ -50,6 +57,7 @@ private:
     ThemeId theme_ = ThemeId::Azure;
     QToolButton* brand_ = nullptr;
     QToolButton* theme_button_ = nullptr;
+    QPushButton* return_ = nullptr;
 };
 
 } // namespace erdflow::desktop

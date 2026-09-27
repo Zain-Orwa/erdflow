@@ -1384,6 +1384,17 @@ void MainWindow::build_shell() {
     header->setObjectName("workspaceHeader");
     auto* header_layout = new QHBoxLayout(header);
     header_layout->setContentsMargins(22, 14, 22, 14);
+    // The way back to Home, which is the door every project is come in by
+    // (Zain, 2026-09-26): first in the header, where a way back is looked
+    // for, on the diagram and on the schema, whatever the project and however
+    // it was opened, so a change of mind can always go back and choose
+    // another card. What is open stays open behind Home, as the Home command
+    // leaves it.
+    back_to_home_ = new QPushButton(QStringLiteral("← Back to Home"), header);
+    back_to_home_->setObjectName("backToHome");
+    back_to_home_->setToolTip("Return to the Home screen. The project stays open.");
+    connect(back_to_home_, &QPushButton::clicked, this, [this] { show_home(true); });
+    header_layout->addWidget(back_to_home_);
     auto* badge = new QLabel("CONCEPTUAL", header);
     badge->setObjectName("workspaceBadge");
     header_layout->addWidget(badge);
@@ -2114,10 +2125,9 @@ void MainWindow::build_actions() {
     home_menu->addSeparator();
     auto* examples = home_menu->addAction("Open example", this, [this] { load_example(); });
     examples->setObjectName("homeExamples");
-    // A template is a project copied and left untitled (ADR-016). The bundled
-    // University project is the one there is, and load_example leaves it
-    // untitled and unsaved, which is exactly what starting from a template is.
-    auto* templates = home_menu->addAction("New from template", this, [this] { load_example(); });
+    // A template is a project left untitled and unsaved (ADR-016). It is the
+    // general starting frame, not the University example (Zain, 2026-09-26).
+    auto* templates = home_menu->addAction("New from template", this, [this] { load_template(); });
     templates->setObjectName("homeTemplates");
 
     // Design: what is done to the model as a whole rather than to one thing in
@@ -4225,7 +4235,16 @@ void MainWindow::show_home(bool on) {
         for (const auto& chrome : hidden_chrome_for_home_) if (chrome) chrome->show();
         hidden_chrome_for_home_.clear();
         home_chrome_hidden_ = false;
+        workspace_seen_ = true;
     }
+    // Home offers the way back into the workspace it was come to from, named
+    // for whichever was in front: the schema if it had the whole window, the
+    // conceptual diagram otherwise (Zain, 2026-09-27). Returning is leaving
+    // Home, which puts everything back exactly as it was.
+    if (on && home_)
+        home_->top_bar()->set_return_to(!workspace_seen_ ? QString{}
+                                        : schema_full_ ? QStringLiteral("Relational Design")
+                                                       : QStringLiteral("Conceptual Design"));
     pages_->setCurrentIndex(on ? 0 : 1);
 }
 
@@ -4319,6 +4338,7 @@ void MainWindow::wire_home() {
     for (const char* name : {"themeMenu", "iconMenu", "notationMenu"})
         if (auto* menu = findChild<QMenu*>(name)) settings_menu_->addMenu(menu);
     home_->top_bar()->attach_theme_menu(findChild<QMenu*>("themeMenu"));
+    connect(home_->top_bar()->return_button(), &QPushButton::clicked, this, [this] { show_home(false); });
 
     auto* rail = home_->sidebar();
     // A menu opened from a row stands beside it, as a submenu would.
@@ -4332,9 +4352,10 @@ void MainWindow::wire_home() {
     rail->set_callback(HomeSection::OpenProject, [this] { open_dialog(); });
     rail->set_callback(HomeSection::Recent, beside(HomeSection::Recent, recent_menu_));
     rail->set_callback(HomeSection::Examples, [this] { load_example(); });
-    // Templates are projects (ADR-016), and the bundled University project is
-    // the one there is. It opens untitled and unsaved, as a template should.
-    rail->set_callback(HomeSection::Templates, [this] { load_example(); });
+    // Templates are projects (ADR-016). The one there is is the general
+    // starting frame, not the example (Zain, 2026-09-26), opened untitled and
+    // unsaved, as a template should be.
+    rail->set_callback(HomeSection::Templates, [this] { load_template(); });
     // Bringing in work that already exists. Today that is an ERDFlow project
     // or a picture carrying one; SQL and database sources join it when there
     // is a Relational Design to read them into.
@@ -5738,6 +5759,32 @@ void MainWindow::refresh_export_actions() {
     // go quiet, rather than the row appearing and disappearing as work starts.
     const auto anything = !canvas_->diagram_bounds().isEmpty();
     for (auto* action : export_actions_) action->setEnabled(anything);
+}
+
+// The template is a starting frame, not a worked example (Zain, 2026-09-26):
+// the general things an ERD is made of, each named for what it is -- an
+// entity with an attribute, a relationship, and another entity with an
+// attribute -- ready to be renamed into a model of something. The bodies are
+// at their default sizes but for the diamond, and every line starts unlocked.
+// It opens untitled and unsaved, as a project started from a template does
+// (ADR-016).
+void MainWindow::load_template() {
+    if (!confirm_discard()) return;
+    show_home(false);
+    application::Editor starting(ids_);
+    const auto body = [](double centre_x, double centre_y, const BodySize& size) {
+        return domain::Rect{centre_x - size.width / 2, centre_y - size.height / 2, size.width, size.height};
+    };
+    const auto left = std::get<EntityId>(*starting.create_entity("Entity", body(-340, 0, entity_body)).created);
+    const auto right = std::get<EntityId>(*starting.create_entity("Entity", body(340, 0, entity_body)).created);
+    // The diamond is drawn wider than a new one, as the example's Enrollment
+    // Date is, so the template does not open on its own word cut short.
+    starting.relate(left, right, body(0, 0, BodySize{280, 120}), "Relationship");
+    starting.create_attribute("Attribute", body(-340, -160, attribute_body), AttributeOwner{ElementRef{left}});
+    starting.create_attribute("Attribute", body(340, -160, attribute_body), AttributeOwner{ElementRef{right}});
+    show_result(editor_.replace_project(starting.project()));
+    path_.clear();
+    canvas_->fit_diagram();
 }
 
 void MainWindow::load_example() {

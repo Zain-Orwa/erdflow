@@ -12,6 +12,7 @@
 #include <QMenu>
 #include <QPainter>
 #include <QPainterPath>
+#include <QPushButton>
 #include <QToolButton>
 
 namespace erdflow::desktop {
@@ -145,7 +146,13 @@ AppTopBar::AppTopBar(QWidget* parent) : QWidget(parent) {
     row->addWidget(brand_);
     row->addStretch(1);
     // Settings is reached from the sidebar's own row, so the bar carries no
-    // second one (Zain, 2026-09-26): only Theme stands at its right.
+    // second one (Zain, 2026-09-26): only Theme stands at its right, with the
+    // way back into the workspace beside it once there is one. Made first, so
+    // the keyboard reaches them in the order they are read.
+    return_ = new QPushButton(this);
+    return_->setObjectName("appTopBarReturn");
+    return_->hide();
+    row->addWidget(return_, 0, Qt::AlignVCenter);
     theme_button_ = new Control("appTopBarTheme", "Theme", "appearance", true, this);
     row->addWidget(theme_button_);
     wear(theme_);
@@ -159,6 +166,11 @@ void AppTopBar::wear(ThemeId id) {
 }
 
 void AppTopBar::attach_theme_menu(QMenu* menu) { theme_button_->setMenu(menu); }
+void AppTopBar::set_return_to(const QString& workspace) {
+    return_->setText(QStringLiteral("Return to %1  →").arg(workspace));
+    return_->setToolTip(QStringLiteral("Go back into %1, as you left it.").arg(workspace));
+    return_->setVisible(!workspace.isEmpty());
+}
 
 QSize AppTopBar::sizeHint() const { return {960, bar_height}; }
 QSize AppTopBar::minimumSizeHint() const { return {320, bar_height}; }

@@ -42,6 +42,30 @@ not been built yet. Their presence in those documents is not a completion claim.
   styles the mark). Size, place, words, the spark, the pressed look and what
   pressing does are unchanged, and so is the card
   (`StartRouteCard::eventFilter`, the `lit` rules in `StartRouteCard::wear`).
+- **Back to Home, always** (2026-09-26). **← Back to Home** stands first in
+  the workspace's header whatever the project is and however it was opened,
+  on the diagram and on the schema, whether the schema shares the stage or
+  fills the window, since Home is the door every project is come in by and
+  a change of mind can always go back to choose another card. It returns to
+  Home as the Home command does, leaving the project open behind it. (It
+  first came only with an example or the template opened from Home; Zain
+  asked for it everywhere the same day.)
+- **Return from Home to the workspace** (2026-09-27). Once a workspace has
+  been in front, Home's top bar offers the way back into it beside Theme:
+  **Return to Conceptual Design →**, or **Return to Relational Design →** when
+  the schema had the whole window. It leaves Home, which puts the workspace
+  back exactly as it was, schema and full view included. A fresh start, with
+  no workspace yet, shows nothing there (`AppTopBar::set_return_to`,
+  `MainWindow::show_home`).
+- **The template is a starting frame, not the example** (2026-09-26).
+  **Templates** (Home's sidebar, and New from template) used to open the
+  University example. It now opens the general things a diagram is made of,
+  each named for what it is: an Entity with an Attribute, a Relationship, and
+  another Entity with an Attribute, joined through the relationship with every
+  line unlocked, untitled and unsaved (`MainWindow::load_template`). The
+  bodies are at their default sizes except the diamond, drawn 280 x 120 so
+  its word is not cut short, as the example's Enrollment Date oval is. The
+  example itself is unchanged and still opens from Examples.
 - **History** (2026-09-26). **View → History**, the last entry in View (and
   so the last button on the ribbon's View row), opens a panel on the right
   listing every step Undo can take back, oldest first, each said in words

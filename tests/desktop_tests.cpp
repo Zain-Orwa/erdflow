@@ -31,6 +31,7 @@
 #include <QDialog>
 #include <QDockWidget>
 #include <QTreeWidget>
+#include <QLayout>
 #include <QEnterEvent>
 #include <QFontMetrics>
 #include <QGraphicsItem>
@@ -276,6 +277,8 @@ int main(int argc, char** argv) {
             auto* home = static_cast<desktop::HomePage*>(window.findChild<QWidget*>("homePage"));
             require(home != nullptr, "Which is a page of its own");
             require(home->isVisible(), "And is the page in front");
+            require(home->top_bar()->return_button()->isHidden(),
+                    "A fresh start has no workspace yet to return to");
             // The eight places it can send somebody. Import sits directly under
             // Examples and Templates, in their group, as Zain settled it. There
             // is no New Project row: the cards are where a project is started
@@ -1697,6 +1700,102 @@ int main(int argc, char** argv) {
 
             window.show_home(false);
             settle();
+        }
+
+        // Back to Home is always in the workspace's header (Zain,
+        // 2026-09-26): Home is the door every project is come in by, and a
+        // change of mind can always go back to choose another card.
+        {
+            auto* home = static_cast<desktop::HomePage*>(window.findChild<QWidget*>("homePage"));
+            auto* back = child<QPushButton>(window, "backToHome");
+            require(!window.showing_home() && back->isVisible(), "The workspace offers the way back to Home");
+            require(back->text().contains("Back to Home"), "Saying where it goes");
+            auto* header_layout = child<QWidget>(window, "workspaceHeader")->layout();
+            require(header_layout->indexOf(back) == 0, "First in the header, where a way back is looked for");
+            // Whatever the project, and however it was opened.
+            window.show_home(true);
+            settle();
+            home->sidebar()->button(desktop::HomeSection::Examples)->click();
+            settle();
+            require(!window.showing_home() && back->isVisible(), "An example offers it");
+            child<QPushButton>(window, "openExample")->click();
+            settle();
+            require(back->isVisible(), "Opened from inside a project too");
+            // Staying to build changes nothing: the way back stays.
+            child<QAction>(window, "toolEntity")->trigger();
+            click_canvas(*window.canvas(), QPointF(-2000, -2000));
+            require(back->isVisible(), "Working on the project keeps the way back");
+            child<QAction>(window, "undoCommand")->trigger();
+            settle();
+            // It goes to Home, and what is open stays open behind it.
+            const auto open = window.editor().project().id;
+            back->click();
+            settle();
+            require(window.showing_home(), "Back returns to Home");
+            require(window.editor().project().id == open, "Leaving the project open");
+            // And Home offers the way back in (Zain, 2026-09-27), beside
+            // Theme, named for the workspace it returns to.
+            auto* returning = home->top_bar()->return_button();
+            require(returning->isVisible() && returning->text().contains("Return to Conceptual Design"),
+                    "Home offers the way back into the workspace, named");
+            returning->click();
+            settle();
+            require(!window.showing_home() && window.editor().project().id == open,
+                    "Which returns to the workspace as it was left");
+            back->click();
+            settle();
+
+            // The template is not the example (Zain, 2026-09-26): it is the
+            // general things a diagram is made of, named for what they are.
+            home->sidebar()->button(desktop::HomeSection::Templates)->click();
+            settle();
+            require(!window.showing_home() && back->isVisible(), "The template offers the way back too");
+            const auto& started = window.editor().project();
+            require(started.entities.size() == 2 && started.attributes.size() == 2
+                        && started.relationships.size() == 1,
+                    "Two entities, an attribute on each, and a relationship between them");
+            require(std::all_of(started.entities.begin(), started.entities.end(),
+                                [](const auto& each) { return each.second.name == "Entity"; })
+                        && std::all_of(started.attributes.begin(), started.attributes.end(),
+                                       [](const auto& each) {
+                                           return each.second.name == "Attribute" && each.second.owner.has_value();
+                                       })
+                        && started.relationships.begin()->second.name == "Relationship",
+                    "Each named for what it is, not the example's students and courses");
+            require(started.relationships.begin()->second.participants.size() == 2,
+                    "The relationship joins the two entities");
+            require(started.connectors.empty(), "Every line starts unlocked");
+            require(started.name == "Untitled" && !window.editor().dirty(), "Untitled and unsaved, as a new project is");
+            // A new project, started from the File menu, has it as well.
+            child<QAction>(window, "newProject")->trigger();
+            settle();
+            require(back->isVisible(), "A new project offers it");
+
+            // On the schema too, sharing the stage or filling the window.
+            window.load_example();
+            settle();
+            child<QPushButton>(window, "previewSchema")->click();
+            settle_for(600);
+            require(back->isVisible(), "With the schema preview open");
+            auto* full = child<QPushButton>(window, "schemaFull");
+            full->click();
+            settle();
+            require(back->isVisible(), "And with the schema filling the window");
+            // Left from the schema, the way back in returns to the schema,
+            // still filling the window.
+            back->click();
+            settle();
+            require(returning->isVisible() && returning->text().contains("Return to Relational Design"),
+                    "From the schema, Home names the schema");
+            returning->click();
+            settle();
+            require(!window.showing_home() && child<QLabel>(window, "workspaceBadge")->text() == "RELATIONAL DESIGN"
+                        && full->text() == "Exit full",
+                    "And returns to it, still filling the window");
+            full->click();
+            settle();
+            child<QPushButton>(window, "previewSchema")->click();
+            settle_for(400);
         }
         window.load_example();
         settle();
