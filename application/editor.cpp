@@ -63,6 +63,7 @@ std::size_t payload(const Picture& value) {
 std::size_t payload(const Note& value) { return value.name.capacity() + value.description.capacity(); }
 std::size_t payload(const Rect&) { return 0; }
 std::size_t payload(const Colour&) { return 0; }
+std::size_t payload(const LetteringBase&) { return 0; }
 std::size_t payload(std::uint8_t) { return 0; }
 std::size_t payload(double) { return 0; }
 // A connector holds its bend and joins inline; only the route is on the heap.
@@ -148,6 +149,7 @@ struct Delta {
     Changes<ConnectorRef, Connector> connectors;
     Changes<ElementRef, Colour> colours;
     Changes<ElementRef, std::uint8_t> transparency;
+    Changes<ElementRef, LetteringBase> lettering;
     std::size_t bytes = 0;
     std::uint64_t before_state = 0;
     std::uint64_t after_state = 0;
@@ -158,7 +160,7 @@ struct Delta {
             && relationships.keys.empty() && specializations.keys.empty()
             && pictures.keys.empty() && notes.keys.empty() && comments.keys.empty()
             && layout.keys.empty() && connectors.keys.empty() && colours.keys.empty()
-            && transparency.keys.empty();
+            && transparency.keys.empty() && lettering.keys.empty();
     }
     void toggle(Project& project) {
         if (project_name) project.name.swap(*project_name);
@@ -178,6 +180,7 @@ struct Delta {
         connectors.toggle(project.connectors);
         colours.toggle(project.colours);
         transparency.toggle(project.transparency);
+        lettering.toggle(project.lettering);
     }
     [[nodiscard]] std::size_t estimate(const Project& project) const {
         return sizeof(Delta) + sizeof(std::unique_ptr<Delta>) + label.capacity()
@@ -194,7 +197,8 @@ struct Delta {
             + cost(pictures, project.pictures) + cost(notes, project.notes)
             + cost(comments, project.comments)
             + cost(layout, project.layout) + cost(connectors, project.connectors)
-            + cost(colours, project.colours) + cost(transparency, project.transparency);
+            + cost(colours, project.colours) + cost(transparency, project.transparency)
+            + cost(lettering, project.lettering);
     }
 };
 
@@ -650,6 +654,7 @@ EditResult Editor::merge_project(const Project& other, double dx, double dy) {
         }
         for (const auto& [ref, colour] : other.colours) delta.colours.put(mapping.at(ref), colour);
         for (const auto& [ref, percent] : other.transparency) delta.transparency.put(mapping.at(ref), percent);
+        for (const auto& [ref, base] : other.lettering) delta.lettering.put(mapping.at(ref), base);
         for (const auto& [ref, connector] : other.connectors) {
             const auto found = links.find(ref);
             if (found == links.end()) continue;
@@ -1554,10 +1559,28 @@ EditResult Editor::disconnect(RelationshipId relationship, ParticipantId partici
         return EditResult{};
     });
 }
+namespace {
+// The first time an entity, relationship or attribute is made a different
+// size by hand, the size it had is kept as the size its name is drawn for,
+// so from then on the name grows and shrinks with the box (Zain,
+// 2026-09-26). Kept in the same edit as the resize, so one undo takes both.
+void keep_lettering_base(const Project& project, Delta& delta, const ElementRef& ref, const Rect& sized) {
+    if (!std::holds_alternative<EntityId>(ref) && !std::holds_alternative<RelationshipId>(ref)
+        && !std::holds_alternative<AttributeId>(ref))
+        return;
+    if (project.lettering.contains(ref)) return;
+    const auto found = project.layout.find(ref);
+    if (found == project.layout.end()) return;
+    if (found->second.width == sized.width && found->second.height == sized.height) return;
+    delta.lettering.put(ref, LetteringBase{found->second.width, found->second.height});
+}
+} // namespace
+
 EditResult Editor::move(const std::map<ElementRef, Rect>& positions) {
     return impl_->edit("Move elements", [&](Delta& delta) {
         for (const auto& [ref, rect] : positions) {
             if (!exists(project(), ref)) return failure("An element no longer exists.");
+            keep_lettering_base(project(), delta, ref, rect);
             const auto found = project().layout.find(ref);
             if (found == project().layout.end() || found->second != rect) delta.layout.put(ref, rect);
         }
@@ -1599,6 +1622,46 @@ EditResult Editor::resize_entities(const std::map<ElementRef, Rect>& boxes) {
             sized.height = std::clamp(sized.height, min_entity_height, max_entity_height);
             sized.x = std::clamp(sized.x, -max_coordinate, max_coordinate - sized.width);
             sized.y = std::clamp(sized.y, -max_coordinate, max_coordinate - sized.height);
+            keep_lettering_base(project(), delta, ref, sized);
+            const auto found = project().layout.find(ref);
+            if (found == project().layout.end() || found->second != sized) delta.layout.put(ref, sized);
+        }
+        return EditResult{};
+    });
+}
+EditResult Editor::resize_relationships(const std::map<ElementRef, Rect>& boxes) {
+    return impl_->edit("Resize relationship", [&](Delta& delta) {
+        for (const auto& [ref, box] : boxes) {
+            if (!std::holds_alternative<RelationshipId>(ref)) return failure("Only a relationship can be resized here.");
+            if (!exists(project(), ref)) return failure("The relationship no longer exists.");
+            // Clamped rather than refused: a size comes from an edge being
+            // dragged, and a drag that runs past the end is asking for the
+            // end, not for nothing to happen.
+            auto sized = box;
+            sized.width = std::clamp(sized.width, min_entity_width, max_entity_width);
+            sized.height = std::clamp(sized.height, min_entity_height, max_entity_height);
+            sized.x = std::clamp(sized.x, -max_coordinate, max_coordinate - sized.width);
+            sized.y = std::clamp(sized.y, -max_coordinate, max_coordinate - sized.height);
+            keep_lettering_base(project(), delta, ref, sized);
+            const auto found = project().layout.find(ref);
+            if (found == project().layout.end() || found->second != sized) delta.layout.put(ref, sized);
+        }
+        return EditResult{};
+    });
+}
+EditResult Editor::resize_attributes(const std::map<ElementRef, Rect>& boxes) {
+    return impl_->edit("Resize attribute", [&](Delta& delta) {
+        for (const auto& [ref, box] : boxes) {
+            if (!std::holds_alternative<AttributeId>(ref)) return failure("Only an attribute can be resized here.");
+            if (!exists(project(), ref)) return failure("The attribute no longer exists.");
+            // Clamped rather than refused, as for an entity: a drag that runs
+            // past the end is asking for the end, not for nothing to happen.
+            auto sized = box;
+            sized.width = std::clamp(sized.width, min_entity_width, max_entity_width);
+            sized.height = std::clamp(sized.height, min_entity_height, max_entity_height);
+            sized.x = std::clamp(sized.x, -max_coordinate, max_coordinate - sized.width);
+            sized.y = std::clamp(sized.y, -max_coordinate, max_coordinate - sized.height);
+            keep_lettering_base(project(), delta, ref, sized);
             const auto found = project().layout.find(ref);
             if (found == project().layout.end() || found->second != sized) delta.layout.put(ref, sized);
         }
@@ -1797,6 +1860,7 @@ EditResult Editor::erase(const std::vector<ElementRef>& elements,
             // validation never sees one pointing at something that is gone.
             if (project().colours.contains(ref)) delta.colours.remove(ref);
             if (project().transparency.contains(ref)) delta.transparency.remove(ref);
+            if (project().lettering.contains(ref)) delta.lettering.remove(ref);
         }
         // A triangle without its supertype means nothing, so it goes with it;
         // a deleted subtype is simply detached from the ones that survive.
@@ -1999,6 +2063,9 @@ EditResult Editor::duplicate(const std::vector<ElementRef>& elements, double dx,
             if (colour != project().colours.end()) delta.colours.put(replacement, colour->second);
             const auto faded = project().transparency.find(original);
             if (faded != project().transparency.end()) delta.transparency.put(replacement, faded->second);
+            // And its name is drawn the size the original's is.
+            const auto lettering = project().lettering.find(original);
+            if (lettering != project().lettering.end()) delta.lettering.put(replacement, lettering->second);
         }
         EditResult result;
         if (!elements.empty()) result.created = mapping.at(elements.front());

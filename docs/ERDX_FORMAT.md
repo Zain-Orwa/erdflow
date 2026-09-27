@@ -111,6 +111,12 @@ required `transparency` array, which may be empty, of one percentage per
 element; earlier versions must not carry it, and every surface in such a file
 is solid, which is all it could be.
 
+**Version 29** keeps the size each entity, relationship or attribute had when
+it was first resized by hand, which its name is drawn for. The project gains a
+required `lettering` array, which may be empty; earlier versions must not
+carry it, and every name in such a file is drawn at its ordinary size. (The
+versions between 15 and 28 are not yet written up here.)
+
 **Version 13** adds weak entities and identifying relationships. An entity
 object gains a required `weak` boolean and a relationship object a required
 `identifying` boolean; earlier versions must not carry them, and read as
@@ -156,6 +162,7 @@ The project object has exactly these fields:
 | `pictures` | Array of picture objects; version 11 onwards |
 | `notes` | Array of note objects; version 11 onwards |
 | `transparency` | Array of element-transparency objects; version 12 onwards |
+| `lettering` | Array of element-lettering objects; version 29 onwards |
 | `background` | Background object; version 14 onwards |
 
 An **entity** object has `id`, `name`, and `description`, all strings, and
@@ -322,6 +329,22 @@ rather than approximate. The `element` must reference an element that exists. At
 most one colour may be given per element, and an element with none is drawn in
 whatever colour the active theme gives its kind — which is why a document that
 has never been recoloured follows the theme everywhere.
+
+## Lettering
+
+An **element-lettering** object has exactly `element`, `width` and `height`:
+
+```json
+{"element": {"type": "attribute", "id": "019947b9-7111-7000-8000-000000000002"},
+ "width": 150, "height": 60}
+```
+
+It names an entity, a relationship or an attribute, and the positive size its
+box had when it was first resized by hand. In a box of that size the name is
+drawn at its ordinary size; in any other it is drawn larger or smaller by the
+smaller of the two changes, width to width and height to height, held between
+a quarter and sixteen times ordinary. An element with no entry has its name
+drawn at its ordinary size whatever its box. At most one entry per element.
 
 ## Transparency
 

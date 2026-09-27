@@ -2985,6 +2985,192 @@ void search_tests() {
     for (const char* every : {"Student", "Course", "Professor", "Enrolled", "Gender", "Credit Hours"})
         require(find_node(view, every)->isVisible() && find_node(view, every)->opacity() == 1.0, every);
 }
+// Relationship diamonds share the existing handles without changing stored sizes.
+// An attribute is pulled by its edges and corners as an entity is. Its
+// handles were drawn, but letting go of one sent the new size to the symbols'
+// command, which refused it: "Only a symbol can be resized".
+void attribute_resize_tests() {
+    SequentialIds ids;
+    application::Editor editor(ids);
+    const domain::ElementRef ref = *editor.create_attribute("EnrollmentDate", {0, 0, 150, 60}).created;
+    desktop::DiagramView view(editor);
+    QString refused;
+    view.on_edit = [&](const application::EditResult& result) { if (!result) refused = QString::fromStdString(result.error); };
+    view.resize(1000, 700);
+    view.show();
+    view.actual_size();
+    view.centerOn(75, 30);
+    QApplication::processEvents();
+    view.select_elements({ref});
+    QApplication::processEvents();
+    const auto haul = [&](QPointF grip, QPoint by) {
+        const auto& at = editor.project().layout.at(ref);
+        const auto start = view.mapFromScene(QPointF(at.x, at.y) + grip);
+        mouse(view, QEvent::MouseButtonPress, start, Qt::LeftButton, Qt::LeftButton);
+        mouse(view, QEvent::MouseMove, start + by, Qt::NoButton, Qt::LeftButton);
+        mouse(view, QEvent::MouseButtonRelease, start + by, Qt::LeftButton, Qt::NoButton);
+        view.synchronize();
+        return editor.project().layout.at(ref);
+    };
+    // The right edge, alone, gives the name room.
+    auto box = haul({148, 30}, {60, 0});
+    require(refused.isEmpty(), "Pulling an attribute is not refused");
+    require(box.x == 0 && box.y == 0 && box.width == 210 && box.height == 60,
+            "The right edge moves and the other three stay where they were");
+    require(editor.undo_label() == "Resize attribute", "It is its own step of history");
+    // A corner moves the two sides it lies on.
+    box = haul({2, 2}, {-20, -10});
+    require(box.x == -20 && box.y == -10 && box.width == 230 && box.height == 70, "The top-left corner moves both");
+    // Pulled past the smallest it may be, it stops there.
+    box = haul({228, 35}, {-400, 0});
+    require(box.width == domain::min_entity_width && box.x == -20, "And an edge pulled too far stops at the minimum");
+    require(refused.isEmpty(), "Nothing along the way was refused");
+    require(editor.undo() && editor.undo() && editor.undo(), "Each pull undone");
+    require(editor.project().layout.at(ref) == domain::Rect{0, 0, 150, 60}, "Back to the size it was placed at");
+
+    // The name is drawn with the box (Zain, 2026-09-26): a corner pulled out
+    // to twice the size draws it twice as tall, and pulling only the width
+    // out after that gives it room without making it any taller.
+    const auto lettering_height = [&] {
+        view.synchronize();
+        const auto& at = editor.project().layout.at(ref);
+        QImage painted(QSize(static_cast<int>(at.width), static_cast<int>(at.height)), QImage::Format_ARGB32);
+        painted.fill(Qt::transparent);
+        QPainter painter(&painted);
+        find_node(view, "EnrollmentDate")->paint(&painter, nullptr, nullptr);
+        painter.end();
+        const auto ink = desktop::theme(view.theme_id()).node_text;
+        int top = painted.height();
+        int bottom = -1;
+        for (int y = 0; y < painted.height(); ++y)
+            for (int x = 0; x < painted.width(); ++x)
+                if (painted.pixelColor(x, y) == ink) {
+                    top = std::min(top, y);
+                    bottom = std::max(bottom, y);
+                }
+        require(bottom >= top, "The name is painted");
+        return bottom - top + 1;
+    };
+    const auto ordinary = lettering_height();
+    haul({148, 58}, {150, 60});
+    require(editor.project().layout.at(ref) == domain::Rect{0, 0, 300, 120}, "A corner pulled out doubles the box");
+    const auto doubled = lettering_height();
+    require(std::abs(doubled - 2 * ordinary) <= 3, "And draws the name twice as tall");
+    haul({298, 60}, {120, 0});
+    require(std::abs(lettering_height() - doubled) <= 1, "Pulled only wider after that, the name is no taller");
+    require(editor.undo() && editor.undo(), "Both pulls undone");
+    require(std::abs(lettering_height() - ordinary) <= 1, "And the name is back to its ordinary size");
+    require(editor.project().lettering.empty(), "With nothing kept for it");
+}
+
+void relationship_resize_tests() {
+    SequentialIds ids;
+    application::Editor editor(ids);
+    const auto first = *editor.create_entity("First", {-340, -140, 148, 86}).created;
+    const auto second = *editor.create_entity("Second", {230, 160, 148, 86}).created;
+    desktop::DiagramView view(editor);
+    view.resize(1000, 700);
+    view.show();
+    view.actual_size();
+    view.centerOn(0, 0);
+    QApplication::processEvents();
+    view.set_tool(desktop::Tool::Relationship);
+    click(view, {0, 0});
+    const domain::ElementRef ref{editor.project().relationships.begin()->first};
+    const auto original = editor.project().layout.at(ref);
+    require(original.width == 190 && original.height == 110, "The relationship default is unchanged");
+    require(editor.rename(ref, "Owns"), "Name the diamond");
+    const auto id = std::get<domain::RelationshipId>(ref);
+    require(editor.connect(id, std::get<domain::EntityId>(first)), "Connect the first entity");
+    const auto pinned = editor.connect(id, std::get<domain::EntityId>(second));
+    require(pinned, "Connect the second entity");
+    require(editor.pin_connector(*pinned.participant, 0.65, -2.5), "Pin one connector to its outline");
+    view.synchronize();
+    view.select_elements({ref});
+    auto* node = find_node(view, "Owns");
+    const auto untouched = editor.project().layout;
+    const auto check_drawing = [&] {
+        const auto box = node->sceneBoundingRect().adjusted(4, 4, -4, -4);
+        require(!node->shape().contains({box.width() * 0.1, box.height() * 0.1}),
+                "The resized body retains its diamond outline");
+        // Both automatic and pinned joins must meet the current diamond,
+        // including during a drag before anything is written to the model.
+        const auto target = find_node(view, "First")->sceneBoundingRect().center();
+        auto automatic = target - box.center();
+        if (view.line_style() == desktop::LineStyle::Elbow)
+            automatic = std::abs(automatic.x()) / box.width() >= std::abs(automatic.y()) / box.height()
+                ? QPointF(automatic.x(), 0) : QPointF(0, automatic.y());
+        for (const auto direction : {automatic, QPointF(std::cos(0.65), std::sin(0.65))}) {
+            const auto divisor = std::abs(direction.x()) / (box.width() / 2)
+                               + std::abs(direction.y()) / (box.height() / 2);
+            const auto join = box.center() + direction / divisor;
+            bool attached = false;
+            for (auto* item : view.scene()->items())
+                if (item->zValue() < 0 && item->shape().contains(item->mapFromScene(join))) attached = true;
+            require(attached, "The connector remains attached to the resized diamond boundary");
+        }
+        // Inspect the actual painted label, independently of the hit shape.
+        QImage painted(QSize(static_cast<int>(box.width()), static_cast<int>(box.height())), QImage::Format_ARGB32);
+        painted.fill(Qt::transparent);
+        QPainter painter(&painted);
+        node->paint(&painter, nullptr, nullptr);
+        painter.end();
+        QRect ink;
+        const auto text_colour = desktop::theme(view.theme_id()).node_text;
+        for (int y = 0; y < painted.height(); ++y)
+            for (int x = 0; x < painted.width(); ++x)
+                if (painted.pixelColor(x, y) == text_colour) ink |= QRect(x, y, 1, 1);
+        require(!ink.isEmpty(), "The relationship label is painted");
+        require(std::abs(ink.center().x() - box.width() / 2) < 5
+                    && std::abs(ink.center().y() - box.height() / 2) < 7,
+                "The painted label stays centered after resizing");
+    };
+    check_drawing();
+    // Corners first, then edges, matching the existing entity handles.
+    const std::array<QPointF, 8> grips{{{2, 2}, {188, 2}, {188, 108}, {2, 108},
+                                      {95, 2}, {188, 55}, {95, 108}, {2, 55}}};
+    const std::array<QPoint, 8> travel{{{-30, -20}, {30, -20}, {30, 20}, {-30, 20},
+                                      {0, -20}, {30, 0}, {0, 20}, {-30, 0}}};
+    for (std::size_t handle = 0; handle < grips.size(); ++handle) {
+        const auto start = view.mapFromScene(QPointF(original.x, original.y) + grips[handle]);
+        mouse(view, QEvent::MouseButtonPress, start, Qt::LeftButton, Qt::LeftButton);
+        mouse(view, QEvent::MouseMove, start + travel[handle], Qt::NoButton, Qt::LeftButton);
+        require(editor.project().layout == untouched, "Dragging previews without changing stored dimensions");
+        check_drawing();
+        mouse(view, QEvent::MouseButtonRelease, start + travel[handle], Qt::LeftButton, Qt::NoButton);
+        view.synchronize();
+        const auto resized = editor.project().layout.at(ref);
+        require(resized.width == original.width + std::abs(travel[handle].x())
+                    && resized.height == original.height + std::abs(travel[handle].y()),
+                "Every relationship handle pulls its own sides independently");
+        require(resized.x == original.x + std::min(0, travel[handle].x())
+                    && resized.y == original.y + std::min(0, travel[handle].y()),
+                "The opposite sides stay fixed");
+        require(editor.undo_label() == "Resize relationship", "Resize has its own undo step");
+        check_drawing();
+        require(editor.undo(), "Undo the relationship resize");
+        view.synchronize();
+        require(editor.project().layout == untouched, "Undo restores every original size exactly");
+        require(editor.redo(), "Redo the relationship resize");
+        view.synchronize();
+        require(editor.project().layout.at(ref) == resized, "Redo restores the resized diamond");
+        require(editor.undo(), "Restore for the next handle");
+        view.synchronize();
+    }
+    const auto revision = editor.revision();
+    const auto start = view.mapFromScene(QPointF(original.x, original.y) + grips[2]);
+    mouse(view, QEvent::MouseButtonPress, start, Qt::LeftButton, Qt::LeftButton);
+    mouse(view, QEvent::MouseButtonRelease, start, Qt::LeftButton, Qt::NoButton);
+    require(editor.revision() == revision, "Clicking a handle preserves existing dimensions and history");
+    mouse(view, QEvent::MouseButtonPress, start, Qt::LeftButton, Qt::LeftButton);
+    mouse(view, QEvent::MouseMove, start + QPoint(40, 30), Qt::NoButton, Qt::LeftButton);
+    key(view, Qt::Key_Escape);
+    mouse(view, QEvent::MouseButtonRelease, start + QPoint(40, 30), Qt::LeftButton, Qt::NoButton);
+    require(editor.revision() == revision && editor.project().layout == untouched,
+            "Escape restores the original size without a history entry");
+    check_drawing();
+}
+
 // Turning the wheel moves the diagram; holding the platform's zoom key and
 // turning it makes the diagram larger or smaller, about the pointer.
 // An entity is a box holding a name, and how wide and how tall it is are two
@@ -3348,6 +3534,8 @@ int main(int argc, char** argv) {
         search_tests();
         wheel_zoom_tests();
         entity_resize_tests();
+        relationship_resize_tests();
+        attribute_resize_tests();
         std::cout << "Canvas tests passed\n";
     } catch (const std::exception& exception) {
         std::cerr << "Canvas test failed: " << exception.what() << '\n';

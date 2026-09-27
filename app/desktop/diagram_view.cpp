@@ -322,6 +322,14 @@ public:
         apply_colors();
     }
     [[nodiscard]] int transparency() const { return transparency_; }
+    // How much larger or smaller than ordinary the name is drawn: 1 until the
+    // element is resized by hand, then following its box (Zain, 2026-09-26).
+    void set_lettering(qreal factor) {
+        if (lettering_ == factor) return;
+        lettering_ = factor;
+        update();
+    }
+    [[nodiscard]] qreal lettering() const { return lettering_; }
 
     // A picture's own pixels, decoded once from the bytes the model holds.
     void set_image(const std::vector<std::uint8_t>& bytes) {
@@ -448,15 +456,16 @@ public:
     // A symbol is drawn as its character grown to fill its box, so the box is
     // how big the character is, and hauling a corner is how it is made bigger.
     //
-    // An entity and an attribute both hold a name, and how wide and how tall
+    // Entities, attributes and relationships hold a name, and how wide and how tall
     // each is are two separate questions: a long name wants width where a
-    // second line wants height. So both answer to each of their four edges as
+    // second line wants height. So they answer to each of their four edges as
     // well as to their corners, the side that is pulled moving and the side
     // opposite it staying where it was. A default is a starting size, not a
     // ruling, and a name that will not fit one has to be able to be given room.
     static constexpr qreal grip = 9;
     [[nodiscard]] bool boxed() const {
-        return std::holds_alternative<EntityId>(ref) || std::holds_alternative<AttributeId>(ref);
+        return std::holds_alternative<EntityId>(ref) || std::holds_alternative<AttributeId>(ref)
+            || std::holds_alternative<RelationshipId>(ref);
     }
     [[nodiscard]] bool sizeable() const { return (plain || boxed()) && isSelected(); }
     [[nodiscard]] int handle_count() const { return boxed() ? 8 : 4; }
@@ -784,7 +793,7 @@ public:
         // zoom, so they sit a step above the interface's own type and never
         // below medium weight.
         auto font = painter->font();
-        font = lettered(font, 12.5);
+        font = lettered(font, 12.5 * lettering_);
         font.setWeight(std::holds_alternative<EntityId>(ref) ? QFont::Bold : QFont::Medium);
         font.setUnderline(std::holds_alternative<AttributeId>(ref) && attribute_kind == AttributeKind::Key && !partial_key);
         painter->setFont(font);
@@ -871,6 +880,7 @@ private:
     QColor fill_, border_, text_, selection_;
     std::optional<QColor> chosen_;
     int transparency_ = 0;
+    qreal lettering_ = 1.0;
     QPixmap image_;
 };
 
@@ -1792,10 +1802,25 @@ struct DiagramView::Impl {
             bottom = std::clamp(start.bottom() + travelled.y(), top + min_entity_height, top + max_entity_height);
         return Rect{left, top, right - left, bottom - top};
     }
+    // How large a name is drawn in a box being pulled from the one it started
+    // at: from the size its lettering was set for, or, the first time it is
+    // resized, from the size it started the pull at, which is what the edit
+    // will keep as that size when the pull is let go.
+    [[nodiscard]] qreal lettering_while_pulled(const SizeDrag& drag, double width, double height) const {
+        if (!std::holds_alternative<EntityId>(drag.ref) && !std::holds_alternative<RelationshipId>(drag.ref)
+            && !std::holds_alternative<AttributeId>(drag.ref))
+            return 1.0;
+        const auto& lettering = editor.project().lettering;
+        const auto base = lettering.find(drag.ref);
+        return domain::lettering_factor(base != lettering.end() ? base->second
+                                                                : domain::LetteringBase{drag.start.width, drag.start.height},
+                                        width, height);
+    }
     // Which of the two the shape under the hand is pulled by.
     [[nodiscard]] static Rect hauled_box(const SizeDrag& drag, const QPointF& pointer) {
-        return std::holds_alternative<EntityId>(drag.ref) ? pulled_body(drag, pointer)
-                                                          : sized_box(drag, pointer);
+        return (std::holds_alternative<EntityId>(drag.ref) || std::holds_alternative<RelationshipId>(drag.ref)
+                || std::holds_alternative<AttributeId>(drag.ref))
+            ? pulled_body(drag, pointer) : sized_box(drag, pointer);
     }
     QPointF minimum_drag;
     QPointF maximum_drag;
@@ -2051,7 +2076,7 @@ struct DiagramView::Impl {
         const QRect area(view.mapFromScene(box.topLeft() + QPointF(inset, 0)),
                          view.mapFromScene(box.bottomRight() - QPointF(inset, 0)));
         auto font = inline_editor->font();
-        font.setPointSizeF(std::clamp(11.0 * view.zoom_factor(), 7.0, 28.0));
+        font.setPointSizeF(std::clamp(11.0 * view.zoom_factor() * found->second->lettering(), 7.0, 28.0));
         font.setWeight(std::holds_alternative<EntityId>(*renaming) ? QFont::DemiBold : QFont::Normal);
         inline_editor->setFont(font);
         const auto height = std::min(area.height(), inline_editor->sizeHint().height());
@@ -2639,6 +2664,9 @@ void DiagramView::synchronize() {
             : std::optional{QColor(chosen->second.red, chosen->second.green, chosen->second.blue)});
         const auto faded = project.transparency.find(ref);
         node->set_transparency(faded == project.transparency.end() ? 0 : faded->second);
+        const auto base = project.lettering.find(ref);
+        node->set_lettering(base == project.lettering.end()
+            ? 1.0 : domain::lettering_factor(base->second, node->body_rect().width(), node->body_rect().height()));
         if (geometry_changed) {
             const auto incident = impl_->incident.find(ref);
             if (incident != impl_->incident.end()) dirty_edges.insert(incident->second.begin(), incident->second.end());
@@ -3118,6 +3146,8 @@ void DiagramView::cancel_interaction() {
             impl_->synchronizing = true;
             found->second->setPos(impl_->sizing->start.x, impl_->sizing->start.y);
             found->second->set_size(impl_->sizing->start.width, impl_->sizing->start.height);
+            found->second->set_lettering(impl_->lettering_while_pulled(
+                *impl_->sizing, impl_->sizing->start.width, impl_->sizing->start.height));
             impl_->synchronizing = false;
             // An entity's lines followed its edge while it was being pulled,
             // so they are drawn again from the outline it has gone back to.
@@ -3491,7 +3521,7 @@ void DiagramView::mousePressEvent(QMouseEvent* event) {
     // Grabbing a selected connector's handle reshapes it instead of starting a
     // rubber band. The bend is previewed on the item and committed on release.
     if (impl_->active_tool == Tool::Select) {
-        // A handle on a selected symbol or entity resizes it rather than
+        // A handle on a selected resizable shape resizes it rather than
         // moving it. Tested before the shape itself: the handles are drawn on
         // top of everything it sits over, so that is what they are clicked on.
         // A selected line's own grips come first, though: an end grip lies on
@@ -3735,6 +3765,9 @@ void DiagramView::mouseMoveEvent(QMouseEvent* event) {
             impl_->synchronizing = true;
             found->second->setPos(box.x, box.y);
             found->second->set_size(box.width, box.height);
+            // The name grows and shrinks with the box as it is pulled, not
+            // only once it is let go.
+            found->second->set_lettering(impl_->lettering_while_pulled(*impl_->sizing, box.width, box.height));
             impl_->synchronizing = false;
             // An entity carries its relationships and its attributes, and each
             // of those lines is drawn from its outline, so they follow the
@@ -3858,7 +3891,14 @@ void DiagramView::mouseReleaseEvent(QMouseEvent* event) {
         if (box != drag.start) {
             const auto result = std::holds_alternative<EntityId>(drag.ref)
                 ? impl_->editor.resize_entities({{drag.ref, box}})
-                : impl_->editor.resize_symbols({{drag.ref, box}});
+                : std::holds_alternative<RelationshipId>(drag.ref)
+                    ? impl_->editor.resize_relationships({{drag.ref, box}})
+                    // An attribute used to fall through to the symbols' own
+                    // command, which refuses anything but a symbol, so pulling
+                    // one out ended in "Only a symbol can be resized".
+                    : std::holds_alternative<AttributeId>(drag.ref)
+                        ? impl_->editor.resize_attributes({{drag.ref, box}})
+                        : impl_->editor.resize_symbols({{drag.ref, box}});
             if (!result) impl_->displayed_revision.reset(); // Put the stored size back after a refusal.
             impl_->publish(result);
         }

@@ -42,6 +42,31 @@ not been built yet. Their presence in those documents is not a completion claim.
   styles the mark). Size, place, words, the spark, the pressed look and what
   pressing does are unchanged, and so is the card
   (`StartRouteCard::eventFilter`, the `lit` rules in `StartRouteCard::wear`).
+- Attributes can be resized by their edges and corners, as entities are
+  (2026-09-26, fix). Their eight handles were drawn, but a drag was sized by
+  the symbol's corner-only rule, and letting go sent the new size to the
+  symbols' command, which refused it with "Only a symbol can be resized".
+  They now use the entity's pull and their own command,
+  `Editor::resize_attributes` ("Resize attribute"), clamped to the entity's
+  limits.
+
+- An entity's, relationship's or attribute's name is drawn with its box once
+  the box has been resized by hand (2026-09-26). The first resize by a handle
+  or through Properties keeps the size the element had as the size its name
+  is drawn for (`Project::lettering`, saved from format version 29), and the
+  name then grows and shrinks with the box by the smaller of the two changes
+  (`domain::lettering_factor`, held between a quarter and sixteen times):
+  a corner pulled out to twice the size draws the name twice as tall, while
+  pulling only the width out gives a long name room without enlarging it.
+  It follows the box live while a handle is pulled, the rename box follows
+  it too, and a copy keeps it. An element never resized has no entry and is
+  drawn exactly as before, so every existing diagram is unchanged.
+
+- Conceptual relationship diamonds can be resized with the existing selection
+  handles on all four edges and corners. The label stays centered and connectors
+  follow the boundary during dragging. Resize is undoable; defaults and existing
+  document dimensions remain unchanged until explicitly resized.
+
 - The diagram has paper of its own, chosen under **View → Background** and so
   also on the Design row: **None**, the plain canvas its theme gives it;
   **Squares**, like graph paper; **Lines**, ruled like a notebook; **Dots**; or
@@ -1109,7 +1134,8 @@ records what a key the conversion invented has been
 renamed to; version 21 records where the schema differs from the diagram;
 version 22 records how it has been arranged; version 23 records how tall a
 table has been pulled as well as how wide; version 28 records which bridges
-somebody chose to key by their participants' foreign keys. Older files open,
+somebody chose to key by their participants' foreign keys; version 29 keeps the
+size an element's name is drawn for. Older files open,
 and read correctly as having none of these.
 
 The Part 1 checklist is a coverage inventory, not a replacement for semantic
