@@ -96,6 +96,22 @@ struct PreviewColumn {
     // The key's own identity, derived from that link. What a line drawn by
     // hand is remembered against, for the same reason a relation has one.
     std::optional<ForeignKeyId> key_id;
+    // Which column of the key it points at this is, for a key of several
+    // columns; 0 for a key of one. Counted along the key as the key itself
+    // is ordered (PreviewTable::primary_key), not along the table it is in,
+    // so it names the same member however the table lists its columns. With
+    // key_id, what a typed name is kept against.
+    std::uint32_t reference_part = 0;
+    // A column added on the schema: its place in its table's primary key, as
+    // SchemaColumn::key_order keeps it. Nought otherwise.
+    std::uint32_t key_order = 0;
+    // A key the conversion invented: the relation it was invented for, which
+    // is not always the table it is in -- a parent's key copied into a child
+    // keeps the parent's. A discriminator: the specialization whose kinds of
+    // row it tells apart. With the fields above, these give every column an
+    // identity of its own (column_identity).
+    std::optional<RelationId> invented_for;
+    std::optional<SpecializationId> discriminates;
     // Whether the row it points at need not exist, and whether the relationship
     // behind it is one to one. Together these decide how the line is drawn.
     bool optional_link = false;
@@ -154,6 +170,13 @@ struct PreviewTable {
     // whatever is showing it (ADR-009 §64).
     std::optional<ElementRef> derives_from;
     std::vector<PreviewColumn> columns;
+    // The table's primary key, as positions in columns, in the order the key
+    // itself is in -- which is not necessarily the order the table lists its
+    // columns in. A key the conversion makes is in the order the conversion
+    // makes it; columns added on the schema take the places their key_order
+    // gives them. Everything that reads a key of several columns, or refers to
+    // one, reads it from here rather than from where its columns stand.
+    std::vector<std::size_t> primary_key;
     // The questions this table is where to answer.
     std::vector<OpenDecision> decisions;
     auto operator<=>(const PreviewTable&) const = default;
@@ -174,6 +197,20 @@ struct SchemaPreview {
 // itself: the differences live in the project, beside the conversion decisions
 // and for the same reason.
 [[nodiscard]] SchemaPreview schema_preview(const Project& project);
+
+// What a column is, by the identities the model keeps (ColumnIdentity): the
+// same column has the same identity in every preview, whatever it is called
+// and wherever it stands. Within one table no two columns share one -- short
+// of a hierarchy that copies the same column into a table twice, by two
+// paths; an order then places the first, and the copy follows the rest.
+// Absent only for a column made some way this does not know of.
+//
+// A table worked out from the diagram is listed in the order
+// SchemaOverrides::column_order gives it, by these identities, and its
+// primary key and every foreign key into it are carried along with their
+// columns, so what they are and what they point at is the same whichever
+// order the table is listed in.
+[[nodiscard]] std::optional<ColumnIdentity> column_identity(const PreviewColumn& column);
 
 // Columns in different tables that carry the same name and are still waiting
 // for a type. They are almost always the same thing said several times over --

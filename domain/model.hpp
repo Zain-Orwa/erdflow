@@ -52,7 +52,7 @@ using ForeignKeyId = Id<struct ForeignKeyTag>;
 // on the canvas and the constraints that decide how it converts to relations.
 // A picture and a note are placed elements too, though not database objects:
 // see Picture below for what that means.
-using ElementRef = std::variant<EntityId, AttributeId, RelationshipId, SpecializationId, PictureId, NoteId>;
+using ElementRef = std::variant<EntityId, AttributeId, RelationshipId, SpecializationId, PictureId, NoteId, RelationId>;
 // An attribute belongs to an entity, a relationship, or a composite attribute;
 // never to a specialization, which owns no data of its own.
 using AttributeOwner = ElementRef;
@@ -112,6 +112,17 @@ struct Rect {
     auto operator<=>(const Rect&) const = default;
 };
 
+// The box size at which an element's name is drawn at its ordinary size.
+struct LetteringBase {
+    double width = 0;
+    double height = 0;
+    auto operator<=>(const LetteringBase&) const = default;
+};
+// How much larger or smaller than ordinary an element's name is drawn in a
+// box of the given size: the smaller of the two changes from its base, so
+// pulling only the width out gives a long name room without enlarging it.
+[[nodiscard]] double lettering_factor(const LetteringBase& base, double width, double height);
+
 enum class AttributeKind { Normal, Key, Composite, Multivalued, Derived };
 
 // What a column is. The whole SQL data type catalogue, grouped the way SQL
@@ -159,6 +170,14 @@ enum class TypeSize { None, Length, Precision };
 [[nodiscard]] bool deprecated_type(LogicalType type);
 // Whether the value is one the enum actually has.
 [[nodiscard]] bool known_type(LogicalType type);
+// Whether a column can become a foreign key to a key without its type being
+// changed (Stage 5 of the Schema workspace, 2026-10-01). A foreign key has its
+// key's type -- the schema has always given it that -- so a column qualifies
+// where it has no type yet, which it then takes, or has exactly the key's,
+// size and all. Any other column would be retyped by becoming one, and that is
+// never done behind anybody's back.
+[[nodiscard]] bool takes_key_type(LogicalType type, std::uint32_t length, std::uint32_t scale,
+                                  LogicalType key_type, std::uint32_t key_length, std::uint32_t key_scale);
 enum class Cardinality { One, Many };
 enum class Participation { Partial, Total };
 // Whether an instance of the supertype may belong to more than one subtype,
@@ -450,8 +469,22 @@ struct SchemaColumn {
     // What the column means to a reader, as an attribute carries one. It is a
     // description, not a review remark.
     std::string comment;
+    // Where it stands in its table's primary key, counted from one: a key of
+    // several columns is taken in this order, whatever order the table lists
+    // its columns in, so moving a column in the list never changes what the
+    // key is. Nought for a column outside the key. Kept in step with
+    // identifier by number_primary_key.
+    std::uint32_t key_order = 0;
     auto operator<=>(const SchemaColumn&) const = default;
 };
+
+// Numbers a table's primary key from one. The columns already in it keep the
+// order they have; a column that has just joined it (identifier, but no place
+// yet) takes the place where it stands in the table's list among them, which
+// is the order the key was read in before it had an order of its own -- so a
+// key built a column at a time comes out in the order it always did. A column
+// outside the key has no place.
+void number_primary_key(std::vector<SchemaColumn>& columns);
 
 // Everything the schema says that the diagram does not.
 //
@@ -467,7 +500,7 @@ struct SchemaColumn {
 // three are between them every foreign key there is: a participant carries a
 // relationship's key, a multivalued attribute's table points home, and a
 // subtype points at its parent.
-using LinkSource = std::variant<ParticipantId, AttributeId, EntityId>;
+using LinkSource = std::variant<ParticipantId, AttributeId, EntityId, ForeignKeyId>;
 
 // Which rule of the conversion produced a relation.
 //
@@ -570,7 +603,61 @@ struct SchemaTableBox {
     auto operator<=>(const SchemaTableBox&) const = default;
 };
 
+struct Relation {
+    RelationId id;
+    std::string name;
+    std::string description;
+    std::string comment;
+    auto operator<=>(const Relation&) const = default;
+};
+
+struct SchemaForeignKey {
+    ForeignKeyId id;
+    RelationId from;
+    RelationId to;
+    SchemaColumnId column;
+    SchemaColumnId target;
+    auto operator<=>(const SchemaForeignKey&) const = default;
+};
+
+// One column of a foreign key the conversion made: which key, and which of the
+// columns of the key it points at. A key of one column has only part 0; a key
+// pointing at a composite primary key has one part for each of its columns.
+struct ForeignKeyColumn {
+    ForeignKeyId key;
+    std::uint32_t part = 0;
+    auto operator<=>(const ForeignKeyColumn&) const = default;
+};
+
+// What a column of a table worked out from the diagram is, told by
+// identities the model already keeps rather than by where the column stands
+// (Task 4B, 2026-10-02). Each kind of column is named by what it was made
+// from:
+//  - an attribute's column, by the attribute;
+//  - a column added on the schema, by its own identity;
+//  - one column of a foreign key the conversion made, by the key and part;
+//  - a key invented for a table nothing identifies, by the relation it was
+//    invented for -- what its typed name is already kept against -- which
+//    tells a parent's key copied into a child apart from the child's own;
+//  - the column a hierarchy kept in one table adds to say which kind of row
+//    each row is, by the specialization it says that for.
+// None of them is a name or a position, so each survives a rename, a fresh
+// preview, and the columns around it coming and going.
+struct InventedKeyColumn {
+    RelationId relation;
+    auto operator<=>(const InventedKeyColumn&) const = default;
+};
+struct DiscriminatorColumn {
+    SpecializationId specialization;
+    auto operator<=>(const DiscriminatorColumn&) const = default;
+};
+using ColumnIdentity =
+    std::variant<AttributeId, SchemaColumnId, ForeignKeyColumn, InventedKeyColumn, DiscriminatorColumn>;
+
 struct SchemaOverrides {
+    bool standalone = false;
+    std::map<RelationId, Relation> relations;
+    std::map<ForeignKeyId, SchemaForeignKey> foreign_keys;
     // Columns added to one table at the schema level only, in the order they
     // were added, under the element whose table they were added to.
     std::map<RelationId, std::vector<SchemaColumn>> added;
@@ -591,8 +678,30 @@ struct SchemaOverrides {
     // of all to want it -- a table with nothing to identify it is given a
     // surrogate, and a surrogate is what IDENTITY is for.
     std::set<RelationId> counting_keys;
+    // What a foreign key the conversion made is called, where the name the
+    // rule gives it was not wanted (Zain, 2026-09-27). The rule names a key
+    // for what it points at, and a name somebody typed -- ManagerID for a key
+    // into the same table's EmpID -- says what the rule cannot. A typed name
+    // is kept and no longer follows the key it points at, as a typed table
+    // name no longer follows its entity; taking it away hands the name back
+    // to the rule. It is also how a schema converted into a diagram keeps the
+    // foreign key names it was drawn with.
+    std::map<ForeignKeyColumn, std::string> foreign_key_names;
+    // The order a table worked out from the diagram lists its columns in,
+    // where somebody has given it one (Task 4B, 2026-10-02). Only the order
+    // is kept, never the columns: the table is worked out afresh each time,
+    // its columns are put in this order, and any it has that are not named
+    // here follow in the order the conversion makes them. A column named here
+    // that the table does not have at the moment -- taken out by a change on
+    // the diagram that can be changed back -- keeps its place for when it
+    // returns. How a table is listed is not what it is: its primary key and
+    // every foreign key keep their own order whatever this says. A table
+    // drawn by hand has no entry, because its columns are already kept in
+    // the order they are listed.
+    std::map<RelationId, std::vector<ColumnIdentity>> column_order;
     [[nodiscard]] bool empty() const {
-        return added.empty() && hidden.empty() && key_names.empty() && counting_keys.empty();
+        return !standalone && relations.empty() && foreign_keys.empty() && added.empty() && hidden.empty()
+            && key_names.empty() && counting_keys.empty() && foreign_key_names.empty() && column_order.empty();
     }
     auto operator<=>(const SchemaOverrides&) const = default;
 };
@@ -633,6 +742,14 @@ struct Project {
     // whichever colour the surface has, chosen or the theme's, which is why
     // it is kept apart from the colour. An absent entry means solid.
     std::map<ElementRef, std::uint8_t> transparency;
+    // The size each entity, relationship or attribute had when it was first
+    // resized by hand (Zain, 2026-09-26). Its name is drawn at its ordinary
+    // size in a box of this size, and grows or shrinks with the box from
+    // there, by the smaller of the two changes, so a box pulled wider only
+    // gives a long name room. An absent entry means the element has never
+    // been resized, and its name is drawn at its ordinary size whatever size
+    // it is, which is how every diagram made before this is still drawn.
+    std::map<ElementRef, LetteringBase> lettering;
     // The paper the diagram is drawn on.
     Background background;
     auto operator<=>(const Project&) const = default;

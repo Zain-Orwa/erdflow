@@ -11,6 +11,8 @@
 #include <QIcon>
 #include <QContextMenuEvent>
 #include <QMenu>
+#include <QMessageBox>
+#include <QPushButton>
 #include <QGraphicsItem>
 #include <QGraphicsScene>
 #include <QKeyEvent>
@@ -35,6 +37,7 @@
 #include <cmath>
 #include <limits>
 #include <map>
+#include <numbers>
 #include <set>
 #include <utility>
 
@@ -156,6 +159,48 @@ QPointF normal(const QPointF& delta) {
     return length > 0.001 ? QPointF(-delta.y() / length, delta.x() / length) : QPointF(0, 1);
 }
 
+// A line of straight runs moved sideways by a distance, each corner mitred so
+// the moved line stays the same distance from every run of the original (Zain,
+// 2026-10-03, for the double line of a total participation). Its ends move
+// square to the runs they finish, so two lines moved either way leave a point
+// together. Anything not made only of straight runs is moved as a whole.
+QPainterPath alongside(const QPainterPath& path, qreal distance) {
+    std::vector<QPointF> points;
+    for (int i = 0; i < path.elementCount(); ++i) {
+        const auto element = path.elementAt(i);
+        if (!element.isMoveTo() && !element.isLineTo()) return path.translated(normal(
+            path.pointAtPercent(1) - path.pointAtPercent(0)) * distance);
+        const QPointF at(element.x, element.y);
+        if (points.empty() || std::hypot(at.x() - points.back().x(), at.y() - points.back().y()) > 0.01)
+            points.push_back(at);
+    }
+    if (points.size() < 2) return path;
+    QPainterPath moved;
+    for (std::size_t i = 0; i < points.size(); ++i) {
+        QPointF by;
+        if (i == 0) by = normal(points[1] - points[0]) * distance;
+        else if (i + 1 == points.size()) by = normal(points[i] - points[i - 1]) * distance;
+        else {
+            const auto before = normal(points[i] - points[i - 1]);
+            const auto after = normal(points[i + 1] - points[i]);
+            const auto between = before + after;
+            const auto length = std::hypot(between.x(), between.y());
+            // Turning straight back, there is no corner to mitre.
+            if (length < 0.01) by = before * distance;
+            else {
+                const auto bisector = between / length;
+                // A very sharp corner is mitred no further than four times the
+                // distance, so a tight turn cannot throw a spike out.
+                const auto square = std::max(QPointF::dotProduct(bisector, before), 0.25);
+                by = bisector * (distance / square);
+            }
+        }
+        if (i == 0) moved.moveTo(points[i] + by);
+        else moved.lineTo(points[i] + by);
+    }
+    return moved;
+}
+
 // The face the diagram is lettered in, at a size given in the units everything
 // else on the diagram is measured in.
 //
@@ -275,6 +320,13 @@ public:
     // ring says which of the things still at full strength were asked for and
     // which are only there because they are next to one.
     bool found = false;
+    // Whether this is the element new attributes are attached to, locked by
+    // hand. Marked with a closed padlock, so it is plain where they will go.
+    bool owner_lock = false;
+    // Whether it could be: an entity, a relationship or a composite attribute.
+    // Selected, one of these wears an open padlock that locks it when pressed.
+    bool can_own = false;
+    [[nodiscard]] bool shows_owner_lock() const { return owner_lock || (can_own && isSelected()); }
     // A note's text, drawn beneath its title.
     QString body;
     // A plain note is one character standing on its own, drawn as the
@@ -322,6 +374,14 @@ public:
         apply_colors();
     }
     [[nodiscard]] int transparency() const { return transparency_; }
+    // How much larger or smaller than ordinary the name is drawn: 1 until the
+    // element is resized by hand, then following its box (Zain, 2026-09-26).
+    void set_lettering(qreal factor) {
+        if (lettering_ == factor) return;
+        lettering_ = factor;
+        update();
+    }
+    [[nodiscard]] qreal lettering() const { return lettering_; }
 
     // A picture's own pixels, decoded once from the bytes the model holds.
     void set_image(const std::vector<std::uint8_t>& bytes) {
@@ -448,15 +508,16 @@ public:
     // A symbol is drawn as its character grown to fill its box, so the box is
     // how big the character is, and hauling a corner is how it is made bigger.
     //
-    // An entity and an attribute both hold a name, and how wide and how tall
+    // Entities, attributes and relationships hold a name, and how wide and how tall
     // each is are two separate questions: a long name wants width where a
-    // second line wants height. So both answer to each of their four edges as
+    // second line wants height. So they answer to each of their four edges as
     // well as to their corners, the side that is pulled moving and the side
     // opposite it staying where it was. A default is a starting size, not a
     // ruling, and a name that will not fit one has to be able to be given room.
     static constexpr qreal grip = 9;
     [[nodiscard]] bool boxed() const {
-        return std::holds_alternative<EntityId>(ref) || std::holds_alternative<AttributeId>(ref);
+        return std::holds_alternative<EntityId>(ref) || std::holds_alternative<AttributeId>(ref)
+            || std::holds_alternative<RelationshipId>(ref);
     }
     [[nodiscard]] bool sizeable() const { return (plain || boxed()) && isSelected(); }
     [[nodiscard]] int handle_count() const { return boxed() ? 8 : 4; }
@@ -529,30 +590,20 @@ public:
     // the body they belong to rather than each being routed on its own.
     std::vector<NodeItem*> attribute_children;
 
-    // Where a link to an attribute leaves this body, and the point just outside
-    // it where the line straightens out.
+    // Where a link to an attribute leaves this body (Zain, 2026-09-26): the
+    // middle of the side facing the attribute, so every attribute on one side
+    // leaves from the same point, each by a straight line of its own. Moving
+    // an attribute about on that side leaves the point where it is; carried
+    // past a corner, its line moves to the middle of the side it now faces.
+    // Nothing is stored for it, so the line stays unlocked. A join pinned by
+    // hand is where it was pinned.
     //
-    // The anchor rides the outline itself, at whatever point the attribute's own
-    // direction crosses it, so moving the attribute slides the join smoothly
-    // around the body and carries it around the corners. Snapping to the middle
-    // of whichever face is nearest is what made the line jump: the anchor would
-    // sit still while the attribute moved, then leap the width of the body the
-    // moment the nearest face changed.
-    void attribute_trunk(const NodeItem* child, const std::optional<double>& pinned,
-                         QPointF& anchor, QPointF& junction) const {
-        const QPointF centre = scenePos() + bounds_.center();
-        anchor = pinned ? boundary_at(*pinned)
-                        : boundary_toward(child->scenePos() + child->bounds_.center());
-        // The stub leaves along the outline's own outward direction rather than
-        // pointing straight back at the attribute, so the line looks like it
-        // leaves the body squarely and still has somewhere to curve from.
-        // Dividing each axis by its own radius turns the corners smoothly
-        // instead of snapping between four fixed headings.
-        const auto rx = std::max(bounds_.width() / 2, 0.001);
-        const auto ry = std::max(bounds_.height() / 2, 0.001);
-        QPointF out{(anchor.x() - centre.x()) / (rx * rx), (anchor.y() - centre.y()) / (ry * ry)};
-        const auto length = std::hypot(out.x(), out.y());
-        junction = anchor + (length > 0.000001 ? out / length : QPointF(1, 0)) * 22;
+    // It used to ride the outline at whatever point the attribute's direction
+    // crossed it, then leave by a short stub square to the outline. With the
+    // join pinned on a side facing away from its attribute, the stub turned
+    // back on itself, and the line hooked round or ran across the body.
+    [[nodiscard]] QPointF attribute_exit(const NodeItem* child, const std::optional<double>& pinned) const {
+        return boundary_at(pinned ? *pinned : middle_facing(child->scenePos() + child->bounds_.center()));
     }
 
     // The ISA triangle attaches at fixed points rather than wherever a ray
@@ -573,6 +624,17 @@ public:
     [[nodiscard]] double direction_of(const QPointF& point) const {
         const QPointF centre = scenePos() + bounds_.center();
         return std::atan2(point.y() - centre.y(), point.x() - centre.x());
+    }
+    // The middle of whichever side faces a point, as a direction: the top,
+    // right, bottom or left of the box, which is where a diamond has its
+    // points and an ellipse its ends. Each axis is measured against its own
+    // half of the box, so a wide entity is not taken to face sideways.
+    [[nodiscard]] double middle_facing(const QPointF& point) const {
+        const QPointF centre = scenePos() + bounds_.center();
+        const auto across = (point.x() - centre.x()) / std::max(bounds_.width() / 2, 0.001);
+        const auto down = (point.y() - centre.y()) / std::max(bounds_.height() / 2, 0.001);
+        if (std::abs(down) >= std::abs(across)) return down < 0 ? -std::numbers::pi / 2 : std::numbers::pi / 2;
+        return across < 0 ? std::numbers::pi : 0.0;
     }
     // Intersection of a ray from the node center with its actual Chen shape.
     QPointF boundary_toward(const QPointF& target) const {
@@ -784,7 +846,7 @@ public:
         // zoom, so they sit a step above the interface's own type and never
         // below medium weight.
         auto font = painter->font();
-        font = lettered(font, 12.5);
+        font = lettered(font, 12.5 * lettering_);
         font.setWeight(std::holds_alternative<EntityId>(ref) ? QFont::Bold : QFont::Medium);
         font.setUnderline(std::holds_alternative<AttributeId>(ref) && attribute_kind == AttributeKind::Key && !partial_key);
         painter->setFont(font);
@@ -828,6 +890,7 @@ public:
                               disjoint ? QStringLiteral("d") : QStringLiteral("o"));
         }
         paint_comment_badge(painter);
+        paint_owner_lock(painter);
         paint_found_ring(painter);
         // Last, so that a handle in the corner is never hidden under the mark
         // for a remark that happens to sit there.
@@ -858,6 +921,32 @@ public:
         draw_comment_badge(painter, QPointF(bounds_.right() - comment_badge_size - 3, bounds_.top() + 3),
                            colors_->warning, comments_to_show > 0);
     }
+    // In the top-left of the box: the corner opposite the remark mark, empty
+    // inside an ellipse or a diamond, and clear of a rectangle's centred name.
+    // Set in from the corner far enough to clear the resize grip there.
+    [[nodiscard]] QRectF owner_lock_rect() const {
+        constexpr qreal side = 12 * connector_scale;
+        return {bounds_.left() + 7, bounds_.top() + 7, side, side};
+    }
+    // The padlock a line wears, and read the same way: closed and filled on
+    // the owner, open and hollow on an element that could be one.
+    void paint_owner_lock(QPainter* painter) const {
+        if (!shows_owner_lock()) return;
+        const auto lock = owner_lock_rect();
+        const QRectF body(lock.left(), lock.center().y() - connector_scale, lock.width(),
+                          lock.height() / 2 + connector_scale);
+        const QRectF shackle(lock.left() + lock.width() * 0.22, lock.top(), lock.width() * 0.56,
+                             lock.height() * 0.62);
+        painter->save();
+        painter->setRenderHint(QPainter::Antialiasing);
+        painter->setPen(QPen(selection_, 1.4 * connector_scale));
+        painter->setBrush(Qt::NoBrush);
+        painter->drawArc(owner_lock ? shackle : shackle.translated(2.5 * connector_scale, -1.5 * connector_scale),
+                         0, 180 * 16);
+        painter->setBrush(owner_lock ? selection_ : (colors_ ? colors_->canvas : fill_));
+        painter->drawRoundedRect(body, 1.5 * connector_scale, 1.5 * connector_scale);
+        painter->restore();
+    }
 protected:
     QVariant itemChange(GraphicsItemChange change, const QVariant& value) override {
         if (change == ItemPositionChange && constrain) return constrain(value.toPointF());
@@ -871,6 +960,7 @@ private:
     QColor fill_, border_, text_, selection_;
     std::optional<QColor> chosen_;
     int transparency_ = 0;
+    qreal lettering_ = 1.0;
     QPixmap image_;
 };
 
@@ -1203,24 +1293,17 @@ public:
         const bool owned_attribute = std::holds_alternative<AttributeId>(descriptor.key)
             && std::holds_alternative<AttributeId>(descriptor.from);
         if (owned_attribute) {
-            QPointF anchor;
-            QPointF junction;
-            target->attribute_trunk(source, descriptor.owner_anchor, anchor, junction);
+            // One straight line from its owner's point to the attribute, in
+            // every line style, so lines sharing a point leave it each on its
+            // own rather than running together and branching (Zain,
+            // 2026-09-26).
+            const auto anchor = target->attribute_exit(source, descriptor.owner_anchor);
             end = descriptor.child_anchor ? source->boundary_at(*descriptor.child_anchor)
-                                          : source->boundary_toward(junction);
+                                          : source->boundary_toward(anchor);
             owner_join_ = anchor;
             child_join_ = end;
             path_ = QPainterPath(anchor);
-            path_.lineTo(junction);
-            if (style != LineStyle::Curved) {
-                path_.lineTo(end);
-            } else {
-                const auto reach = std::clamp(std::hypot(end.x() - junction.x(), end.y() - junction.y()) * 0.45, 18.0, 90.0);
-                const auto out = junction - anchor;
-                const auto length = std::hypot(out.x(), out.y());
-                const auto lead = length > 0.01 ? out / length : QPointF(0, -1);
-                path_.cubicTo(junction + lead * reach, end + normal(lead) * 0, end);
-            }
+            path_.lineTo(end);
             bend = path_.pointAtPercent(0.5);
             midpoint_ = bend;
             perpendicular_ = normal(end - anchor);
@@ -1363,6 +1446,62 @@ public:
         const auto role_center = end + outward_ * (symbol_reach() + 20.0 + role_width / 2)
             - entity_normal * clearance(entity_normal, role_width / 2, 10);
         role_rect_ = QRectF(role_center - QPointF(role_width / 2, 10), QSizeF(role_width, 20));
+        // Chen's and min-max's number belongs to the entity's end (Zain,
+        // 2026-10-03): its box a short way out from the entity along the run
+        // that touches it, and just clear of the line -- of both lines where a
+        // total participation draws two, as heavy as a chosen line is drawn,
+        // so choosing never moves it or lets it cover the line. It sits above
+        // a level run; beside a standing one, away from where the line turns
+        // next, or else to the right; and opposite the role, where the side
+        // has one. Crow's foot and Bachman, which write no number, keep the
+        // box they had.
+        if (descriptor.relationship && (notation == Notation::Chen || notation == Notation::MinMax)) {
+            const auto along = outward_;
+            auto side = entity_normal;
+            if (descriptor.role.isEmpty()) {
+                if (std::abs(along.x()) >= std::abs(along.y())) {
+                    if (side.y() > 0) side = -side;
+                } else {
+                    // The path runs from the far shape to this entity, so the
+                    // corner before the last run is where the line turns next.
+                    QPointF turn;
+                    if (const auto count = path_.elementCount(); count >= 3) {
+                        const auto corner = path_.elementAt(count - 2);
+                        const auto beyond = path_.elementAt(count - 3);
+                        turn = QPointF(beyond.x - corner.x, beyond.y - corner.y);
+                        // Straight on is no turn.
+                        if (std::abs(turn.x() * along.y() - turn.y() * along.x()) < 0.01 * std::hypot(turn.x(), turn.y()))
+                            turn = QPointF();
+                    }
+                    if (!turn.isNull()) {
+                        if (QPointF::dotProduct(side, turn) > 0) side = -side;
+                    } else if (side.x() < 0) {
+                        side = -side;
+                    }
+                }
+            }
+            const auto reach_of = [&](const QPointF& unit) {
+                return label_width / 2 * std::abs(unit.x()) + label_height / 2 * std::abs(unit.y());
+            };
+            constexpr qreal heaviest = 4.0 * connector_scale;
+            const auto envelope = mandatory() ? (heaviest + 1.0 * connector_scale) / 2 + heaviest / 2 : heaviest / 2;
+            constexpr qreal entity_gap = 2.0;
+            constexpr qreal line_gap = 1.0;
+            const auto centre = end + along * (entity_gap + reach_of(along)) + side * (envelope + line_gap + reach_of(side));
+            auto box = QRectF(centre - QPointF(label_width / 2, label_height / 2), QSizeF(label_width, label_height));
+            // A line meeting its entity at a slant can leave a box set this
+            // close reaching past the entity's corner; it slides out along the
+            // line until it is clear.
+            const auto body_of = [](const NodeItem* node) { return node->body_rect().translated(node->scenePos()); };
+            const auto distance_to = [&](const QRectF& body) {
+                const auto dx = std::max({body.left() - end.x(), 0.0, end.x() - body.right()});
+                const auto dy = std::max({body.top() - end.y(), 0.0, end.y() - body.bottom()});
+                return std::hypot(dx, dy);
+            };
+            const auto entity = distance_to(body_of(target)) <= distance_to(body_of(source)) ? body_of(target) : body_of(source);
+            for (int step = 0; step < 120 && box.intersects(entity); ++step) box.translate(along);
+            cardinality_rect_ = box;
+        }
         bounds_ = path_.boundingRect().adjusted(-14, -14, 14, 14);
         if (descriptor.relationship && !end_label().isEmpty()) bounds_ = bounds_.united(cardinality_rect_);
         if (!descriptor.role.isEmpty()) bounds_ = bounds_.united(role_rect_);
@@ -1398,11 +1537,19 @@ public:
         const qreal weight = (isSelected() ? 4.0 : highlighted ? 3.4 : 2.2) * connector_scale;
         painter->setPen(QPen(ink, weight));
         painter->setBrush(Qt::NoBrush);
-        // A total participation in Chen, and a total specialization in every
-        // notation, are drawn as a double line.
-        const bool doubled = (descriptor.relationship && notation == Notation::Chen && descriptor.participation == Participation::Total)
-            || (std::holds_alternative<InheritanceKey>(descriptor.key) && descriptor.total);
-        if (doubled) {
+        // A total participation is drawn as a double line in every notation
+        // (Zain, 2026-10-03; until then only in Chen): two lines of the same
+        // weight, a narrow gap apart, one either side of where the single
+        // line runs, so both leave the diamond's corner together and stay
+        // parallel round every bend. A total specialization keeps its own
+        // double line, in every notation.
+        const bool total_side = descriptor.relationship && descriptor.participation == Participation::Total;
+        const bool doubled = std::holds_alternative<InheritanceKey>(descriptor.key) && descriptor.total;
+        if (total_side) {
+            const auto apart = (weight + 1.0 * connector_scale) / 2;
+            painter->drawPath(alongside(path_, apart));
+            painter->drawPath(alongside(path_, -apart));
+        } else if (doubled) {
             painter->save();
             painter->translate(perpendicular_ * (3 * connector_scale));
             painter->drawPath(path_);
@@ -1505,6 +1652,21 @@ private:
 
 } // namespace
 
+// Measured the way a name is drawn: the same lettering and weight, and the
+// same room left inside the shape -- 15 at either side of a box or an oval,
+// and a fifth and more of a diamond's width at either point.
+double width_for_name(NamedShape shape, const QString& name, const QFont& base) {
+    auto font = lettered(base, 12.5);
+    font.setWeight(shape == NamedShape::Entity ? QFont::Bold : QFont::Medium);
+    const auto words = QFontMetricsF(font).horizontalAdvance(name) + 6;
+    switch (shape) {
+    case NamedShape::Entity: return std::max(entity_body.width, std::ceil(words + 30));
+    case NamedShape::Attribute: return std::max(attribute_body.width, std::ceil(words + 30));
+    case NamedShape::Relationship: return std::max(relationship_body.width, std::ceil(words / 0.56));
+    }
+    return entity_body.width;
+}
+
 struct DiagramView::Impl {
     DiagramView& view;
     application::Editor& editor;
@@ -1516,8 +1678,98 @@ struct DiagramView::Impl {
     ThemeId theme_id = ThemeId::OfficeLight;
     Notation notation = Notation::CrowsFoot;
     LineStyle style = LineStyle::Elbow;
-    JoinMode join_mode = JoinMode::WhereClicked;
+    JoinMode join_mode = JoinMode::Automatic;
     bool tool_locked = false;
+    // The element attributes placed are attached to, and the project it was
+    // locked in: element identities are only unique within a project.
+    std::optional<ElementRef> attribute_owner;
+    domain::ProjectId owner_project;
+    [[nodiscard]] bool can_own_attributes(const ElementRef& ref) const {
+        const auto& project = editor.project();
+        if (!exists(project, ref)) return false;
+        if (std::holds_alternative<EntityId>(ref) || std::holds_alternative<RelationshipId>(ref)) return true;
+        const auto* attribute = std::get_if<AttributeId>(&ref);
+        return attribute && project.attributes.at(*attribute).kind == AttributeKind::Composite;
+    }
+    // Lets the lock go once it no longer names something that can hold
+    // attributes here, and marks whichever element holds it, and which could.
+    void refresh_owner_lock() {
+        if (attribute_owner
+            && (editor.project().id != owner_project || !can_own_attributes(*attribute_owner))) {
+            attribute_owner.reset();
+            answered_near.clear();
+        }
+        for (auto& [ref, node] : nodes) {
+            const bool marked = attribute_owner && ref == *attribute_owner;
+            const bool could = can_own_attributes(ref);
+            if (node->owner_lock == marked && node->can_own == could) continue;
+            node->owner_lock = marked;
+            node->can_own = could;
+            node->update();
+        }
+    }
+    // An attribute put down beside one element while another is locked may
+    // be meant for the one it is beside, the lock forgotten (Zain,
+    // 2026-09-26). This finds that element: one that could hold it, within a
+    // short reach of where it was put, and nearer than the owner. Distances
+    // are to each body's box, and nothing already answered for during this
+    // lock is asked about again.
+    std::set<ElementRef> answered_near;
+    [[nodiscard]] std::optional<ElementRef> nearer_owner(const ElementRef& locked, const QPointF& at) const {
+        constexpr qreal reach = 100;
+        const auto distance = [&at](const NodeItem* node) {
+            const auto box = node->mapRectToScene(node->body_rect());
+            const auto across = std::max({box.left() - at.x(), 0.0, at.x() - box.right()});
+            const auto down = std::max({box.top() - at.y(), 0.0, at.y() - box.bottom()});
+            return std::hypot(across, down);
+        };
+        const auto owner = nodes.find(locked);
+        if (owner == nodes.end()) return std::nullopt;
+        const auto to_owner = distance(owner->second);
+        std::optional<ElementRef> nearest;
+        auto best = reach;
+        for (const auto& [ref, node] : nodes) {
+            if (ref == locked || answered_near.contains(ref) || !node->isVisible() || !can_own_attributes(ref)) continue;
+            const auto away = distance(node);
+            if (away <= best && away < to_owner) {
+                best = away;
+                nearest = ref;
+            }
+        }
+        return nearest;
+    }
+    enum class OwnerAnswer { Attach, Unlock, Cancel };
+    [[nodiscard]] OwnerAnswer ask_about_owner(const ElementRef& locked, const ElementRef& near) {
+        const auto owner = QString::fromStdString(name(editor.project(), locked));
+        const auto beside = QString::fromStdString(name(editor.project(), near));
+        QMessageBox box(&view);
+        box.setObjectName("ownerLockQuestion");
+        box.setIcon(QMessageBox::Question);
+        box.setWindowTitle(QStringLiteral("Attribute owner is locked"));
+        box.setText(QStringLiteral("You are locked to %1, but this attribute is nearer %2.").arg(owner, beside));
+        box.setInformativeText(QStringLiteral("Continue to attach it to %1. Unlock to place it on its own, "
+                                              "then connect it to %2 by hand.").arg(owner, beside));
+        auto* attach = box.addButton(QStringLiteral("Continue"), QMessageBox::AcceptRole);
+        attach->setObjectName("ownerContinue");
+        auto* unlock = box.addButton(QStringLiteral("Unlock"), QMessageBox::DestructiveRole);
+        unlock->setObjectName("ownerUnlock");
+        auto* cancel = box.addButton(QMessageBox::Cancel);
+        box.setDefaultButton(attach);
+        box.setEscapeButton(cancel);
+        box.exec();
+        if (box.clickedButton() == attach) return OwnerAnswer::Attach;
+        if (box.clickedButton() == unlock) return OwnerAnswer::Unlock;
+        return OwnerAnswer::Cancel;
+    }
+    // The element whose padlock is under the pointer, when one is showing.
+    [[nodiscard]] NodeItem* owner_lock_at(const QPoint& viewport_position) const {
+        const auto at = view.mapToScene(viewport_position);
+        for (const auto& [ref, node] : nodes)
+            if (node->isVisible() && node->shows_owner_lock()
+                && node->mapRectToScene(node->owner_lock_rect()).contains(at))
+                return node;
+        return nullptr;
+    }
     bool grid = true;
     // The paper as the projection has it, and the picture decoded from it once
     // rather than on every repaint.
@@ -1792,10 +2044,25 @@ struct DiagramView::Impl {
             bottom = std::clamp(start.bottom() + travelled.y(), top + min_entity_height, top + max_entity_height);
         return Rect{left, top, right - left, bottom - top};
     }
+    // How large a name is drawn in a box being pulled from the one it started
+    // at: from the size its lettering was set for, or, the first time it is
+    // resized, from the size it started the pull at, which is what the edit
+    // will keep as that size when the pull is let go.
+    [[nodiscard]] qreal lettering_while_pulled(const SizeDrag& drag, double width, double height) const {
+        if (!std::holds_alternative<EntityId>(drag.ref) && !std::holds_alternative<RelationshipId>(drag.ref)
+            && !std::holds_alternative<AttributeId>(drag.ref))
+            return 1.0;
+        const auto& lettering = editor.project().lettering;
+        const auto base = lettering.find(drag.ref);
+        return domain::lettering_factor(base != lettering.end() ? base->second
+                                                                : domain::LetteringBase{drag.start.width, drag.start.height},
+                                        width, height);
+    }
     // Which of the two the shape under the hand is pulled by.
     [[nodiscard]] static Rect hauled_box(const SizeDrag& drag, const QPointF& pointer) {
-        return std::holds_alternative<EntityId>(drag.ref) ? pulled_body(drag, pointer)
-                                                          : sized_box(drag, pointer);
+        return (std::holds_alternative<EntityId>(drag.ref) || std::holds_alternative<RelationshipId>(drag.ref)
+                || std::holds_alternative<AttributeId>(drag.ref))
+            ? pulled_body(drag, pointer) : sized_box(drag, pointer);
     }
     QPointF minimum_drag;
     QPointF maximum_drag;
@@ -2051,7 +2318,7 @@ struct DiagramView::Impl {
         const QRect area(view.mapFromScene(box.topLeft() + QPointF(inset, 0)),
                          view.mapFromScene(box.bottomRight() - QPointF(inset, 0)));
         auto font = inline_editor->font();
-        font.setPointSizeF(std::clamp(11.0 * view.zoom_factor(), 7.0, 28.0));
+        font.setPointSizeF(std::clamp(11.0 * view.zoom_factor() * found->second->lettering(), 7.0, 28.0));
         font.setWeight(std::holds_alternative<EntityId>(*renaming) ? QFont::DemiBold : QFont::Normal);
         inline_editor->setFont(font);
         const auto height = std::min(area.height(), inline_editor->sizeHint().height());
@@ -2400,17 +2667,17 @@ struct DiagramView::Impl {
         if (std::holds_alternative<SpecializationId>(from) || std::holds_alternative<SpecializationId>(to)) return {};
         // Two entities have no line of their own in Chen notation: they are
         // read through a relationship. Rather than refuse the pair, the
-        // relationship they obviously mean is made between them, midway, with
-        // each line joined to the entity where it was clicked.
+        // relationship they obviously mean is made between them, midway.
+        // Its two lines start unlocked (Zain, 2026-09-26): neither end is
+        // pinned to where it was clicked, so each slides round its shapes as
+        // they are moved, and a hand that wants them fixed locks them.
         if (std::holds_alternative<EntityId>(from) && std::holds_alternative<EntityId>(to)) {
-            return Plan{[this, first = std::get<EntityId>(from), second = std::get<EntityId>(to)]
-                        (Joins from_join, Joins to_join) {
+            return Plan{[this, first = std::get<EntityId>(from), second = std::get<EntityId>(to)](Joins, Joins) {
                 // Asked for as the edit is made rather than as the plan is
                 // built, so a pair connected twice in a row steps the second
                 // diamond past the first.
                 const auto place = relationship_place(ElementRef{first}, ElementRef{second});
-                return editor.relate(first, second, centred(place, relationship_body), "Relationship",
-                                     joined(std::nullopt, from_join), joined(std::nullopt, to_join));
+                return editor.relate(first, second, centred(place, relationship_body), "Relationship");
             }};
         }
         if (std::holds_alternative<AttributeId>(from) && std::holds_alternative<AttributeId>(to)
@@ -2639,6 +2906,9 @@ void DiagramView::synchronize() {
             : std::optional{QColor(chosen->second.red, chosen->second.green, chosen->second.blue)});
         const auto faded = project.transparency.find(ref);
         node->set_transparency(faded == project.transparency.end() ? 0 : faded->second);
+        const auto base = project.lettering.find(ref);
+        node->set_lettering(base == project.lettering.end()
+            ? 1.0 : domain::lettering_factor(base->second, node->body_rect().width(), node->body_rect().height()));
         if (geometry_changed) {
             const auto incident = impl_->incident.find(ref);
             if (incident != impl_->incident.end()) dirty_edges.insert(incident->second.begin(), incident->second.end());
@@ -2698,6 +2968,7 @@ void DiagramView::synchronize() {
     }
     // An element can disappear under an open editor through undo or a reload.
     if (impl_->renaming && !exists(project, *impl_->renaming)) impl_->cancel_inline_edit();
+    impl_->refresh_owner_lock();
     impl_->place_inline_editor();
     // Also reapplies the highlight to whatever items this projection rebuilt.
     impl_->selection_changed();
@@ -2725,7 +2996,14 @@ void DiagramView::set_tool(Tool tool, bool locked) {
         break;
     }
     case Tool::Entity: impl_->status(QStringLiteral("Click the canvas to create an entity.")); break;
-    case Tool::Attribute: impl_->status(QStringLiteral("Click to add an attribute to the selected owner, or an unattached attribute.")); break;
+    case Tool::Attribute:
+        if (const auto owner = attribute_owner())
+            impl_->status(QStringLiteral("Click to place an attribute on %1, the locked owner.")
+                              .arg(QString::fromStdString(name(impl_->editor.project(), *owner))));
+        else
+            impl_->status(QStringLiteral("Click to place an attribute, then connect it by hand. To attach each one "
+                                         "as it is placed, select its owner and press the padlock on it."));
+        break;
     case Tool::Relationship: impl_->status(QStringLiteral("Click the canvas to create a relationship, then use Connect to add participants.")); break;
     case Tool::Specialization: impl_->status(QStringLiteral("Click the canvas to place an ISA triangle pointing down, then connect its supertype and subtypes.")); break;
     case Tool::Generalization: impl_->status(QStringLiteral("Click the canvas to place an ISA triangle pointing up, then connect its supertype and subtypes.")); break;
@@ -2740,6 +3018,29 @@ void DiagramView::set_tool(Tool tool, bool locked) {
 }
 bool DiagramView::tool_locked() const { return impl_->tool_locked; }
 Tool DiagramView::tool() const { return impl_->active_tool; }
+
+void DiagramView::set_attribute_owner(std::optional<ElementRef> owner) {
+    // Something that cannot hold attributes is not locked, and the lock
+    // already held is kept rather than lost to the attempt.
+    if (owner && !impl_->can_own_attributes(*owner)) return;
+    if (owner == attribute_owner()) return;
+    impl_->attribute_owner = owner;
+    impl_->owner_project = impl_->editor.project().id;
+    impl_->answered_near.clear();
+    impl_->refresh_owner_lock();
+    impl_->status(owner
+        ? QStringLiteral("Attributes placed now go on %1. Unlock it with its padlock, its right-click menu or Properties.")
+              .arg(QString::fromStdString(name(impl_->editor.project(), *owner)))
+        : QStringLiteral("Attributes placed now stand on their own. Connect each one by hand."));
+    if (on_attribute_owner) on_attribute_owner();
+}
+std::optional<ElementRef> DiagramView::attribute_owner() const {
+    const auto& owner = impl_->attribute_owner;
+    if (!owner || impl_->editor.project().id != impl_->owner_project || !impl_->can_own_attributes(*owner))
+        return std::nullopt;
+    return owner;
+}
+bool DiagramView::can_own_attributes(const ElementRef& ref) const { return impl_->can_own_attributes(ref); }
 
 std::vector<ElementRef> DiagramView::selected_elements() const {
     std::vector<ElementRef> selected;
@@ -3118,6 +3419,8 @@ void DiagramView::cancel_interaction() {
             impl_->synchronizing = true;
             found->second->setPos(impl_->sizing->start.x, impl_->sizing->start.y);
             found->second->set_size(impl_->sizing->start.width, impl_->sizing->start.height);
+            found->second->set_lettering(impl_->lettering_while_pulled(
+                *impl_->sizing, impl_->sizing->start.width, impl_->sizing->start.height));
             impl_->synchronizing = false;
             // An entity's lines followed its edge while it was being pulled,
             // so they are drawn again from the outline it has gone back to.
@@ -3277,6 +3580,21 @@ void DiagramView::contextMenuEvent(QContextMenuEvent* event) {
     // a region at a time rather than one line at a time.
     const auto lines = impl_->connectors_of(chosen);
     impl_->add_lock_entries(menu, lines, lines.size() == 1 ? "this connector" : "these connectors");
+    // What attributes are attached to as they are placed (Zain, 2026-09-26),
+    // offered on one element that can hold them.
+    QAction* owner_entry = nullptr;
+    const bool holding = !several && attribute_owner() == chosen.front();
+    if (!several && can_own_attributes(chosen.front())) {
+        menu.addSeparator();
+        owner_entry = menu.addAction(holding ? "Unlock attribute owner" : "Lock as attribute owner");
+        owner_entry->setObjectName(holding ? "contextUnlockOwner" : "contextLockOwner");
+        owner_entry->setToolTip(holding
+            ? QStringLiteral("Stop attaching attributes to this. Each one placed then stands on its own.")
+            : QStringLiteral("Attach every attribute placed from now on to this, with its line drawn."));
+        connect(owner_entry, &QAction::triggered, this, [this, holding, target = chosen.front()] {
+            set_attribute_owner(holding ? std::nullopt : std::optional<ElementRef>{target});
+        });
+    }
     menu.addSeparator();
     impl_->add_insert_menu(menu, mapToScene(event->pos()));
 
@@ -3285,6 +3603,8 @@ void DiagramView::contextMenuEvent(QContextMenuEvent* event) {
     // nothing left to do for them here.
     if (!picked || picked->objectName().startsWith("contextInsert")
         || picked->objectName().endsWith("Connectors")) return;
+    // So does the attribute owner's.
+    if (owner_entry && picked == owner_entry) return;
     if (picked == comment) {
         if (on_comment) {
             std::vector<CommentTarget> targets;
@@ -3427,6 +3747,16 @@ void DiagramView::mousePressEvent(QMouseEvent* event) {
         return;
     }
     if (event->button() != Qt::LeftButton) { QGraphicsView::mousePressEvent(event); return; }
+    // The padlock on an element locks it as the attribute owner, and unlocks
+    // it again (Zain, 2026-09-26). Answered with the Attribute tool in hand
+    // as well, before it places anything, since that is when an owner is
+    // being worked with.
+    if (impl_->active_tool == Tool::Select || impl_->active_tool == Tool::Attribute)
+        if (auto* node = impl_->owner_lock_at(event->position().toPoint())) {
+            set_attribute_owner(node->owner_lock ? std::nullopt : std::optional<ElementRef>{node->ref});
+            event->accept();
+            return;
+        }
     if (impl_->active_tool == Tool::Connect) {
         impl_->connect_node(impl_->node_at(event->position().toPoint()), mapToScene(event->position().toPoint()));
         // Arming a source starts carrying a preview line. Releasing over another
@@ -3471,13 +3801,29 @@ void DiagramView::mousePressEvent(QMouseEvent* event) {
             event->accept();
             return;
         } else {
+            // Attached only to an owner locked by hand (Zain, 2026-09-26).
+            // Whatever happens to be selected is not a choice of owner: an
+            // attribute placed with Mentor selected was joined to Mentor, and
+            // had to be taken off it again by hand.
             std::optional<AttributeOwner> owner;
-            const auto selection = selected_elements();
-            if (selection.size() == 1 && exists(impl_->editor.project(), selection.front())
-                && !is_figure(selection.front())) {
-                const auto* attribute = std::get_if<AttributeId>(&selection.front());
-                if (!attribute || impl_->editor.project().attributes.at(*attribute).kind == AttributeKind::Composite) owner = selection.front();
-            }
+            // Put down nearer another element than the one locked, it is
+            // asked about before anything is placed: go on to the locked one,
+            // or unlock and place it on its own. Continuing is remembered for
+            // that element until the lock changes.
+            if (const auto locked = attribute_owner())
+                if (const auto near = impl_->nearer_owner(*locked, center)) {
+                    const auto answer = impl_->ask_about_owner(*locked, *near);
+                    if (answer == Impl::OwnerAnswer::Cancel) {
+                        event->accept();
+                        return;
+                    }
+                    if (answer == Impl::OwnerAnswer::Unlock) set_attribute_owner(std::nullopt);
+                    else impl_->answered_near.insert(*near);
+                }
+            // Its line is unlocked like any other, and so leaves the owner
+            // from the middle of the side facing it, which every attribute
+            // placed on that side shares (Zain, 2026-09-26).
+            if (const auto locked = attribute_owner()) owner = *locked;
             result = impl_->editor.create_attribute("Attribute", centred(center, attribute_body), owner);
         }
         impl_->publish(result);
@@ -3491,7 +3837,7 @@ void DiagramView::mousePressEvent(QMouseEvent* event) {
     // Grabbing a selected connector's handle reshapes it instead of starting a
     // rubber band. The bend is previewed on the item and committed on release.
     if (impl_->active_tool == Tool::Select) {
-        // A handle on a selected symbol or entity resizes it rather than
+        // A handle on a selected resizable shape resizes it rather than
         // moving it. Tested before the shape itself: the handles are drawn on
         // top of everything it sits over, so that is what they are clicked on.
         // A selected line's own grips come first, though: an end grip lies on
@@ -3668,6 +4014,14 @@ bool DiagramView::eventFilter(QObject* watched, QEvent* event) {
 }
 
 void DiagramView::mouseDoubleClickEvent(QMouseEvent* event) {
+    // A second quick press on a padlock is a second press, not a rename.
+    if (event->button() == Qt::LeftButton
+        && (impl_->active_tool == Tool::Select || impl_->active_tool == Tool::Attribute))
+        if (auto* node = impl_->owner_lock_at(event->position().toPoint())) {
+            set_attribute_owner(node->owner_lock ? std::nullopt : std::optional<ElementRef>{node->ref});
+            event->accept();
+            return;
+        }
     // Double-clicking an element renames it in place; double-clicking a
     // connector restores its automatic routing.
     if (event->button() == Qt::LeftButton && impl_->active_tool == Tool::Select) {
@@ -3735,6 +4089,9 @@ void DiagramView::mouseMoveEvent(QMouseEvent* event) {
             impl_->synchronizing = true;
             found->second->setPos(box.x, box.y);
             found->second->set_size(box.width, box.height);
+            // The name grows and shrinks with the box as it is pulled, not
+            // only once it is let go.
+            found->second->set_lettering(impl_->lettering_while_pulled(*impl_->sizing, box.width, box.height));
             impl_->synchronizing = false;
             // An entity carries its relationships and its attributes, and each
             // of those lines is drawn from its outline, so they follow the
@@ -3841,7 +4198,8 @@ void DiagramView::mouseMoveEvent(QMouseEvent* event) {
                                 || cursor().shape() == Qt::SizeHorCursor
                                 || cursor().shape() == Qt::SizeVerCursor;
         if (handle >= 0) setCursor(NodeItem::cursor_for(handle));
-        else if (sizing_cursor) setCursor(Qt::ArrowCursor);
+        else if (impl_->owner_lock_at(event->position().toPoint())) setCursor(Qt::PointingHandCursor);
+        else if (sizing_cursor || cursor().shape() == Qt::PointingHandCursor) setCursor(Qt::ArrowCursor);
     }
     QGraphicsView::mouseMoveEvent(event);
 }
@@ -3858,7 +4216,14 @@ void DiagramView::mouseReleaseEvent(QMouseEvent* event) {
         if (box != drag.start) {
             const auto result = std::holds_alternative<EntityId>(drag.ref)
                 ? impl_->editor.resize_entities({{drag.ref, box}})
-                : impl_->editor.resize_symbols({{drag.ref, box}});
+                : std::holds_alternative<RelationshipId>(drag.ref)
+                    ? impl_->editor.resize_relationships({{drag.ref, box}})
+                    // An attribute used to fall through to the symbols' own
+                    // command, which refuses anything but a symbol, so pulling
+                    // one out ended in "Only a symbol can be resized".
+                    : std::holds_alternative<AttributeId>(drag.ref)
+                        ? impl_->editor.resize_attributes({{drag.ref, box}})
+                        : impl_->editor.resize_symbols({{drag.ref, box}});
             if (!result) impl_->displayed_revision.reset(); // Put the stored size back after a refusal.
             impl_->publish(result);
         }

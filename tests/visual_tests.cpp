@@ -168,13 +168,13 @@ void audit_home(desktop::MainWindow& window) {
     // top to bottom, the card that can be taken and its own + Create, then the
     // panel. Nothing is asked under the cards (ADR-022 9.19).
     const QStringList read_in_order{
-        "appTopBarSettings", "appTopBarTheme",
+        "appTopBarTheme",
         "homeNavHome", "homeNavOpenProject", "homeNavRecent",
         "homeNavExamples", "homeNavTemplates", "homeNavImport", "homeNavSettings", "homeNavHelp",
         "startRouteConceptual", "startRouteConceptualCreate",
         "homeLinkTutorials"};
     QStringList reached;
-    auto* start = child<QWidget>(*home, "appTopBarSettings");
+    auto* start = child<QWidget>(*home, "appTopBarTheme");
     auto* at = start;
     for (int step = 0; step < 200; ++step) {
         if (at->isVisible() && at->isEnabled() && (at->focusPolicy() & Qt::TabFocus)
@@ -321,7 +321,9 @@ int main(int argc, char** argv) {
         check_picture("card-rest", card_picture(routes[0], false, false));
         check_picture("card-hover", card_picture(routes[0], false, true));
         check_picture("card-selected", card_picture(routes[0], true, false));
-        check_picture("card-coming-soon", card_picture(routes[1], false, false));
+        // SQL Project, the card still coming; Relational Schema can be taken
+        // now (Zain, 2026-09-27).
+        check_picture("card-coming-soon", card_picture(routes[2], false, false));
 
         // A sidebar row under the pointer.
         auto* row = home->sidebar()->button(desktop::HomeSection::OpenProject);

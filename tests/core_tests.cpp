@@ -1167,11 +1167,179 @@ void connections_can_be_pinned_as_they_are_made() {
     CHECK(!editor.project().attributes.at(born).owner);
     CHECK(editor.project().connectors.size() == 1);
     CHECK(!blocks(editor.project()));
+
+    // An attribute placed on its owner can be pinned as it is made, in the
+    // same step of history, which is how the attributes placed on a locked
+    // owner all leave it from one point.
+    Connector exit;
+    exit.owner_anchor = -1.2;
+    const auto placed = editor.create_attribute("Grade", {0, -200, 150, 60}, AttributeOwner{ElementRef{student}}, exit);
+    CHECK(placed && placed.created);
+    const auto grade = std::get<AttributeId>(*placed.created);
+    CHECK(editor.project().connectors.at(ConnectorRef{grade}) == exit);
+    CHECK(editor.undo_label() == "Create attribute");
+    CHECK(editor.undo());
+    CHECK(!editor.project().attributes.contains(grade));
+    CHECK(!editor.project().connectors.contains(ConnectorRef{grade}));
+    // With no owner there is no link, so the shape is not stored.
+    const auto alone = editor.create_attribute("Alone", {0, 200, 150, 60}, std::nullopt, exit);
+    CHECK(alone && !editor.project().connectors.contains(ConnectorRef{std::get<AttributeId>(*alone.created)}));
+    CHECK(!blocks(editor.project()));
 }
 
 // A picture and a note are placed elements without being database objects:
 // named, described, moved, coloured, copied and deleted through the same
 // commands as everything else, owning nothing and connected to nothing.
+// The History is the undo history, each step described in words (Zain,
+// 2026-09-26), and moving through it is undoing and redoing.
+void history_tells_what_was_done() {
+    TestIds ids;
+    Editor editor(ids);
+    CHECK(editor.history().empty() && editor.history_position() == 0);
+    const auto said = [&] { return editor.history().back().description; };
+
+    const auto made = editor.create_entity("Entity", {0, 0, 160, 80});
+    const ElementRef student = *made.created;
+    CHECK(said() == "Created Entity \"Entity\"");
+    CHECK(editor.history().back().label == "Create entity");
+    CHECK(editor.rename(student, "Student"));
+    CHECK(said() == "Renamed Entity \"Entity\" to \"Student\"");
+    const auto id = std::get<AttributeId>(*editor.create_attribute("student_id", {0, -120, 150, 60},
+                                                                   AttributeOwner{student}).created);
+    CHECK(said() == "Added Attribute \"student_id\" to \"Student\"");
+    CHECK(editor.move({{student, {40, 0, 160, 80}}}));
+    CHECK(said() == "Moved Entity \"Student\"");
+    // Carrying its attribute along, it is still the entity that was moved.
+    CHECK(editor.move({{student, {80, 0, 160, 80}}, {ElementRef{id}, {80, -120, 150, 60}}}));
+    CHECK(said() == "Moved Entity \"Student\"");
+    CHECK(editor.resize_entities({{student, {80, 0, 200, 100}}}));
+    CHECK(said() == "Resized Entity \"Student\"");
+    CHECK(editor.set_attribute_kind(id, AttributeKind::Key));
+    CHECK(said() == "Changed attribute kind: Attribute \"student_id\"");
+
+    const auto enrolls = relationship(editor, "Enrolls");
+    CHECK(said() == "Created Relationship \"Enrolls\"");
+    const auto side = connect(editor, enrolls, std::get<EntityId>(student));
+    CHECK(said() == "Connected \"Student\" to Relationship \"Enrolls\"");
+    CHECK(editor.disconnect(enrolls, side));
+    CHECK(said() == "Disconnected \"Student\" from Relationship \"Enrolls\"");
+    CHECK(editor.erase({ElementRef{enrolls}}));
+    CHECK(said() == "Deleted Relationship \"Enrolls\"");
+
+    // On the schema: a table renamed is the entity renamed, told as the table.
+    CHECK(editor.rename_table(student, "Students"));
+    CHECK(said() == "Renamed Table \"Student\" to \"Students\"");
+    CHECK(editor.add_schema_column(student, "grade"));
+    CHECK(said().rfind("Added Column \"grade\" to \"", 0) == 0);
+    CHECK(editor.move_schema_tables({{student, Point{300, 40}}}));
+    CHECK(said().rfind("Moved Table \"", 0) == 0);
+
+    // Deleting an entity takes its attributes, and says so.
+    const auto course = entity(editor, "Course");
+    attribute(editor, "title", AttributeOwner{ElementRef{course}});
+    attribute(editor, "code", AttributeOwner{ElementRef{course}});
+    CHECK(editor.erase({ElementRef{course}}));
+    CHECK(said() == "Deleted Entity \"Course\" with its 2 attributes");
+
+    // In order, oldest first, each with the time it was made.
+    const auto all = editor.history();
+    CHECK(all.size() == editor.history_position());
+    CHECK(all.front().description == "Created Entity \"Entity\"");
+    CHECK(std::is_sorted(all.begin(), all.end(), [](const auto& a, const auto& b) { return a.when < b.when; }));
+    CHECK(std::all_of(all.begin(), all.end(), [](const auto& entry) { return entry.in_effect; }));
+
+    // Going back to a step is undoing everything after it; the steps stay,
+    // marked as undone, and going forward again is redoing them.
+    const auto everything = editor.project();
+    CHECK(editor.go_to(2));
+    CHECK(editor.history_position() == 2);
+    CHECK(editor.project().entities.at(std::get<EntityId>(student)).name == "Student");
+    CHECK(!editor.project().attributes.contains(id));
+    const auto back = editor.history();
+    CHECK(back.size() == all.size());
+    CHECK(back[1].in_effect && !back[2].in_effect);
+    CHECK(editor.can_redo() && editor.redo_label() == "Create attribute");
+    CHECK(editor.go_to(all.size()));
+    CHECK(editor.project() == everything);
+    CHECK(editor.go_to(0));
+    CHECK(editor.project().entities.empty());
+    CHECK(!editor.go_to(all.size() + 1));
+    // A new step made from an earlier point takes the place of what was
+    // undone, as it always has for Undo.
+    CHECK(editor.go_to(1));
+    entity(editor, "Professor");
+    CHECK(editor.history().size() == 2 && editor.history_position() == 2);
+    CHECK(said() == "Created Entity \"Professor\"");
+}
+
+// The first time an entity, relationship or attribute is made another size by
+// hand, the size it had is kept as the size its name is drawn for, and the
+// name follows the box from there (Zain, 2026-09-26). Nothing else keeps one.
+void lettering_follows_resizing_by_hand() {
+    // The smaller of the two changes, held between a quarter and sixteen.
+    const LetteringBase base{148, 86};
+    CHECK(lettering_factor(base, 148, 86) == 1.0);
+    CHECK(lettering_factor(base, 296, 86) == 1.0);   // wider only: room, not size
+    CHECK(lettering_factor(base, 296, 172) == 2.0);
+    CHECK(lettering_factor(base, 74, 86) == 0.5);
+    CHECK(lettering_factor(base, 1, 1) == 0.25);
+    CHECK(lettering_factor(base, 100000, 100000) == 16.0);
+
+    TestIds ids;
+    Editor editor(ids);
+    const ElementRef student{entity(editor, "Student")};
+    const ElementRef mentor{relationship(editor, "Mentor")};
+    const ElementRef born{attribute(editor, "Born")};
+    const Rect was{0, 0, 160, 80};
+    CHECK(editor.project().layout.at(student) == was);
+    CHECK(editor.project().lettering.empty());
+
+    // The first resize keeps the size it started from, in the same edit.
+    CHECK(editor.resize_entities({{student, {0, 0, 320, 160}}}));
+    CHECK(editor.project().lettering.at(student) == (LetteringBase{160, 80}));
+    // A second keeps the first's, so the name follows the box both ways.
+    CHECK(editor.resize_entities({{student, {0, 0, 240, 120}}}));
+    CHECK(editor.project().lettering.at(student) == (LetteringBase{160, 80}));
+    CHECK(editor.undo());
+    CHECK(editor.undo());
+    CHECK(!editor.project().lettering.contains(student));
+    CHECK(editor.redo());
+
+    // Relationships and attributes alike.
+    CHECK(editor.resize_relationships({{mentor, {0, 0, 380, 220}}}));
+    CHECK(editor.resize_attributes({{born, {0, 0, 300, 120}}}));
+    CHECK(editor.project().lettering.at(mentor) == (LetteringBase{160, 80}));
+    CHECK(editor.project().lettering.at(born) == (LetteringBase{160, 80}));
+
+    // Moving keeps no size; giving a new size through Properties does.
+    const ElementRef course{entity(editor, "Course")};
+    CHECK(editor.move({{course, {40, 40, 160, 80}}}));
+    CHECK(!editor.project().lettering.contains(course));
+    CHECK(editor.move({{course, {40, 40, 200, 100}}}));
+    CHECK(editor.project().lettering.at(course) == (LetteringBase{160, 80}));
+
+    // A copy draws its name as the original does; a deletion takes it away.
+    const auto copied = editor.duplicate({student});
+    CHECK(copied && copied.created);
+    CHECK(editor.project().lettering.at(*copied.created) == editor.project().lettering.at(student));
+    CHECK(editor.erase({student}));
+    CHECK(!editor.project().lettering.contains(student));
+    CHECK(!blocks(editor.project()));
+    CHECK(editor.undo());
+    CHECK(editor.project().lettering.contains(student));
+
+    // Only those three have lettering of their own.
+    auto project = editor.project();
+    const auto note = editor.create_note("Note", {});
+    CHECK(note && note.created);
+    project = editor.project();
+    project.lettering.emplace(*note.created, LetteringBase{200, 120});
+    CHECK(has_issue(project, "lettering.kind"));
+    project = editor.project();
+    project.lettering.at(course) = LetteringBase{0, 80};
+    CHECK(has_issue(project, "lettering.invalid"));
+}
+
 void pictures_and_notes_are_placed_like_elements() {
     TestIds ids;
     Editor editor(ids);
@@ -2573,6 +2741,1540 @@ void schema_tables_are_pulled_by_any_of_their_edges() {
     CHECK(editor.project().schema_layout.heights.empty());
 }
 
+
+// A table drawn by hand has its key named for it (Zain, 2026-09-27): Student's
+// key is StudentID, not ID, and it follows the table's name until it is named
+// by hand, as a key the conversion makes for an entity is named for it.
+void a_drawn_table_names_its_key_for_itself() {
+    TestIds ids;
+    Editor editor(ids);
+    editor.new_schema_project();
+    const auto table = std::get<RelationId>(*editor.create_relation("Table").created);
+    const auto key = [&]() -> const SchemaColumn& { return editor.project().schema.added.at(table).front(); };
+    CHECK(key().name == "TableID" && key().identifier);
+    // Named where it appears, the key follows in the same edit.
+    CHECK(editor.rename_table(ElementRef{table}, "Student"));
+    CHECK(editor.project().schema.relations.at(table).name == "Student" && key().name == "StudentID");
+    CHECK(editor.undo());
+    CHECK(editor.project().schema.relations.at(table).name == "Table" && key().name == "TableID");
+    CHECK(editor.redo());
+    CHECK(key().name == "StudentID");
+    // A key named by hand keeps its name when the table is renamed.
+    CHECK(editor.rename_schema_column(key().id, "Matriculation"));
+    CHECK(editor.rename_table(ElementRef{table}, "Pupil"));
+    CHECK(key().name == "Matriculation");
+    // And a column that is not the key is never renamed for the table, even
+    // one that happens to read like its key.
+    CHECK(editor.add_schema_column(ElementRef{table}, "PupilID"));
+    CHECK(editor.rename_table(ElementRef{table}, "Learner"));
+    const auto& columns = editor.project().schema.added.at(table);
+    CHECK(columns[0].name == "Matriculation" && columns[1].name == "PupilID");
+}
+
+// A schema drawn by hand (Zain, 2026-09-27): tables made on the schema itself,
+// in a project with no diagram, and foreign keys drawn between them. A foreign
+// key takes its key's type and keeps it, and nothing it points at can be
+// changed out from under it without being told why.
+void a_schema_is_drawn_by_hand() {
+    TestIds ids;
+    Editor editor(ids);
+    editor.new_schema_project();
+    CHECK(editor.project().schema.standalone);
+    CHECK(!editor.can_undo());
+    CHECK(!editor.create_entity("Entity", {}));
+    const auto made = editor.create_relation("Employee", Point{40, 60});
+    CHECK(made && made.created);
+    const auto employee = std::get<RelationId>(*made.created);
+    CHECK(editor.project().schema_layout.tables.at(employee) == (Point{40, 60}));
+    auto preview = schema_preview(editor.project());
+    CHECK(preview.tables.size() == 1 && preview.tables[0].name == "Employee");
+    CHECK(preview.tables[0].columns.size() == 1);
+    CHECK(preview.tables[0].columns[0].name == "EmployeeID" && preview.tables[0].columns[0].primary_key);
+    CHECK(preview.tables[0].columns[0].type == LogicalType::Int);
+
+    const auto column_id = [&](const std::string& name) {
+        for (const auto& column : editor.project().schema.added.at(employee))
+            if (column.name == name) return column.id;
+        throw std::runtime_error("no column " + name);
+    };
+    const auto column = [&](const std::string& name) -> const SchemaColumn& {
+        for (const auto& one : editor.project().schema.added.at(employee))
+            if (one.name == name) return one;
+        throw std::runtime_error("no column " + name);
+    };
+    CHECK(editor.rename_schema_column(column_id("EmployeeID"), "EmpID"));
+    CHECK(editor.add_schema_column(ElementRef{employee}, "Name"));
+    CHECK(editor.add_schema_column(ElementRef{employee}, "ManagerID"));
+    const auto key = column_id("EmpID");
+    const auto manager = column_id("ManagerID");
+    const auto name = column_id("Name");
+
+    // A foreign key into its own table, taking the key's type as it is made.
+    CHECK(editor.add_foreign_key(employee, manager, employee, key));
+    CHECK(column("ManagerID").logical_type == LogicalType::Int);
+    preview = schema_preview(editor.project());
+    const auto& drawn = preview.tables[0].columns[2];
+    CHECK(drawn.name == "ManagerID" && drawn.foreign_key && drawn.references == std::size_t{0});
+    CHECK(drawn.references_column == 0 && drawn.optional_link);
+
+    // Only a key can be pointed at, and the refusal says so.
+    const auto at_name = editor.add_foreign_key(employee, manager, employee, name);
+    CHECK(!at_name && at_name.error.find("primary key") != std::string::npos);
+    CHECK(editor.project().schema.foreign_keys.begin()->second.target == key);
+
+    // The key's type travels to the key pointing at it, in the same edit.
+    CHECK(editor.set_schema_column_type(key, LogicalType::BigInt));
+    CHECK(column("ManagerID").logical_type == LogicalType::BigInt);
+    CHECK(editor.undo());
+    CHECK(column("ManagerID").logical_type == LogicalType::Int);
+    CHECK(column("EmpID").logical_type == LogicalType::Int);
+    // The foreign key's own type is the key's, and asking it says where to go.
+    const auto own = editor.set_schema_column_type(manager, LogicalType::Varchar);
+    CHECK(!own && own.error.find("takes its type from Employee.EmpID") != std::string::npos);
+    // A key that is pointed at stays a key, and saying otherwise says why.
+    const auto unkeyed = editor.set_schema_column_rules(key, false, true, false);
+    CHECK(!unkeyed && unkeyed.error.find("Employee.ManagerID points at Employee.EmpID") != std::string::npos);
+    const auto second = editor.set_schema_column_rules(name, true, true, false);
+    CHECK(!second && second.error.find("only primary key") != std::string::npos);
+
+    // A table goes with its keys and its place, and comes back with them.
+    const auto before = editor.project();
+    CHECK(editor.erase_relation(employee));
+    CHECK(editor.history().back().description.find("with its 3 columns") != std::string::npos);
+    CHECK(editor.project().schema.relations.empty() && editor.project().schema.foreign_keys.empty());
+    CHECK(editor.project().schema.added.empty() && editor.project().schema_layout.tables.empty());
+    CHECK(editor.undo());
+    CHECK(editor.project() == before);
+
+    // The History tells a table made.
+    const auto told = editor.history();
+    CHECK(told.front().description.find("Table") != std::string::npos);
+}
+
+// A foreign key read off a whole-schema description, for comparing the tables
+// before and after a conversion without minding the order columns come in.
+std::vector<std::string> described(const SchemaPreview& preview, const std::string& table_name) {
+    std::vector<std::string> columns;
+    for (const auto& table : preview.tables) {
+        if (table.name != table_name) continue;
+        for (const auto& column : table.columns) {
+            if (column.ignored) continue;
+            std::string line = column.name + ":" + std::to_string(static_cast<int>(column.type)) + "("
+                + std::to_string(column.length) + "," + std::to_string(column.scale) + ")";
+            if (column.primary_key) line += " PK";
+            if (column.required) line += " NOT NULL";
+            if (column.unique) line += " UNIQUE";
+            if (column.auto_increment) line += " IDENTITY";
+            if (column.foreign_key && column.references)
+                line += " -> " + preview.tables[*column.references].name + "."
+                      + preview.tables[*column.references].columns[column.references_column].name;
+            columns.push_back(line);
+        }
+    }
+    std::sort(columns.begin(), columns.end());
+    return columns;
+}
+
+// Converting a schema drawn by hand into the diagram it would have come from
+// (Zain, 2026-09-27): afterwards the diagram is the model, and the schema
+// worked out from it reads exactly as the one that was drawn.
+void a_schema_converts_into_its_diagram() {
+    TestIds ids;
+    Editor editor(ids);
+    editor.new_schema_project();
+    const auto table = [&](const std::string& name, Point at) {
+        return std::get<RelationId>(*editor.create_relation(name, at).created);
+    };
+    const auto column_id = [&](RelationId in, const std::string& name) {
+        for (const auto& column : editor.project().schema.added.at(in))
+            if (column.name == name) return column.id;
+        throw std::runtime_error("no column " + name);
+    };
+    const auto add = [&](RelationId in, const std::string& name, LogicalType type, std::uint32_t length,
+                         std::uint32_t scale, bool required, bool unique) {
+        CHECK(editor.add_schema_column(ElementRef{in}, name));
+        const auto id = column_id(in, name);
+        CHECK(editor.set_schema_column_type(id, type));
+        if (length != 0) CHECK(editor.set_schema_column_size(id, length, scale));
+        CHECK(editor.set_schema_column_rules(id, false, required, unique));
+        return id;
+    };
+    const auto point = [&](RelationId from, RelationId to, const std::string& name, bool required, bool unique) {
+        CHECK(editor.add_schema_column(ElementRef{from}, name));
+        const auto id = column_id(from, name);
+        CHECK(editor.set_schema_column_rules(id, false, required, unique));
+        const auto& keys = editor.project().schema.added.at(to);
+        const auto target = std::find_if(keys.begin(), keys.end(), [](const auto& c) { return c.identifier; });
+        CHECK(editor.add_foreign_key(from, id, to, target->id));
+        return id;
+    };
+
+    const auto department = table("Department", Point{40, 40});
+    CHECK(editor.rename_schema_column(column_id(department, "DepartmentID"), "DeptID"));
+    add(department, "DeptName", LogicalType::Varchar, 40, 0, true, false);
+    const auto employee = table("Employee", Point{420, 40});
+    CHECK(editor.rename_schema_column(column_id(employee, "EmployeeID"), "EmpID"));
+    CHECK(editor.set_schema_column_auto_increment(column_id(employee, "EmpID"), true));
+    add(employee, "Name", LogicalType::Varchar, 50, 0, true, false);
+    add(employee, "Salary", LogicalType::Decimal, 10, 2, false, false);
+    point(employee, employee, "ManagerID", false, false);
+    point(employee, department, "DeptID", true, false);
+    const auto student = table("Student", Point{40, 360});
+    CHECK(column_id(student, "StudentID") == editor.project().schema.added.at(student).front().id);
+    add(student, "Name", LogicalType::NVarchar, 60, 0, true, false);
+    const auto course = table("Course", Point{800, 360});
+    CHECK(column_id(course, "CourseID") == editor.project().schema.added.at(course).front().id);
+    add(course, "Title", LogicalType::Varchar, 80, 0, true, true);
+    const auto enrollment = table("Enrollment", Point{420, 360});
+    CHECK(column_id(enrollment, "EnrollmentID") == editor.project().schema.added.at(enrollment).front().id);
+    CHECK(editor.set_schema_column_auto_increment(column_id(enrollment, "EnrollmentID"), true));
+    point(enrollment, student, "StudentID", true, false);
+    point(enrollment, course, "CourseID", true, false);
+    add(enrollment, "Grade", LogicalType::Char, 2, 0, false, false);
+    const auto passport = table("Passport", Point{800, 40});
+    CHECK(editor.rename_schema_column(column_id(passport, "PassportID"), "PassportNo"));
+    CHECK(editor.set_schema_column_type(column_id(passport, "PassportNo"), LogicalType::Varchar));
+    CHECK(editor.set_schema_column_size(column_id(passport, "PassportNo"), 20, 0));
+    point(passport, employee, "EmpID", true, true);
+    CHECK(editor.recolour({ElementRef{employee}}, Colour{200, 100, 50}));
+    SchemaLine shaped;
+    shaped.route = {Point{300, 10}, Point{300, 30}};
+    const auto manager_key = std::find_if(editor.project().schema.foreign_keys.begin(),
+                                          editor.project().schema.foreign_keys.end(), [&](const auto& entry) {
+        return entry.second.from == employee && entry.second.to == employee;
+    })->first;
+    CHECK(editor.shape_schema_line(LinkSource{manager_key}, shaped));
+
+    const auto drawn = editor.project();
+    const auto before = schema_preview(drawn);
+    std::map<RelationId, Point> places;
+    for (const auto& [id, at] : drawn.schema_layout.tables) places.emplace(id, at);
+    std::vector<std::string> notes;
+    CHECK(editor.convert_schema_to_diagram(places, DiagramSizes{}, &notes));
+    const auto& now = editor.project();
+    CHECK(!now.schema.standalone && now.schema.relations.empty() && now.schema.foreign_keys.empty());
+    CHECK(editor.undo_label() == "Convert to Conceptual Design");
+
+    // Every table but the join table is an entity; the join table is the
+    // many-to-many relationship between the two it joins.
+    std::vector<std::string> entities;
+    for (const auto& [id, entity] : now.entities) { (void)id; entities.push_back(entity.name); }
+    std::sort(entities.begin(), entities.end());
+    CHECK(entities == std::vector<std::string>({"Course", "Department", "Employee", "Passport", "Student"}));
+    CHECK(now.relationships.size() == 4);
+    const auto enrolled = std::find_if(now.relationships.begin(), now.relationships.end(),
+                                       [](const auto& entry) { return entry.second.name == "Enrollment"; });
+    CHECK(enrolled != now.relationships.end());
+    CHECK(enrolled->second.participants.size() == 2);
+    CHECK(enrolled->second.participants[0].maximum == Cardinality::Many);
+    CHECK(enrolled->second.participants[1].maximum == Cardinality::Many);
+    const auto managed = std::find_if(now.relationships.begin(), now.relationships.end(),
+                                      [](const auto& entry) { return entry.second.name == "Manager"; });
+    CHECK(managed != now.relationships.end());
+    CHECK(target_ref(managed->second.participants[0].target) == target_ref(managed->second.participants[1].target));
+    // Its two sides are told apart, so the diagram opens with nothing to fix.
+    CHECK(managed->second.participants[0].role == "Manager" && managed->second.participants[1].role == "Employee");
+    for (const auto& issue : validate(now)) CHECK(issue.severity == Severity::Info);
+    // A key is drawn as a key, and a join table's facts belong to its
+    // relationship.
+    for (const auto& [id, attribute] : now.attributes) {
+        (void)id;
+        if (attribute.name == "EmpID") CHECK(attribute.kind == AttributeKind::Key && attribute.identifier);
+        if (attribute.name == "Grade") CHECK(attribute.owner == ElementRef{enrolled->first});
+    }
+    CHECK(now.layout.size() == now.entities.size() + now.attributes.size() + now.relationships.size());
+    for (const auto& [ref, box] : now.layout) {
+        (void)ref;
+        CHECK(box.x >= 0 && box.y >= 0);
+    }
+
+    // The schema reads as it did: every table, every column, what each is
+    // typed and enforces, and what every foreign key points at, by its own
+    // name.
+    const auto after = schema_preview(now);
+    CHECK(after.tables.size() == before.tables.size());
+    for (const auto& one : before.tables) CHECK(described(after, one.name) == described(before, one.name));
+    // Each table is where it was.
+    for (const auto& one : after.tables) {
+        const auto was = std::find_if(before.tables.begin(), before.tables.end(),
+                                      [&](const auto& t) { return t.name == one.name; });
+        CHECK(now.schema_layout.tables.at(one.id) == drawn.schema_layout.tables.at(was->id));
+    }
+    // The shaped line and the colour came with what they belonged to.
+    CHECK(now.schema_layout.lines.size() == 1 && now.schema_layout.lines.begin()->second == shaped);
+    CHECK(now.colours.size() == 1 && std::holds_alternative<EntityId>(now.colours.begin()->first));
+    // The join table's columns come back in the conversion's own order, and
+    // that is said rather than hidden.
+    CHECK(std::any_of(notes.begin(), notes.end(), [](const std::string& note) {
+        return note.find("Foreign keys are listed after") != std::string::npos;
+    }));
+
+    // One step: undone, it is the schema drawn by hand again.
+    CHECK(editor.undo());
+    CHECK(editor.project() == drawn);
+    CHECK(editor.redo());
+    CHECK(schema_preview(editor.project()) == after);
+
+    // Converting forwards again is what the diagram already does, so the
+    // schema follows the diagram now: renaming the entity renames the table.
+    const auto employee_entity = std::find_if(now.entities.begin(), now.entities.end(),
+                                              [](const auto& e) { return e.second.name == "Employee"; })->first;
+    CHECK(editor.rename(ElementRef{employee_entity}, "Staff"));
+    CHECK(!described(schema_preview(editor.project()), "Staff").empty());
+}
+
+
+// A join table between a table and itself -- friendships between people --
+// becomes a many-to-many relationship of the entity with itself, its two sides
+// named for the keys that hold them, and converts back to the same table.
+void a_join_of_a_table_with_itself_converts() {
+    TestIds ids;
+    Editor editor(ids);
+    editor.new_schema_project();
+    const auto person = std::get<RelationId>(*editor.create_relation("Person", Point{40, 40}).created);
+    const auto friendship = std::get<RelationId>(*editor.create_relation("Friendship", Point{420, 40}).created);
+    const auto key_of = [&](RelationId table) { return editor.project().schema.added.at(table).front().id; };
+    CHECK(editor.set_schema_column_rules(key_of(friendship), false, false, false));
+    CHECK(editor.erase_schema_column(key_of(friendship)));
+    for (const auto* name : {"PersonA", "PersonB"}) {
+        CHECK(editor.add_schema_column(ElementRef{friendship}, name));
+        const auto& columns = editor.project().schema.added.at(friendship);
+        CHECK(editor.set_schema_column_rules(columns.back().id, true, true, false));
+        CHECK(editor.add_foreign_key(friendship, columns.back().id, person, key_of(person)));
+    }
+    const auto before = schema_preview(editor.project());
+    std::vector<std::string> notes;
+    CHECK(editor.convert_schema_to_diagram({}, DiagramSizes{}, &notes));
+    const auto& now = editor.project();
+    CHECK(now.entities.size() == 1 && now.relationships.size() == 1);
+    const auto& join = now.relationships.begin()->second;
+    CHECK(join.name == "Friendship" && join.participants.size() == 2);
+    CHECK(join.participants[0].role == "PersonA" && join.participants[1].role == "PersonB");
+    CHECK(now.decisions.bridge_key.at(now.relationships.begin()->first) == BridgeKey::Pair);
+    for (const auto& issue : validate(now)) CHECK(issue.severity == Severity::Info);
+    const auto after = schema_preview(now);
+    CHECK(described(after, "Friendship") == described(before, "Friendship"));
+    CHECK(described(after, "Person") == described(before, "Person"));
+}
+
+// A foreign key the conversion made can be renamed from the schema (Zain,
+// 2026-09-27), and keeps the name it was given rather than following its key.
+void foreign_keys_can_be_renamed() {
+    TestIds ids;
+    Editor editor(ids);
+    const auto professor = std::get<EntityId>(*editor.create_entity("Professor", {0, 0, 160, 80}).created);
+    const auto student = std::get<EntityId>(*editor.create_entity("Student", {400, 0, 160, 80}).created);
+    const auto key = std::get<AttributeId>(*editor.create_attribute("ID", {}, ElementRef{professor}).created);
+    CHECK(editor.set_primary_key(key, true));
+    const auto advises = std::get<RelationshipId>(*editor.create_relationship("Advises", {200, 100, 190, 110}).created);
+    const auto one = editor.connect(advises, professor);
+    const auto many = editor.connect(advises, student);
+    CHECK(one && many);
+    CHECK(editor.update_participant(advises, *one.participant, Cardinality::One, Participation::Partial, ""));
+    CHECK(editor.update_participant(advises, *many.participant, Cardinality::Many, Participation::Partial, ""));
+    const auto foreign = [&]() -> PreviewColumn {
+        for (const auto& table : schema_preview(editor.project()).tables)
+            for (const auto& column : table.columns)
+                if (column.foreign_key) return column;
+        throw std::runtime_error("no foreign key");
+    };
+    CHECK(foreign().name == "ProfessorID");
+    const ForeignKeyColumn which{*foreign().key_id, foreign().reference_part};
+    CHECK(editor.rename_foreign_key(which, "AdvisorID"));
+    CHECK(foreign().name == "AdvisorID");
+    // It is kept as typed, and no longer follows the key it points at.
+    CHECK(editor.rename(ElementRef{key}, "StaffNo"));
+    CHECK(foreign().name == "AdvisorID");
+    // Taken away, the rule names it again.
+    CHECK(editor.rename_foreign_key(which, ""));
+    CHECK(foreign().name == "ProfessorStaffNo");
+    CHECK(editor.undo());
+    CHECK(foreign().name == "AdvisorID");
+    // It goes with the relationship behind it, and comes back with it.
+    CHECK(editor.erase({ElementRef{advises}}));
+    CHECK(editor.project().schema.foreign_key_names.empty());
+    CHECK(editor.undo());
+    CHECK(editor.project().schema.foreign_key_names.size() == 1);
+}
+
+// What a key of several columns is, and what each part of a foreign key
+// points at, is kept apart from the order a table lists its columns in (Task
+// 4A, 2026-10-02): the list can be put in any order without the key, or
+// anything referring to it, changing.
+void key_order_is_not_column_order() {
+    TestIds ids;
+    const auto find_schema_column = [](auto& schema, SchemaColumnId id) {
+        for (auto& [table, columns] : schema.added)
+            for (auto& column : columns)
+                if (column.id == id) return &column;
+        throw std::runtime_error("no such column");
+    };
+    const auto names_of = [](const PreviewTable& table, const std::vector<std::size_t>& rows) {
+        std::vector<std::string> names;
+        for (const auto row : rows) names.push_back(table.columns.at(row).name);
+        return names;
+    };
+    const auto table_named = [](const SchemaPreview& preview, const std::string& name) -> const PreviewTable& {
+        for (const auto& table : preview.tables)
+            if (table.name == name) return table;
+        throw std::runtime_error("no table " + name);
+    };
+    const auto blocking = [](const Project& project, const std::string& code) {
+        const auto issues = validate(project);
+        return std::any_of(issues.begin(), issues.end(), [&](const Issue& issue) { return issue.code == code; });
+    };
+
+    // A table drawn by hand: A, B, Name, keyed by (A, B).
+    {
+        Editor editor(ids);
+        editor.new_schema_project();
+        const auto pair = std::get<RelationId>(*editor.create_relation("Pair", Point{40, 40}).created);
+        const auto a = editor.project().schema.added.at(pair).front().id;
+        CHECK(editor.rename_schema_column(a, "A"));
+        CHECK(editor.add_schema_column(ElementRef{pair}, "B"));
+        const auto b = editor.project().schema.added.at(pair).back().id;
+        CHECK(editor.add_schema_column(ElementRef{pair}, "Name"));
+        const auto name = editor.project().schema.added.at(pair).back().id;
+        CHECK(editor.set_schema_column_rules(b, true, true, false));
+        const auto place = [&](SchemaColumnId id) { return find_schema_column(editor.project().schema, id)->key_order; };
+        CHECK(place(a) == 1 && place(b) == 2 && place(name) == 0);
+        CHECK(names_of(table_named(schema_preview(editor.project()), "Pair"),
+                       table_named(schema_preview(editor.project()), "Pair").primary_key)
+              == (std::vector<std::string>{"A", "B"}));
+
+        // Only the list's order changes: B, Name, A. The key is still (A, B).
+        auto listed = editor.project();
+        auto& columns = listed.schema.added.at(pair);
+        std::rotate(columns.begin(), columns.begin() + 1, columns.end());   // B, Name, A
+        CHECK(columns.front().name == "B" && columns.back().name == "A");
+        const auto preview = schema_preview(listed);
+        const auto& table = table_named(preview, "Pair");
+        CHECK(table.columns.front().name == "B");
+        CHECK((names_of(table, table.primary_key) == std::vector<std::string>{"A", "B"}));
+        CHECK(validate(listed).empty());
+        // Numbering it again in that order changes nothing either.
+        auto renumbered = columns;
+        number_primary_key(renumbered);
+        CHECK(renumbered == columns);
+
+        // A column joining the key takes its place where it stands in the
+        // list, as a key built a column at a time always read: (A, B, Name).
+        CHECK(editor.set_schema_column_rules(name, true, true, false));
+        CHECK(place(a) == 1 && place(b) == 2 && place(name) == 3);
+        // Leaving, it gives the place up and the key closes behind it; joining
+        // again, B goes back between A and Name.
+        CHECK(editor.set_schema_column_rules(b, false, true, false));
+        CHECK(place(a) == 1 && place(b) == 0 && place(name) == 2);
+        CHECK(editor.set_schema_column_rules(b, true, true, false));
+        CHECK(place(a) == 1 && place(b) == 2 && place(name) == 3);
+        // Undone and redone exactly.
+        CHECK(editor.undo());
+        CHECK(place(a) == 1 && place(b) == 0 && place(name) == 2);
+        CHECK(editor.redo());
+        CHECK(place(a) == 1 && place(b) == 2 && place(name) == 3);
+        // A column taken away closes the key up, and comes back to its place.
+        CHECK(editor.erase_schema_column(a));
+        CHECK(place(b) == 1 && place(name) == 2);
+        CHECK(editor.undo());
+        CHECK(place(a) == 1 && place(b) == 2 && place(name) == 3);
+
+        // A place that does not agree with the key is refused.
+        auto missing = editor.project();
+        find_schema_column(missing.schema, b)->key_order = 0;
+        CHECK(blocking(missing, "schema.key.order.missing"));
+        auto stray = editor.project();
+        CHECK(editor.set_schema_column_rules(name, false, true, false));
+        stray = editor.project();
+        find_schema_column(stray.schema, name)->key_order = 7;
+        CHECK(blocking(stray, "schema.key.order.missing"));
+        auto twice = editor.project();
+        find_schema_column(twice.schema, b)->key_order = 1;
+        CHECK(blocking(twice, "schema.key.order.duplicate"));
+
+        // A foreign key drawn by hand refers to its key by identity: listed
+        // in another order, it still points where it pointed.
+        const auto course = std::get<RelationId>(*editor.create_relation("Course", Point{400, 40}).created);
+        const auto lesson = std::get<RelationId>(*editor.create_relation("Lesson", Point{400, 300}).created);
+        CHECK(editor.add_schema_column(ElementRef{lesson}, "Course"));
+        const auto held = editor.project().schema.added.at(lesson).back().id;
+        CHECK(editor.connect_foreign_key(lesson, held, "Course", course,
+                                         editor.project().schema.added.at(course).front().id));
+        auto shuffled = editor.project();
+        std::reverse(shuffled.schema.added.at(lesson).begin(), shuffled.schema.added.at(lesson).end());
+        const auto again = schema_preview(shuffled);
+        const auto& refers = table_named(again, "Lesson");
+        const auto row = std::find_if(refers.columns.begin(), refers.columns.end(),
+                                      [](const PreviewColumn& column) { return column.foreign_key; });
+        CHECK(row != refers.columns.end() && row->name == "Course" && row->references
+              && again.tables[*row->references].name == "Course"
+              && again.tables[*row->references].columns[row->references_column].name == "CourseID");
+    }
+
+    // A table worked out from a diagram, keyed by two columns added on the
+    // schema, and the foreign key the conversion makes into it: each part, and
+    // the name typed over one, stays with the member it points at.
+    {
+        Editor editor(ids);
+        const auto parent = std::get<EntityId>(*editor.create_entity("Parent", {0, 0, 160, 80}).created);
+        const auto child = std::get<EntityId>(*editor.create_entity("Child", {400, 0, 160, 80}).created);
+        CHECK(editor.add_schema_column(ElementRef{parent}, "X"));
+        const auto x = editor.project().schema.added.at(relation_from(ElementRef{parent})).back().id;
+        CHECK(editor.add_schema_column(ElementRef{parent}, "Y"));
+        const auto y = editor.project().schema.added.at(relation_from(ElementRef{parent})).back().id;
+        CHECK(editor.set_schema_column_type(x, LogicalType::Int));
+        CHECK(editor.set_schema_column_type(y, LogicalType::Date));
+        CHECK(editor.set_schema_column_rules(x, true, true, false));
+        CHECK(editor.set_schema_column_rules(y, true, true, false));
+        const auto has = std::get<RelationshipId>(*editor.create_relationship("Has", {200, 100, 190, 110}).created);
+        const auto one = editor.connect(has, parent);
+        const auto many = editor.connect(has, child);
+        CHECK(editor.update_participant(has, *one.participant, Cardinality::One, Participation::Partial, ""));
+        CHECK(editor.update_participant(has, *many.participant, Cardinality::Many, Participation::Partial, ""));
+        // Which Parent column each of Child's foreign key columns points at,
+        // by name, and with what type.
+        const auto pointing = [&](const Project& project) {
+            const auto preview = schema_preview(project);
+            std::map<std::string, std::pair<std::string, LogicalType>> found;
+            for (const auto& column : table_named(preview, "Children").columns)
+                if (column.foreign_key && column.references)
+                    found[column.name] = {preview.tables[*column.references].columns[column.references_column].name,
+                                          column.type};
+            return found;
+        };
+        const auto before = pointing(editor.project());
+        CHECK(before.size() == 2);
+        // Part 0 is X, the key's first member; named by hand.
+        std::optional<ForeignKeyColumn> first;
+        const auto converted = schema_preview(editor.project());
+        for (const auto& column : table_named(converted, "Children").columns)
+            if (column.foreign_key && column.key_id && column.reference_part == 0) first = ForeignKeyColumn{*column.key_id, 0};
+        CHECK(first.has_value());
+        CHECK(editor.rename_foreign_key(*first, "FirstPart"));
+        const auto named = pointing(editor.project());
+        CHECK(named.at("FirstPart").first == "X" && named.at("FirstPart").second == LogicalType::Int);
+        CHECK(named.size() == 2);
+
+        // Parent's columns listed the other way round: Y, X.
+        auto listed = editor.project();
+        auto& columns = listed.schema.added.at(relation_from(ElementRef{parent}));
+        std::reverse(columns.begin(), columns.end());
+        CHECK(columns.front().name == "Y");
+        const auto preview = schema_preview(listed);
+        const auto& keyed = table_named(preview, "Parents");
+        CHECK(keyed.columns.front().name == "Y");
+        CHECK((names_of(keyed, keyed.primary_key) == std::vector<std::string>{"X", "Y"}));
+        CHECK(pointing(listed) == named);   // FirstPart -> X (INT), the other -> Y (DATE)
+        CHECK(validate(listed).empty());
+
+        // Undone and redone, the foreign key comes back pointing exactly where
+        // it pointed, its typed name with it.
+        CHECK(editor.undo());   // the name
+        CHECK(pointing(editor.project()) == before);
+        int steps = 0;          // back to before Child held a foreign key
+        while (!pointing(editor.project()).empty() && steps < 6) {
+            CHECK(editor.undo());
+            ++steps;
+        }
+        CHECK(pointing(editor.project()).empty() && steps > 0);
+        for (int step = 0; step < steps; ++step) CHECK(editor.redo());
+        CHECK(pointing(editor.project()) == before);
+        CHECK(editor.redo());
+        CHECK(pointing(editor.project()) == named);
+    }
+}
+
+namespace {
+const PreviewTable& table_called(const SchemaPreview& preview, const std::string& name) {
+    for (const auto& table : preview.tables)
+        if (table.name == name) return table;
+    throw std::runtime_error("no table " + name);
+}
+std::vector<std::string> listed(const PreviewTable& table) {
+    std::vector<std::string> names;
+    for (const auto& column : table.columns) names.push_back(column.name);
+    return names;
+}
+std::vector<std::string> key_of(const PreviewTable& table) {
+    std::vector<std::string> names;
+    for (const auto row : table.primary_key) names.push_back(table.columns.at(row).name);
+    return names;
+}
+// The identities of a table's columns, named by what the columns are called.
+std::vector<ColumnIdentity> identities(const PreviewTable& table, const std::vector<std::string>& names) {
+    std::vector<ColumnIdentity> found;
+    for (const auto& name : names)
+        for (const auto& column : table.columns)
+            if (column.name == name) found.push_back(*column_identity(column));
+    if (found.size() != names.size()) throw std::runtime_error("a column is missing from " + table.name);
+    return found;
+}
+using Strings = std::vector<std::string>;
+} // namespace
+
+// A table worked out from the diagram can be listed in an order somebody gave
+// it (Task 4B, 2026-10-02). It is an order and nothing more: its key, every
+// foreign key into it or out of it, and every name typed over one stay what
+// they were, and the order is one step of the history like any other edit.
+void generated_columns_keep_the_order_given_them() {
+    TestIds ids;
+    Editor editor(ids);
+    const auto thing = std::get<EntityId>(*editor.create_entity("Thing", {0, 0, 160, 80}).created);
+    const auto a = std::get<AttributeId>(*editor.create_attribute("A", {}, ElementRef{thing}).created);
+    CHECK(editor.set_attribute_kind(a, AttributeKind::Key));
+    for (const auto* name : {"B", "C", "D"}) CHECK(editor.create_attribute(name, {}, ElementRef{thing}));
+    const auto things = relation_from(ElementRef{thing});
+
+    // With no order given, nothing changes: the table is listed as the
+    // conversion makes it, and reading it again and again changes nothing in
+    // the project -- not its revision, not whether it needs saving.
+    const auto natural = schema_preview(editor.project());
+    CHECK(editor.project().schema.column_order.empty());
+    CHECK((listed(table_called(natural, "Things")) == Strings{"A", "B", "C", "D"}));
+    editor.mark_saved(editor.revision());
+    const auto revision = editor.revision();
+    CHECK(schema_preview(editor.project()) == natural);
+    CHECK(editor.revision() == revision && !editor.dirty());
+
+    // D, B, A, C: exactly those columns, each one the same column it was.
+    const auto& as_made = table_called(natural, "Things");
+    CHECK(editor.set_column_order(things, identities(as_made, {"D", "B", "A", "C"})));
+    CHECK(editor.revision() == revision + 1 && editor.dirty());
+    CHECK(editor.undo_label() == "Reorder the columns");
+    const auto ordered = schema_preview(editor.project());
+    const auto& listed_now = table_called(ordered, "Things");
+    CHECK((listed(listed_now) == Strings{"D", "B", "A", "C"}));
+    CHECK(listed_now.columns.size() == as_made.columns.size());
+    for (const auto& column : listed_now.columns)
+        CHECK(std::count(as_made.columns.begin(), as_made.columns.end(), column) == 1);
+    CHECK((key_of(listed_now) == Strings{"A"}));
+    CHECK(schema_preview(editor.project()) == ordered);   // read again, the same
+    CHECK(validate(editor.project()).empty());
+    // One step back and forth; and empty gives the table back as it was made.
+    CHECK(editor.undo());
+    CHECK(schema_preview(editor.project()) == natural);
+    CHECK(editor.redo());
+    CHECK(schema_preview(editor.project()) == ordered);
+    CHECK(editor.set_column_order(things, {}));
+    CHECK(editor.project().schema.column_order.empty());
+    CHECK(schema_preview(editor.project()) == natural);
+    // The same order again is no step at all.
+    CHECK(editor.set_column_order(things, identities(as_made, {"D", "B", "A", "C"})));
+    const auto steps = editor.revision();
+    CHECK(editor.set_column_order(things, identities(as_made, {"D", "B", "A", "C"})));
+    CHECK(editor.revision() == steps);
+
+    // A key of two columns, listed B, Name, A, is still the key (A, B): its
+    // places are carried to where its columns now stand, in the key's order.
+    const auto pair = std::get<EntityId>(*editor.create_entity("Pair", {0, 200, 160, 80}).created);
+    for (const auto* name : {"A", "B"}) {
+        const auto part = std::get<AttributeId>(*editor.create_attribute(name, {}, ElementRef{pair}).created);
+        CHECK(editor.set_attribute_kind(part, AttributeKind::Key));
+    }
+    CHECK(editor.create_attribute("Name", {}, ElementRef{pair}));
+    const auto pairs_made = table_called(schema_preview(editor.project()), "Pairs");
+    CHECK((listed(pairs_made) == Strings{"A", "B", "Name"}));
+    CHECK((pairs_made.primary_key == std::vector<std::size_t>{0, 1}));
+    CHECK(editor.set_column_order(relation_from(ElementRef{pair}), identities(pairs_made, {"B", "Name", "A"})));
+    const auto pairs = table_called(schema_preview(editor.project()), "Pairs");
+    CHECK((listed(pairs) == Strings{"B", "Name", "A"}));
+    CHECK((pairs.primary_key == std::vector<std::size_t>{2, 0}));
+    CHECK((key_of(pairs) == Strings{"A", "B"}));
+}
+
+// A foreign key into a key of two columns, X to A and Y to B, each part named
+// by hand. Listing either table in another order -- the one it points into,
+// the one it is in, or both -- leaves every part pointing where it pointed,
+// under the name it was given.
+void composite_foreign_keys_ignore_the_order_tables_are_listed_in() {
+    TestIds ids;
+    Editor editor(ids);
+    const auto parent = std::get<EntityId>(*editor.create_entity("Parent", {0, 0, 160, 80}).created);
+    for (const auto* name : {"A", "B"}) {
+        const auto part = std::get<AttributeId>(*editor.create_attribute(name, {}, ElementRef{parent}).created);
+        CHECK(editor.set_attribute_kind(part, AttributeKind::Key));
+    }
+    CHECK(editor.create_attribute("Name", {}, ElementRef{parent}));
+    const auto child = std::get<EntityId>(*editor.create_entity("Child", {400, 0, 160, 80}).created);
+    CHECK(editor.create_attribute("Note", {}, ElementRef{child}));
+    const auto has = std::get<RelationshipId>(*editor.create_relationship("Has", {200, 100, 190, 110}).created);
+    const auto one = editor.connect(has, parent);
+    const auto many = editor.connect(has, child);
+    CHECK(editor.update_participant(has, *one.participant, Cardinality::One, Participation::Partial, ""));
+    CHECK(editor.update_participant(has, *many.participant, Cardinality::Many, Participation::Partial, ""));
+    const auto key = foreign_key_from(LinkSource{*one.participant});
+    CHECK(editor.rename_foreign_key(ForeignKeyColumn{key, 0}, "X"));
+    CHECK(editor.rename_foreign_key(ForeignKeyColumn{key, 1}, "Y"));
+    const auto typed = editor.project().schema.foreign_key_names;
+
+    // What each column of Children's key points at, which part it is, and what
+    // that part holds: the whole meaning of the foreign key.
+    using Pointing = std::map<std::string, std::tuple<std::string, std::uint32_t, LogicalType>>;
+    const auto pointing = [](const SchemaPreview& preview) {
+        Pointing found;
+        for (const auto& column : table_called(preview, "Children").columns)
+            if (column.foreign_key && column.references) {
+                const auto& target = preview.tables.at(*column.references);
+                found[column.name] = {target.columns.at(column.references_column).name, column.reference_part,
+                                      column.type};
+            }
+        return found;
+    };
+    const auto as_made = schema_preview(editor.project());
+    const auto meaning = pointing(as_made);
+    CHECK((meaning == Pointing{{"X", {"A", 0, LogicalType::Unset}}, {"Y", {"B", 1, LogicalType::Unset}}}));
+    CHECK((listed(table_called(as_made, "Children")) == Strings{"ChildID", "Note", "X", "Y"}));
+
+    // The table pointed into, listed B, Name, A.
+    CHECK(editor.set_column_order(relation_from(ElementRef{parent}),
+                                  identities(table_called(as_made, "Parents"), {"B", "Name", "A"})));
+    auto now = schema_preview(editor.project());
+    CHECK((listed(table_called(now, "Parents")) == Strings{"B", "Name", "A"}));
+    CHECK((key_of(table_called(now, "Parents")) == Strings{"A", "B"}));
+    CHECK(pointing(now) == meaning);
+    // The table the key is in, listed Y, Note, X, and its own key last.
+    CHECK(editor.set_column_order(relation_from(ElementRef{child}),
+                                  identities(table_called(as_made, "Children"), {"Y", "Note", "X", "ChildID"})));
+    now = schema_preview(editor.project());
+    CHECK((listed(table_called(now, "Children")) == Strings{"Y", "Note", "X", "ChildID"}));
+    CHECK((key_of(table_called(now, "Children")) == Strings{"ChildID"}));
+    CHECK(pointing(now) == meaning);
+    CHECK(editor.project().schema.foreign_key_names == typed);
+    // A name typed now still lands on the part it is typed for.
+    CHECK(editor.rename_foreign_key(ForeignKeyColumn{key, 1}, "SecondPart"));
+    now = schema_preview(editor.project());
+    CHECK(std::get<0>(pointing(now).at("SecondPart")) == "B");
+    CHECK((listed(table_called(now, "Children")) == Strings{"SecondPart", "Note", "X", "ChildID"}));
+    CHECK(validate(editor.project()).empty());
+    // And undone, every step at a time, it is the table it was.
+    CHECK(editor.undo() && editor.undo() && editor.undo());
+    CHECK(schema_preview(editor.project()) == as_made);
+}
+
+// The table is worked out afresh from the diagram, and the order is kept
+// apart from it, so the diagram can change under it. A column the order does
+// not name is new, and follows the others; a column it names that the table
+// no longer has is passed over and keeps its place, so if it returns it
+// returns there; a column renamed is the same column, where it was.
+void a_column_order_outlives_the_diagram_changing() {
+    TestIds ids;
+    Editor editor(ids);
+    const auto thing = std::get<EntityId>(*editor.create_entity("Thing", {0, 0, 160, 80}).created);
+    const auto a = std::get<AttributeId>(*editor.create_attribute("A", {}, ElementRef{thing}).created);
+    CHECK(editor.set_attribute_kind(a, AttributeKind::Key));
+    const auto b = std::get<AttributeId>(*editor.create_attribute("B", {}, ElementRef{thing}).created);
+    CHECK(editor.create_attribute("C", {}, ElementRef{thing}));
+    const auto things = relation_from(ElementRef{thing});
+    const auto shown = [&] { return listed(table_called(schema_preview(editor.project()), "Things")); };
+    CHECK((shown() == Strings{"A", "B", "C"}));
+    const auto as_made = table_called(schema_preview(editor.project()), "Things");
+    CHECK(editor.set_column_order(things, identities(as_made, {"C", "A", "B"})));
+    const auto stored = editor.project().schema.column_order.at(things);
+    CHECK((shown() == Strings{"C", "A", "B"}));
+
+    // B made multivalued leaves the table for one of its own: it is passed
+    // over, not forgotten. D is new, and follows.
+    CHECK(editor.set_attribute_kind(b, AttributeKind::Multivalued));
+    CHECK((shown() == Strings{"C", "A"}));
+    CHECK(editor.project().schema.column_order.at(things) == stored);
+    CHECK(validate(editor.project()).empty());
+    CHECK(editor.create_attribute("D", {}, ElementRef{thing}));
+    CHECK((shown() == Strings{"C", "A", "D"}));
+    // Undone, B comes back -- and to its place, not to the end.
+    CHECK(editor.undo());
+    CHECK((shown() == Strings{"C", "A"}));
+    CHECK(editor.undo());
+    CHECK((shown() == Strings{"C", "A", "B"}));
+    CHECK(editor.redo() && editor.redo());
+    CHECK((shown() == Strings{"C", "A", "D"}));
+    // Changed back by a fresh edit rather than undone, the same.
+    CHECK(editor.set_attribute_kind(b, AttributeKind::Normal));
+    CHECK((shown() == Strings{"C", "A", "B", "D"}));
+
+    // A column renamed is the same column, and stays where it stands.
+    CHECK(editor.rename(ElementRef{a}, "Alpha"));
+    CHECK((shown() == Strings{"C", "Alpha", "B", "D"}));
+
+    // Put in a new order while B is away, B keeps its place beside the
+    // column it followed, and comes back to it.
+    CHECK(editor.set_attribute_kind(b, AttributeKind::Multivalued));
+    CHECK((shown() == Strings{"C", "Alpha", "D"}));
+    const auto away = table_called(schema_preview(editor.project()), "Things");
+    CHECK(editor.set_column_order(things, identities(away, {"D", "Alpha", "C"})));
+    CHECK((shown() == Strings{"D", "Alpha", "C"}));
+    CHECK(editor.project().schema.column_order.at(things).size() == 4);
+    CHECK(editor.set_attribute_kind(b, AttributeKind::Normal));
+    CHECK((shown() == Strings{"D", "Alpha", "B", "C"}));
+
+    // A column added on the schema is ordered like any other.
+    CHECK(editor.add_schema_column(ElementRef{thing}, "Extra"));
+    const auto extra = editor.project().schema.added.at(things).back().id;
+    CHECK((shown() == Strings{"D", "Alpha", "B", "C", "Extra"}));
+    const auto with_extra = table_called(schema_preview(editor.project()), "Things");
+    CHECK(editor.set_column_order(things, identities(with_extra, {"Extra", "D", "Alpha", "B", "C"})));
+    CHECK((shown() == Strings{"Extra", "D", "Alpha", "B", "C"}));
+
+    // A column whose element is deleted is gone, not away: it leaves the
+    // order in the same step, and the one undo brings both back.
+    CHECK(editor.erase({ElementRef{b}}));
+    CHECK((shown() == Strings{"Extra", "D", "Alpha", "C"}));
+    const auto& now = editor.project().schema.column_order.at(things);
+    CHECK(std::find(now.begin(), now.end(), ColumnIdentity{b}) == now.end());
+    CHECK(editor.undo());
+    CHECK((shown() == Strings{"Extra", "D", "Alpha", "B", "C"}));
+    CHECK(editor.erase_schema_column(extra));
+    CHECK((shown() == Strings{"D", "Alpha", "B", "C"}));
+    CHECK(editor.undo());
+    CHECK((shown() == Strings{"Extra", "D", "Alpha", "B", "C"}));
+
+    // A foreign key goes from the order with the side that made it,
+    // disconnected or deleted, and comes back with it.
+    const auto other = std::get<EntityId>(*editor.create_entity("Other", {400, 0, 160, 80}).created);
+    const auto has = std::get<RelationshipId>(*editor.create_relationship("Has", {200, 100, 190, 110}).created);
+    const auto one = editor.connect(has, other);
+    const auto many = editor.connect(has, thing);
+    CHECK(editor.update_participant(has, *one.participant, Cardinality::One, Participation::Partial, ""));
+    CHECK(editor.update_participant(has, *many.participant, Cardinality::Many, Participation::Partial, ""));
+    CHECK((shown() == Strings{"Extra", "D", "Alpha", "B", "C", "OtherID"}));
+    const auto keyed = table_called(schema_preview(editor.project()), "Things");
+    CHECK(editor.set_column_order(things, identities(keyed, {"OtherID", "Extra", "D", "Alpha", "B", "C"})));
+    CHECK(editor.disconnect(has, *one.participant));
+    CHECK((shown() == Strings{"Extra", "D", "Alpha", "B", "C"}));
+    CHECK(editor.project().schema.column_order.at(things).size() == 5);
+    CHECK(editor.undo());
+    CHECK((shown() == Strings{"OtherID", "Extra", "D", "Alpha", "B", "C"}));
+    CHECK(editor.erase({ElementRef{other}}));
+    CHECK(editor.project().schema.column_order.at(things).size() == 5);
+    CHECK(editor.undo());
+    CHECK((shown() == Strings{"OtherID", "Extra", "D", "Alpha", "B", "C"}));
+    // And the table's own entity deleted takes the whole order with it.
+    CHECK(editor.erase({ElementRef{thing}}));
+    CHECK(!editor.project().schema.column_order.contains(things));
+    CHECK(editor.undo());
+    CHECK(editor.project().schema.column_order.contains(things));
+}
+
+// Every column of every table worked out from the diagram has an identity of
+// its own, the ones the conversion invents included, and no two columns of a
+// table share one. What an order may say is held to the model; what the
+// table happens to hold today is not.
+void every_generated_column_has_an_identity_of_its_own() {
+    TestIds ids;
+    Editor editor(ids);
+    // Animal has no key of its own, so one is invented; it is kept in one
+    // table with two hierarchies under it, so it has two discriminators.
+    const auto animal = std::get<EntityId>(*editor.create_entity("Animal", {0, 0, 160, 80}).created);
+    CHECK(editor.create_attribute("Name", {}, ElementRef{animal}));
+    std::vector<SpecializationId> hierarchies;
+    for (const auto* kinds : {"Diet", "Habitat"}) {
+        const auto isa = std::get<SpecializationId>(
+            *editor.create_specialization(kinds, {0, 200, 96, 74}, Inheritance::Generalization).created);
+        CHECK(editor.set_supertype(isa, animal));
+        for (const auto* kind : {"A", "B"}) {
+            const auto subtype = std::get<EntityId>(
+                *editor.create_entity(std::string(kinds) + kind, {0, 400, 160, 80}).created);
+            CHECK(editor.attach_subtype(isa, subtype));
+        }
+        CHECK(editor.set_isa_strategy(isa, IsaStrategy::SingleTable));
+        hierarchies.push_back(isa);
+    }
+    // Vehicle has no key either, and its subtype Car none of its own: each
+    // car table holds Vehicle's invented key copied in and its own beside it.
+    const auto vehicle = std::get<EntityId>(*editor.create_entity("Vehicle", {400, 0, 160, 80}).created);
+    const auto car = std::get<EntityId>(*editor.create_entity("Car", {400, 200, 160, 80}).created);
+    const auto lineage = std::get<SpecializationId>(
+        *editor.create_specialization("Kind", {400, 100, 96, 74}, Inheritance::Generalization).created);
+    CHECK(editor.set_supertype(lineage, vehicle));
+    CHECK(editor.attach_subtype(lineage, car));
+    CHECK(editor.set_isa_strategy(lineage, IsaStrategy::PerConcrete));
+
+    const auto preview = schema_preview(editor.project());
+    for (const auto& table : preview.tables) {
+        std::set<ColumnIdentity> seen;
+        for (const auto& column : table.columns) {
+            const auto identity = column_identity(column);
+            CHECK(identity.has_value());
+            CHECK(seen.insert(*identity).second);
+        }
+    }
+    const auto& animals = table_called(preview, "Animals");
+    std::vector<ColumnIdentity> discriminators;
+    for (const auto& column : animals.columns)
+        if (column.origin_kind == ColumnOrigin::Discriminator) discriminators.push_back(*column_identity(column));
+    CHECK((discriminators == std::vector<ColumnIdentity>{DiscriminatorColumn{hierarchies[0]},
+                                                         DiscriminatorColumn{hierarchies[1]}}));
+    CHECK(*column_identity(animals.columns.front()) == ColumnIdentity{InventedKeyColumn{relation_from(ElementRef{animal})}});
+    const auto& cars = table_called(preview, "Cars");
+    std::set<ColumnIdentity> invented;
+    for (const auto& column : cars.columns)
+        if (column.invented_for) invented.insert(*column_identity(column));
+    CHECK((invented == std::set<ColumnIdentity>{InventedKeyColumn{relation_from(ElementRef{vehicle})},
+                                                InventedKeyColumn{relation_from(ElementRef{car})}}));
+    // So the ones the conversion invents are ordered like any other.
+    const auto animal_table = relation_from(ElementRef{animal});
+    CHECK(editor.set_column_order(animal_table, {DiscriminatorColumn{hierarchies[1]}, DiscriminatorColumn{hierarchies[0]},
+                                                 InventedKeyColumn{animal_table}}));
+    const auto reordered = table_called(schema_preview(editor.project()), "Animals");
+    CHECK(reordered.columns[0].discriminates == hierarchies[1] && reordered.columns[1].discriminates == hierarchies[0]);
+    CHECK(reordered.columns[2].invented_for == animal_table);
+    CHECK((key_of(reordered) == Strings{"AnimalID"}));
+
+    // Refused, and the project left as it was: a column the table does not
+    // hold, a column named twice, a table that is not there.
+    const auto before = editor.project();
+    CHECK(!editor.set_column_order(animal_table, {InventedKeyColumn{relation_from(ElementRef{car})}}));
+    CHECK(!editor.set_column_order(animal_table, {InventedKeyColumn{animal_table}, InventedKeyColumn{animal_table}}));
+    CHECK(!editor.set_column_order(relation_from(ElementRef{hierarchies[0]}), {InventedKeyColumn{animal_table}}));
+    CHECK(editor.project() == before);
+
+    // What an order may say: each column once, and only columns the model
+    // can still make, for a table the model can still make.
+    const auto blocking = [](const Project& project, const std::string& code) {
+        const auto issues = validate(project);
+        return std::any_of(issues.begin(), issues.end(), [&](const Issue& issue) { return issue.code == code; });
+    };
+    auto twice = editor.project();
+    twice.schema.column_order[animal_table].push_back(InventedKeyColumn{animal_table});
+    CHECK(blocking(twice, "schema.column_order.duplicate"));
+    auto missing = editor.project();
+    missing.schema.column_order[animal_table].push_back(AttributeId{Uuid{}});
+    CHECK(blocking(missing, "schema.column_order.column"));
+    auto no_table = editor.project();
+    no_table.schema.column_order[RelationId{Uuid{}}] = {InventedKeyColumn{animal_table}};
+    CHECK(blocking(no_table, "schema.column_order.missing"));
+    // A column the model can make but this table does not hold today is not
+    // a fault: Car's own key named under Animal is merely not shown there.
+    auto elsewhere = editor.project();
+    elsewhere.schema.column_order[animal_table].push_back(InventedKeyColumn{relation_from(ElementRef{car})});
+    CHECK(validate(elsewhere).empty());
+    CHECK(schema_preview(elsewhere) == schema_preview(editor.project()));
+
+    // A schema drawn by hand keeps its columns in the order it lists them,
+    // and takes no order beside it.
+    Editor drawn(ids);
+    drawn.new_schema_project();
+    const auto table = std::get<RelationId>(*drawn.create_relation("Pair", Point{40, 40}).created);
+    const auto first = drawn.project().schema.added.at(table).front().id;
+    CHECK(!drawn.set_column_order(table, {first}));
+    auto ordered = drawn.project();
+    ordered.schema.column_order[table] = {first};
+    CHECK(blocking(ordered, "schema.column_order.standalone"));
+}
+
+// Disconnecting the side a foreign key was made for takes the key off its
+// table, and every name typed over one of its parts with it, in the same step
+// (fixed 2026-10-02). The names used to be left behind; a name for a key that
+// is gone is refused, so a side whose key had been named could not be
+// disconnected at all. A key that is still there keeps its names.
+void disconnecting_a_side_takes_its_foreign_key_names() {
+    TestIds ids;
+    Editor editor(ids);
+    const auto keyed = [&](const char* entity_name, Point at, std::vector<const char*> keys) {
+        const auto made = std::get<EntityId>(*editor.create_entity(entity_name, {at.x, at.y, 160, 80}).created);
+        for (const auto* name : keys) {
+            const auto key = std::get<AttributeId>(*editor.create_attribute(name, {}, ElementRef{made}).created);
+            CHECK(editor.set_attribute_kind(key, AttributeKind::Key));
+        }
+        return made;
+    };
+    const auto course = keyed("Course", {0, 0}, {"Code", "Term"});
+    const auto teacher = keyed("Teacher", {400, 0}, {"StaffNo"});
+    const auto section = keyed("Section", {200, 300}, {"SectionNo"});
+    // One course offers many sections, and one teacher teaches many: each puts
+    // a key on Sections, made for the side on the one end.
+    struct Link {
+        RelationshipId relationship;
+        ParticipantId one;
+        ParticipantId many;
+    };
+    const auto one_to_many = [&](const char* name, EntityId one, Rect at) {
+        const auto made = std::get<RelationshipId>(*editor.create_relationship(name, at).created);
+        const auto one_end = editor.connect(made, one);
+        const auto many_end = editor.connect(made, section);
+        CHECK(editor.update_participant(made, *one_end.participant, Cardinality::One, Participation::Partial, ""));
+        CHECK(editor.update_participant(made, *many_end.participant, Cardinality::Many, Participation::Partial, ""));
+        return Link{made, *one_end.participant, *many_end.participant};
+    };
+    const auto offers = one_to_many("Offers", course, {0, 150, 190, 110});
+    const auto teaches = one_to_many("Teaches", teacher, {400, 150, 190, 110});
+    const auto course_key = foreign_key_from(LinkSource{offers.one});
+    const auto teacher_key = foreign_key_from(LinkSource{teaches.one});
+    CHECK(editor.rename_foreign_key(ForeignKeyColumn{course_key, 0}, "OfferedCode"));
+    CHECK(editor.rename_foreign_key(ForeignKeyColumn{course_key, 1}, "OfferedTerm"));
+    CHECK(editor.rename_foreign_key(ForeignKeyColumn{teacher_key, 0}, "Lecturer"));
+    const auto sections = [&] { return listed(table_called(schema_preview(editor.project()), "Sections")); };
+    CHECK((sections() == Strings{"SectionNo", "OfferedCode", "OfferedTerm", "Lecturer"}));
+    // Sections listed in an order of its own (Task 4B), so that what
+    // disconnecting does to the order is seen too.
+    const auto sections_table = relation_from(ElementRef{section});
+    const auto as_made = table_called(schema_preview(editor.project()), "Sections");
+    CHECK(editor.set_column_order(sections_table, identities(as_made, {"Lecturer", "OfferedTerm", "SectionNo", "OfferedCode"})));
+    CHECK((sections() == Strings{"Lecturer", "OfferedTerm", "SectionNo", "OfferedCode"}));
+    const auto named = editor.project().schema.foreign_key_names;
+    CHECK(named.size() == 3);
+    const auto before = editor.project();
+    const auto sound = [](const Project& project) {
+        const auto issues = validate(project);
+        return std::none_of(issues.begin(), issues.end(), [](const Issue& issue) { return issue.blocks_save; });
+    };
+    const auto refused_for = [](const Project& project, const std::string& code) {
+        const auto issues = validate(project);
+        return std::any_of(issues.begin(), issues.end(), [&](const Issue& issue) { return issue.code == code; });
+    };
+    const auto has_side = [&](RelationshipId relationship, ParticipantId side) {
+        const auto& sides = editor.project().relationships.at(relationship).participants;
+        return std::any_of(sides.begin(), sides.end(), [&](const Participant& one) { return one.id == side; });
+    };
+
+    // Left behind, the name for a key whose side has gone is refused. That is
+    // what refused the whole disconnection.
+    auto stranded = before;
+    std::erase_if(stranded.relationships.at(teaches.relationship).participants,
+                  [&](const Participant& side) { return side.id == teaches.one; });
+    CHECK(refused_for(stranded, "schema.foreign_key_name.missing"));
+
+    // A key of one column, named by hand: disconnected, the key is off the
+    // table and its name is gone, in one step. The key of two columns, and
+    // both its names, are untouched; so is everything else in the schema
+    // but the key's place in the order.
+    const auto revision = editor.revision();
+    CHECK(editor.disconnect(teaches.relationship, teaches.one));
+    CHECK(editor.revision() == revision + 1);
+    CHECK(editor.undo_label() == "Disconnect participant");
+    CHECK(!has_side(teaches.relationship, teaches.one));
+    CHECK((sections() == Strings{"OfferedTerm", "SectionNo", "OfferedCode"}));
+    auto without_lecturer = named;
+    without_lecturer.erase(ForeignKeyColumn{teacher_key, 0});
+    CHECK(editor.project().schema.foreign_key_names == without_lecturer);
+    CHECK(editor.project().schema.column_order.at(sections_table)
+          == identities(as_made, {"OfferedTerm", "SectionNo", "OfferedCode"}));
+    auto rest = before.schema;
+    rest.foreign_key_names = without_lecturer;
+    rest.column_order = editor.project().schema.column_order;
+    CHECK(editor.project().schema == rest);
+    CHECK(sound(editor.project()));
+    // Undone, the side, the key, its name exactly as typed and its place all
+    // come back; redone, they all go again.
+    CHECK(editor.undo());
+    CHECK(editor.project() == before);
+    CHECK(editor.project().schema.foreign_key_names.at(ForeignKeyColumn{teacher_key, 0}) == "Lecturer");
+    CHECK((sections() == Strings{"Lecturer", "OfferedTerm", "SectionNo", "OfferedCode"}));
+    CHECK(editor.redo());
+    CHECK(!has_side(teaches.relationship, teaches.one));
+    CHECK(editor.project().schema.foreign_key_names == without_lecturer);
+    CHECK((sections() == Strings{"OfferedTerm", "SectionNo", "OfferedCode"}));
+    CHECK(editor.undo());
+    CHECK(editor.project() == before);
+
+    // A key of two columns: every name typed over any of its parts goes, and
+    // the other key keeps its own.
+    CHECK(editor.disconnect(offers.relationship, offers.one));
+    CHECK((editor.project().schema.foreign_key_names
+           == std::map<ForeignKeyColumn, std::string>{{ForeignKeyColumn{teacher_key, 0}, "Lecturer"}}));
+    CHECK((sections() == Strings{"Lecturer", "SectionNo"}));
+    CHECK(editor.project().schema.column_order.at(sections_table) == identities(as_made, {"Lecturer", "SectionNo"}));
+    CHECK(sound(editor.project()));
+    CHECK(editor.undo());
+    CHECK(editor.project() == before);
+
+    // Disconnecting the other end takes the key off the table too, but the key
+    // is still the one made for the course's side, which is still there: its
+    // names are kept, and the key comes back under them when Offers is
+    // whole again.
+    CHECK(editor.disconnect(offers.relationship, offers.many));
+    CHECK(editor.project().schema.foreign_key_names == named);
+    CHECK((sections() == Strings{"Lecturer", "SectionNo"}));
+    CHECK(sound(editor.project()));
+    const auto again = editor.connect(offers.relationship, section);
+    CHECK(editor.update_participant(offers.relationship, *again.participant, Cardinality::Many,
+                                    Participation::Partial, ""));
+    CHECK((sections() == Strings{"Lecturer", "OfferedTerm", "SectionNo", "OfferedCode"}));
+
+    // A key nobody named: disconnecting does exactly what it always did --
+    // the side goes, and nothing else changes.
+    Editor plain(ids);
+    const auto owner = std::get<EntityId>(*plain.create_entity("Owner", {0, 0, 160, 80}).created);
+    const auto pet = std::get<EntityId>(*plain.create_entity("Pet", {400, 0, 160, 80}).created);
+    const auto owns = std::get<RelationshipId>(*plain.create_relationship("Owns", {200, 100, 190, 110}).created);
+    const auto owning = plain.connect(owns, owner);
+    const auto owned = plain.connect(owns, pet);
+    CHECK(plain.update_participant(owns, *owning.participant, Cardinality::One, Participation::Partial, ""));
+    CHECK(plain.update_participant(owns, *owned.participant, Cardinality::Many, Participation::Partial, ""));
+    auto expected = plain.project();
+    std::erase_if(expected.relationships.at(owns).participants,
+                  [&](const Participant& side) { return side.id == *owning.participant; });
+    CHECK(plain.disconnect(owns, *owning.participant));
+    CHECK(plain.project() == expected);
+}
+
+namespace {
+// An entity keyed by the attributes named, each drawn as a key.
+EntityId keyed_entity(Editor& editor, const char* name, Point at, const std::vector<const char*>& keys) {
+    const auto made = std::get<EntityId>(*editor.create_entity(name, {at.x, at.y, 160, 80}).created);
+    for (const auto* key : keys) {
+        const auto attribute = std::get<AttributeId>(*editor.create_attribute(key, {}, ElementRef{made}).created);
+        CHECK(editor.set_attribute_kind(attribute, AttributeKind::Key));
+    }
+    return made;
+}
+// A relationship between two entities, and its two sides in the order given.
+struct TwoSides {
+    RelationshipId relationship;
+    ParticipantId first;
+    ParticipantId second;
+};
+TwoSides related(Editor& editor, const char* name, EntityId first, Cardinality first_maximum, EntityId second,
+                 Cardinality second_maximum, Point at) {
+    const auto made = std::get<RelationshipId>(*editor.create_relationship(name, {at.x, at.y, 190, 110}).created);
+    const auto one = editor.connect(made, first);
+    const auto other = editor.connect(made, second);
+    CHECK(editor.update_participant(made, *one.participant, first_maximum, Participation::Partial, ""));
+    CHECK(editor.update_participant(made, *other.participant, second_maximum, Participation::Partial, ""));
+    return {made, *one.participant, *other.participant};
+}
+// A comment pinned to the targets given, and the identity it was given.
+CommentId remark(Editor& editor, const char* text, std::vector<CommentTarget> targets) {
+    const auto before = editor.project().comments;
+    CHECK(editor.create_comment(text, std::move(targets)));
+    for (const auto& [id, comment] : editor.project().comments)
+        if (!before.contains(id)) return id;
+    throw std::runtime_error("no comment was made");
+}
+// The project with one side taken out of its relationship, and nothing else.
+Project without_side(Project project, const TwoSides& sides, ParticipantId side) {
+    std::erase_if(project.relationships.at(sides.relationship).participants,
+                  [&](const Participant& one) { return one.id == side; });
+    return project;
+}
+// Whether the conversion puts a foreign key of this identity on any table.
+bool makes_key(const Project& project, ForeignKeyId key) {
+    for (const auto& table : schema_preview(project).tables)
+        for (const auto& column : table.columns)
+            if (column.key_id == key) return true;
+    return false;
+}
+// Whether nothing in the project would refuse it.
+bool sound(const Project& project) {
+    const auto issues = validate(project);
+    return std::none_of(issues.begin(), issues.end(), [](const Issue& issue) { return issue.blocks_save; });
+}
+} // namespace
+
+// A side disconnected takes the shape given by hand to its foreign key's line
+// on the schema with it, in the same step, as deleting the side does (fixed
+// 2026-10-02: the shape was left for a line that no longer existed, and that
+// refused the disconnection). Every other line keeps its shape.
+void disconnecting_a_side_takes_its_shaped_line() {
+    TestIds ids;
+    Editor editor(ids);
+    const auto department = keyed_entity(editor, "Department", {0, 0}, {"DeptNo"});
+    const auto employee = keyed_entity(editor, "Employee", {400, 0}, {"EmpNo"});
+    const auto venture = keyed_entity(editor, "Venture", {0, 300}, {"VentureNo"});
+    const auto works_in = related(editor, "WorksIn", department, Cardinality::One, employee, Cardinality::Many, {200, 100});
+    const auto runs = related(editor, "Runs", department, Cardinality::One, venture, Cardinality::Many, {200, 300});
+    const auto key = foreign_key_from(LinkSource{works_in.first});
+    const auto other = foreign_key_from(LinkSource{runs.first});
+    SchemaLine bent;
+    bent.route = {Point{300, 40}, Point{300, 200}};
+    SchemaLine kept;
+    kept.route = {Point{120, 260}};
+    CHECK(editor.shape_schema_line(LinkSource{works_in.first}, bent));
+    CHECK(editor.shape_schema_line(LinkSource{runs.first}, kept));
+    CHECK(makes_key(editor.project(), key));
+    const auto before = editor.project();
+
+    CHECK(editor.disconnect(works_in.relationship, works_in.first));
+    CHECK(!makes_key(editor.project(), key));
+    auto expected = without_side(before, works_in, works_in.first);
+    expected.schema_layout.lines.erase(key);
+    CHECK(editor.project() == expected);
+    CHECK(editor.project().schema_layout.lines.at(other) == kept);
+    CHECK(sound(editor.project()));
+    // Undone, the side, its key and the line's shape come back exactly;
+    // redone, they go again.
+    CHECK(editor.undo());
+    CHECK(editor.project() == before);
+    CHECK(editor.project().schema_layout.lines.at(key) == bent);
+    CHECK(editor.redo());
+    CHECK(editor.project() == expected);
+}
+
+// Which side of a one-to-one keeps the key is a choice between its two sides.
+// Disconnecting the chosen side takes the choice with it, in the same step, as
+// deleting the side does, and hands it to nobody (fixed 2026-10-02: the choice
+// was left naming a side no longer in the relationship, and that refused the
+// disconnection). Disconnecting the other side leaves the choice, which still
+// names a side that is there; a choice on another relationship is untouched.
+void disconnecting_a_side_settles_its_one_to_one_choice() {
+    TestIds ids;
+    Editor editor(ids);
+    const auto manager = keyed_entity(editor, "Manager", {0, 0}, {"StaffNo"});
+    const auto department = keyed_entity(editor, "Department", {400, 0}, {"DeptNo"});
+    const auto heads = related(editor, "Heads", manager, Cardinality::One, department, Cardinality::One, {200, 100});
+    const auto car = keyed_entity(editor, "Car", {0, 300}, {"Plate"});
+    const auto bay = keyed_entity(editor, "Bay", {400, 300}, {"BayNo"});
+    const auto parks = related(editor, "Parks", car, Cardinality::One, bay, Cardinality::One, {200, 300});
+    CHECK(editor.set_one_to_one_key(parks.relationship, parks.first));
+    // Departments keeps the key, which points at Managers.
+    CHECK(editor.set_one_to_one_key(heads.relationship, heads.second));
+    const auto before = editor.project();
+
+    CHECK(editor.disconnect(heads.relationship, heads.second));
+    auto expected = without_side(before, heads, heads.second);
+    expected.decisions.one_to_one_key.erase(heads.relationship);
+    CHECK(editor.project() == expected);
+    CHECK(!editor.project().decisions.one_to_one_key.contains(heads.relationship));
+    CHECK(editor.project().decisions.one_to_one_key.at(parks.relationship) == parks.first);
+    CHECK(sound(editor.project()));
+    CHECK(editor.undo());
+    CHECK(editor.project() == before);
+    CHECK(editor.project().decisions.one_to_one_key.at(heads.relationship) == heads.second);
+    CHECK(editor.redo());
+    CHECK(editor.project() == expected);
+    CHECK(editor.undo());
+
+    CHECK(editor.disconnect(heads.relationship, heads.first));
+    CHECK(editor.project() == without_side(before, heads, heads.first));
+    CHECK(editor.project().decisions.one_to_one_key.at(heads.relationship) == heads.second);
+    CHECK(sound(editor.project()));
+}
+
+// Making a side one, so that its relationship is one to one, can say in the
+// same edit which side keeps the foreign key (Zain, 2026-10-02): either may,
+// the side said replaces whatever was recorded before, and one undo takes
+// back both. Kept where it is, the key is the same key; given to the other
+// side, the conversion puts it there.
+void making_a_side_one_can_say_which_side_keeps_the_key() {
+    TestIds ids;
+    Editor editor(ids);
+    const auto student = keyed_entity(editor, "Student", {0, 0}, {"StudentNo"});
+    const auto professor = keyed_entity(editor, "Professor", {400, 0}, {"StaffNo"});
+    // Many students to one professor: Students keeps the key, to Professors.
+    const auto mentor = related(editor, "Mentor", student, Cardinality::Many, professor, Cardinality::One, {200, 100});
+    const auto holding = [&] {
+        std::vector<std::pair<std::string, ForeignKeyId>> found;
+        for (const auto& table : schema_preview(editor.project()).tables)
+            for (const auto& column : table.columns)
+                if (column.foreign_key && column.key_id) found.emplace_back(table.name, *column.key_id);
+        return found;
+    };
+    CHECK(holding().size() == 1);
+    CHECK(holding().front().first == "Students");
+    const auto first_key = holding().front().second;
+    // An older answer naming the other side, from a time it was one to one.
+    CHECK(editor.set_one_to_one_key(mentor.relationship, mentor.second));
+    const auto before = editor.project();
+    const auto maximum_of = [&](ParticipantId side) {
+        for (const auto& one : editor.project().relationships.at(mentor.relationship).participants)
+            if (one.id == side) return one.maximum;
+        throw std::runtime_error("no such side");
+    };
+
+    // Kept where it is: the side made one and the answer replaced, in one edit.
+    CHECK(editor.set_cardinality(mentor.first, Cardinality::One, mentor.first));
+    CHECK(editor.undo_label() == "Make the side one");
+    CHECK(maximum_of(mentor.first) == Cardinality::One);
+    CHECK(editor.project().decisions.one_to_one_key.at(mentor.relationship) == mentor.first);
+    CHECK(holding().size() == 1);
+    CHECK(holding().front().first == "Students");
+    CHECK(holding().front().second == first_key);
+    CHECK(sound(editor.project()));
+    const auto kept = editor.project();
+    CHECK(editor.undo());
+    CHECK(editor.project() == before);
+    CHECK(editor.redo());
+    CHECK(editor.project() == kept);
+    CHECK(editor.undo());
+
+    // Given to the other side: the conversion moves the key, and it is still one key.
+    CHECK(editor.set_cardinality(mentor.first, Cardinality::One, mentor.second));
+    CHECK(maximum_of(mentor.first) == Cardinality::One);
+    CHECK(editor.project().decisions.one_to_one_key.at(mentor.relationship) == mentor.second);
+    CHECK(holding().size() == 1);
+    CHECK(holding().front().first == "Professors");
+    CHECK(holding().front().second == foreign_key_from(LinkSource{mentor.first}));
+    CHECK(sound(editor.project()));
+    const auto moved = editor.project();
+    CHECK(editor.undo());
+    CHECK(editor.project() == before);
+    CHECK(editor.redo());
+    CHECK(editor.project() == moved);
+    CHECK(editor.undo());
+
+    // A side of some other relationship cannot keep this one's key.
+    const auto room = keyed_entity(editor, "Room", {0, 300}, {"RoomNo"});
+    const auto office = related(editor, "Office", professor, Cardinality::One, room, Cardinality::One, {200, 300});
+    const auto unrefused = editor.project();
+    const auto revision = editor.revision();
+    const auto label = editor.undo_label();
+    const auto refused = editor.set_cardinality(mentor.first, Cardinality::One, office.second);
+    CHECK(!refused);
+    CHECK(!refused.error.empty());
+    CHECK(editor.project() == unrefused);
+    CHECK(editor.revision() == revision);
+    CHECK(editor.undo_label() == label);
+
+    // A key of two columns is kept whole, its columns in the key's own order,
+    // or given to the other side whole: the answer is the relationship's.
+    const auto invoice = keyed_entity(editor, "Invoice", {0, 600}, {"InvoiceNo", "Year"});
+    const auto shipment = keyed_entity(editor, "Shipment", {400, 600}, {"ShipmentNo"});
+    const auto covers = related(editor, "Covers", invoice, Cardinality::One, shipment, Cardinality::Many, {200, 600});
+    const auto covering = [&] {
+        std::vector<std::pair<std::string, std::uint32_t>> found;
+        for (const auto& table : schema_preview(editor.project()).tables)
+            for (const auto& column : table.columns)
+                if (column.key_id && column.link == LinkSource{covers.first}) found.emplace_back(table.name, column.reference_part);
+                else if (column.key_id && column.link == LinkSource{covers.second}) found.emplace_back(table.name, column.reference_part);
+        return found;
+    };
+    using Parts = std::vector<std::pair<std::string, std::uint32_t>>;
+    CHECK(covering() == (Parts{{"Shipments", 0}, {"Shipments", 1}}));
+    const auto uncovered = editor.project();
+    CHECK(editor.set_cardinality(covers.second, Cardinality::One, covers.second));
+    CHECK(covering() == (Parts{{"Shipments", 0}, {"Shipments", 1}}));
+    CHECK(editor.undo());
+    CHECK(editor.project() == uncovered);
+    CHECK(editor.set_cardinality(covers.second, Cardinality::One, covers.first));
+    CHECK(covering() == (Parts{{"Invoices", 0}}));
+    CHECK(sound(editor.project()));
+    CHECK(editor.undo());
+    CHECK(editor.project() == uncovered);
+}
+
+// A comment pinned to a side's line on the diagram is unpinned from it when
+// the side is disconnected, as it is when the side is deleted: a comment
+// pinned to nothing else goes with the line, and one pinned to something else
+// as well stays pinned there (fixed 2026-10-02: the pin was left on a line
+// that was no longer there, and that refused the disconnection). A comment
+// pinned anywhere else, the other end of the same relationship included, is
+// untouched.
+void disconnecting_a_side_unpins_comments_from_its_line() {
+    TestIds ids;
+    Editor editor(ids);
+    const auto department = keyed_entity(editor, "Department", {0, 0}, {"DeptNo"});
+    const auto employee = keyed_entity(editor, "Employee", {400, 0}, {"EmpNo"});
+    const auto works_in = related(editor, "WorksIn", department, Cardinality::One, employee, Cardinality::Many, {200, 100});
+    const auto only_line = remark(editor, "Is this the right department?", {ConnectorRef{works_in.first}});
+    const auto line_and_box = remark(editor, "Check both", {ConnectorRef{works_in.first}, ElementRef{employee}});
+    const auto other_end = remark(editor, "Fine as it is", {ConnectorRef{works_in.second}});
+    const auto on_box = remark(editor, "Is DeptNo right?", {ElementRef{department}});
+    const auto before = editor.project();
+
+    CHECK(editor.disconnect(works_in.relationship, works_in.first));
+    auto expected = without_side(before, works_in, works_in.first);
+    expected.comments.erase(only_line);
+    expected.comments.at(line_and_box).targets = {CommentTarget{ElementRef{employee}}};
+    CHECK(editor.project() == expected);
+    CHECK(!editor.project().comments.contains(only_line));
+    CHECK(editor.project().comments.at(other_end) == before.comments.at(other_end));
+    CHECK(editor.project().comments.at(on_box) == before.comments.at(on_box));
+    CHECK(sound(editor.project()));
+    CHECK(editor.undo());
+    CHECK(editor.project() == before);
+    CHECK(editor.redo());
+    CHECK(editor.project() == expected);
+}
+
+// Everything that hangs on one side goes with it in one step, and nothing that
+// hangs on anything else: what is left is exactly what deleting the side
+// leaves, and one undo brings the whole project back.
+void disconnecting_a_side_takes_everything_that_depends_on_it() {
+    TestIds ids;
+    Editor editor(ids);
+    const auto manager = keyed_entity(editor, "Manager", {0, 0}, {"StaffNo"});
+    const auto department = keyed_entity(editor, "Department", {400, 0}, {"DeptNo"});
+    const auto employee = keyed_entity(editor, "Employee", {400, 300}, {"EmpNo"});
+    const auto heads = related(editor, "Heads", manager, Cardinality::One, department, Cardinality::One, {200, 100});
+    // Departments keeps the key at first, so the key is the one made for
+    // Manager's side: it is named, listed first and its line shaped.
+    CHECK(editor.set_one_to_one_key(heads.relationship, heads.second));
+    const auto key = foreign_key_from(LinkSource{heads.first});
+    CHECK(makes_key(editor.project(), key));
+    CHECK(editor.rename_foreign_key(ForeignKeyColumn{key, 0}, "HeadStaffNo"));
+    const auto departments = relation_from(ElementRef{department});
+    CHECK(editor.set_column_order(
+        departments, identities(table_called(schema_preview(editor.project()), "Departments"), {"HeadStaffNo", "DeptNo"})));
+    SchemaLine bent;
+    bent.route = {Point{300, 60}};
+    CHECK(editor.shape_schema_line(LinkSource{heads.first}, bent));
+    // Then Managers is chosen to keep it instead, so Manager's side is the
+    // chosen side, and the key made for it -- name, place and line -- waits
+    // for the choice to come back. Its line on the diagram is bent and
+    // remarked on.
+    CHECK(editor.set_one_to_one_key(heads.relationship, heads.first));
+    CHECK(!makes_key(editor.project(), key));
+    CHECK(editor.bend_connector(ConnectorRef{heads.first}, 24.0));
+    const auto on_line = remark(editor, "Who heads it?", {ConnectorRef{heads.first}});
+
+    // The other end of Heads, which stays: the key now made for it, named and
+    // shaped; a bend; a remark.
+    const auto kept_key = foreign_key_from(LinkSource{heads.second});
+    CHECK(makes_key(editor.project(), kept_key));
+    CHECK(editor.rename_foreign_key(ForeignKeyColumn{kept_key, 0}, "HeadOf"));
+    CHECK(editor.shape_schema_line(LinkSource{heads.second}, bent));
+    CHECK(editor.bend_connector(ConnectorRef{heads.second}, -16.0));
+    const auto on_other_end = remark(editor, "Fine", {ConnectorRef{heads.second}});
+    // A relationship of its own, with all the same; a table placed by hand;
+    // another one-to-one with its own choice.
+    const auto works_in = related(editor, "WorksIn", department, Cardinality::One, employee, Cardinality::Many, {400, 150});
+    const auto home = foreign_key_from(LinkSource{works_in.first});
+    CHECK(editor.rename_foreign_key(ForeignKeyColumn{home, 0}, "HomeDept"));
+    CHECK(editor.set_column_order(relation_from(ElementRef{employee}),
+                                  identities(table_called(schema_preview(editor.project()), "Employees"), {"HomeDept", "EmpNo"})));
+    CHECK(editor.shape_schema_line(LinkSource{works_in.first}, bent));
+    CHECK(editor.bend_connector(ConnectorRef{works_in.first}, 12.0));
+    const auto elsewhere = remark(editor, "Check", {ConnectorRef{works_in.first}});
+    CHECK(editor.move_schema_tables({{ElementRef{employee}, Point{640, 480}}}));
+    const auto car = keyed_entity(editor, "Car", {0, 500}, {"Plate"});
+    const auto bay = keyed_entity(editor, "Bay", {400, 500}, {"BayNo"});
+    const auto parks = related(editor, "Parks", car, Cardinality::One, bay, Cardinality::One, {200, 500});
+    CHECK(editor.set_one_to_one_key(parks.relationship, parks.second));
+    const auto before = editor.project();
+    CHECK(sound(before));
+
+    const auto revision = editor.revision();
+    CHECK(editor.disconnect(heads.relationship, heads.first));
+    CHECK(editor.revision() == revision + 1);
+    CHECK(editor.undo_label() == "Disconnect participant");
+    auto expected = without_side(before, heads, heads.first);
+    expected.decisions.one_to_one_key.erase(heads.relationship);
+    expected.schema.foreign_key_names.erase(ForeignKeyColumn{key, 0});
+    std::erase(expected.schema.column_order.at(departments), ColumnIdentity{ForeignKeyColumn{key, 0}});
+    expected.schema_layout.lines.erase(key);
+    expected.connectors.erase(ConnectorRef{heads.first});
+    expected.comments.erase(on_line);
+    CHECK(editor.project() == expected);
+    CHECK(sound(editor.project()));
+    // What hangs on the other end, and on everything else, is as it was.
+    const auto& after = editor.project();
+    CHECK(after.schema.foreign_key_names.at(ForeignKeyColumn{kept_key, 0}) == "HeadOf");
+    CHECK(after.schema.foreign_key_names.at(ForeignKeyColumn{home, 0}) == "HomeDept");
+    CHECK(after.schema_layout.lines.contains(kept_key) && after.schema_layout.lines.contains(home));
+    CHECK(after.connectors.contains(ConnectorRef{heads.second}) && after.connectors.contains(ConnectorRef{works_in.first}));
+    CHECK(after.comments.contains(on_other_end) && after.comments.contains(elsewhere));
+    CHECK(after.decisions.one_to_one_key.at(parks.relationship) == parks.second);
+    CHECK(after.schema.column_order.at(relation_from(ElementRef{employee})) == before.schema.column_order.at(relation_from(ElementRef{employee})));
+    CHECK(after.schema_layout.tables == before.schema_layout.tables);
+
+    // One undo brings the whole project back; redo takes it all again.
+    CHECK(editor.undo());
+    CHECK(editor.project() == before);
+    CHECK(editor.redo());
+    CHECK(editor.project() == expected);
+    // And it is exactly what deleting the same side leaves.
+    CHECK(editor.undo());
+    CHECK(editor.erase({}, {{heads.relationship, heads.first}}));
+    CHECK(editor.project() == expected);
+    CHECK(editor.undo());
+    CHECK(editor.project() == before);
+}
+
+namespace {
+// The whole of a column's type: what it is, and how it is measured.
+struct TypeShape {
+    LogicalType type = LogicalType::Unset;
+    std::uint32_t length = 0;
+    std::uint32_t scale = 0;
+    auto operator<=>(const TypeShape&) const = default;
+};
+TypeShape shape_in(const Project& project, const std::string& table, const std::string& column) {
+    for (const auto& one : schema_preview(project).tables)
+        if (one.name == table)
+            for (const auto& held : one.columns)
+                if (held.name == column) return {held.type, held.length, held.scale};
+    throw std::runtime_error("no column " + table + "." + column);
+}
+} // namespace
+
+// A foreign key drawn by hand takes the whole of its key's type -- the type,
+// its precision and its scale -- and follows the key when the key's size
+// changes. It always has; it stands here beside the conversion's own foreign
+// keys, below, so the two are seen to agree.
+void hand_drawn_foreign_keys_keep_the_key_scale() {
+    TestIds ids;
+    Editor editor(ids);
+    editor.new_schema_project();
+    const auto price = std::get<RelationId>(*editor.create_relation("Price", Point{40, 40}).created);
+    const auto key = editor.project().schema.added.at(price).front().id;
+    CHECK(editor.set_schema_column_type(key, LogicalType::Decimal));
+    CHECK(editor.set_schema_column_size(key, 10, 2));
+    const auto item = std::get<RelationId>(*editor.create_relation("Item", Point{400, 40}).created);
+    CHECK(editor.connect_foreign_key(item, std::nullopt, "PriceID", price, key));
+    CHECK((shape_in(editor.project(), "Price", "PriceID") == TypeShape{LogicalType::Decimal, 10, 2}));
+    CHECK((shape_in(editor.project(), "Item", "PriceID") == TypeShape{LogicalType::Decimal, 10, 2}));
+    // The key made larger, and the foreign key with it.
+    CHECK(editor.set_schema_column_size(key, 12, 4));
+    CHECK((shape_in(editor.project(), "Item", "PriceID") == TypeShape{LogicalType::Decimal, 12, 4}));
+}
+
+// A foreign key the conversion makes takes the whole of its key's type too,
+// so a key of decimal(10,2) is referred to by a decimal(10,2) and not by a
+// decimal(10,0) (fixed 2026-10-02: the scale was left behind). Each column of
+// a key of several columns takes its own, in the key's own order; a bridge's
+// foreign keys are made the same way; and since the conversion is worked out
+// afresh, a key whose size changes is followed.
+void generated_foreign_keys_keep_the_key_scale() {
+    TestIds ids;
+    Editor editor(ids);
+    const auto entity = [&](const char* name, double x) {
+        return std::get<EntityId>(*editor.create_entity(name, {x, 0, 160, 80}).created);
+    };
+    const auto key = [&](EntityId owner, const char* name, LogicalType type, std::uint32_t length,
+                         std::uint32_t scale) {
+        const auto made = std::get<AttributeId>(*editor.create_attribute(name, {}, ElementRef{owner}).created);
+        CHECK(editor.set_attribute_kind(made, AttributeKind::Key));
+        CHECK(editor.set_logical_type(made, type, length));
+        CHECK(editor.set_type_size(made, length, scale));
+        return made;
+    };
+    const auto relate = [&](const char* name, EntityId first, Cardinality first_maximum, EntityId second,
+                            Cardinality second_maximum) {
+        const auto made = std::get<RelationshipId>(*editor.create_relationship(name, {200, 300, 190, 110}).created);
+        const auto one = editor.connect(made, first);
+        const auto other = editor.connect(made, second);
+        CHECK(editor.update_participant(made, *one.participant, first_maximum, Participation::Partial, ""));
+        CHECK(editor.update_participant(made, *other.participant, second_maximum, Participation::Partial, ""));
+    };
+
+    // A key of one column, decimal(10,2): its foreign key is decimal(10,2),
+    // as one drawn by hand into the same key is.
+    const auto price = entity("Price", 0);
+    const auto code = key(price, "Code", LogicalType::Decimal, 10, 2);
+    const auto item = entity("Item", 400);
+    relate("Has", price, Cardinality::One, item, Cardinality::Many);
+    CHECK((shape_in(editor.project(), "Prices", "Code") == TypeShape{LogicalType::Decimal, 10, 2}));
+    CHECK((shape_in(editor.project(), "Items", "PriceCode") == TypeShape{LogicalType::Decimal, 10, 2}));
+    // The key made decimal(12,4): its foreign key follows.
+    CHECK(editor.set_type_size(code, 12, 4));
+    CHECK((shape_in(editor.project(), "Items", "PriceCode") == TypeShape{LogicalType::Decimal, 12, 4}));
+
+    // A key of two columns with different scales: each part keeps its own,
+    // and points at its own member in the key's order.
+    const auto lot = entity("Lot", 0);
+    key(lot, "A", LogicalType::Decimal, 10, 2);
+    key(lot, "B", LogicalType::Decimal, 8, 3);
+    const auto unit = entity("Unit", 400);
+    relate("Holds", lot, Cardinality::One, unit, Cardinality::Many);
+    CHECK((shape_in(editor.project(), "Units", "LotA") == TypeShape{LogicalType::Decimal, 10, 2}));
+    CHECK((shape_in(editor.project(), "Units", "LotB") == TypeShape{LogicalType::Decimal, 8, 3}));
+    const auto preview = schema_preview(editor.project());
+    for (const auto& table : preview.tables) {
+        if (table.name != "Units") continue;
+        for (const auto& column : table.columns) {
+            if (!column.foreign_key || !column.references) continue;
+            const auto& pointed = preview.tables[*column.references].columns[column.references_column].name;
+            CHECK((column.name == "LotA" && column.reference_part == 0 && pointed == "A")
+                  || (column.name == "LotB" && column.reference_part == 1 && pointed == "B"));
+        }
+    }
+
+    // A bridge's foreign keys are made by the same rule: numeric(9,4) stays
+    // numeric(9,4).
+    const auto store = entity("Store", 0);
+    key(store, "StoreNo", LogicalType::Numeric, 9, 4);
+    relate("Stocks", store, Cardinality::Many, item, Cardinality::Many);
+    CHECK((shape_in(editor.project(), "Stocks", "StoreNo") == TypeShape{LogicalType::Numeric, 9, 4}));
+}
+
 int main() {
     const std::pair<const char*, std::function<void()>> tests[] = {
         {"identity and work in progress", identity_and_work_in_progress},
@@ -2602,6 +4304,8 @@ int main() {
         {"connector shapes follow their link", connector_shapes_follow_their_link},
         {"connections can be pinned as they are made", connections_can_be_pinned_as_they_are_made},
         {"pictures and notes are placed like elements", pictures_and_notes_are_placed_like_elements},
+        {"lettering follows resizing by hand", lettering_follows_resizing_by_hand},
+        {"history tells what was done", history_tells_what_was_done},
         {"relating two entities is one edit", relating_two_entities_is_one_edit},
         {"weak entities and identifying relationships", weak_entities_and_identifying_relationships},
         {"hostile connector shapes", hostile_connector_shapes_are_rejected},
@@ -2621,6 +4325,25 @@ int main() {
         {"schema tables are pulled by any of their edges", schema_tables_are_pulled_by_any_of_their_edges},
         {"roles name the keys they carry", roles_name_the_keys_they_carry},
         {"deletion carries away answers and schema edits", deletion_carries_away_answers_and_schema_edits},
+        {"a schema is drawn by hand", a_schema_is_drawn_by_hand},
+        {"a drawn table names its key for itself", a_drawn_table_names_its_key_for_itself},
+        {"a schema converts into its diagram", a_schema_converts_into_its_diagram},
+        {"a join of a table with itself converts", a_join_of_a_table_with_itself_converts},
+        {"foreign keys can be renamed", foreign_keys_can_be_renamed},
+        {"key order is not column order", key_order_is_not_column_order},
+        {"generated columns keep the order given them", generated_columns_keep_the_order_given_them},
+        {"composite foreign keys ignore the order tables are listed in",
+         composite_foreign_keys_ignore_the_order_tables_are_listed_in},
+        {"a column order outlives the diagram changing", a_column_order_outlives_the_diagram_changing},
+        {"every generated column has an identity of its own", every_generated_column_has_an_identity_of_its_own},
+        {"disconnecting a side takes its foreign key names", disconnecting_a_side_takes_its_foreign_key_names},
+        {"disconnecting a side takes its shaped line", disconnecting_a_side_takes_its_shaped_line},
+        {"disconnecting a side settles its one-to-one choice", disconnecting_a_side_settles_its_one_to_one_choice},
+        {"making a side one can say which side keeps the key", making_a_side_one_can_say_which_side_keeps_the_key},
+        {"disconnecting a side unpins comments from its line", disconnecting_a_side_unpins_comments_from_its_line},
+        {"disconnecting a side takes everything that depends on it", disconnecting_a_side_takes_everything_that_depends_on_it},
+        {"hand-drawn foreign keys keep the key scale", hand_drawn_foreign_keys_keep_the_key_scale},
+        {"generated foreign keys keep the key scale", generated_foreign_keys_keep_the_key_scale},
     };
     std::size_t failures = 0;
     for (const auto& [name, test] : tests) {

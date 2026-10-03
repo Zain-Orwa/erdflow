@@ -260,6 +260,42 @@ QWidget#schemaBar QToolButton:hover, QWidget#schemaBar QToolButton:pressed { bor
 QToolButton#schemaTheme { border-color: @border@; background: @panel@; padding: 5px 22px 5px 9px; }
 QToolButton#schemaTheme::menu-indicator { subcontrol-origin: padding; subcontrol-position: center right; right: 4px; width: 12px; }
 QToolButton#schemaTheme:hover, QToolButton#schemaTheme:pressed { border-color: @accent@; background: @base@; color: @text@; }
+/* The header of a schema drawn by hand (Zain, 2026-09-27): quiet controls of
+   one height, with rounded corners and a hairline edge on the panel, in
+   groups, and only the chosen design lit in the accent. Keyed on the header's
+   schemaFirst property, or on containers only that header shows, so the
+   header of a diagram is dressed exactly as before.
+
+   The tools are written for their row, and the buttons that drop a menu by a
+   property they carry, so a menu added to the row later has its arrow level
+   with the word without anybody remembering. Connect's split arrow is drawn
+   by the theme, as the diagram's tool row draws it, in rules kept apart for
+   the reason given with those. */
+QWidget#workspaceHeader[schemaFirst="true"] QPushButton#backToHome { background: @base@; color: @text@; border: 1px solid @border@; border-radius: 7px; padding: 5px 12px; min-height: 20px; }
+QWidget#workspaceHeader[schemaFirst="true"] QPushButton#backToHome:hover { background: @hover@; border-color: @hoveredge@; }
+QWidget#schemaModeSwitch { background: @base@; border: 1px solid @border@; border-radius: 8px; }
+QWidget#schemaModeSwitch QPushButton { background: transparent; color: @text@; border: none; border-radius: 6px; padding: 4px 16px; min-height: 20px; }
+QWidget#schemaModeSwitch QPushButton:hover { background: @hover@; }
+QWidget#schemaModeSwitch QPushButton#schemaModeSchema:checked { background: @accent@; color: @selected@; font-weight: 600; }
+QWidget#schemaModeSwitch QPushButton#previewConceptual:checked { background: @hover@; color: @accent@; }
+QFrame#headerRule { background: @border@; border: none; }
+QToolButton#renameDocument { background: transparent; border: 1px solid transparent; border-radius: 6px; padding: 4px; }
+QToolButton#renameDocument:hover { background: @hover@; border-color: @hoveredge@; }
+QWidget#schemaTopTools QToolButton { background: @base@; color: @text@; border: 1px solid @border@; border-radius: 7px; padding: 5px 10px; min-height: 20px; }
+QWidget#schemaTopTools QToolButton:hover { background: @hover@; border-color: @hoveredge@; }
+QWidget#schemaTopTools QToolButton:checked { background: @accent@; color: @selected@; border-color: @accent@; }
+QWidget#schemaTopTools QToolButton[menuButton="true"] { padding: 5px 24px 5px 10px; }
+QWidget#schemaTopTools QToolButton[menuButton="true"]::menu-indicator { subcontrol-origin: padding; subcontrol-position: center right; right: 6px; width: 12px; }
+QWidget#schemaTopTools QToolButton#schemaConnect { padding-right: 22px; }
+QWidget#schemaTopTools QToolButton::menu-button { background: transparent; border: none; width: 18px; }
+QWidget#schemaTopTools QToolButton::menu-button:hover { background: rgba(0, 0, 0, 13%); }
+QWidget#schemaTopTools QToolButton::menu-button:pressed { background: rgba(0, 0, 0, 25%); }
+QWidget#workspaceHeader[schemaFirst="true"] QToolButton#schemaUndo { background: transparent; border: 1px solid transparent; border-radius: 7px; padding: 5px 8px; min-height: 20px; }
+QWidget#workspaceHeader[schemaFirst="true"] QToolButton#schemaRedo { background: transparent; border: 1px solid transparent; border-radius: 7px; padding: 5px 8px; min-height: 20px; }
+QWidget#workspaceHeader[schemaFirst="true"] QToolButton#schemaUndo:hover { background: @hover@; border-color: @hoveredge@; }
+QWidget#workspaceHeader[schemaFirst="true"] QToolButton#schemaRedo:hover { background: @hover@; border-color: @hoveredge@; }
+QWidget#workspaceHeader[schemaFirst="true"] QLineEdit#schemaSearch { background: @base@; border: 1px solid @border@; border-radius: 7px; padding: 5px 8px; min-height: 20px; }
+QWidget#workspaceHeader[schemaFirst="true"] QToolButton#schemaTheme { background: @base@; border-radius: 7px; padding: 5px 24px 5px 10px; min-height: 20px; }
 QToolBar#ribbonTabs { background: @panel@; border-bottom: 1px solid @border@; padding: 0px; spacing: 0px; }
 QToolBar#ribbonTabs QToolButton { background: transparent; color: @text@; border: none; border-bottom: 2px solid transparent; border-radius: 0px; padding: 6px 13px 4px 13px; }
 QToolBar#ribbonTabs QToolButton:hover { background: @hover@; color: @text@; border-bottom-color: @hoveredge@; }
@@ -327,7 +363,9 @@ QWidget#canvasControls { background: @panel@; border: 1px solid @border@; border
 QWidget#canvasControls QToolButton { background: transparent; color: @text@; border: 1px solid transparent; border-radius: 5px; padding: 0px; font-size: 16px; font-weight: 700; }
 QWidget#canvasControls QToolButton:hover { background: @hover@; border-color: @hoveredge@; }
 QWidget#canvasControls QToolButton:checked { background: @accent@; color: @selected@; border-color: @accent@; }
+QWidget#canvasControls QFrame#canvasControlsRule { background: @border@; border: none; }
 QGraphicsView#diagramCanvas { background: @canvas@; border: 1px solid @border@; }
+QGraphicsView#conceptualPreview { background: @canvas@; border: 1px solid @border@; }
 QLineEdit, QComboBox, QDoubleSpinBox, QSpinBox, QPlainTextEdit { background: @base@; color: @text@; border: 1px solid @border@; border-radius: 2px; padding: 4px 6px; }
 QLineEdit:focus, QComboBox:focus, QDoubleSpinBox:focus, QSpinBox:focus, QPlainTextEdit:focus { border-color: @accent@; }
 QLineEdit:disabled, QComboBox:disabled, QDoubleSpinBox:disabled, QSpinBox:disabled, QPlainTextEdit:disabled { background: @panel@; color: @muted@; }
@@ -352,6 +390,44 @@ QWidget#workspaceHeader { background: @panel@; border-bottom: 1px solid @border@
 QLabel#workspaceBadge { color: @accent@; font-size: 11px; font-weight: 700; padding-right: 10px; }
 QLabel#documentTitle { color: @text@; font-size: 13px; font-weight: 600; }
 QLabel#propertyHeading { color: @accent@; font-size: 15px; font-weight: 800; padding-bottom: 2px; }
+QLabel#schemaPropertyName { color: @text@; font-size: 14px; font-weight: 700; }
+QLabel#schemaPropertiesHeading { color: @accent@; font-size: 15px; font-weight: 800; }
+QWidget#schemaTableProperties QLabel#propertyHeading { color: @muted@; font-size: 12px; font-weight: 600; padding: 0px; }
+QFrame#schemaPropertySeparator { background: @border@; border: none; }
+QFrame#schemaColumnRow { background: @base@; border: 1px solid @border@; border-radius: 5px; }
+QFrame#schemaColumnRow:hover, QFrame#schemaColumnRow:focus { border-color: @accent@; }
+QLabel#schemaColumnNumber { color: @muted@; font-size: 12px; }
+QFrame#schemaColumnRow QLineEdit { padding: 3px 4px; font-size: 12px; }
+QComboBox#schemaColumnType { padding: 3px 3px; padding-right: 12px; font-size: 12px; }
+QToolButton#schemaColumnConstraints { background: @base@; color: @text@; border: 1px solid @border@; border-radius: 2px; padding: 0px; font-size: 12px; }
+QToolButton#schemaColumnConstraints:hover, QToolButton#schemaColumnConstraints:focus { border-color: @accent@; }
+QPushButton#schemaPropertiesAddColumn { padding: 4px 8px; text-align: left; }
+QPushButton#schemaDerivedValue { color: @muted@; font-style: italic; text-align: left; }
+QFrame#schemaFactCard { background: @base@; border: 1px solid @border@; border-radius: 7px; }
+QFrame#schemaFactCard QLabel#schemaLowerFactTitle { color: @text@; font-size: 12px; font-weight: 600; }
+QFrame#schemaFactCard QLabel#schemaPropertyValue { color: @muted@; font-size: 12px; }
+QLabel#schemaFactCount { background: @hover@; color: @muted@; border: none; border-radius: 8px; padding: 1px 6px; font-size: 11px; }
+QFrame#schemaColumnIdentity { background: @base@; border: 1px solid @border@; border-radius: 8px; }
+QFrame#schemaColumnIdentity QLabel#propertyHeading { padding-bottom: 0px; }
+QLabel#schemaColumnIdentityName { color: @text@; font-size: 14px; font-weight: 700; }
+QLabel#schemaColumnIdentityPath { color: @muted@; font-size: 12px; }
+QFrame#schemaReadOnlyBox { background: @panel@; border: 1px solid @border@; border-radius: 4px; }
+QFrame#schemaReadOnlyBox QLabel#schemaPropertyValue { color: @text@; }
+QFrame#schemaRelationshipIdentity { background: @base@; border: 1px solid @border@; border-radius: 8px; }
+QFrame#schemaRelationshipIdentity QLabel#propertyHeading { padding-bottom: 0px; }
+QLabel#schemaRelationshipIdentityEnds { color: @text@; font-size: 13px; font-weight: 700; }
+QLabel#schemaRelationshipIdentityKind { color: @muted@; font-size: 12px; }
+QFrame#schemaRelationshipFacts, QFrame#schemaRelationshipEnd { background: @base@; border: 1px solid @border@; border-radius: 7px; }
+QLabel#schemaRelationshipFactLabel { color: @muted@; font-size: 12px; }
+QFrame#schemaRelationshipFacts QLabel#schemaPropertyValue { color: @text@; font-size: 12px; font-weight: 600; }
+QLabel#schemaRelationshipTable { color: @text@; font-size: 12px; font-weight: 700; }
+QLabel#schemaRelationshipRole { font-size: 11px; }
+QLabel#schemaRelationshipEndRole { color: @muted@; font-size: 11px; font-weight: 600; }
+QFrame#schemaRelationshipEnd QLabel#schemaPropertyValue { color: @text@; font-size: 12px; font-weight: 600; }
+QFrame#schemaConstraintList { background: @base@; border: 1px solid @border@; border-radius: 7px; }
+QFrame#schemaConstraintDivider { background: @border@; border: none; }
+QLabel#schemaConstraintTitle { color: @text@; font-size: 12px; font-weight: 700; }
+QLabel#schemaConstraintNote { color: @muted@; font-size: 11px; }
 QWidget#participantCard { background: @panel@; border: 1px solid @border@; border-radius: 3px; margin-bottom: 4px; }
 QWidget#participantCard:hover { background: @hover@; border-color: @hoveredge@; }
 QTabBar::tab { background: @window@; color: @text@; border: 1px solid @border@; padding: 6px 14px; }

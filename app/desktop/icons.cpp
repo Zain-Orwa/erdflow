@@ -14,6 +14,7 @@
 #include <QPixmap>
 #include <QPolygonF>
 #include <QSvgRenderer>
+#include <array>
 #include <cmath>
 
 namespace erdflow::desktop {
@@ -140,11 +141,80 @@ void draw(QPainter& painter, Glyph glyph, const Theme& colors, qreal side) {
         painter.setPen(outline(colors.entity_border, weight));
         painter.drawRoundedRect(box.adjusted(0, box.height() * 0.14, 0, -box.height() * 0.14), 2.5, 2.5);
         break;
+    case Glyph::Arrange: {
+        // Three sheets laid one over another, as a drawing program shows the
+        // order things are stacked in: where things are put.
+        painter.setPen(outline(accent.darker(150), weight * 0.8));
+        for (int sheet = 2; sheet >= 0; --sheet) {
+            const auto drop = box.height() * 0.2 * sheet;
+            const auto top = box.top() + drop;
+            const auto tall = box.height() * 0.55;
+            QPolygonF leaf;
+            leaf << QPointF(centre.x(), top) << QPointF(box.right(), top + tall / 2)
+                 << QPointF(centre.x(), top + tall) << QPointF(box.left(), top + tall / 2);
+            if (sheet == 0) painter.setBrush(depth(box, accent));
+            else painter.setBrush(accent.lighter(130 + sheet * 20));
+            painter.drawPolygon(leaf);
+        }
+        break;
+    }
+    case Glyph::Appearance: {
+        // A painter's palette with three dabs of colour on it: how things are
+        // drawn, as against Theme, which is the whole window's colours.
+        QPainterPath palette;
+        palette.addEllipse(box.adjusted(0, box.height() * 0.06, 0, -box.height() * 0.06));
+        QPainterPath thumb;
+        thumb.addEllipse(QPointF(box.left() + box.width() * 0.66, box.top() + box.height() * 0.68),
+                         box.width() * 0.13, box.width() * 0.13);
+        painter.setBrush(depth(box, colors.base));
+        painter.setPen(outline(ink, weight * 0.85));
+        painter.drawPath(palette.subtracted(thumb));
+        painter.setPen(Qt::NoPen);
+        const std::array<QColor, 3> dabs{colors.entity_border, colors.relationship_border, accent};
+        const std::array<QPointF, 3> at{QPointF(0.32, 0.36), QPointF(0.58, 0.28), QPointF(0.28, 0.62)};
+        for (std::size_t i = 0; i < dabs.size(); ++i) {
+            painter.setBrush(dabs[i]);
+            painter.drawEllipse(QPointF(box.left() + box.width() * at[i].x(), box.top() + box.height() * at[i].y()),
+                                box.width() * 0.1, box.width() * 0.1);
+        }
+        break;
+    }
+    case Glyph::Table: {
+        // A table as the schema draws one: a heading band over its rows, with
+        // the key gutter ruled off down the left. In the entity's colours,
+        // since a table wears the colours of what it came from.
+        const auto body = box.adjusted(0, box.height() * 0.08, 0, -box.height() * 0.08);
+        painter.setBrush(depth(box, colors.entity_fill));
+        painter.setPen(outline(colors.entity_border, weight));
+        painter.drawRoundedRect(body, 2.5, 2.5);
+        const auto band = body.top() + body.height() * 0.3;
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(colors.entity_border);
+        painter.drawRoundedRect(QRectF(body.left(), body.top(), body.width(), band - body.top()), 2.5, 2.5);
+        painter.setPen(outline(colors.entity_border, weight * 0.7));
+        const auto row = body.top() + body.height() * 0.65;
+        painter.drawLine(QPointF(body.left(), row), QPointF(body.right(), row));
+        const auto gutter = body.left() + body.width() * 0.3;
+        painter.drawLine(QPointF(gutter, band), QPointF(gutter, body.bottom()));
+        break;
+    }
     case Glyph::Attribute:
         painter.setBrush(depth(box, colors.attribute_fill));
         painter.setPen(outline(colors.attribute_border, weight));
         painter.drawEllipse(box.adjusted(0, box.height() * 0.16, 0, -box.height() * 0.16));
         break;
+    case Glyph::SchemaRelationships: {
+        const QPointF top(centre.x(), box.top() + box.height() * 0.16);
+        const QPointF left(box.left() + box.width() * 0.16, box.bottom() - box.height() * 0.16);
+        const QPointF right(box.right() - box.width() * 0.16, left.y());
+        const auto radius = box.width() * 0.16;
+        painter.setPen(outline(ink, weight));
+        painter.drawLine(top, left);
+        painter.drawLine(top, right);
+        painter.setBrush(colors.panel);
+        for (const auto& point : {top, left, right}) painter.drawEllipse(point, radius, radius);
+        break;
+    }
     case Glyph::Relationship: {
         QPolygonF diamond;
         diamond << QPointF(centre.x(), box.top()) << QPointF(box.right(), centre.y())
@@ -419,6 +489,32 @@ void draw(QPainter& painter, Glyph glyph, const Theme& colors, qreal side) {
         painter.drawLine(middle.topRight(), middle.bottomRight());
         break;
     }
+    case Glyph::ExplorerPanel:
+    case Glyph::PropertiesPanel:
+    case Glyph::SidePanels: {
+        // The window Full view draws, with the side panel the button shows or
+        // puts away filled -- the left, the right, or both -- where Full view
+        // fills what is left between them. The fill goes under the frame, so
+        // the two meet with nothing between them.
+        const auto margin = box.width() * 0.3;
+        const bool left = glyph != Glyph::PropertiesPanel;
+        const bool right = glyph != Glyph::ExplorerPanel;
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(depth(box, accent));
+        if (left)
+            painter.drawRect(QRectF(box.left(), box.top(), margin, box.height()));
+        if (right)
+            painter.drawRect(QRectF(box.right() - margin, box.top(), margin, box.height()));
+        painter.setBrush(Qt::NoBrush);
+        painter.setPen(outline(colors.muted, weight * 0.85));
+        painter.drawRoundedRect(box, 2, 2);
+        painter.setPen(outline(colors.muted, weight * 0.6));
+        if (left)
+            painter.drawLine(QPointF(box.left() + margin, box.top()), QPointF(box.left() + margin, box.bottom()));
+        if (right)
+            painter.drawLine(QPointF(box.right() - margin, box.top()), QPointF(box.right() - margin, box.bottom()));
+        break;
+    }
     case Glyph::Note: {
         // A slip with a folded corner and two lines of writing on it.
         const auto fold = box.width() * 0.28;
@@ -471,6 +567,7 @@ QString icon_name(Glyph glyph) {
     case Glyph::Entity: return QStringLiteral("entity");
     case Glyph::Attribute: return QStringLiteral("attribute");
     case Glyph::Relationship: return QStringLiteral("relationship");
+    case Glyph::SchemaRelationships: return QStringLiteral("schema-relationships");
     case Glyph::Isa: return QStringLiteral("isa");
     case Glyph::Connect: return QStringLiteral("connect");
     case Glyph::Pan: return QStringLiteral("pan");
@@ -492,8 +589,41 @@ QString icon_name(Glyph glyph) {
     case Glyph::Export: return QStringLiteral("export");
     case Glyph::Search: return QStringLiteral("search");
     case Glyph::Key: return QStringLiteral("key");
+    // The coloured set's table is filed as the schema it is the unit of.
+    case Glyph::Table: return QStringLiteral("schema");
+    // Neither has artwork in the coloured set, so the drawn glyph stands in
+    // there; the line art has both.
+    case Glyph::Arrange: return QStringLiteral("layers");
+    case Glyph::Appearance: return QStringLiteral("appearance");
+    case Glyph::ExplorerPanel: return QStringLiteral("panel-left");
+    case Glyph::PropertiesPanel: return QStringLiteral("panel-right");
+    case Glyph::SidePanels: return QStringLiteral("side-panels");
     }
     return QStringLiteral("select");
+}
+
+QPixmap primary_key_mark(int size, qreal ratio, bool greyed) {
+    const auto pixels = std::max(1, static_cast<int>(std::lround(size * ratio)));
+    QImage image(pixels, pixels, QImage::Format_ARGB32);
+    image.fill(Qt::transparent);
+    QSvgRenderer drawing(QStringLiteral(":/erdflow/marks/primary-key.svg"));
+    if (drawing.isValid()) {
+        QPainter painter(&image);
+        painter.setRenderHint(QPainter::Antialiasing);
+        drawing.render(&painter, QRectF(0, 0, pixels, pixels));
+    }
+    // Plain shows no colour of its own (Zain, 2026-09-24): the key keeps its
+    // shape and shading, in greys.
+    if (greyed)
+        for (int y = 0; y < image.height(); ++y) {
+            auto* line = reinterpret_cast<QRgb*>(image.scanLine(y));
+            for (int x = 0; x < image.width(); ++x) {
+                const auto grey = qGray(line[x]);
+                line[x] = qRgba(grey, grey, grey, qAlpha(line[x]));
+            }
+        }
+    image.setDevicePixelRatio(ratio);
+    return QPixmap::fromImage(image);
 }
 
 QPixmap outline_pixmap(const QString& name, const QColor& ink, int size) {
@@ -539,7 +669,10 @@ QIcon inked_icon(Glyph glyph, const Theme& colors, int size, IconMode mode) {
         // of the surrounding text. Qt's renderer does not resolve that itself,
         // so the ink asked for is put in its place before the file is drawn --
         // which is what makes one set of files serve every palette.
-        QFile file(QStringLiteral(":/erdflow/icons-outline/%1.svg").arg(icon_name(glyph)));
+        // The line-art set files its table as relational, the level it is
+        // the unit of; every other glyph goes by the same name in both sets.
+        QFile file(QStringLiteral(":/erdflow/icons-outline/%1.svg")
+                       .arg(glyph == Glyph::Table ? QStringLiteral("relational") : icon_name(glyph)));
         if (file.open(QIODevice::ReadOnly)) {
             const auto source = file.readAll();
             const auto inked = [&](const QColor& ink) {

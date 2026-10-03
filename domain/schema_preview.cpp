@@ -171,6 +171,7 @@ PreviewColumn generated_key_for(const Project& project, const ElementRef& table,
     auto column = generated_key(chosen != project.schema.key_names.end() ? chosen->second
                                                                          : std::move(suggested));
     column.auto_increment = project.schema.counting_keys.contains(relation_from(table));
+    column.invented_for = relation_from(table);
     return column;
 }
 } // namespace
@@ -285,6 +286,7 @@ void add_schema_only(const Project& project, const ElementRef& table,
         column.auto_increment = one.auto_increment;
         column.origin_kind = ColumnOrigin::SchemaOnly;
         column.added = one.id;
+        column.key_order = one.key_order;
         into.push_back(column);
     }
 }
@@ -317,18 +319,133 @@ bool begins_with(const std::string& name, const std::string& word) {
     return true;
 }
 
-// The primary key columns of a table, by position, so a foreign key can name
-// what it points at.
+// The primary key columns of a table, as positions, in the order the key is
+// in, so a foreign key can name what it points at, part by part. The columns
+// the conversion makes stand in the order it makes them; among them, the
+// columns added on the schema take the places their own key order gives them,
+// in the run of places they fill, rather than the order the table lists them
+// in -- which is what lets a table's columns be listed in any order without
+// the key, or anything pointing at it, changing.
 std::vector<std::size_t> key_columns(const PreviewTable& table) {
     std::vector<std::size_t> keys;
-    for (std::size_t i = 0; i < table.columns.size(); ++i)
-        if (table.columns[i].primary_key && !table.columns[i].ignored) keys.push_back(i);
+    std::vector<std::size_t> slots;   // where in keys the added columns stand
+    std::vector<std::size_t> added;   // and which columns they are
+    for (std::size_t i = 0; i < table.columns.size(); ++i) {
+        if (!table.columns[i].primary_key || table.columns[i].ignored) continue;
+        if (table.columns[i].added) {
+            slots.push_back(keys.size());
+            added.push_back(i);
+        }
+        keys.push_back(i);
+    }
+    std::stable_sort(added.begin(), added.end(), [&](std::size_t a, std::size_t b) {
+        return table.columns[a].key_order < table.columns[b].key_order;
+    });
+    for (std::size_t n = 0; n < slots.size(); ++n) keys[slots[n]] = added[n];
     return keys;
+}
+
+// Each table worked out from the diagram, listed in the order somebody gave
+// it (Task 4B, 2026-10-02), once its key has been taken. The columns the order
+// names come first, in its order; one it names that the table does not have
+// at the moment is passed over, and stays in the order for when it returns;
+// and every column it does not name follows, in the order the conversion made
+// them. What finds a column by where it stands -- the table's own key, and
+// every foreign key that points into the table -- is carried to where the
+// column now stands, the key keeping its own order: a key (A, B) is still
+// (A, B) whichever of A and B is listed first.
+void arrange_columns(const Project& project, SchemaPreview& preview) {
+    if (project.schema.column_order.empty()) return;
+    // For each table listed afresh, where each column as made now stands.
+    std::vector<std::vector<std::size_t>> moved_to(preview.tables.size());
+    for (std::size_t t = 0; t < preview.tables.size(); ++t) {
+        auto& table = preview.tables[t];
+        const auto wanted = project.schema.column_order.find(table.id);
+        if (wanted == project.schema.column_order.end()) continue;
+        // Where each identity stands in the table as made, the first last, so
+        // that a column copied in twice gives up its first place first.
+        std::map<ColumnIdentity, std::vector<std::size_t>> rows_of;
+        for (auto row = table.columns.size(); row-- > 0;)
+            if (const auto identity = column_identity(table.columns[row])) rows_of[*identity].push_back(row);
+        std::vector<std::size_t> listed;   // the rows as made, in the order they are now listed
+        std::vector<bool> placed(table.columns.size(), false);
+        for (const auto& identity : wanted->second) {
+            const auto found = rows_of.find(identity);
+            if (found == rows_of.end() || found->second.empty()) continue;
+            listed.push_back(found->second.back());
+            placed[found->second.back()] = true;
+            found->second.pop_back();
+        }
+        for (std::size_t row = 0; row < table.columns.size(); ++row)
+            if (!placed[row]) listed.push_back(row);
+        if (std::is_sorted(listed.begin(), listed.end())) continue;   // listed as made already
+        std::vector<std::size_t> to(table.columns.size());
+        std::vector<PreviewColumn> columns;
+        columns.reserve(listed.size());
+        for (std::size_t place = 0; place < listed.size(); ++place) {
+            to[listed[place]] = place;
+            columns.push_back(std::move(table.columns[listed[place]]));
+        }
+        table.columns = std::move(columns);
+        for (auto& row : table.primary_key) row = to[row];
+        moved_to[t] = std::move(to);
+    }
+    for (auto& table : preview.tables)
+        for (auto& column : table.columns) {
+            if (!column.references || *column.references >= moved_to.size()) continue;
+            const auto& to = moved_to[*column.references];
+            if (column.references_column < to.size()) column.references_column = to[column.references_column];
+        }
 }
 } // namespace
 
+std::optional<ColumnIdentity> column_identity(const PreviewColumn& column) {
+    // Its own identity first, where it has one; then the foreign key it is a
+    // part of; then what it was made for; and last the attribute it was made
+    // from -- which a composite kept whole as well as in parts also has.
+    if (column.added) return ColumnIdentity{*column.added};
+    if (column.origin_kind == ColumnOrigin::ForeignKey && column.key_id)
+        return ColumnIdentity{ForeignKeyColumn{*column.key_id, column.reference_part}};
+    if (column.invented_for) return ColumnIdentity{InventedKeyColumn{*column.invented_for}};
+    if (column.discriminates) return ColumnIdentity{DiscriminatorColumn{*column.discriminates}};
+    if (column.origin) return ColumnIdentity{*column.origin};
+    return std::nullopt;
+}
+
 SchemaPreview schema_preview(const Project& project) {
     SchemaPreview preview;
+    if (project.schema.standalone) {
+        std::map<RelationId, std::size_t> positions;
+        for (const auto& [id, relation] : project.schema.relations) {
+            PreviewTable table;
+            table.id = id;
+            table.origin = ElementRef{id}; // editable object, not conceptual provenance
+            table.name = relation.name;
+            add_schema_only(project, ElementRef{id}, table.columns);
+            positions[id] = preview.tables.size();
+            preview.tables.push_back(std::move(table));
+        }
+        for (const auto& [id, key] : project.schema.foreign_keys) {
+            if (!positions.contains(key.from) || !positions.contains(key.to)) continue;
+            auto& from = preview.tables[positions.at(key.from)];
+            const auto& to = preview.tables[positions.at(key.to)];
+            for (auto& column : from.columns) {
+                if (column.added != key.column) continue;
+                for (std::size_t i = 0; i < to.columns.size(); ++i) {
+                    if (to.columns[i].added != key.target) continue;
+                    column.foreign_key = true;
+                    column.references = positions.at(key.to);
+                    column.references_column = i;
+                    column.link = LinkSource{id};
+                    column.key_id = id;
+                    column.optional_link = !column.required;
+                    column.one_to_one = column.unique || column.primary_key;
+                }
+            }
+        }
+        for (auto& table : preview.tables) table.primary_key = key_columns(table);
+        return preview;
+    }
     std::map<ElementRef, std::size_t> table_of;   // which table an element became
 
     // 1. A table for each entity, carrying its attributes.
@@ -423,15 +540,21 @@ SchemaPreview schema_preview(const Project& project) {
                                      LinkSource link, const std::string& role = {}, bool key_part = false) {
         const auto keys = key_columns(preview.tables[target]);
         if (keys.empty()) return;
-        for (const auto key : keys) {
+        for (std::size_t part = 0; part < keys.size(); ++part) {
+            const auto key = keys[part];
             PreviewColumn column;
             const auto& key_name = preview.tables[target].columns[key].name;
+            // A name typed over this one wins over every rule below, and is
+            // kept as it was typed (Zain, 2026-09-27).
+            const auto typed = project.schema.foreign_key_names.find(
+                ForeignKeyColumn{foreign_key_from(link), static_cast<std::uint32_t>(part)});
+            if (typed != project.schema.foreign_key_names.end()) column.name = typed->second;
             // The role the side was given names the key, which is the only
             // thing that can tell two links to the same table apart. A flight's
             // departure and arrival airports are both AirportID without it, and
             // naming one of them after the table it points at says nothing
             // about which is which.
-            if (!role.empty()) column.name = role + key_name;
+            else if (!role.empty()) column.name = role + key_name;
             // A key pointing back into its own table cannot share the name it
             // points at, or a table would hold the same column twice.
             else if (into == target) column.name = "Parent" + key_name;
@@ -450,14 +573,17 @@ SchemaPreview schema_preview(const Project& project) {
                 return std::any_of(preview.tables[into].columns.begin(), preview.tables[into].columns.end(),
                                    [&](const PreviewColumn& existing) { return existing.name == wanted; });
             };
-            if (taken_already(column.name)) {
+            if (typed == project.schema.foreign_key_names.end() && taken_already(column.name)) {
                 const auto qualified = preview.tables[target].name + column.name;
                 column.name = qualified;
                 for (int attempt = 2; taken_already(column.name); ++attempt)
                     column.name = qualified + std::to_string(attempt);
             }
+            // The whole of the key's type, scale and all, so a key of
+            // decimal(10,2) is referred to by a decimal(10,2).
             column.type = preview.tables[target].columns[key].type;
             column.length = preview.tables[target].columns[key].length;
+            column.scale = preview.tables[target].columns[key].scale;
             column.foreign_key = true;
             column.required = !optional;
             column.primary_key = key_part;
@@ -475,6 +601,7 @@ SchemaPreview schema_preview(const Project& project) {
             column.one_to_one = one_to_one;
             column.link = link;
             column.key_id = foreign_key_from(link);
+            column.reference_part = static_cast<std::uint32_t>(part);
             preview.tables[into].columns.push_back(column);
         }
     };
@@ -693,13 +820,14 @@ SchemaPreview schema_preview(const Project& project) {
         }
         if (strategy == IsaStrategy::SingleTable) {
             auto& into = preview.tables[parent->second];
-            into.columns.push_back([] {
+            into.columns.push_back([&] {
                 PreviewColumn discriminator;
                 discriminator.name = "Type";
                 discriminator.type = LogicalType::Varchar;
                 discriminator.length = 40;
                 discriminator.required = true;
                 discriminator.origin_kind = ColumnOrigin::Discriminator;
+                discriminator.discriminates = id;
                 return discriminator;
             }());
         } else if (strategy == IsaStrategy::PerConcrete) {
@@ -762,6 +890,13 @@ SchemaPreview schema_preview(const Project& project) {
         preview.tables = std::move(kept);
     }
 
+    // Each table's key, taken once everything is in place and before anything
+    // could list the columns in another order: what a key is, and what each
+    // foreign key's parts point at, is settled here and never read again from
+    // where columns happen to stand.
+    for (auto& table : preview.tables) table.primary_key = key_columns(table);
+    // Only then is a table listed in an order somebody gave it.
+    arrange_columns(project, preview);
     return preview;
 }
 
