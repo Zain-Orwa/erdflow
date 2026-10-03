@@ -1167,11 +1167,97 @@ void connections_can_be_pinned_as_they_are_made() {
     CHECK(!editor.project().attributes.at(born).owner);
     CHECK(editor.project().connectors.size() == 1);
     CHECK(!blocks(editor.project()));
+
+    // An attribute placed on its owner can be pinned as it is made, in the
+    // same step of history, which is how the attributes placed on a locked
+    // owner all leave it from one point.
+    Connector exit;
+    exit.owner_anchor = -1.2;
+    const auto placed = editor.create_attribute("Grade", {0, -200, 150, 60}, AttributeOwner{ElementRef{student}}, exit);
+    CHECK(placed && placed.created);
+    const auto grade = std::get<AttributeId>(*placed.created);
+    CHECK(editor.project().connectors.at(ConnectorRef{grade}) == exit);
+    CHECK(editor.undo_label() == "Create attribute");
+    CHECK(editor.undo());
+    CHECK(!editor.project().attributes.contains(grade));
+    CHECK(!editor.project().connectors.contains(ConnectorRef{grade}));
+    // With no owner there is no link, so the shape is not stored.
+    const auto alone = editor.create_attribute("Alone", {0, 200, 150, 60}, std::nullopt, exit);
+    CHECK(alone && !editor.project().connectors.contains(ConnectorRef{std::get<AttributeId>(*alone.created)}));
+    CHECK(!blocks(editor.project()));
 }
 
 // A picture and a note are placed elements without being database objects:
 // named, described, moved, coloured, copied and deleted through the same
 // commands as everything else, owning nothing and connected to nothing.
+// The first time an entity, relationship or attribute is made another size by
+// hand, the size it had is kept as the size its name is drawn for, and the
+// name follows the box from there (Zain, 2026-09-26). Nothing else keeps one.
+void lettering_follows_resizing_by_hand() {
+    // The smaller of the two changes, held between a quarter and sixteen.
+    const LetteringBase base{148, 86};
+    CHECK(lettering_factor(base, 148, 86) == 1.0);
+    CHECK(lettering_factor(base, 296, 86) == 1.0);   // wider only: room, not size
+    CHECK(lettering_factor(base, 296, 172) == 2.0);
+    CHECK(lettering_factor(base, 74, 86) == 0.5);
+    CHECK(lettering_factor(base, 1, 1) == 0.25);
+    CHECK(lettering_factor(base, 100000, 100000) == 16.0);
+
+    TestIds ids;
+    Editor editor(ids);
+    const ElementRef student{entity(editor, "Student")};
+    const ElementRef mentor{relationship(editor, "Mentor")};
+    const ElementRef born{attribute(editor, "Born")};
+    const Rect was{0, 0, 160, 80};
+    CHECK(editor.project().layout.at(student) == was);
+    CHECK(editor.project().lettering.empty());
+
+    // The first resize keeps the size it started from, in the same edit.
+    CHECK(editor.resize_entities({{student, {0, 0, 320, 160}}}));
+    CHECK(editor.project().lettering.at(student) == (LetteringBase{160, 80}));
+    // A second keeps the first's, so the name follows the box both ways.
+    CHECK(editor.resize_entities({{student, {0, 0, 240, 120}}}));
+    CHECK(editor.project().lettering.at(student) == (LetteringBase{160, 80}));
+    CHECK(editor.undo());
+    CHECK(editor.undo());
+    CHECK(!editor.project().lettering.contains(student));
+    CHECK(editor.redo());
+
+    // Relationships and attributes alike.
+    CHECK(editor.resize_relationships({{mentor, {0, 0, 380, 220}}}));
+    CHECK(editor.resize_attributes({{born, {0, 0, 300, 120}}}));
+    CHECK(editor.project().lettering.at(mentor) == (LetteringBase{160, 80}));
+    CHECK(editor.project().lettering.at(born) == (LetteringBase{160, 80}));
+
+    // Moving keeps no size; giving a new size through Properties does.
+    const ElementRef course{entity(editor, "Course")};
+    CHECK(editor.move({{course, {40, 40, 160, 80}}}));
+    CHECK(!editor.project().lettering.contains(course));
+    CHECK(editor.move({{course, {40, 40, 200, 100}}}));
+    CHECK(editor.project().lettering.at(course) == (LetteringBase{160, 80}));
+
+    // A copy draws its name as the original does; a deletion takes it away.
+    const auto copied = editor.duplicate({student});
+    CHECK(copied && copied.created);
+    CHECK(editor.project().lettering.at(*copied.created) == editor.project().lettering.at(student));
+    CHECK(editor.erase({student}));
+    CHECK(!editor.project().lettering.contains(student));
+    CHECK(!blocks(editor.project()));
+    CHECK(editor.undo());
+    CHECK(editor.project().lettering.contains(student));
+
+    // Only those three have lettering of their own.
+    auto project = editor.project();
+    const auto note = editor.create_note("Note", {});
+    CHECK(note && note.created);
+    project = editor.project();
+    project.lettering.emplace(*note.created, LetteringBase{200, 120});
+    CHECK(has_issue(project, "lettering.kind"));
+    project = editor.project();
+    project.lettering.at(course) = LetteringBase{0, 80};
+    CHECK(has_issue(project, "lettering.invalid"));
+}
+
 void pictures_and_notes_are_placed_like_elements() {
     TestIds ids;
     Editor editor(ids);
@@ -2602,6 +2688,7 @@ int main() {
         {"connector shapes follow their link", connector_shapes_follow_their_link},
         {"connections can be pinned as they are made", connections_can_be_pinned_as_they_are_made},
         {"pictures and notes are placed like elements", pictures_and_notes_are_placed_like_elements},
+        {"lettering follows resizing by hand", lettering_follows_resizing_by_hand},
         {"relating two entities is one edit", relating_two_entities_is_one_edit},
         {"weak entities and identifying relationships", weak_entities_and_identifying_relationships},
         {"hostile connector shapes", hostile_connector_shapes_are_rejected},

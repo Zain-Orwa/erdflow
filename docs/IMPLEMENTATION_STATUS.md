@@ -7,7 +7,7 @@
 > look like afterwards, and whether it is a gain or a loss. He decides.
 > Full rule: [CLAUDE.md](../CLAUDE.md).
 
-**Updated:** 2026-09-23
+**Updated:** 2026-09-27
 
 **Scope:** Part 1 — a single-page Conceptual ERD editor foundation.
 
@@ -16,6 +16,56 @@ Domain Model, Scale, and Roadmap documents also describe capabilities that have
 not been built yet. Their presence in those documents is not a completion claim.
 
 ## What works
+
+- **Approved full-window start cards** (2026-09-27). The raised pale-blue
+  window is now the whole card, including its title, three dots, preview and
+  centered blue **+ Create** button. The inner preview window and its shadow
+  are removed; no divider separates the preview from the action. SQL retains
+  its Coming soon badge and disabled route. Create with AI remains constructed
+  and available through `set_ai_offered`, hidden by default. Existing preview
+  scenes, animation controls, accessibility and route wiring are retained.
+
+- **Create with AI is switched off for now** (2026-09-26). One constant,
+  `create_with_ai_offered` in `start_route_card.hpp`, is `false`: every
+  card still makes its Create with AI exactly as before, but does not show
+  it, and **+ Create** stands alone in the middle of the card at the size
+  it has beside it. Setting the constant to `true` brings the pair back
+  exactly as it was, + Create on the left and Create with AI on the right,
+  the two centred together (`StartRouteCard::set_ai_offered` does the same
+  for one card). The card's size and content are unchanged.
+- **A Home card's two actions light up under the pointer** (2026-09-26).
+  Pointed at, **+ Create** is drawn brighter with a pale edge, and **Create
+  with AI** takes a soft blue tint and an accent outline; each lights alone,
+  and is exactly as it was at rest once the pointer leaves. Create with AI
+  lights up though it is disabled (a style sheet gives a disabled button no
+  hover, so the card marks it `lit` as the pointer enters and leaves, and
+  styles the mark). Size, place, words, the spark, the pressed look and what
+  pressing does are unchanged, and so is the card
+  (`StartRouteCard::eventFilter`, the `lit` rules in `StartRouteCard::wear`).
+- Attributes can be resized by their edges and corners, as entities are
+  (2026-09-26, fix). Their eight handles were drawn, but a drag was sized by
+  the symbol's corner-only rule, and letting go sent the new size to the
+  symbols' command, which refused it with "Only a symbol can be resized".
+  They now use the entity's pull and their own command,
+  `Editor::resize_attributes` ("Resize attribute"), clamped to the entity's
+  limits.
+
+- An entity's, relationship's or attribute's name is drawn with its box once
+  the box has been resized by hand (2026-09-26). The first resize by a handle
+  or through Properties keeps the size the element had as the size its name
+  is drawn for (`Project::lettering`, saved from format version 29), and the
+  name then grows and shrinks with the box by the smaller of the two changes
+  (`domain::lettering_factor`, held between a quarter and sixteen times):
+  a corner pulled out to twice the size draws the name twice as tall, while
+  pulling only the width out gives a long name room without enlarging it.
+  It follows the box live while a handle is pulled, the rename box follows
+  it too, and a copy keeps it. An element never resized has no entry and is
+  drawn exactly as before, so every existing diagram is unchanged.
+
+- Conceptual relationship diamonds can be resized with the existing selection
+  handles on all four edges and corners. The label stays centered and connectors
+  follow the boundary during dragging. Resize is undoable; defaults and existing
+  document dimensions remain unchanged until explicitly resized.
 
 - The diagram has paper of its own, chosen under **View → Background** and so
   also on the Design row: **None**, the plain canvas its theme gives it;
@@ -238,6 +288,56 @@ not been built yet. Their presence in those documents is not a completion claim.
   element and returns to Select. Double-clicking the tool locks it, marking the
   button with a padlock, so it keeps placing until another tool is chosen or
   Escape is pressed. Select cannot be locked.
+- An attribute placed with the Attribute tool stands on its own and is
+  connected by hand, whatever is selected (2026-09-26). It used to be joined
+  to a selected entity, relationship or composite attribute. To attach
+  attributes as they are placed, an owner is locked instead, in any of
+  three places: the open padlock an entity, relationship or composite
+  attribute wears in its top-left corner while it is selected; **Lock as
+  attribute owner** in its right-click menu; or the same button under its
+  name in Properties. The owner then wears a closed padlock there, and
+  every attribute placed is attached to it with its line drawn; with the
+  Attribute tool locked too, one after another. Pressing the closed padlock,
+  which also answers with the Attribute tool in hand, or **Unlock attribute
+  owner** in the other two places, lets it go, as does deleting the owner,
+  a composite being made plain, or another project being opened. Only one
+  owner is locked at a time. The lock is not saved in the file. Connecting
+  two entities still creates the relationship between them, as before.
+- An attribute put down within a short reach (100 units) of another
+  entity, relationship or composite attribute, and nearer to it than to the
+  locked owner, is asked about before anything is placed (2026-09-26): "You
+  are locked to Mentor, but this attribute is nearer Student." **Continue**
+  attaches it to the locked owner, and that element is not asked about
+  again while the lock lasts; **Unlock** lets the lock go and places the
+  attribute on its own, to be connected by hand; **Cancel** places nothing.
+- **An attribute's line leaves its owner from the middle of the side facing
+  it** (2026-09-26, replacing the sliding join and its stub). Every
+  attribute on one side of an entity, relationship or composite attribute
+  leaves from the same point (the middle of a box's edge, a diamond's point,
+  an ellipse's end), each by its own straight line in every line style,
+  with no stub, so lines never hook round or run across the body. Moving
+  an attribute about on that side leaves the point where it is; carried past
+  a corner, its line moves to the middle of the side it now faces (Zain
+  chose this over a point fixed wherever the attribute goes). Nothing is
+  stored, so the line stays unlocked; one pinned by hand, or dragged to a
+  point, is drawn straight from where it was pinned. Attributes placed on a
+  locked owner are unlocked like any other and follow the same rule (they
+  used to be pinned to a shared exit).
+- **Connect no longer pins a line where it was clicked** (2026-09-26).
+  "Join where I click", which was the default and pinned both ends there,
+  is gone from Connect's arrow, and with it the choice it was one half of;
+  a choice remembered from before is ignored. Every line Connect draws
+  starts unlocked. Lines already pinned in saved diagrams stay pinned until
+  unlocked by their padlock or right-click.
+- A click anywhere in the window outside the diagram puts down whatever
+  tool is in hand, locked or not, and takes up Select (2026-09-26): the
+  Explorer, Properties, the ribbon, the header, the Relational Design panel
+  and so on. Inside the diagram a click does what the tool does, placing
+  what it places. The diagram's own zoom controls and scrollbars count as
+  inside it, and a button that chooses a tool still chooses that tool.
+  The click itself still does its ordinary job, and the tool is put down
+  once it has, so a name being typed on the diagram is kept as before
+  (`MainWindow::pressed_outside_canvas`, watched by `PressWatch`).
 - Selecting an element draws every link touching it heavier and lifts it above
   the other links, so what it connects to can be read at a glance.
 - Single/multiple/rubber-band selection, Select All, zoom (mouse wheel, or a
@@ -324,7 +424,10 @@ not been built yet. Their presence in those documents is not a completion claim.
   there, and is then an element like any other to drag or place by its
   coordinates. The
   relationship, both of its sides and their joins are one edit, so one undo
-  takes the whole thing back.
+  takes the whole thing back. Its two lines start unlocked (2026-09-26):
+  neither end is pinned to where the entity was clicked, whatever Connect's
+  join setting, so each slides round its shapes as they move, until it is
+  locked by hand. Every other connection Connect makes is unchanged.
 - Weak entities and identifying relationships: an entity's **Kind** in
   Properties is Regular or Weak, and a relationship's is Regular, Identifying
   or Associative. A weak entity is drawn with a double border and its key
@@ -1084,7 +1187,8 @@ records what a key the conversion invented has been
 renamed to; version 21 records where the schema differs from the diagram;
 version 22 records how it has been arranged; version 23 records how tall a
 table has been pulled as well as how wide; version 28 records which bridges
-somebody chose to key by their participants' foreign keys. Older files open,
+somebody chose to key by their participants' foreign keys; version 29 keeps the
+size an element's name is drawn for. Older files open,
 and read correctly as having none of these.
 
 The Part 1 checklist is a coverage inventory, not a replacement for semantic
@@ -1114,11 +1218,13 @@ outside the repository at `erdflow-notes/UI-AZURE-TASKS.md`. What is built:
   the work.
 - **The top of Home.** The native menu bar (File · Home · Edit · Insert ·
   Design · View · Help) stays on Home. The ribbon's rows give way, while Home
-  is up, to a slim bar (`AppTopBar`) carrying only the ERDFlow mark, a
-  **Settings** button and a **Theme ▼** control, as Zain settled (ADR-022
-  §9.14). Theme opens the window's own theme menu, with its preview on hover.
-  Settings holds the window's own Theme, Icons and Notation menus. The ribbon
-  row that was in front comes back when Home is left. The status line stays.
+  is up, to a slim bar (`AppTopBar`) carrying only the ERDFlow mark and a
+  **Theme ▼** control (ADR-022 §9.14). Theme opens the window's own theme
+  menu, with its preview on hover. The bar's own Settings gear, and the
+  divider between it and Theme, were taken out on 2026-09-26 (Zain: one
+  Settings, not two); Settings is the sidebar's row, which holds the
+  window's own Theme, Icons and Notation menus. The ribbon row that was in
+  front comes back when Home is left. The status line stays.
 - **Opens filling the screen.** An ordinary launch shows the window
   maximised. 1440 × 920 is the size it returns to when un-maximised, and a
   run with `--screenshot` or `--size` is shown at that size, or the one asked
@@ -1172,16 +1278,17 @@ outside the repository at `erdflow-notes/UI-AZURE-TASKS.md`. What is built:
     at most 320 px, on one level. A column is also kept small enough that the
     illustration's top stays on the page and both pictures end clear of
     *Create a new project*.
-  - *The line:* one smooth line joins them, running from a port on the
-    page's right edge to a port on the platform's near corner. It passes
-    under both ends of the subtitle, so it never crosses a word. It is a
-    rounded tube in one light blue (Zain, 2026-09-25): deeper at its edges,
-    paler towards its middle, with light along its centre, over a soft
-    glow. Nothing is fixed on it.
+  - *The line:* one smooth line joins them. It comes out from under the
+    page's right edge and goes in under the platform, past its near corner,
+    with nothing fixed at either end. It passes under both ends of the
+    subtitle, so it never crosses a word. It is a rounded tube in one light
+    blue (Zain, 2026-09-25): deeper at its edges, paler towards its middle,
+    with light along its centre, over a soft glow. Nothing is fixed on it.
     - *Electrons:* four coloured electrons travel along it on the
       illustration's clock, cyan and violet going to the database, amber
       and green coming back. They move when the orbit moves and rest where
-      it rests.
+      it rests. They are hidden inside the page and under the platform,
+      so they come out of one and go into the other.
     - *The page lights up:* when an electron coming back reaches the page,
       the page glows in that electron's colour for a second and a half.
     - *Cost:* only the pixels round each electron, and the page while it
@@ -1280,7 +1387,10 @@ outside the repository at `erdflow-notes/UI-AZURE-TASKS.md`. What is built:
     of the accent across the row.
 
   The chosen card is told apart only gently, by a slightly firmer edge and
-  a faint light at its top; it has no heavy blue outline. A card holding a
+  a faint light at its top; it has no heavy blue outline. A card that can
+  be taken, while pointed at or reached by the keyboard, is coloured a
+  little deeper than the others and than itself at rest: the hover colour
+  carried towards the accent, with the hover edge (Zain, 2026-09-25). A card holding a
   preview keeps no room for the description it does not draw, so its parts
   sit close together.
 - **Each preview is a raised tile of tinted glass, like the hero's welcome

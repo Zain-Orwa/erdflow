@@ -58,16 +58,15 @@ public:
     void show_time(double seconds);
     [[nodiscard]] std::size_t step() const { return step_; }
     // Whether it stands on a floor of its own: under the cards it does; held
-    // inside a card, the card is its ground, and it is shown on a small screen
-    // raised off the card instead (Zain, 2026-09-25).
+    // inside a card, the card supplies the full window surface.
     void set_floor(bool on);
     // For the Conceptual demo: show the Conceptual canvas itself, drawn small,
     // rather than its painted scene. What a still card shows; a demo that
     // moves shows its painted scene, which is what can be moved.
     void set_real_canvas(bool on);
     [[nodiscard]] bool real_canvas() const { return real_canvas_; }
-    // The screen it is shown on inside a card, and the part of it the scene
-    // or the canvas is drawn in, in this widget's own coordinates.
+    // The preview content bounds within the parent card, in this widget's
+    // coordinates. The parent supplies the window frame.
     [[nodiscard]] QRectF screen() const;
     [[nodiscard]] QRectF screen_inside() const;
     [[nodiscard]] double progress() const { return progress_; }
@@ -83,7 +82,6 @@ protected:
 
 private:
     void paint_floor(QPainter& painter, const QRectF& stage) const;
-    void paint_screen(QPainter& painter) const;
 
     HomeDemoKind kind_;
     ThemeId theme_ = ThemeId::Azure;
