@@ -64,6 +64,14 @@ struct StartRouteDefinition {
 // + Create. All three hold theirs on Home; a card given none keeps its own
 // drawing and description. Pressing the card chooses it; only the button
 // creates.
+//
+// Whether the cards offer Create with AI beside + Create (Zain, 2026-09-26).
+// Off for now: AI is not built, so + Create stands alone, centred on the
+// card. Set this to true to offer it again, and the two stand side by side
+// exactly as before. Nothing of Create with AI is taken out while it is off;
+// it is made as ever and only not shown.
+inline constexpr bool create_with_ai_offered = false;
+
 class StartRouteCard final : public QAbstractButton {
 public:
     StartRouteCard(const StartRouteDefinition& what, QWidget* parent);
@@ -73,7 +81,7 @@ public:
     [[nodiscard]] StartRoute route() const { return what_.route; }
     [[nodiscard]] QSize sizeHint() const override;
     [[nodiscard]] QSize minimumSizeHint() const override;
-    // How tall the card is at a given width: a door's proportion, 1.10 times
+    // How tall the card is at a given width: a door's proportion, 1.24 times
     // as tall as wide, unless its words need more. Its height follows from its
     // width and is never set on its own.
     [[nodiscard]] int height_for(int card_width) const;
@@ -86,11 +94,16 @@ public:
     [[nodiscard]] bool compact() const { return compact_; }
     // What starts the project. Disabled with its card.
     [[nodiscard]] QPushButton* create_button() const { return create_; }
-    // Beside it, Create with AI. On every card, and not yet built, so it
-    // cannot be pressed on any of them and says why when pointed at. On a
-    // card too narrow to hold both in full, it says only "AI", with the same
-    // spark and the same name read out.
+    // Beside it, Create with AI. Made on every card, and shown only while it
+    // is offered (see create_with_ai_offered). Not yet built, so it cannot be
+    // pressed on any of them and says why when pointed at. On a card too
+    // narrow to hold both in full, it says only "AI", with the same spark and
+    // the same name read out.
     [[nodiscard]] QPushButton* ai_button() const { return ai_; }
+    // Whether this card shows it. Every card starts as create_with_ai_offered
+    // says; turned on, the pair stands as it always has.
+    void set_ai_offered(bool on);
+    [[nodiscard]] bool ai_offered() const { return ai_offered_; }
     // Where its preview's screen stands, in the card's own coordinates, or
     // nothing where it holds none or the preview is too small to be drawn.
     [[nodiscard]] QRectF preview() const;
@@ -100,6 +113,11 @@ protected:
     void resizeEvent(QResizeEvent* event) override;
     void enterEvent(QEnterEvent* event) override;
     void leaveEvent(QEvent* event) override;
+    // Lights + Create or Create with AI while the pointer is over it, and
+    // only that one (Zain, 2026-09-26), enabled or not: Create with AI is not
+    // built yet, and a disabled button is given no hover by its style sheet,
+    // so it is marked "lit" by hand as the pointer comes and goes.
+    bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
     struct Flow {
@@ -123,6 +141,7 @@ private:
     ThemeId theme_ = ThemeId::Azure;
     bool under_pointer_ = false;
     bool compact_ = false;
+    bool ai_offered_ = create_with_ai_offered;
 };
 
 } // namespace erdflow::desktop

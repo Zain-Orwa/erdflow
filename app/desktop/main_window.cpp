@@ -4175,7 +4175,6 @@ void MainWindow::wire_home() {
     settings_menu_->setObjectName("settingsMenu");
     for (const char* name : {"themeMenu", "iconMenu", "notationMenu"})
         if (auto* menu = findChild<QMenu*>(name)) settings_menu_->addMenu(menu);
-    home_->top_bar()->attach_settings_menu(settings_menu_);
     home_->top_bar()->attach_theme_menu(findChild<QMenu*>("themeMenu"));
 
     auto* rail = home_->sidebar();
