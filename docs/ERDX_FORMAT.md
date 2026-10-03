@@ -111,6 +111,41 @@ required `transparency` array, which may be empty, of one percentage per
 element; earlier versions must not carry it, and every surface in such a file
 is solid, which is all it could be.
 
+**Version 29** keeps the size each entity, relationship or attribute had when
+it was first resized by hand, which its name is drawn for. The project gains a
+required `lettering` array, which may be empty; earlier versions must not
+carry it, and every name in such a file is drawn at its ordinary size. (The
+versions between 15 and 28 are not yet written up here.)
+
+**Version 30** holds a schema drawn by hand, in a project that starts from its
+schema rather than from a diagram (2026-09-27). The `schema` object gains a
+required `standalone` boolean and required `relations` and `foreign_keys`
+arrays, which may be empty; an element reference may name a `relation`, and a
+schema line's link may be a `foreign_key`. Earlier versions must not carry
+them, and open as projects begun as diagrams, which is all they could be. See
+[The schema drawn by hand](#the-schema-drawn-by-hand).
+
+**Version 31** keeps a name typed over a foreign key the conversion made. The
+`schema` object gains a required `foreign_key_names` array, which may be empty;
+earlier versions must not carry it, and every foreign key in such a file is
+named by the rule, which is all it could be.
+
+**Version 32** keeps each schema column's place in its table's primary key
+(2026-10-02), so a key of several columns no longer follows the order its
+table lists its columns in. Every object in an `added` table's `columns` gains
+a required `key_order` number; earlier versions must not carry it. A file of
+an earlier version is given, as it opens, the order its key was read in then
+-- the key's columns in the order the table listed them -- so it means exactly
+what it meant; saved again, it is written as version 32. See
+[The order of a key](#the-order-of-a-key).
+
+**Version 33** keeps the order somebody gave the columns of a table worked out
+from the diagram (2026-10-02). The `schema` object gains a required
+`column_order` array, which may be empty; earlier versions must not carry it,
+and every table in such a file is listed as the conversion makes it, which is
+all it could say. See
+[The order of columns in a table](#the-order-of-columns-in-a-table).
+
 **Version 13** adds weak entities and identifying relationships. An entity
 object gains a required `weak` boolean and a relationship object a required
 `identifying` boolean; earlier versions must not carry them, and read as
@@ -156,6 +191,7 @@ The project object has exactly these fields:
 | `pictures` | Array of picture objects; version 11 onwards |
 | `notes` | Array of note objects; version 11 onwards |
 | `transparency` | Array of element-transparency objects; version 12 onwards |
+| `lettering` | Array of element-lettering objects; version 29 onwards |
 | `background` | Background object; version 14 onwards |
 
 An **entity** object has `id`, `name`, and `description`, all strings, and
@@ -269,6 +305,83 @@ A specialization holds no attributes of its own; an attribute owned by one is
 rejected. Deleting a supertype removes the specialization with it, and deleting
 a subtype detaches it from the specializations that survive.
 
+## The schema drawn by hand
+
+A project that starts from its schema has `standalone: true` in its `schema`
+object, holds no entities, attributes, relationships or specializations, and
+keeps its tables as relations:
+
+```json
+{"id": "019947b9-7111-7000-8000-000000000010", "name": "Employee",
+ "description": "", "comment": ""}
+```
+
+Each relation's columns are the schema's added columns under that relation's
+identity, in their order, exactly as columns added to a derived table are. A
+**foreign key** has exactly `id`, `from`, `to`, `column` and `target`: the
+relation holding the key and the relation it points at, and the column in
+each. The target is its table's only primary key column, or a unique one; the
+two columns have the same type, length and scale; and a column carries at most
+one foreign key. A relation or foreign key may appear only where `standalone`
+is `true`.
+
+Converting such a project into a diagram leaves `standalone` `false` and the
+two arrays empty: the tables are worked out from the diagram from then on.
+
+A **foreign key name** has exactly `key`, `part` and `name`: the identity of a
+foreign key the conversion made, which column of the key it points at (`0` for
+a key of one column), and the name typed over the one the rule gives it. The
+key must be one the project can make; at most one name per `key` and `part`.
+A `part` counts along the referenced key in the key's own order (below), never
+along the order its table lists its columns in.
+
+### The order of a key
+
+A column added on the schema -- every column of a table drawn by hand, and any
+column added to a table worked out from a diagram -- carries `key_order`: its
+place in its table's primary key, counted from `1`, or `0` for a column
+outside the key. A column is in the key exactly when it is an `identifier`,
+and no two columns of a table share a place. A key of several columns is read
+in ascending `key_order`, whatever order the table lists its columns in; a
+foreign key the conversion makes into it takes its parts in that order, part
+`0` pointing at the first. A key the conversion makes from the diagram is in
+the order the conversion makes it, and the columns added on the schema take
+their places, by `key_order`, in the run of places they fill.
+
+### The order of columns in a table
+
+A **column order** has exactly `relation` and `columns`: a table worked out
+from the diagram, and its columns in the order it is listed in. Each column is
+named by what it was made from, never by its name or its position, as an
+object tagged by `kind`:
+
+| `kind` | Other fields | The column |
+| --- | --- | --- |
+| `attribute` | `id` | made from that attribute |
+| `column` | `id` | added on the schema, by its own identity |
+| `foreign_key` | `key`, `part` | that part of a foreign key the conversion made, as a foreign key name names it |
+| `key` | `relation` | the key invented for that relation, where nothing on the diagram identifies it |
+| `discriminator` | `specialization` | the column that says which kind of row each row is, for that specialization |
+
+The table is listed with the columns named here first, in this order, and then
+every column it has that is not named, in the order the conversion makes them.
+A column named here that the table does not hold at the moment -- taken out by
+something that can be put back, such as an attribute made multivalued, or put
+in another table by a hierarchy's mapping -- is passed over and kept, so that
+it returns to its place. The order says only how a table is listed: its
+primary key keeps the order of [The order of a key](#the-order-of-a-key), and
+a foreign key's `part` counts along that key, whatever order either table is
+listed in.
+
+A table appears at most once, and an empty `columns` list is read as no order
+at all. Each table must be one the project can make, no column may be named
+twice in one order, and every column named must be one the project can still
+make -- an attribute, an added column, a foreign key, a relation or a
+specialization that is there. A column the project can make but this table
+does not hold is not a fault. Deleting an element takes its columns out of
+every order in the same step. A schema drawn by hand carries no orders: its
+columns are listed in the order its `added` columns are kept in.
+
 ## Pictures and notes
 
 A picture and a note are visual aids: they are placed on the canvas, and
@@ -322,6 +435,22 @@ rather than approximate. The `element` must reference an element that exists. At
 most one colour may be given per element, and an element with none is drawn in
 whatever colour the active theme gives its kind — which is why a document that
 has never been recoloured follows the theme everywhere.
+
+## Lettering
+
+An **element-lettering** object has exactly `element`, `width` and `height`:
+
+```json
+{"element": {"type": "attribute", "id": "019947b9-7111-7000-8000-000000000002"},
+ "width": 150, "height": 60}
+```
+
+It names an entity, a relationship or an attribute, and the positive size its
+box had when it was first resized by hand. In a box of that size the name is
+drawn at its ordinary size; in any other it is drawn larger or smaller by the
+smaller of the two changes, width to width and height to height, held between
+a quarter and sixteen times ordinary. An element with no entry has its name
+drawn at its ordinary size whatever its box. At most one entry per element.
 
 ## Transparency
 
