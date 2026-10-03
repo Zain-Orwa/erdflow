@@ -45,7 +45,6 @@ jobs:
         with:
           version: 6.11.2
           arch: ${{ matrix.qt-arch }}
-          modules: qtsvg
           cache: true
 
       - name: Configure
