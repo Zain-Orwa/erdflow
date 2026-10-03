@@ -45,6 +45,8 @@ jobs:
         with:
           version: 6.11.2
           arch: ${{ matrix.qt-arch }}
+          # Pin the upstream fix for Qt 6.11 Windows repository paths.
+          aqtsource: ${{ runner.os == 'Windows' && 'git+https://github.com/miurahr/aqtinstall.git@7e5a5c3d95cf962cfc2f36c86ffa0d2c07f1a0d4' || '' }}
           cache: true
 
       - name: Configure
