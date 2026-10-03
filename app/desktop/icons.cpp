@@ -496,6 +496,30 @@ QString icon_name(Glyph glyph) {
     return QStringLiteral("select");
 }
 
+QPixmap primary_key_mark(int size, qreal ratio, bool greyed) {
+    const auto pixels = std::max(1, static_cast<int>(std::lround(size * ratio)));
+    QImage image(pixels, pixels, QImage::Format_ARGB32);
+    image.fill(Qt::transparent);
+    QSvgRenderer drawing(QStringLiteral(":/erdflow/marks/primary-key.svg"));
+    if (drawing.isValid()) {
+        QPainter painter(&image);
+        painter.setRenderHint(QPainter::Antialiasing);
+        drawing.render(&painter, QRectF(0, 0, pixels, pixels));
+    }
+    // Plain shows no colour of its own (Zain, 2026-09-24): the key keeps its
+    // shape and shading, in greys.
+    if (greyed)
+        for (int y = 0; y < image.height(); ++y) {
+            auto* line = reinterpret_cast<QRgb*>(image.scanLine(y));
+            for (int x = 0; x < image.width(); ++x) {
+                const auto grey = qGray(line[x]);
+                line[x] = qRgba(grey, grey, grey, qAlpha(line[x]));
+            }
+        }
+    image.setDevicePixelRatio(ratio);
+    return QPixmap::fromImage(image);
+}
+
 QPixmap outline_pixmap(const QString& name, const QColor& ink, int size) {
     QFile file(QStringLiteral(":/erdflow/icons-outline/%1.svg").arg(name));
     if (!file.open(QIODevice::ReadOnly)) return {};

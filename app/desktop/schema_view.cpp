@@ -577,20 +577,6 @@ void SchemaView::set_icon_mode(IconMode mode) {
     update();
 }
 
-// The gold a key is drawn in.
-//
-// A theme's warning ink is chosen to be read as words on that theme's paper, so
-// on a light one it is a dark bronze -- right for the letters PK and wrong for a
-// key, which should look like a key. Its hue is kept and its saturation and
-// brightness are raised until it reads as gold, then held back from going pale
-// enough to disappear on light paper. Derived rather than fixed, so a theme that
-// warns in another hue still gets a key of its own rather than somebody else's.
-QColor key_gold(const QColor& warning, bool dark_paper) {
-    const auto hue = warning.hsvHue() < 0 ? 42 : warning.hsvHue();
-    return QColor::fromHsv(hue, std::clamp(int(warning.hsvSaturation() * 1.02), 170, 255),
-                           dark_paper ? 235 : 205);
-}
-
 // The key drawn beside PK, kept until the size, the ink or the set it is taken
 // from changes. Asking for it again on every row of every repaint is the kind
 // of work a drag across a large schema pays for a hundred times a second.
@@ -602,17 +588,11 @@ const QPixmap& SchemaView::key_mark(int side) {
         key_mark_mode_ = icon_mode_;
         key_mark_ink_ = theme_->warning;
         key_mark_ratio_ = ratio;
-        // Inked as the letters are, so the mark and the word it stands beside
-        // are plainly one thing.
-        auto palette = *theme_;
-        // A theme with no colour has no gold to raise the ink to, so the key
-        // is drawn in the letters' own grey rather than a paler one.
-        const auto gold = colourless(theme_->id)
-            ? theme_->warning
-            : key_gold(theme_->warning, theme_->canvas.lightnessF() < 0.5);
-        palette.text = gold;
-        palette.accent = gold;
-        key_mark_ = glyph_icon(Glyph::Key, palette, side, icon_mode_).pixmap(QSize(side, side), ratio);
+        // The golden key Zain chose (2026-09-26): held bow up and pointing
+        // down, its own polished drawing rather than a glyph from the icon
+        // set, and the same key a table will wear. Grey where the theme has
+        // no colour.
+        key_mark_ = primary_key_mark(side, ratio, colourless(theme_->id));
     }
     return key_mark_;
 }
@@ -749,6 +729,16 @@ std::vector<domain::LinkSource> SchemaView::lines_over_tables() const {
     return crossing;
 }
 
+void SchemaView::set_names_only(bool on) {
+    if (names_only_ == on) return;
+    names_only_ = on;
+    arrange();
+    reroute();
+    update();
+}
+
+double SchemaView::heading_room() const { return names_only_ ? 0.0 : heading_height; }
+
 void SchemaView::set_tables_resizable(bool resizable) {
     if (tables_resizable_ == resizable) return;
     tables_resizable_ = resizable;
@@ -796,12 +786,21 @@ SchemaView::Columns SchemaView::columns_of(const domain::PreviewTable& table) co
 // width nobody chose would be hiding work rather than showing it.
 double SchemaView::natural_width(const domain::PreviewTable& table) const {
     const auto room = columns_of(table);
+    // With only the names shown, a table is as wide as its keys and names.
+    if (names_only_) {
+        auto title_font = font();
+        title_font.setBold(true);
+        const auto title_width = QFontMetricsF(title_font).horizontalAdvance(
+            QString::fromStdString(table.name)) + 18;
+        return std::clamp(std::max(gutter_width + room.name, title_width),
+                          domain::min_table_width, domain::max_table_width);
+    }
     return std::clamp(gutter_width + room.name + room.type + room.rules,
                       domain::min_table_width, domain::max_table_width);
 }
 
 double SchemaView::width_of(const domain::PreviewTable& table) const {
-    if (!table.origin) return natural_width(table);
+    if (!table.origin || names_only_) return natural_width(table);
     if (const auto held = resizing_to_.find(*table.origin); held != resizing_to_.end())
         return held->second.box.width();
     const auto& widths = editor_.project().schema_layout.widths;
@@ -814,7 +813,7 @@ double SchemaView::width_of(const domain::PreviewTable& table) const {
 // own columns. A table that gains a column afterwards therefore grows past the
 // height it was given rather than hiding the new one.
 double SchemaView::height_of(const domain::PreviewTable& table, double natural) const {
-    if (!table.origin) return natural;
+    if (!table.origin || names_only_) return natural;
     if (const auto held = resizing_to_.find(*table.origin); held != resizing_to_.end())
         return std::max(natural, held->second.box.height());
     const auto& heights = editor_.project().schema_layout.heights;
@@ -823,7 +822,7 @@ double SchemaView::height_of(const domain::PreviewTable& table, double natural) 
 }
 
 double SchemaView::natural_height(const domain::PreviewTable& table, double wide) const {
-    return header_height + heading_height + row_height * static_cast<double>(table.columns.size())
+    return header_height + heading_room() + row_height * static_cast<double>(table.columns.size())
          + footer_height(table, wide);
 }
 
@@ -862,7 +861,7 @@ Qt::CursorShape SchemaView::cursor_for(Pull pull) {
 }
 
 std::optional<SchemaView::Resizing> SchemaView::edge_at(QPointF point) const {
-    if (!tables_resizable_) return std::nullopt;
+    if (!tables_resizable_ || names_only_) return std::nullopt;
     for (std::size_t i = placed_.size(); i-- > 0;) {
         if (!preview_.tables[i].origin) continue;
         const auto& box = placed_[i].box;
@@ -1078,6 +1077,7 @@ void SchemaView::tidy() {
     shaping_.reset();
     shaping_shape_.reset();
     dragging_at_.clear();
+    carried_lines_.clear();
     resizing_to_.clear();
     const auto result = editor_.tidy_schema();
     if (arranged) arranged(result);
@@ -1108,7 +1108,7 @@ void SchemaView::resizeEvent(QResizeEvent* event) {
 // table goes, the pointer has to find the answers too, and an edge being
 // pulled has to know how short the table may be made.
 double SchemaView::footer_height(const domain::PreviewTable& table, double wide) const {
-    if (table.decisions.empty()) return 0.0;
+    if (names_only_ || table.decisions.empty()) return 0.0;
     auto asking_font = font();
     asking_font.setPointSizeF(std::max(7.0, font().pointSizeF() - 1.0));
     // Measured bold, because the answer in force is drawn bold and every chip
@@ -1157,7 +1157,7 @@ void SchemaView::arrange() {
         const auto& table = preview_.tables[i];
         const auto wide = width_of(table);
         const auto footer = footer_height(table, wide);
-        const auto natural = header_height + heading_height
+        const auto natural = header_height + heading_room()
                            + row_height * static_cast<double>(table.columns.size()) + footer;
         const auto height = height_of(table, natural);
         // The automatic arrangement is worked out for every table, whether or
@@ -1184,7 +1184,7 @@ void SchemaView::arrange() {
         // simply a roomier table.
         const auto deep = table.columns.empty()
             ? row_height
-            : std::max(row_height, (height - header_height - heading_height - footer)
+            : std::max(row_height, (height - header_height - heading_room() - footer)
                                        / static_cast<double>(table.columns.size()));
         placed_[i].rows.clear();
         placed_[i].cells.clear();
@@ -1211,8 +1211,8 @@ void SchemaView::arrange() {
         // Nothing springs back. The width is wherever a hand left it, and
         // every column returns, in the reverse order, as it is widened again.
         const auto beside = wide - gutter_width;
-        const bool shows_rules = beside - type_room - room.rules >= name_floor;
-        const bool shows_type = shows_rules || beside - type_room >= name_floor;
+        const bool shows_rules = !names_only_ && beside - type_room - room.rules >= name_floor;
+        const bool shows_type = !names_only_ && (shows_rules || beside - type_room >= name_floor);
         // Where the rules between the columns fall: one for each column that
         // is still being shown beyond the names.
         placed_[i].dividers.clear();
@@ -1222,7 +1222,7 @@ void SchemaView::arrange() {
         else if (shows_type)
             placed_[i].dividers = {right - type_room};
         for (std::size_t row = 0; row < table.columns.size(); ++row) {
-            const QRectF where(at.x(), at.y() + header_height + heading_height
+            const QRectF where(at.x(), at.y() + header_height + heading_room()
                                    + deep * static_cast<double>(row),
                                wide, deep);
             placed_[i].rows.push_back(where);
@@ -1257,9 +1257,9 @@ void SchemaView::arrange() {
             }
             placed_[i].cells.push_back(cell);
         }
-        auto below = at.y() + header_height + heading_height
+        auto below = at.y() + header_height + heading_room()
                    + deep * static_cast<double>(table.columns.size()) + footer_pad;
-        for (std::size_t d = 0; d < table.decisions.size(); ++d) {
+        for (std::size_t d = 0; !names_only_ && d < table.decisions.size(); ++d) {
             placed_[i].asked.push_back(QRectF(at.x() + 9, below, wide - 18, question_height));
             below += question_height;
             auto left = at.x() + 9;
@@ -1326,7 +1326,32 @@ SchemaView::Shape SchemaView::shape_of(const domain::LinkSource& link) const {
     const auto& lines = editor_.project().schema_layout.lines;
     const auto found = lines.find(domain::foreign_key_from(link));
     if (found == lines.end()) return {};
+    // Carried whole by a drag, it is where the drag has taken it.
+    if (!dragging_at_.empty()
+        && std::find(carried_lines_.begin(), carried_lines_.end(), link) != carried_lines_.end())
+        return moved_by(as_shape(found->second), carried_by_);
     return as_shape(found->second);
+}
+
+SchemaView::Shape SchemaView::moved_by(Shape shape, QPointF by) {
+    for (auto& corner : shape.route) corner += by;
+    if (shape.from && !shape.from->on_table) shape.from->at += by;
+    if (shape.to && !shape.to->on_table) shape.to->at += by;
+    return shape;
+}
+
+domain::SchemaLine SchemaView::as_line(const Shape& shape) {
+    domain::SchemaLine line;
+    line.route.reserve(shape.route.size());
+    for (const auto& corner : shape.route) line.route.push_back(domain::Point{corner.x(), corner.y()});
+    const auto taken = [](const std::optional<EndAnchor>& end) {
+        return end ? std::optional<domain::SchemaEnd>{
+                         domain::SchemaEnd{end->on_table, domain::Point{end->at.x(), end->at.y()}}}
+                   : std::nullopt;
+    };
+    line.from = taken(shape.from);
+    line.to = taken(shape.to);
+    return line;
 }
 
 bool SchemaView::line_is_shaped(const domain::LinkSource& link) const {
@@ -1642,6 +1667,17 @@ void SchemaView::mousePressEvent(QMouseEvent* event) {
             if (one.origin && (t == *found || is_marked(one)))
                 carried_.emplace_back(*one.origin, placed_[t].box.topLeft());
         }
+        carried_by_ = {};
+        carried_lines_.clear();
+        const auto is_carried = [&](std::size_t t) {
+            return t < preview_.tables.size() && preview_.tables[t].origin
+                && std::any_of(carried_.begin(), carried_.end(),
+                               [&](const auto& one) { return one.first == *preview_.tables[t].origin; });
+        };
+        for (const auto& routed : routes_)
+            if (routed.link && line_is_shaped(*routed.link) && is_carried(routed.from_table)
+                && is_carried(routed.to_table))
+                carried_lines_.push_back(*routed.link);
         return;
     }
     // Pressing the empty canvas asks about nothing, which puts the whole
@@ -1757,6 +1793,7 @@ void SchemaView::mouseMoveEvent(QMouseEvent* event) {
         moved.setY(std::max(moved.y(), -from.y()));
     }
     for (const auto& [carried, from] : carried_) dragging_at_[carried] = from + moved;
+    carried_by_ = moved;
     arrange();
     reroute();
     update();
@@ -1904,12 +1941,17 @@ void SchemaView::commit_arrangement() {
     } else if (!dragging_at_.empty()) {
         std::map<domain::ElementRef, domain::Point> places;
         for (const auto& [table, at] : dragging_at_) places.emplace(table, domain::Point{at.x(), at.y()});
-        dragging_at_.clear();
+        // The lines the drag carried whole are written where it took them.
+        std::vector<std::pair<domain::LinkSource, domain::SchemaLine>> carried;
+        for (const auto& link : carried_lines_) carried.emplace_back(link, as_line(shape_of(link)));
         // A line told to give way is given back in the same edit as the move
         // that displaced it, so one undo takes both back together rather than
         // leaving the line released and the table where it was.
-        result = editor_.move_schema_tables(
-            places, lines_give_way_ ? lines_over_tables() : std::vector<domain::LinkSource>{});
+        const auto give_way = lines_give_way_ ? lines_over_tables() : std::vector<domain::LinkSource>{};
+        dragging_at_.clear();
+        carried_lines_.clear();
+        carried_by_ = {};
+        result = editor_.move_schema_tables(places, give_way, carried);
     } else if (shaping_shape_) {
         domain::SchemaLine line;
         line.route.reserve(shaping_shape_->second.route.size());
@@ -2679,15 +2721,17 @@ void SchemaView::paintEvent(QPaintEvent*) {
     // asked by pressing it. Laid before the lines, so the colours still sit
     // on top and crossings still read.
     if (const auto asking = selected_table()) {
-        painter.setPen(QPen(theme_->text, 5.0, Qt::SolidLine, Qt::FlatCap, Qt::MiterJoin));
+        painter.setPen(QPen(theme_->text, 6.0, Qt::SolidLine, Qt::FlatCap, Qt::MiterJoin));
         for (const auto& routed : routes_) {
             if (routed.from_table != *asking && routed.to_table != *asking) continue;
             if (!line_shown(routed)) continue;
             painter.drawPath(routed.path);
         }
     }
+    // Drawn bold, so a connection reads at a glance across a full schema
+    // (Zain, 2026-09-25), and bolder still under the pointer.
     for (const auto& routed : routes_) {
-        painter.setPen(QPen(dim(routed.colour, line_shown(routed)), lit(routed) ? 2.6 : 1.8,
+        painter.setPen(QPen(dim(routed.colour, line_shown(routed)), lit(routed) ? 3.4 : 2.6,
                             Qt::SolidLine, Qt::FlatCap, Qt::MiterJoin));
         painter.drawPath(routed.path);
     }
@@ -2702,7 +2746,7 @@ void SchemaView::paintEvent(QPaintEvent*) {
                 return QPointF(at.x() + step.x() * along + across.x() * side,
                                at.y() + step.y() * along + across.y() * side);
             };
-            painter.setPen(QPen(dim(routed.colour, line_shown(routed)), 1.5));
+            painter.setPen(QPen(dim(routed.colour, line_shown(routed)), 2.2));
             painter.setBrush(Qt::NoBrush);
             if (notation_ == Notation::Chen || notation_ == Notation::MinMax) {
                 // The label stands beside the line rather than on it, on
@@ -2788,7 +2832,10 @@ void SchemaView::paintEvent(QPaintEvent*) {
         // Where the table came from, said in the header. A reader learning the
         // rules needs to know that Enrolleds is a bridge and Phones is a
         // multivalued attribute, and the schema is the only place that says so.
-        const auto came_from = provenance_of(table);
+        // Not in the compact schema, which gives each table its name alone:
+        // cut down to a table only as wide as its names, the badge was never
+        // more than a few letters and an ellipsis.
+        const auto came_from = names_only_ ? QString() : provenance_of(table);
         // A hovered table wears a plus at the right of its header, so the room
         // the header has for words is that much less while it is worn. Taken
         // off here rather than drawn over, or the badge and the plus would sit
@@ -2847,7 +2894,7 @@ void SchemaView::paintEvent(QPaintEvent*) {
         // gutter stops here and the footer is shaded apart. Read off the rows
         // themselves, since a table pulled taller shares that room out between
         // them and its rows are deeper than the standard one.
-        const auto rows_end = placed_[t].rows.empty() ? box.top() + header_height + heading_height
+        const auto rows_end = placed_[t].rows.empty() ? box.top() + header_height + heading_room()
                                                       : placed_[t].rows.back().bottom();
 
         // The gutter holding the keys, closed by a rule running the height of
@@ -2873,6 +2920,8 @@ void SchemaView::paintEvent(QPaintEvent*) {
         // columns underneath, where telling them apart is what matters.
         const auto heading_top = box.top() + header_height;
         const auto heading_end = heading_top + heading_height;
+        // With only the names shown there is no row naming the columns.
+        if (!names_only_) {
         painter.setPen(QPen(dim(edge, here), 1.0));
         painter.drawLine(QPointF(box.left() + 1, heading_end), QPointF(box.right() - 1, heading_end));
         {
@@ -2914,6 +2963,7 @@ void SchemaView::paintEvent(QPaintEvent*) {
             }
             painter.setFont(mono);
         }
+        }
 
         painter.setFont(mono);
         for (std::size_t row = 0; row < table.columns.size(); ++row) {
@@ -2938,8 +2988,13 @@ void SchemaView::paintEvent(QPaintEvent*) {
                         const auto& mark = key_mark(side);
                         const auto was = painter.opacity();
                         if (!here) painter.setOpacity(was * 0.45);
-                        painter.drawPixmap(QPointF(where.left() + 2,
-                                                   where.top() + (where.height() - side) / 2), mark);
+                        // Stood right before PK, so the key and its letters
+                        // read as one mark beside the name (Zain,
+                        // 2026-09-26): the drawing's key reaches 72% across
+                        // its square, and its teeth end a hair short of P.
+                        const auto letters_at = where.left() + gutter_width - 4 - lettered;
+                        const auto left = std::max(where.left() + 1, letters_at - 3 - side * 0.72);
+                        painter.drawPixmap(QPointF(left, where.top() + (where.height() - side) / 2), mark);
                         painter.setOpacity(was);
                     }
                 }
@@ -3210,9 +3265,9 @@ void SchemaView::paintEvent(QPaintEvent*) {
         // A line that is being faded is not being shown, so it is not lifted
         // over the tables either, however near the pointer happens to be.
         if (!lit(routed) || !line_shown(routed)) continue;
-        painter.setPen(QPen(theme_->canvas, 6, Qt::SolidLine, Qt::FlatCap, Qt::MiterJoin));
+        painter.setPen(QPen(theme_->canvas, 7, Qt::SolidLine, Qt::FlatCap, Qt::MiterJoin));
         painter.drawPath(routed.path);
-        painter.setPen(QPen(routed.colour, 2.6, Qt::SolidLine, Qt::FlatCap, Qt::MiterJoin));
+        painter.setPen(QPen(routed.colour, 3.4, Qt::SolidLine, Qt::FlatCap, Qt::MiterJoin));
         painter.drawPath(routed.path);
     }
 

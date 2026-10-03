@@ -112,6 +112,17 @@ struct Rect {
     auto operator<=>(const Rect&) const = default;
 };
 
+// The box size at which an element's name is drawn at its ordinary size.
+struct LetteringBase {
+    double width = 0;
+    double height = 0;
+    auto operator<=>(const LetteringBase&) const = default;
+};
+// How much larger or smaller than ordinary an element's name is drawn in a
+// box of the given size: the smaller of the two changes from its base, so
+// pulling only the width out gives a long name room without enlarging it.
+[[nodiscard]] double lettering_factor(const LetteringBase& base, double width, double height);
+
 enum class AttributeKind { Normal, Key, Composite, Multivalued, Derived };
 
 // What a column is. The whole SQL data type catalogue, grouped the way SQL
@@ -633,6 +644,14 @@ struct Project {
     // whichever colour the surface has, chosen or the theme's, which is why
     // it is kept apart from the colour. An absent entry means solid.
     std::map<ElementRef, std::uint8_t> transparency;
+    // The size each entity, relationship or attribute had when it was first
+    // resized by hand (Zain, 2026-09-26). Its name is drawn at its ordinary
+    // size in a box of this size, and grows or shrinks with the box from
+    // there, by the smaller of the two changes, so a box pulled wider only
+    // gives a long name room. An absent entry means the element has never
+    // been resized, and its name is drawn at its ordinary size whatever size
+    // it is, which is how every diagram made before this is still drawn.
+    std::map<ElementRef, LetteringBase> lettering;
     // The paper the diagram is drawn on.
     Background background;
     auto operator<=>(const Project&) const = default;

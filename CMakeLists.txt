@@ -25,7 +25,7 @@ add_library(erdflow_domain domain/model.cpp domain/schema_preview.cpp)
 target_include_directories(erdflow_domain PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(erdflow_domain PRIVATE erdflow_warnings)
 
-add_library(erdflow_application application/editor.cpp)
+add_library(erdflow_application application/editor.cpp application/history.cpp)
 target_link_libraries(erdflow_application PUBLIC erdflow_domain PRIVATE erdflow_warnings)
 
 add_library(erdflow_infrastructure infrastructure/project_store.cpp)
@@ -80,6 +80,15 @@ qt_add_resources(erdflow_desktop "erdflow_icons_on_dark"
         assets/icons-on-dark/full-view.svg assets/icons-on-dark/close.svg
 )
 
+
+# Marks drawn on data rather than on commands: the primary key's golden key.
+# Kept apart from the icon sets, so it is the same key whichever set is chosen.
+qt_add_resources(erdflow_desktop "erdflow_marks"
+    PREFIX "/erdflow/marks"
+    BASE "assets/marks"
+    FILES
+        assets/marks/primary-key.svg
+)
 
 # The line-art set: Lucide for the ordinary commands, ERDFlow's own for the
 # database shapes Lucide has no icon for. Every file names its colour as the
