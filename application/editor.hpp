@@ -297,6 +297,10 @@ public:
     // says which was done; and it refuses anything that is not an entity, so
     // the command cannot quietly reshape the rest of the diagram.
     EditResult resize_entities(const std::map<domain::ElementRef, domain::Rect>& boxes);
+    // Relationship diamonds use the same edge and corner gesture as entities.
+    EditResult resize_relationships(const std::map<domain::ElementRef, domain::Rect>& boxes);
+    // And so do attributes, whose names want width as an entity's does.
+    EditResult resize_attributes(const std::map<domain::ElementRef, domain::Rect>& boxes);
     // A connector carries one signed perpendicular bend. Passing no offset
     // restores automatic routing rather than storing a zero-length bend.
     EditResult bend_connector(domain::ConnectorRef ref, std::optional<double> offset);
