@@ -38,6 +38,7 @@ class QToolButton;
 class QVBoxLayout;
 class QStandardItemModel;
 class QTreeView;
+class QTreeWidget;
 
 namespace erdflow::desktop {
 
@@ -232,6 +233,15 @@ private:
     void add_schema_column(domain::ElementRef table, bool schema_only = false);
     void remove_schema_column(domain::ElementRef table, const domain::PreviewColumn& column);
     QDockWidget* validation_dock_ = nullptr;
+    // The History (Zain, 2026-09-26): every step Undo can take back, in the
+    // order it was made, each in words, and any of them a place to go back
+    // or forward to. A panel of its own, closed until it is opened from View.
+    QDockWidget* history_dock_ = nullptr;
+    QTreeWidget* history_list_ = nullptr;
+    // What the panel last showed, so it is only rebuilt when there is more.
+    std::uint64_t history_shown_ = 0;
+    void build_history();
+    void refresh_history(bool again = false);
     QLabel* document_label_ = nullptr;
     QLabel* count_label_ = nullptr;
     QLabel* zoom_label_ = nullptr;
@@ -409,6 +419,8 @@ private:
     void build_shell();
     void build_actions();
     void choose_tool(Tool tool, bool locked);
+    // Back to Select after a click outside the diagram.
+    void pressed_outside_canvas(QWidget* pressed);
     void choose_line_style(LineStyle style);
     void refresh_tool_labels();
     void refresh_icons();

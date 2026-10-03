@@ -30,6 +30,8 @@
 #include <QComboBox>
 #include <QDialog>
 #include <QDockWidget>
+#include <QTreeWidget>
+#include <QEnterEvent>
 #include <QFontMetrics>
 #include <QGraphicsItem>
 #include <QGraphicsScene>
@@ -338,7 +340,14 @@ int main(int argc, char** argv) {
             require(brand_bar->isVisible(), "Home's slim bar is in the ribbon's place");
             require(brand_bar->theme_button()->menu() == window.findChild<QMenu*>("themeMenu"),
                     "Its Theme opens the window's own theme menu, not a copy");
-            auto* settings = brand_bar->settings_button()->menu();
+            // One Settings, the sidebar's row (Zain, 2026-09-26): the bar has
+            // no gear of its own beside Theme.
+            require(home->findChild<QWidget*>("appTopBarSettings") == nullptr
+                        && home->findChild<QWidget*>("appTopBarSeparator") == nullptr,
+                    "The bar carries no second Settings");
+            require(home->sidebar()->button(desktop::HomeSection::Settings)->isVisible(),
+                    "Settings is the sidebar's row");
+            auto* settings = window.findChild<QMenu*>("settingsMenu");
             require(settings != nullptr && settings->actions().size() == 3
                         && settings->actions()[0]->menu() == window.findChild<QMenu*>("themeMenu"),
                     "Its Settings holds the application's own choices: theme, icons, notation");
@@ -370,6 +379,50 @@ int main(int argc, char** argv) {
             require(window.findChild<QWidget*>("startRouteTemplate") == nullptr
                         && window.findChild<QWidget*>("startRouteImport") == nullptr,
                     "Neither Templates nor Import is a card");
+            // Each card's two actions light up under the pointer, each on its
+            // own (Zain, 2026-09-26), and are exactly as they were once it
+            // leaves. Create with AI lights up too, though it cannot be
+            // pressed yet.
+            {
+                // Offered for the purpose, since it is not offered for now.
+                cards.front()->set_ai_offered(true);
+                settle();
+                auto* create = cards.front()->create_button();
+                auto* ai = cards.front()->ai_button();
+                const auto create_at_rest = create->grab().toImage();
+                const auto ai_at_rest = ai->grab().toImage();
+                const auto create_place = create->geometry();
+                const auto ai_place = ai->geometry();
+                const auto point = [](QWidget* button, QEvent::Type type) {
+                    if (type == QEvent::Enter) {
+                        QEnterEvent entered(QPointF(6, 6), QPointF(6, 6), QPointF(button->mapToGlobal(QPoint(6, 6))));
+                        QApplication::sendEvent(button, &entered);
+                    } else {
+                        QEvent left(QEvent::Leave);
+                        QApplication::sendEvent(button, &left);
+                    }
+                    settle();
+                };
+                point(create, QEvent::Enter);
+                require(create->property("lit").toBool() && !ai->property("lit").toBool(),
+                        "Pointing at + Create lights it, and it alone");
+                require(create->grab().toImage() != create_at_rest, "Visibly");
+                require(create->geometry() == create_place && create->text() == "+ Create",
+                        "Without moving it or changing its words");
+                point(create, QEvent::Leave);
+                require(!create->property("lit").toBool() && create->grab().toImage() == create_at_rest,
+                        "And it is exactly as it was once the pointer leaves");
+                point(ai, QEvent::Enter);
+                require(ai->property("lit").toBool() && !create->property("lit").toBool(),
+                        "Pointing at Create with AI lights it, and it alone");
+                require(ai->grab().toImage() != ai_at_rest, "Visibly, though it cannot be pressed yet");
+                require(!ai->isEnabled() && ai->geometry() == ai_place, "Still unpressable, and where it was");
+                point(ai, QEvent::Leave);
+                require(!ai->property("lit").toBool() && ai->grab().toImage() == ai_at_rest,
+                        "And it too is exactly as it was once the pointer leaves");
+                cards.front()->set_ai_offered(desktop::create_with_ai_offered);
+                settle();
+            }
             // Zain's titles (2026-09-24, ADR-022 9.19).
             require(cards[0]->accessibleName() == "Conceptual Design (ERD)"
                         && cards[1]->accessibleName() == "Relational Schema"
@@ -491,9 +544,12 @@ int main(int argc, char** argv) {
                             require(demos[i]->geometry().bottom() < cards[i]->create_button()->y(),
                                     "The demo clears the Create button");
                             // + Create and Create with AI stand side by side,
-                            // the pair centred (Zain, 2026-09-25).
-                            const auto pair = cards[i]->create_button()->geometry().united(
-                                cards[i]->ai_button()->geometry());
+                            // the pair centred (Zain, 2026-09-25); + Create
+                            // alone, while that is not offered, is centred
+                            // too (Zain, 2026-09-26).
+                            const auto pair = cards[i]->ai_button()->isHidden()
+                                ? cards[i]->create_button()->geometry()
+                                : cards[i]->create_button()->geometry().united(cards[i]->ai_button()->geometry());
                             require(std::abs(demos[i]->x() + demos[i]->stage().center().x()
                                              - (pair.left() + pair.width() / 2.0)) <= 1.0,
                                     "The demo and the pair of buttons share the card's center line");
@@ -1519,12 +1575,26 @@ int main(int argc, char** argv) {
                 require(QRect(QPoint(), card->size()).contains(create->geometry())
                             && create->geometry().top() > card->height() * 0.75,
                         "Inside the card, at its foot");
-                // Beside it, Create with AI (Zain, 2026-09-25): on every card,
-                // on the same line, the two together centred on the card.
+                // Create with AI is not offered for now (Zain, 2026-09-26): it
+                // is made on every card but not shown, and + Create stands
+                // alone in the middle of the card, the size it is beside it.
                 auto* ai = card->ai_button();
-                require(ai != nullptr && ai->isVisible()
-                            && (ai->text() == "Create with AI" || ai->text() == "AI"),
+                require(card->ai_offered() == desktop::create_with_ai_offered && !desktop::create_with_ai_offered,
+                        "Create with AI is not offered for now");
+                require(ai != nullptr && ai->isHidden(), "It is made, but not shown");
+                require(std::abs(create->geometry().left() + create->width() / 2.0 - card->width() / 2.0) <= 1.0,
+                        "+ Create stands alone in the middle of the card");
+                const auto alone = create->geometry();
+                // Offered again, the two stand exactly as they did (Zain,
+                // 2026-09-25): on every card, on the same line, the two
+                // together centred on the card.
+                card->set_ai_offered(true);
+                settle();
+                require(ai->isVisible() && (ai->text() == "Create with AI" || ai->text() == "AI"),
                         "Every card has its own Create with AI");
+                require(create->height() == alone.height(), "+ Create keeps its height when AI is offered");
+                require(std::abs(alone.width() - card->width() * 0.52) <= 2,
+                        "The single Create button has the approved panel proportion");
                 require(ai->y() == create->y() && ai->height() == create->height()
                             && ai->x() > create->geometry().right(),
                         "Level with + Create, to its right");
@@ -1539,10 +1609,14 @@ int main(int argc, char** argv) {
                         "Create with AI cannot be pressed yet, and says why");
                 require(ai->accessibleName() == "Create " + card->accessibleName() + " with AI",
                         "It says what it would make to whatever reads the screen");
+                // Put away again, + Create goes back to the middle.
+                card->set_ai_offered(desktop::create_with_ai_offered);
+                settle();
+                require(ai->isHidden() && create->geometry() == alone, "And back to the middle when it is put away");
             }
-            // All six buttons stand on one line across the cards.
+            // Every card's buttons stand on one line across the cards.
             for (auto* card : cards)
-                require(card->ai_button()->mapTo(home, QPoint()).y()
+                require(card->create_button()->mapTo(home, QPoint()).y()
                             == cards[0]->create_button()->mapTo(home, QPoint()).y(),
                         "Every card's buttons share one baseline");
             // No heading over the cards: each card's + Create says it (Zain,
@@ -1963,6 +2037,170 @@ int main(int argc, char** argv) {
         require(window.editor().project().entities.size() == example_entities + 3, "A locked tool keeps placing");
         require(window.canvas()->tool() == desktop::Tool::Entity,
                 "A locked tool stays selected");
+
+        // A click anywhere in the window outside the diagram puts the tool
+        // down, locked or not, and takes up Select (Zain, 2026-09-26). The
+        // diagram's own controls are part of the diagram, and a button that
+        // chooses a tool still chooses it.
+        {
+            const auto press_on = [](QWidget* target, QPoint at) {
+                // Delivered to whatever is deepest under the point, as a
+                // real click is.
+                if (auto* deepest = target->childAt(at)) {
+                    at = deepest->mapFrom(target, at);
+                    target = deepest;
+                }
+                const auto global = QPointF(target->mapToGlobal(at));
+                QMouseEvent press(QEvent::MouseButtonPress, QPointF(at), global, Qt::LeftButton,
+                                  Qt::LeftButton, Qt::NoModifier);
+                QApplication::sendEvent(target, &press);
+                QMouseEvent release(QEvent::MouseButtonRelease, QPointF(at), global, Qt::LeftButton,
+                                    Qt::NoButton, Qt::NoModifier);
+                QApplication::sendEvent(target, &release);
+                settle();
+            };
+            const auto lock_entity = [&] {
+                QMouseEvent twice(QEvent::MouseButtonDblClick, QPointF(5, 5), QPointF(5, 5),
+                                  Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+                QApplication::sendEvent(button, &twice);
+                settle();
+                require(window.canvas()->tool() == desktop::Tool::Entity && window.canvas()->tool_locked(),
+                        "The entity tool is locked again");
+            };
+            auto* explorer = child<QTreeView>(window, "explorer")->viewport();
+            auto* properties = child<QDockWidget>(window, "propertiesDock")->widget();
+
+            press_on(child<QWidget>(window, "canvasControlsGrip"), QPoint(4, 2));
+            require(window.canvas()->tool() == desktop::Tool::Entity && window.canvas()->tool_locked(),
+                    "A press on the diagram's own controls keeps the tool");
+            const auto placed = window.editor().project().entities.size();
+            click_canvas(*window.canvas(), QPointF(680, 250));
+            require(window.editor().project().entities.size() == placed + 1
+                        && window.canvas()->tool() == desktop::Tool::Entity,
+                    "And a click inside the diagram still places");
+
+            press_on(explorer, QPoint(10, explorer->height() - 6));
+            require(window.canvas()->tool() == desktop::Tool::Select && !window.canvas()->tool_locked(),
+                    "A click in the Explorer hands a locked tool back to Select");
+            require(child<QAction>(window, "toolSelect")->isChecked() && entity_tool->text() == "Entity",
+                    "And the toolbar says so, with the lock mark gone");
+
+            lock_entity();
+            press_on(properties, QPoint(6, 6));
+            require(window.canvas()->tool() == desktop::Tool::Select,
+                    "So does a click in Properties");
+
+            entity_tool->trigger();
+            settle();
+            require(window.canvas()->tool() == desktop::Tool::Entity && !window.canvas()->tool_locked(),
+                    "The entity tool, unlocked");
+            press_on(explorer, QPoint(10, explorer->height() - 6));
+            require(window.canvas()->tool() == desktop::Tool::Select, "An unlocked tool is put down the same way");
+
+            lock_entity();
+            auto* toolbar = child<QToolBar>(window, "modelTools");
+            press_on(toolbar->widgetForAction(child<QAction>(window, "toolRelationship")), QPoint(5, 5));
+            require(window.canvas()->tool() == desktop::Tool::Relationship,
+                    "A tool button outside the diagram chooses its tool rather than Select");
+            entity_tool->trigger();
+            lock_entity();
+        }
+
+        // Properties locks the attribute owner as the element's own menu does
+        // (Zain, 2026-09-26), and says which way it stands.
+        {
+            const domain::ElementRef owner = window.editor().project().entities.begin()->first;
+            window.canvas()->select_elements({owner});
+            settle();
+            auto* lock = child<QPushButton>(window, "attributeOwnerLock");
+            require(!lock->isChecked() && lock->text() == "Lock as attribute owner",
+                    "Properties offers to lock an entity as the attribute owner");
+            lock->click();
+            settle();
+            require(window.canvas()->attribute_owner() == owner, "Pressing it locks the entity");
+            lock = child<QPushButton>(window, "attributeOwnerLock");
+            require(lock->isChecked() && lock->text() == "Unlock attribute owner", "And the panel says it is held");
+            child<QAction>(window, "toolAttribute")->trigger();
+            // Put down on the entity itself, where nothing else is nearer and
+            // so nothing is asked.
+            const auto& body = window.editor().project().layout.at(owner);
+            click_canvas(*window.canvas(), QPointF(body.x + body.width / 2, body.y + body.height / 2));
+            const auto placed = window.canvas()->selected_elements();
+            require(placed.size() == 1 && std::holds_alternative<domain::AttributeId>(placed.front())
+                        && window.editor().project().attributes.at(std::get<domain::AttributeId>(placed.front())).owner
+                               == owner,
+                    "An attribute placed goes on the locked entity");
+            require(window.findChild<QPushButton*>("attributeOwnerLock") == nullptr,
+                    "A plain attribute, selected, offers no lock: it cannot hold attributes");
+            window.canvas()->select_elements({owner});
+            settle();
+            child<QPushButton>(window, "attributeOwnerLock")->click();
+            settle();
+            require(!window.canvas()->attribute_owner(), "Pressing it again releases it");
+            require(!child<QPushButton>(window, "attributeOwnerLock")->isChecked(), "And the panel says so");
+            child<QAction>(window, "undoCommand")->trigger();
+            settle();
+        }
+
+        // The History (Zain, 2026-09-26): a panel opened from the end of
+        // View, one row for each step Undo could take back, in order and in
+        // words; pressing a row goes back or forward to just after it.
+        {
+            auto* toggle = child<QAction>(window, "viewHistory");
+            require(child<QMenu>(window, "viewMenu")->actions().last() == toggle,
+                    "History is the last entry in View, after everything already there");
+            auto* dock = child<QDockWidget>(window, "historyDock");
+            require(!dock->isVisible(), "It is closed until it is opened");
+            toggle->trigger();
+            settle();
+            require(dock->isVisible(), "View opens it");
+            auto* list = child<QTreeWidget>(window, "historyList");
+            require(list->topLevelItemCount() == static_cast<int>(window.editor().history().size()) + 1
+                        && list->topLevelItem(0)->text(0) == "Start",
+                    "It shows where the history starts and one row for each step since");
+            // A step made is added after the last one in effect, taking the
+            // place of any that had been undone, said in words, and is where
+            // the history stands.
+            const auto steps = static_cast<int>(window.editor().history_position());
+            child<QAction>(window, "toolEntity")->trigger();
+            const auto& first = window.editor().project().layout.begin()->second;
+            click_canvas(*window.canvas(), QPointF(first.x - 600, first.y - 600));
+            require(list->topLevelItemCount() == steps + 2, "The new step is added");
+            auto* made = list->topLevelItem(steps + 1);
+            require(made->text(0) == "Created Entity \"Entity\"", "In words");
+            require(!made->text(1).isEmpty(), "With the time it was made");
+            require(list->currentItem() == made, "And it is where the history stands");
+            // Pressing the row before it goes back to just after that step.
+            const auto entities = window.editor().project().entities.size();
+            const auto press = [&](QTreeWidgetItem* item) {
+                list->scrollToItem(item);
+                const auto at = list->visualItemRect(item).center();
+                QMouseEvent down(QEvent::MouseButtonPress, QPointF(at), QPointF(list->viewport()->mapToGlobal(at)),
+                                 Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+                QApplication::sendEvent(list->viewport(), &down);
+                QMouseEvent up(QEvent::MouseButtonRelease, QPointF(at), QPointF(list->viewport()->mapToGlobal(at)),
+                               Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+                QApplication::sendEvent(list->viewport(), &up);
+                settle();
+            };
+            press(list->topLevelItem(steps));
+            require(window.editor().project().entities.size() == entities - 1, "Going back takes the entity away");
+            require(list->topLevelItemCount() == steps + 2, "The step stays in the history");
+            made = list->topLevelItem(steps + 1);
+            require(made->font(0).italic(), "Shown as undone");
+            require(child<QAction>(window, "redoCommand")->isEnabled(), "And Redo can bring it back");
+            // Pressing it again goes forward to it.
+            press(made);
+            require(window.editor().project().entities.size() == entities, "Going forward brings it back");
+            require(!list->topLevelItem(steps + 1)->font(0).italic(), "In effect again");
+            // Undo and the History are one history.
+            child<QAction>(window, "undoCommand")->trigger();
+            settle();
+            require(list->currentItem() == list->topLevelItem(steps), "Undo moves where the history stands");
+            toggle->trigger();
+            settle();
+            require(!dock->isVisible(), "And View closes it again");
+        }
         // ISA is one toolbar entry offering both directions; the dropdown picks
         // the mode and the button itself locks like every other tool.
         auto* isa = child<QAction>(window, "toolIsa");
@@ -2916,24 +3154,19 @@ int main(int argc, char** argv) {
                     "And shows it at the toolbar's size");
         }
 
-        // Where a new line joins each shape is chosen on Connect's own arrow,
-        // beside the line style, and the choice is remembered.
+        // A line Connect draws is never pinned where it was clicked (Zain,
+        // 2026-09-26): "Join where I click" is no longer offered, nor the
+        // choice it was one half of, and a choice remembered from before is
+        // not taken up. The line styles stay on Connect's arrow.
         {
+            require(window.findChild<QAction*>("joinWhereClicked") == nullptr
+                        && window.findChild<QAction*>("joinAutomatic") == nullptr,
+                    "Connect's menu no longer offers where a line joins");
+            require(window.canvas()->join_mode() == desktop::JoinMode::Automatic,
+                    "New lines are not pinned where they are clicked");
             auto* connect_menu = child<QToolButton>(window, "connectButton")->menu();
-            auto* clicked = child<QAction>(window, "joinWhereClicked");
-            auto* automatic = child<QAction>(window, "joinAutomatic");
-            require(connect_menu->actions().contains(clicked) && connect_menu->actions().contains(automatic),
-                    "Both join modes are on the Connect menu");
-            require(clicked->isChecked() && window.canvas()->join_mode() == desktop::JoinMode::WhereClicked,
-                    "New lines join where they are clicked unless told otherwise");
-            automatic->trigger();
-            settle();
-            require(window.canvas()->join_mode() == desktop::JoinMode::Automatic, "The menu changes the canvas");
-            require(automatic->isChecked() && !clicked->isChecked(), "And marks the mode in use");
-            require(QSettings().value("joinMode").toString() == "automatic", "The choice is remembered");
-            clicked->trigger();
-            settle();
-            require(window.canvas()->join_mode() == desktop::JoinMode::WhereClicked, "And back again");
+            require(connect_menu->actions().contains(child<QAction>(window, "lineElbow")),
+                    "The line styles are still there");
         }
 
         // An entity says in Properties whether it relates to itself, and
