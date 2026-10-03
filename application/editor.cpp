@@ -5,6 +5,7 @@
 // and whether it is a gain or a loss. He decides. Fixing a real defect is not
 // covered by this — fix it and say what was wrong. Full rule: CLAUDE.md.
 #include "application/editor.hpp"
+#include "domain/schema_preview.hpp"
 
 #include <algorithm>
 #include <functional>
@@ -63,6 +64,7 @@ std::size_t payload(const Picture& value) {
 std::size_t payload(const Note& value) { return value.name.capacity() + value.description.capacity(); }
 std::size_t payload(const Rect&) { return 0; }
 std::size_t payload(const Colour&) { return 0; }
+std::size_t payload(const LetteringBase&) { return 0; }
 std::size_t payload(std::uint8_t) { return 0; }
 std::size_t payload(double) { return 0; }
 // A connector holds its bend and joins inline; only the route is on the heap.
@@ -94,15 +96,26 @@ std::size_t payload(const ConversionDecisions& value) {
 }
 std::size_t payload(const SchemaColumn& value) { return value.name.capacity() + value.comment.capacity(); }
 std::size_t payload(const SchemaOverrides& value) {
-    std::size_t result = entries(value.added.size(), sizeof(std::pair<const ElementRef, std::vector<SchemaColumn>>))
+    // Native tables and keys participate in the same bounded undo history.
+    std::size_t native = entries(value.relations.size(), sizeof(Relation))
+                       + entries(value.foreign_keys.size(), sizeof(SchemaForeignKey));
+    for (const auto& [id, table] : value.relations) {
+        (void)id;
+        native += table.name.capacity() + table.description.capacity() + table.comment.capacity();
+    }
+    std::size_t result = native + entries(value.added.size(), sizeof(std::pair<const ElementRef, std::vector<SchemaColumn>>))
         + entries(value.hidden.size(), sizeof(AttributeId))
         + entries(value.key_names.size(), sizeof(std::pair<const ElementRef, std::string>));
     for (const auto& [table, chosen] : value.key_names) { (void)table; result += chosen.capacity(); }
+    result += entries(value.foreign_key_names.size(), sizeof(std::pair<const ForeignKeyColumn, std::string>));
+    for (const auto& [column, chosen] : value.foreign_key_names) { (void)column; result += chosen.capacity(); }
     for (const auto& [table, columns] : value.added) {
         (void)table;
         result += columns.capacity() * sizeof(SchemaColumn);
         for (const auto& column : columns) result += payload(column);
     }
+    result += entries(value.column_order.size(), sizeof(std::pair<const RelationId, std::vector<ColumnIdentity>>));
+    for (const auto& [table, columns] : value.column_order) { (void)table; result += columns.capacity() * sizeof(ColumnIdentity); }
     return result;
 }
 std::size_t payload(const SchemaLayout& value) {
@@ -131,6 +144,11 @@ std::size_t cost(const Changes<Key, Value>& changes, const std::map<Key, Value>&
 
 struct Delta {
     std::string label;
+    // How the History tells this step: what it did, and when. Worked out as
+    // the step is made, from what it changed.
+    std::string description;
+    std::vector<HistoryChange> changes;
+    std::chrono::system_clock::time_point when;
     std::optional<std::string> project_name;
     std::optional<std::string> project_description;
     std::optional<Background> background;
@@ -148,6 +166,7 @@ struct Delta {
     Changes<ConnectorRef, Connector> connectors;
     Changes<ElementRef, Colour> colours;
     Changes<ElementRef, std::uint8_t> transparency;
+    Changes<ElementRef, LetteringBase> lettering;
     std::size_t bytes = 0;
     std::uint64_t before_state = 0;
     std::uint64_t after_state = 0;
@@ -158,7 +177,7 @@ struct Delta {
             && relationships.keys.empty() && specializations.keys.empty()
             && pictures.keys.empty() && notes.keys.empty() && comments.keys.empty()
             && layout.keys.empty() && connectors.keys.empty() && colours.keys.empty()
-            && transparency.keys.empty();
+            && transparency.keys.empty() && lettering.keys.empty();
     }
     void toggle(Project& project) {
         if (project_name) project.name.swap(*project_name);
@@ -178,6 +197,7 @@ struct Delta {
         connectors.toggle(project.connectors);
         colours.toggle(project.colours);
         transparency.toggle(project.transparency);
+        lettering.toggle(project.lettering);
     }
     [[nodiscard]] std::size_t estimate(const Project& project) const {
         return sizeof(Delta) + sizeof(std::unique_ptr<Delta>) + label.capacity()
@@ -194,9 +214,336 @@ struct Delta {
             + cost(pictures, project.pictures) + cost(notes, project.notes)
             + cost(comments, project.comments)
             + cost(layout, project.layout) + cost(connectors, project.connectors)
-            + cost(colours, project.colours) + cost(transparency, project.transparency);
+            + cost(colours, project.colours) + cost(transparency, project.transparency)
+            + cost(lettering, project.lettering);
     }
 };
+
+// What a step did, thing by thing, for the History (Zain, 2026-09-26). Read
+// once the step has been made: the project holds what things are now, and the
+// step holds what they were, since making it exchanged the two.
+std::vector<HistoryChange> summarise(const Delta& delta, const Project& now) {
+    using Kind = HistoryChange::Kind;
+    std::vector<HistoryChange> changes;
+    // What an element was called before the step, for one the step deleted,
+    // and what it is called now for anything else.
+    const auto called = [&](const ElementRef& ref) -> std::string {
+        if (exists(now, ref)) return name(now, ref);
+        return std::visit([&](const auto& id) -> std::string {
+            using Id = std::decay_t<decltype(id)>;
+            const auto from = [&](const auto& before) -> std::string {
+                const auto found = before.alternate.find(id);
+                return found == before.alternate.end() ? std::string{} : found->second.name;
+            };
+            if constexpr (std::is_same_v<Id, EntityId>) return from(delta.entities);
+            else if constexpr (std::is_same_v<Id, AttributeId>) return from(delta.attributes);
+            else if constexpr (std::is_same_v<Id, RelationshipId>) return from(delta.relationships);
+            else if constexpr (std::is_same_v<Id, SpecializationId>) return from(delta.specializations);
+            else if constexpr (std::is_same_v<Id, PictureId>) return from(delta.pictures);
+            else if constexpr (std::is_same_v<Id, RelationId>) {
+                if (delta.schema && delta.schema->relations.contains(id)) return delta.schema->relations.at(id).name;
+                return {};
+            } else return from(delta.notes);
+        }, ref);
+    };
+    const auto noun_of = [&](const ElementRef& ref) -> std::string {
+        if (std::holds_alternative<EntityId>(ref)) return "Entity";
+        if (std::holds_alternative<AttributeId>(ref)) return "Attribute";
+        if (std::holds_alternative<RelationshipId>(ref)) return "Relationship";
+        if (std::holds_alternative<SpecializationId>(ref)) return "Specialization";
+        if (std::holds_alternative<PictureId>(ref)) return "Picture";
+        const auto id = std::get<NoteId>(ref);
+        const auto found = now.notes.find(id);
+        const auto was = delta.notes.alternate.find(id);
+        const bool plain = found != now.notes.end() ? found->second.plain
+                         : was != delta.notes.alternate.end() && was->second.plain;
+        return plain ? "Symbol" : "Note";
+    };
+    // Created, deleted, renamed or otherwise changed, for each kind of element
+    // whose only question is its name.
+    const auto walk = [&](const auto& changed, const auto& live) {
+        for (const auto& id : changed.keys) {
+            const auto before = changed.alternate.find(id);
+            const auto after = live.find(id);
+            const bool was = before != changed.alternate.end();
+            const bool is = after != live.end();
+            HistoryChange change;
+            change.element = ElementRef{id};
+            change.noun = noun_of(ElementRef{id});
+            if (!was && is) {
+                change.kind = Kind::Created;
+                change.name = after->second.name;
+            } else if (was && !is) {
+                change.kind = Kind::Deleted;
+                change.name = before->second.name;
+            } else if (was && is && before->second.name != after->second.name) {
+                change.kind = Kind::Renamed;
+                change.previous = before->second.name;
+                change.name = after->second.name;
+            } else if (was && is && before->second != after->second) {
+                change.name = after->second.name;
+            } else {
+                continue;
+            }
+            changes.push_back(std::move(change));
+        }
+    };
+    walk(delta.entities, now.entities);
+    walk(delta.specializations, now.specializations);
+    walk(delta.pictures, now.pictures);
+    walk(delta.notes, now.notes);
+    // An attribute also has an owner it can be attached to or taken from.
+    for (const auto& id : delta.attributes.keys) {
+        const auto before = delta.attributes.alternate.find(id);
+        const auto after = now.attributes.find(id);
+        const bool was = before != delta.attributes.alternate.end();
+        const bool is = after != now.attributes.end();
+        HistoryChange change;
+        change.element = ElementRef{id};
+        change.noun = "Attribute";
+        if (!was && is) {
+            change.kind = Kind::Created;
+            change.name = after->second.name;
+            if (after->second.owner) change.other = called(*after->second.owner);
+        } else if (was && !is) {
+            change.kind = Kind::Deleted;
+            change.name = before->second.name;
+        } else if (was && is) {
+            change.name = after->second.name;
+            if (before->second.name != after->second.name) {
+                change.kind = Kind::Renamed;
+                change.previous = before->second.name;
+            } else if (before->second.owner != after->second.owner) {
+                change.kind = after->second.owner ? Kind::Connected : Kind::Disconnected;
+                change.other = called(after->second.owner ? *after->second.owner : *before->second.owner);
+            } else if (before->second == after->second) {
+                continue;
+            }
+        } else {
+            continue;
+        }
+        changes.push_back(std::move(change));
+    }
+    // A relationship also has the sides it takes things in by.
+    for (const auto& id : delta.relationships.keys) {
+        const auto before = delta.relationships.alternate.find(id);
+        const auto after = now.relationships.find(id);
+        const bool was = before != delta.relationships.alternate.end();
+        const bool is = after != now.relationships.end();
+        HistoryChange change;
+        change.element = ElementRef{id};
+        change.noun = "Relationship";
+        if (!was && is) {
+            change.kind = Kind::Created;
+            change.name = after->second.name;
+        } else if (was && !is) {
+            change.kind = Kind::Deleted;
+            change.name = before->second.name;
+        } else if (was && is) {
+            change.name = after->second.name;
+            const auto sides = [](const Relationship& relationship) {
+                std::map<ParticipantId, ElementRef> found;
+                for (const auto& side : relationship.participants) found.emplace(side.id, target_ref(side.target));
+                return found;
+            };
+            const auto then = sides(before->second);
+            const auto later = sides(after->second);
+            std::vector<ElementRef> taken_in;
+            std::vector<ElementRef> let_go;
+            for (const auto& [side, target] : later) if (!then.contains(side)) taken_in.push_back(target);
+            for (const auto& [side, target] : then) if (!later.contains(side)) let_go.push_back(target);
+            if (before->second.name != after->second.name) {
+                change.kind = Kind::Renamed;
+                change.previous = before->second.name;
+            } else if (taken_in.size() == 1 && let_go.empty()) {
+                change.kind = Kind::Connected;
+                change.other = called(taken_in.front());
+            } else if (let_go.size() == 1 && taken_in.empty()) {
+                change.kind = Kind::Disconnected;
+                change.other = called(let_go.front());
+            } else if (before->second == after->second) {
+                continue;
+            }
+        } else {
+            continue;
+        }
+        changes.push_back(std::move(change));
+    }
+    // A remark is named by its first words.
+    for (const auto& id : delta.comments.keys) {
+        const auto before = delta.comments.alternate.find(id);
+        const auto after = now.comments.find(id);
+        const bool was = before != delta.comments.alternate.end();
+        const bool is = after != now.comments.end();
+        if (!was && !is) continue;
+        HistoryChange change;
+        change.noun = "Comment";
+        auto words = (is ? after->second.text : before->second.text);
+        if (words.size() > 40) words = words.substr(0, 40) + "…";
+        change.name = std::move(words);
+        change.kind = !was ? Kind::Created : !is ? Kind::Deleted : Kind::Changed;
+        if (was && is && before->second == after->second) continue;
+        changes.push_back(std::move(change));
+    }
+    if (delta.project_name) {
+        HistoryChange change;
+        change.kind = Kind::Renamed;
+        change.noun = "Project";
+        change.previous = *delta.project_name;
+        change.name = now.name;
+        changes.push_back(std::move(change));
+    }
+    // What went only because something it belongs to went: an attribute of
+    // an entity deleted in the same step.
+    std::set<ElementRef> made_or_gone;
+    for (const auto& change : changes)
+        if (change.element && (change.kind == Kind::Created || change.kind == Kind::Deleted))
+            made_or_gone.insert(*change.element);
+    for (auto& change : changes) {
+        if (change.kind != Kind::Deleted || !change.element) continue;
+        const auto* id = std::get_if<AttributeId>(&*change.element);
+        if (!id) continue;
+        const auto before = delta.attributes.alternate.find(*id);
+        if (before != delta.attributes.alternate.end() && before->second.owner
+            && made_or_gone.contains(*before->second.owner) && !exists(now, *before->second.owner))
+            change.carried = true;
+    }
+    // Moved or resized, for what the step neither made nor deleted.
+    std::set<ElementRef> moved;
+    const auto first_moved = changes.size();
+    for (const auto& ref : delta.layout.keys) {
+        if (made_or_gone.contains(ref)) continue;
+        const auto before = delta.layout.alternate.find(ref);
+        const auto after = now.layout.find(ref);
+        if (before == delta.layout.alternate.end() || after == now.layout.end()) continue;
+        HistoryChange change;
+        change.element = ref;
+        change.noun = noun_of(ref);
+        change.name = called(ref);
+        if (before->second.width != after->second.width || before->second.height != after->second.height)
+            change.kind = Kind::Resized;
+        else if (before->second.x != after->second.x || before->second.y != after->second.y)
+            change.kind = Kind::Moved;
+        else
+            continue;
+        if (change.kind == Kind::Moved) moved.insert(ref);
+        changes.push_back(std::move(change));
+    }
+    // An attribute that moved because what it belongs to moved with it.
+    for (auto index = first_moved; index < changes.size(); ++index) {
+        auto& change = changes[index];
+        if (change.kind != Kind::Moved) continue;
+        auto owner = std::optional<ElementRef>{};
+        if (const auto* id = std::get_if<AttributeId>(&*change.element))
+            if (const auto found = now.attributes.find(*id); found != now.attributes.end()) owner = found->second.owner;
+        for (std::size_t guard = 0; owner && guard < 64; ++guard) {
+            if (moved.contains(*owner)) {
+                change.carried = true;
+                break;
+            }
+            const auto* up = std::get_if<AttributeId>(&*owner);
+            const auto found = up ? now.attributes.find(*up) : now.attributes.end();
+            owner = found != now.attributes.end() ? found->second.owner : std::nullopt;
+        }
+    }
+    // The schema names its tables and columns from the model, so they are
+    // looked up only when the step touched the schema at all.
+    if (delta.schema || delta.schema_layout || delta.decisions) {
+        const auto preview = schema_preview(now);
+        const auto table = [&](const RelationId& id) -> std::string {
+            for (const auto& each : preview.tables)
+                if (each.id == id) return each.name;
+            return {};
+        };
+        if (delta.schema_layout) {
+            const auto& before = *delta.schema_layout;
+            const auto& after = now.schema_layout;
+            std::set<RelationId> placed;
+            std::set<RelationId> sized;
+            for (const auto& [id, at] : after.tables)
+                if (const auto was = before.tables.find(id); was == before.tables.end() || was->second != at) placed.insert(id);
+            for (const auto& [id, at] : before.tables)
+                if (!after.tables.contains(id)) placed.insert(id);
+            const auto differ = [&](const std::map<RelationId, double>& then, const std::map<RelationId, double>& later) {
+                for (const auto& [id, value] : later)
+                    if (const auto was = then.find(id); was == then.end() || was->second != value) sized.insert(id);
+                for (const auto& [id, value] : then)
+                    if (!later.contains(id)) sized.insert(id);
+            };
+            differ(before.widths, after.widths);
+            differ(before.heights, after.heights);
+            for (const auto& id : sized) {
+                placed.erase(id);
+                changes.push_back({.kind = Kind::Resized, .noun = "Table", .name = table(id)});
+            }
+            for (const auto& id : placed) changes.push_back({.kind = Kind::Moved, .noun = "Table", .name = table(id)});
+        }
+        if (delta.schema) {
+            const auto& before = *delta.schema;
+            const auto& after = now.schema;
+            // Tables made, renamed and deleted on a schema drawn by hand. The
+            // columns made or deleted with one go along with it, as an
+            // entity's attributes do.
+            std::set<RelationId> made_tables;
+            std::set<RelationId> gone_tables;
+            for (const auto& [id, relation] : after.relations) {
+                const auto was = before.relations.find(id);
+                if (was == before.relations.end()) {
+                    made_tables.insert(id);
+                    changes.push_back({.kind = Kind::Created, .noun = "Table", .name = relation.name});
+                } else if (was->second.name != relation.name) {
+                    changes.push_back({.kind = Kind::Renamed, .noun = "Table", .name = relation.name,
+                                       .previous = was->second.name});
+                }
+            }
+            std::map<RelationId, std::string> gone_names;
+            for (const auto& [id, relation] : before.relations)
+                if (!after.relations.contains(id)) {
+                    gone_tables.insert(id);
+                    gone_names.emplace(id, relation.name);
+                    changes.push_back({.kind = Kind::Deleted, .noun = "Table", .name = relation.name});
+                }
+            std::map<SchemaColumnId, std::pair<RelationId, const SchemaColumn*>> then;
+            std::map<SchemaColumnId, std::pair<RelationId, const SchemaColumn*>> later;
+            for (const auto& [id, columns] : before.added)
+                for (const auto& column : columns) then.emplace(column.id, std::pair{id, &column});
+            for (const auto& [id, columns] : after.added)
+                for (const auto& column : columns) later.emplace(column.id, std::pair{id, &column});
+            for (const auto& [column, at] : later) {
+                const auto was = then.find(column);
+                HistoryChange change{.noun = "Column", .name = at.second->name, .other = table(at.first)};
+                change.carried = was == then.end() && made_tables.contains(at.first);
+                if (was == then.end()) change.kind = Kind::Created;
+                else if (was->second.second->name != at.second->name) {
+                    change.kind = Kind::Renamed;
+                    change.previous = was->second.second->name;
+                } else if (!(*was->second.second == *at.second)) change.kind = Kind::Changed;
+                else continue;
+                changes.push_back(std::move(change));
+            }
+            for (const auto& [column, at] : then)
+                if (!later.contains(column))
+                    changes.push_back({.kind = Kind::Deleted, .noun = "Column", .name = at.second->name,
+                                       .other = gone_names.contains(at.first) ? gone_names.at(at.first)
+                                                                              : table(at.first),
+                                       .carried = gone_tables.contains(at.first)});
+        }
+        if (delta.decisions) {
+            // A table given a name of its own on the schema.
+            const auto& before = delta.decisions->table_name;
+            for (const auto& [id, chosen] : now.decisions.table_name)
+                if (const auto was = before.find(id); was == before.end() || was->second != chosen)
+                    changes.push_back({.kind = Kind::Renamed, .noun = "Table", .name = chosen,
+                                       .previous = was == before.end() ? std::string{} : was->second});
+        }
+    }
+    // A table renamed on the schema is the element it came from renamed, and
+    // is told as the table it was renamed as.
+    if (delta.label == "Rename table")
+        for (auto& change : changes)
+            if (change.kind == Kind::Renamed && change.element) change.noun = "Table";
+    return changes;
+}
 
 std::set<ElementRef> owned_closure(const Project& project, const std::vector<ElementRef>& selection) {
     std::set<ElementRef> result;
@@ -267,6 +614,16 @@ struct Editor::Impl {
             }
             delta->before_state = state;
             delta->after_state = revision + 1;
+            // Told for the History from what the step changed, now that the
+            // project holds the result and the step what it replaced. Its
+            // words count against the budget like the rest of the step.
+            delta->changes = summarise(*delta, project);
+            delta->description = application::describe(delta->label, delta->changes);
+            delta->when = std::chrono::system_clock::now();
+            delta->bytes += delta->description.capacity() + delta->changes.capacity() * sizeof(HistoryChange);
+            for (const auto& change : delta->changes)
+                delta->bytes += change.noun.capacity() + change.name.capacity() + change.previous.capacity()
+                              + change.other.capacity();
             while (history.size() > cursor) {
                 bytes -= history.back()->bytes;
                 history.pop_back();
@@ -302,10 +659,38 @@ bool Editor::can_redo() const { return impl_->cursor < impl_->history.size(); }
 std::string Editor::undo_label() const { return can_undo() ? impl_->history[impl_->cursor - 1]->label : std::string{}; }
 std::string Editor::redo_label() const { return can_redo() ? impl_->history[impl_->cursor]->label : std::string{}; }
 std::size_t Editor::history_bytes() const { return impl_->bytes; }
+std::vector<HistoryEntry> Editor::history() const {
+    std::vector<HistoryEntry> entries;
+    entries.reserve(impl_->history.size());
+    for (std::size_t index = 0; index < impl_->history.size(); ++index) {
+        const auto& step = *impl_->history[index];
+        entries.push_back(HistoryEntry{.label = step.label, .description = step.description,
+                                       .changes = step.changes, .when = step.when,
+                                       .in_effect = index < impl_->cursor});
+    }
+    return entries;
+}
+std::size_t Editor::history_position() const { return impl_->cursor; }
+EditResult Editor::go_to(std::size_t position) {
+    if (position > impl_->history.size()) return failure("That step is no longer in the history.");
+    while (impl_->cursor > position)
+        if (auto result = undo(); !result) return result;
+    while (impl_->cursor < position)
+        if (auto result = redo(); !result) return result;
+    return {};
+}
 
 void Editor::new_project() {
     Project fresh;
     fresh.id = ProjectId{impl_->next_id()};
+    const auto result = replace_project(std::move(fresh));
+    if (!result) throw std::runtime_error(result.error);
+}
+
+void Editor::new_schema_project() {
+    Project fresh;
+    fresh.id = ProjectId{impl_->next_id()};
+    fresh.schema.standalone = true;
     const auto result = replace_project(std::move(fresh));
     if (!result) throw std::runtime_error(result.error);
 }
@@ -331,6 +716,8 @@ EditResult Editor::replace_project(Project project) {
         const auto invalid = std::find_if(issues.begin(), issues.end(), [](const auto& issue) { return issue.blocks_save; });
         if (invalid != issues.end()) return failure(invalid->message);
         std::set<Uuid> identities{project.id.value};
+        for (const auto& [id, table] : project.schema.relations) { (void)table; identities.insert(id.value); }
+        for (const auto& [id, key] : project.schema.foreign_keys) { (void)key; identities.insert(id.value); }
         for (const auto& [id, entity] : project.entities) { (void)entity; identities.insert(id.value); }
         for (const auto& [id, attribute] : project.attributes) { (void)attribute; identities.insert(id.value); }
         for (const auto& [id, relationship] : project.relationships) {
@@ -385,11 +772,13 @@ EditResult Editor::create_entity(std::string name, Rect rect) {
         return EditResult{true, {}, ElementRef{id}, {}};
     });
 }
-EditResult Editor::create_attribute(std::string name, Rect rect, std::optional<AttributeOwner> owner) {
+EditResult Editor::create_attribute(std::string name, Rect rect, std::optional<AttributeOwner> owner,
+                                   Connector shape) {
     return impl_->edit("Create attribute", [&](Delta& delta) {
         const AttributeId id{impl_->next_id()};
         delta.attributes.put(id, Attribute{.id = id, .name = std::move(name), .kind = AttributeKind::Normal, .owner = owner});
         delta.layout.put(ElementRef{id}, rect);
+        if (owner && !shape.automatic()) delta.connectors.put(ConnectorRef{id}, std::move(shape));
         return EditResult{true, {}, ElementRef{id}, {}};
     });
 }
@@ -549,6 +938,12 @@ template<class Edit> EditResult edit_element(const Project& project, Delta& delt
             auto value = project.notes.at(id);
             edit(value);
             if (value != project.notes.at(id)) delta.notes.put(id, std::move(value));
+        } else if constexpr (std::is_same_v<T, RelationId>) {
+            auto value = project.schema.relations.at(id);
+            edit(value);
+            auto schema = delta.schema.value_or(project.schema);
+            schema.relations[id] = std::move(value);
+            delta.schema = std::move(schema);
         } else {
             auto value = project.relationships.at(id);
             edit(value);
@@ -650,6 +1045,7 @@ EditResult Editor::merge_project(const Project& other, double dx, double dy) {
         }
         for (const auto& [ref, colour] : other.colours) delta.colours.put(mapping.at(ref), colour);
         for (const auto& [ref, percent] : other.transparency) delta.transparency.put(mapping.at(ref), percent);
+        for (const auto& [ref, base] : other.lettering) delta.lettering.put(mapping.at(ref), base);
         for (const auto& [ref, connector] : other.connectors) {
             const auto found = links.find(ref);
             if (found == links.end()) continue;
@@ -886,6 +1282,19 @@ SchemaOverrides schema_with(const SchemaOverrides& from, Change&& change) {
     return value;
 }
 
+// Takes a column whose element an edit removes out of every order given to a
+// table's columns, in that same edit, so one undo puts it back in its place.
+// A column a table merely stops having is not taken out: it keeps its place
+// for when it returns. An order left naming nothing goes.
+template<class Gone>
+void forget_in_orders(SchemaOverrides& schema, Gone&& gone) {
+    for (auto& [table, columns] : schema.column_order) {
+        (void)table;
+        std::erase_if(columns, gone);
+    }
+    std::erase_if(schema.column_order, [](const auto& entry) { return entry.second.empty(); });
+}
+
 // Where a schema-only column lives, since it is held under the table it was
 // added to rather than in a list of its own.
 const SchemaColumn* find_schema_column(const SchemaOverrides& schema, SchemaColumnId id) {
@@ -896,7 +1305,247 @@ const SchemaColumn* find_schema_column(const SchemaOverrides& schema, SchemaColu
     }
     return nullptr;
 }
+SchemaColumn* find_schema_column(SchemaOverrides& schema, SchemaColumnId id) {
+    for (auto& [table, columns] : schema.added) {
+        (void)table;
+        for (auto& column : columns)
+            if (column.id == id) return &column;
+    }
+    return nullptr;
+}
+
+// Every column pointing at a key takes its type, and so on down any column
+// that points at one of those, so a key and its foreign keys never disagree.
+// A key is never among the columns pointing at it, so this ends; the guard
+// is for a chain somebody has tied into a loop.
+void carry_type(SchemaOverrides& schema, SchemaColumnId key, int depth = 0) {
+    const auto* source = find_schema_column(schema, key);
+    if (!source || depth > 64) return;
+    const auto type = source->logical_type;
+    const auto length = source->length;
+    const auto scale = source->scale;
+    for (const auto& [id, reference] : schema.foreign_keys) {
+        (void)id;
+        if (reference.target != key) continue;
+        auto* pointing = find_schema_column(schema, reference.column);
+        if (!pointing) continue;
+        pointing->logical_type = type;
+        pointing->length = length;
+        pointing->scale = scale;
+        carry_type(schema, reference.column, depth + 1);
+    }
+}
+
+// What a foreign key and the key it points at are called, for a sentence.
+std::string called_column(const SchemaOverrides& schema, RelationId table, SchemaColumnId column) {
+    const auto* found = find_schema_column(schema, column);
+    const auto relation = schema.relations.find(table);
+    return (relation != schema.relations.end() ? relation->second.name + "." : std::string{})
+         + (found ? found->name : std::string{});
+}
+
+// Why these rules would leave a foreign key pointing at something it cannot
+// point at, or nothing where every one still can. A foreign key points at a
+// table's only primary key column, or at a UNIQUE one.
+std::string broken_reference(const SchemaOverrides& schema) {
+    for (const auto& [id, reference] : schema.foreign_keys) {
+        (void)id;
+        const auto* target = find_schema_column(schema, reference.target);
+        const auto table = schema.added.find(reference.to);
+        if (!target || table == schema.added.end()) continue;
+        const auto keys = std::count_if(table->second.begin(), table->second.end(),
+                                        [](const SchemaColumn& column) { return column.identifier; });
+        if (target->unique || (target->identifier && keys == 1)) continue;
+        return called_column(schema, reference.from, reference.column) + " points at "
+             + called_column(schema, reference.to, reference.target)
+             + ", so that has to stay its table's only primary key, or be UNIQUE. "
+               "Remove the foreign key first to change it.";
+    }
+    return {};
+}
 } // namespace
+
+EditResult Editor::create_relation(std::string name, std::optional<Point> at) {
+    return impl_->edit("Create table", [&](Delta& delta) {
+        if (!project().schema.standalone) return failure("Create a Relational Schema project first.");
+        if (name.empty()) return failure("A table needs a name.");
+        auto value = project().schema;
+        const RelationId id{impl_->next_id()};
+        // Its key is named for it, as a key the conversion makes for an entity
+        // is (Zain, 2026-09-27): Student's key is StudentID, not ID.
+        auto key_name = name + "ID";
+        value.relations.emplace(id, Relation{.id = id, .name = std::move(name)});
+        SchemaColumn key;
+        key.id = SchemaColumnId{impl_->next_id()};
+        key.name = std::move(key_name);
+        key.logical_type = LogicalType::Int;
+        key.identifier = true;
+        key.key_order = 1;
+        key.required = true;
+        value.added[id].push_back(key);
+        delta.schema = std::move(value);
+        // Put where it was asked for, which is where it stays: a table made by
+        // hand is never moved by the arrangement that places the others.
+        if (at) {
+            auto arranged = project().schema_layout;
+            arranged.tables[id] = *at;
+            delta.schema_layout = std::move(arranged);
+        }
+        return EditResult{.created = ElementRef{id}};
+    });
+}
+
+EditResult Editor::erase_relation(RelationId id) {
+    return erase({ElementRef{id}});
+}
+
+EditResult Editor::add_foreign_key(RelationId from, SchemaColumnId column,
+                                   RelationId to, SchemaColumnId target) {
+    return impl_->edit("Add foreign key", [&](Delta& delta) {
+        if (!project().schema.relations.contains(from) || !project().schema.relations.contains(to))
+            return failure("Choose two existing tables.");
+        const auto* source = find_schema_column(project().schema, column);
+        const auto* key = find_schema_column(project().schema, target);
+        if (!source || !key) return failure("The column no longer exists.");
+        if (column == target) return failure("A column cannot point at itself.");
+        auto value = project().schema;
+        // One reference per source column; changing its target keeps its identity.
+        auto found = std::find_if(value.foreign_keys.begin(), value.foreign_keys.end(),
+            [&](const auto& entry) { return entry.second.column == column; });
+        const auto id = found == value.foreign_keys.end() ? ForeignKeyId{impl_->next_id()} : found->first;
+        value.foreign_keys[id] = SchemaForeignKey{id, from, to, column, target};
+        // It is only a foreign key where it points at a key.
+        if (const auto why = broken_reference(value); !why.empty()) {
+            const auto relation = project().schema.relations.at(to);
+            return failure(key->name + " is not " + relation.name
+                           + "'s primary key. A foreign key points at a table's primary key.");
+        }
+        carry_type(value, target);
+        delta.schema = std::move(value);
+        return EditResult{};
+    });
+}
+
+EditResult Editor::connect_foreign_key(RelationId referencing, std::optional<SchemaColumnId> column, std::string name,
+                                       RelationId referenced, SchemaColumnId key, ForeignKeyId* made) {
+    return impl_->edit("Connect tables", [&](Delta& delta) {
+        const auto& schema = project().schema;
+        if (!schema.relations.contains(referencing) || !schema.relations.contains(referenced))
+            return failure("Choose two existing tables.");
+        const auto owns = [&](RelationId table, SchemaColumnId id) {
+            const auto found = schema.added.find(table);
+            return found != schema.added.end()
+                && std::any_of(found->second.begin(), found->second.end(),
+                               [&](const SchemaColumn& one) { return one.id == id; });
+        };
+        if (!owns(referenced, key)) return failure("The key no longer exists.");
+        const auto& target = *find_schema_column(schema, key);
+        const auto called = [&](RelationId table, const std::string& what) {
+            return schema.relations.at(table).name + "." + what;
+        };
+        const auto keys = std::count_if(schema.added.at(referenced).begin(), schema.added.at(referenced).end(),
+                                        [](const SchemaColumn& one) { return one.identifier; });
+        if (!target.identifier || keys != 1)
+            return failure(called(referenced, target.name) + " is not " + schema.relations.at(referenced).name
+                           + "'s only primary key column, so a foreign key cannot reference it by itself.");
+        auto value = schema;
+        SchemaColumnId holding;
+        if (column) {
+            if (!owns(referencing, *column)) return failure("The column no longer exists.");
+            if (*column == key) return failure("A column cannot reference itself.");
+            const auto& existing = *find_schema_column(schema, *column);
+            for (const auto& [id, reference] : schema.foreign_keys) {
+                (void)id;
+                if (reference.column != *column) continue;
+                const auto& pointed = *find_schema_column(schema, reference.target);
+                if (reference.target == key)
+                    return failure(called(referencing, existing.name) + " already references "
+                                   + called(referenced, target.name) + ".");
+                return failure(called(referencing, existing.name) + " already references "
+                               + called(reference.to, pointed.name)
+                               + ". A column holds one foreign key; remove that one first.");
+            }
+            if (!takes_key_type(existing.logical_type, existing.length, existing.scale,
+                                target.logical_type, target.length, target.scale))
+                return failure(called(referencing, existing.name) + " is not compatible with "
+                               + called(referenced, target.name) + ": its type would have to change.");
+            holding = *column;
+        } else {
+            if (name.empty()) return failure("A column needs a name.");
+            const auto& own = value.added[referencing];
+            if (std::any_of(own.begin(), own.end(), [&](const SchemaColumn& one) { return one.name == name; }))
+                return failure(schema.relations.at(referencing).name + " already has a column called " + name + ".");
+            SchemaColumn fresh;
+            fresh.id = SchemaColumnId{impl_->next_id()};
+            fresh.name = std::move(name);
+            fresh.logical_type = target.logical_type;
+            fresh.length = target.length;
+            fresh.scale = target.scale;
+            holding = fresh.id;
+            value.added[referencing].push_back(std::move(fresh));
+        }
+        const ForeignKeyId id{impl_->next_id()};
+        value.foreign_keys[id] = SchemaForeignKey{id, referencing, referenced, holding, key};
+        if (const auto why = broken_reference(value); !why.empty()) return failure(why);
+        // An untyped column takes the key's type; one already of it is left
+        // as it is. Nothing else the key is reaches the column.
+        carry_type(value, key);
+        delta.schema = std::move(value);
+        if (made) *made = id;
+        return EditResult{};
+    });
+}
+
+EditResult Editor::erase_foreign_key(ForeignKeyId id) {
+    return impl_->edit("Remove foreign key", [&](Delta& delta) {
+        if (!project().schema.foreign_keys.contains(id)) return failure("The foreign key no longer exists.");
+        auto value = project().schema;
+        value.foreign_keys.erase(id);
+        auto layout = project().schema_layout;
+        layout.lines.erase(id);
+        delta.schema = std::move(value);
+        delta.schema_layout = std::move(layout);
+        return EditResult{};
+    });
+}
+
+EditResult Editor::convert_schema_to_diagram(const std::map<RelationId, Point>& tables, const DiagramSizes& sizes,
+                                             std::vector<std::string>* notes) {
+    return impl_->edit("Convert to Conceptual Design", [&](Delta& delta) {
+        if (!project().schema.standalone) return failure("This project is already drawn as a diagram.");
+        if (project().schema.relations.empty())
+            return failure("There are no tables to convert yet. Add a table first.");
+        auto made = diagram_from_schema(project(), tables, sizes, [&] { return impl_->next_id(); });
+        const auto& now = made.project;
+        for (const auto& [id, entity] : now.entities)
+            if (!project().entities.contains(id)) delta.entities.put(id, entity);
+        for (const auto& [id, attribute] : now.attributes)
+            if (!project().attributes.contains(id)) delta.attributes.put(id, attribute);
+        for (const auto& [id, relationship] : now.relationships)
+            if (!project().relationships.contains(id)) delta.relationships.put(id, relationship);
+        for (const auto& [ref, box] : now.layout)
+            if (const auto was = project().layout.find(ref); was == project().layout.end() || was->second != box)
+                delta.layout.put(ref, box);
+        // Colours, see-through surfaces and remarks move from the tables to
+        // what the tables became.
+        const auto moved = [](auto& changes, const auto& before, const auto& after) {
+            for (const auto& [ref, value] : before)
+                if (!after.contains(ref)) changes.remove(ref);
+            for (const auto& [ref, value] : after)
+                if (const auto was = before.find(ref); was == before.end() || !(was->second == value))
+                    changes.put(ref, value);
+        };
+        moved(delta.colours, project().colours, now.colours);
+        moved(delta.transparency, project().transparency, now.transparency);
+        for (const auto& [id, comment] : now.comments)
+            if (!(project().comments.at(id) == comment)) delta.comments.put(id, comment);
+        if (now.decisions != project().decisions) delta.decisions = now.decisions;
+        delta.schema = now.schema;
+        delta.schema_layout = now.schema_layout;
+        if (notes) *notes = std::move(made.notes);
+        return EditResult{};
+    });
+}
 
 EditResult Editor::add_schema_column(ElementRef table, std::string name) {
     return impl_->edit("Add a column", [&](Delta& delta) {
@@ -927,6 +1576,21 @@ EditResult Editor::rename_table(ElementRef ref, std::string name) {
         auto result = edit_element(project(), delta, ref, [&](auto& value) { value.name = std::move(name); });
         if (!result) return result;
         hold_anchors(project(), delta, ref, TextField::Name, characters);
+        // A table drawn by hand keeps its key named for it (Zain, 2026-09-27):
+        // a key still called by the table's old name follows it to the new
+        // one, in the same edit, so Table's TableID becomes Student's
+        // StudentID. A key called anything else was named by hand, and keeps
+        // the name it was given.
+        if (const auto* relation = std::get_if<RelationId>(&ref); relation && delta.schema) {
+            const auto was = project().schema.relations.find(*relation);
+            const auto now = delta.schema->relations.find(*relation);
+            const auto columns = delta.schema->added.find(*relation);
+            if (was != project().schema.relations.end() && now != delta.schema->relations.end()
+                && columns != delta.schema->added.end())
+                for (auto& column : columns->second)
+                    if (column.identifier && column.name == was->second.name + "ID")
+                        column.name = now->second.name + "ID";
+        }
         if (project().decisions.table_name.contains(relation_from(ref))) {
             auto decided = project().decisions;
             decided.table_name.erase(relation_from(ref));
@@ -953,6 +1617,61 @@ EditResult Editor::rename_schema_key(ElementRef table, std::string chosen) {
     });
 }
 
+EditResult Editor::rename_foreign_key(ForeignKeyColumn column, std::string chosen) {
+    return impl_->edit("Rename the foreign key", [&](Delta& delta) {
+        auto value = schema_with(project().schema, [&](SchemaOverrides& s) {
+            if (chosen.empty()) s.foreign_key_names.erase(column); else s.foreign_key_names[column] = chosen;
+        });
+        if (value == project().schema) return EditResult{};
+        delta.schema = std::move(value);
+        return EditResult{};
+    });
+}
+
+EditResult Editor::set_column_order(RelationId table, std::vector<ColumnIdentity> order) {
+    return impl_->edit("Reorder the columns", [&](Delta& delta) {
+        if (project().schema.standalone)
+            return failure("A table drawn by hand keeps its columns in the order it lists them.");
+        const auto preview = schema_preview(project());
+        const auto found = std::find_if(preview.tables.begin(), preview.tables.end(),
+                                        [&](const PreviewTable& one) { return one.id == table; });
+        if (found == preview.tables.end()) return failure("The table no longer exists.");
+        std::set<ColumnIdentity> has;   // the columns the table has now
+        for (const auto& column : found->columns)
+            if (const auto identity = column_identity(column)) has.insert(*identity);
+        std::set<ColumnIdentity> named;
+        for (const auto& identity : order) {
+            if (!has.contains(identity)) return failure("That column is not in this table.");
+            if (!named.insert(identity).second) return failure("A column is named twice in the order.");
+        }
+        auto value = schema_with(project().schema, [&](SchemaOverrides& s) {
+            if (order.empty()) {
+                s.column_order.erase(table);
+                return;
+            }
+            // A column the order named that the table does not have now goes
+            // back in straight after the one it followed, so when it returns
+            // it returns there rather than to the end.
+            auto kept = order;
+            if (const auto before = s.column_order.find(table); before != s.column_order.end()) {
+                std::optional<ColumnIdentity> after;
+                for (const auto& identity : before->second) {
+                    if (has.contains(identity)) {
+                        if (named.contains(identity)) after = identity;
+                        continue;
+                    }
+                    kept.insert(after ? std::find(kept.begin(), kept.end(), *after) + 1 : kept.begin(), identity);
+                    after = identity;
+                }
+            }
+            s.column_order[table] = std::move(kept);
+        });
+        if (value == project().schema) return EditResult{};
+        delta.schema = std::move(value);
+        return EditResult{};
+    });
+}
+
 EditResult Editor::rename_schema_column(SchemaColumnId id, std::string name) {
     return impl_->edit("Rename the column", [&](Delta& delta) {
         if (!find_schema_column(project().schema, id)) return failure("The column no longer exists.");
@@ -970,10 +1689,25 @@ EditResult Editor::rename_schema_column(SchemaColumnId id, std::string name) {
     });
 }
 
+namespace {
+// Why a column's type cannot be given here, where it cannot: a foreign key
+// drawn on the schema takes its type from the key it points at.
+std::string typed_elsewhere(const SchemaOverrides& schema, SchemaColumnId id) {
+    for (const auto& [key, reference] : schema.foreign_keys) {
+        (void)key;
+        if (reference.column != id) continue;
+        return called_column(schema, reference.from, reference.column) + " is a foreign key, so it takes its type from "
+             + called_column(schema, reference.to, reference.target) + ". Change that key's type and this follows.";
+    }
+    return {};
+}
+} // namespace
+
 EditResult Editor::set_schema_column_type(SchemaColumnId id, LogicalType type) {
     return impl_->edit("Set logical type", [&](Delta& delta) {
         if (!find_schema_column(project().schema, id)) return failure("The column no longer exists.");
         if (!known_type(type)) return failure("That is not a logical type.");
+        if (const auto why = typed_elsewhere(project().schema, id); !why.empty()) return failure(why);
         auto value = schema_with(project().schema, [&](SchemaOverrides& s) {
             for (auto& [table, columns] : s.added) {
                 (void)table;
@@ -984,6 +1718,7 @@ EditResult Editor::set_schema_column_type(SchemaColumnId id, LogicalType type) {
                     if (size_of(type) != TypeSize::Precision) column.scale = 0;
                 }
             }
+            carry_type(s, id);
         });
         if (value == project().schema) return EditResult{};
         delta.schema = std::move(value);
@@ -997,12 +1732,22 @@ EditResult Editor::erase_schema_column(SchemaColumnId id) {
         auto value = schema_with(project().schema, [&](SchemaOverrides& s) {
             for (auto& [table, columns] : s.added) {
                 (void)table;
-                std::erase_if(columns, [&](const SchemaColumn& column) { return column.id == id; });
+                // A key that loses a column closes up behind it.
+                if (std::erase_if(columns, [&](const SchemaColumn& column) { return column.id == id; }))
+                    number_primary_key(columns);
             }
             // A table that has none of its own left holds no entry at all, so
             // an empty list never counts as a difference from the diagram.
             std::erase_if(s.added, [](const auto& entry) { return entry.second.empty(); });
+            forget_in_orders(s, [&](const ColumnIdentity& column) { return column == ColumnIdentity{id}; });
         });
+        auto layout = project().schema_layout;
+        std::erase_if(value.foreign_keys, [&](const auto& entry) {
+            const bool drop = entry.second.column == id || entry.second.target == id;
+            if (drop) layout.lines.erase(entry.first);
+            return drop;
+        });
+        delta.schema_layout = std::move(layout);
         delta.schema = std::move(value);
         return EditResult{};
     });
@@ -1030,10 +1775,12 @@ SchemaLayout arranged_with(const SchemaLayout& from, Change&& change) {
 } // namespace
 
 EditResult Editor::move_schema_tables(const std::map<ElementRef, Point>& places,
-                                      const std::vector<LinkSource>& give_way) {
+                                      const std::vector<LinkSource>& give_way,
+                                      const std::vector<std::pair<LinkSource, SchemaLine>>& carried) {
     return impl_->edit("Move on the schema", [&](Delta& delta) {
         auto value = arranged_with(project().schema_layout, [&](SchemaLayout& layout) {
             for (const auto& [table, at] : places) layout.tables[relation_from(table)] = at;
+            for (const auto& [link, shape] : carried) layout.lines[foreign_key_from(link)] = shape;
             for (const auto& link : give_way) layout.lines.erase(foreign_key_from(link));
         });
         if (value == project().schema_layout) return EditResult{};
@@ -1159,6 +1906,7 @@ EditResult Editor::set_schema_column_size(SchemaColumnId id, std::uint32_t lengt
     return impl_->edit("Set the size", [&](Delta& delta) {
         const auto* column = find_schema_column(project().schema, id);
         if (!column) return failure("The column no longer exists.");
+        if (const auto why = typed_elsewhere(project().schema, id); !why.empty()) return failure(why);
         const auto takes = size_of(column->logical_type);
         if (takes == TypeSize::None) return failure("That type is not measured.");
         if (length > max_logical_length) return failure("That is longer than a column can be.");
@@ -1173,6 +1921,7 @@ EditResult Editor::set_schema_column_size(SchemaColumnId id, std::uint32_t lengt
                     one.scale = takes == TypeSize::Precision ? scale : 0;
                 }
             }
+            carry_type(s, id);
         });
         if (value == project().schema) return EditResult{};
         delta.schema = std::move(value);
@@ -1257,15 +2006,22 @@ EditResult Editor::set_schema_column_rules(SchemaColumnId id, bool identifier, b
         auto value = schema_with(project().schema, [&](SchemaOverrides& s) {
             for (auto& [table, columns] : s.added) {
                 (void)table;
+                bool here = false;
                 for (auto& column : columns) {
                     if (column.id != id) continue;
+                    here = true;
+                    // Joining the key, it takes its place where it stands in
+                    // the list; leaving it, it gives its place up.
+                    if (column.identifier != identifier) column.key_order = 0;
                     column.identifier = identifier;
                     column.required = required || identifier;
                     column.unique = unique;
                 }
+                if (here) number_primary_key(columns);
             }
         });
         if (value == project().schema) return EditResult{};
+        if (const auto why = broken_reference(value); !why.empty()) return failure(why);
         delta.schema = std::move(value);
         return EditResult{};
     });
@@ -1359,6 +2115,34 @@ EditResult Editor::set_cardinality(ParticipantId participant, Cardinality maximu
             side.cardinality_confirmed = true;
             if (value == relationship) return EditResult{};
             delta.relationships.put(id, std::move(value));
+            return EditResult{};
+        }
+        return failure("That side of the relationship no longer exists.");
+    });
+}
+
+EditResult Editor::set_cardinality(ParticipantId participant, Cardinality maximum, ParticipantId keeps_key) {
+    return impl_->edit(maximum == Cardinality::One ? "Make the side one" : "Make the side many",
+                       [&](Delta& delta) {
+        for (const auto& [id, relationship] : project().relationships) {
+            const auto item = std::find_if(relationship.participants.begin(),
+                                           relationship.participants.end(),
+                                           [&](const auto& entry) { return entry.id == participant; });
+            if (item == relationship.participants.end()) continue;
+            if (std::none_of(relationship.participants.begin(), relationship.participants.end(),
+                             [&](const auto& entry) { return entry.id == keeps_key; }))
+                return failure("That side does not belong to this relationship.");
+            auto value = relationship;
+            auto& side = value.participants[static_cast<std::size_t>(
+                std::distance(relationship.participants.begin(), item))];
+            side.maximum = maximum;
+            side.cardinality_confirmed = true;
+            if (value != relationship) delta.relationships.put(id, std::move(value));
+            const auto keyed = id;
+            auto decided = decided_with(project().decisions, [&](ConversionDecisions& d) {
+                d.one_to_one_key[keyed] = keeps_key;
+            });
+            if (decided != project().decisions) delta.decisions = std::move(decided);
             return EditResult{};
         }
         return failure("That side of the relationship no longer exists.");
@@ -1542,6 +2326,23 @@ EditResult Editor::reverse_participants(RelationshipId relationship) {
         return EditResult{};
     });
 }
+namespace {
+// Unpins every comment from what an edit takes away, in that same edit, and a
+// comment left pinned to nothing goes with it -- so one undo brings back what
+// was taken and what was said about it together. Deleting and disconnecting
+// both take lines away, and both unpin this way.
+template<class Gone>
+void unpin_comments(const Project& project, Delta& delta, Gone&& gone) {
+    for (const auto& [id, comment] : project.comments) {
+        if (std::none_of(comment.targets.begin(), comment.targets.end(), gone)) continue;
+        auto value = comment;
+        std::erase_if(value.targets, gone);
+        if (value.targets.empty()) delta.comments.remove(id);
+        else delta.comments.put(id, std::move(value));
+    }
+}
+} // namespace
+
 EditResult Editor::disconnect(RelationshipId relationship, ParticipantId participant) {
     return impl_->edit("Disconnect participant", [&](Delta& delta) {
         const auto found = project().relationships.find(relationship);
@@ -1551,13 +2352,62 @@ EditResult Editor::disconnect(RelationshipId relationship, ParticipantId partici
         if (removed == 0) return failure("The participant does not belong to this relationship.");
         delta.relationships.put(relationship, std::move(value));
         if (project().connectors.contains(ConnectorRef{participant})) delta.connectors.remove(participant);
+        // Whatever else refers to the side goes with it in this same step, as
+        // it does when the side is deleted (erase). Anything left pointing at
+        // it is refused, and refusing it refused the disconnection itself.
+        //
+        // A comment pinned to its line is unpinned, and goes if it was pinned
+        // to nothing else.
+        unpin_comments(project(), delta, [&](const CommentTarget& target) {
+            return target == CommentTarget{ConnectorRef{participant}};
+        });
+        // A one-to-one key chosen to be kept on this side names a side the
+        // relationship no longer has. The choice is cleared and handed to no
+        // other side; a choice of the other side still stands.
+        auto decided = decided_with(project().decisions, [&](ConversionDecisions& d) {
+            std::erase_if(d.one_to_one_key, [&](const auto& entry) { return entry.second == participant; });
+        });
+        if (decided != project().decisions) delta.decisions = std::move(decided);
+        // The foreign key this side put on a table goes with it, and so do the
+        // names typed over its parts, its place in that table's order and the
+        // shape given to its line on the schema. Only this side's key goes: a
+        // key made for another side keeps all of them.
+        const auto key = foreign_key_from(LinkSource{participant});
+        auto schema = schema_with(project().schema, [&](SchemaOverrides& s) {
+            std::erase_if(s.foreign_key_names, [&](const auto& entry) { return entry.first.key == key; });
+            forget_in_orders(s, [&](const ColumnIdentity& column) {
+                const auto* part = std::get_if<ForeignKeyColumn>(&column);
+                return part && part->key == key;
+            });
+        });
+        if (schema != project().schema) delta.schema = std::move(schema);
+        auto arranged = arranged_with(project().schema_layout, [&](SchemaLayout& layout) { layout.lines.erase(key); });
+        if (arranged != project().schema_layout) delta.schema_layout = std::move(arranged);
         return EditResult{};
     });
 }
+namespace {
+// The first time an entity, relationship or attribute is made a different
+// size by hand, the size it had is kept as the size its name is drawn for,
+// so from then on the name grows and shrinks with the box (Zain,
+// 2026-09-26). Kept in the same edit as the resize, so one undo takes both.
+void keep_lettering_base(const Project& project, Delta& delta, const ElementRef& ref, const Rect& sized) {
+    if (!std::holds_alternative<EntityId>(ref) && !std::holds_alternative<RelationshipId>(ref)
+        && !std::holds_alternative<AttributeId>(ref))
+        return;
+    if (project.lettering.contains(ref)) return;
+    const auto found = project.layout.find(ref);
+    if (found == project.layout.end()) return;
+    if (found->second.width == sized.width && found->second.height == sized.height) return;
+    delta.lettering.put(ref, LetteringBase{found->second.width, found->second.height});
+}
+} // namespace
+
 EditResult Editor::move(const std::map<ElementRef, Rect>& positions) {
     return impl_->edit("Move elements", [&](Delta& delta) {
         for (const auto& [ref, rect] : positions) {
             if (!exists(project(), ref)) return failure("An element no longer exists.");
+            keep_lettering_base(project(), delta, ref, rect);
             const auto found = project().layout.find(ref);
             if (found == project().layout.end() || found->second != rect) delta.layout.put(ref, rect);
         }
@@ -1599,6 +2449,46 @@ EditResult Editor::resize_entities(const std::map<ElementRef, Rect>& boxes) {
             sized.height = std::clamp(sized.height, min_entity_height, max_entity_height);
             sized.x = std::clamp(sized.x, -max_coordinate, max_coordinate - sized.width);
             sized.y = std::clamp(sized.y, -max_coordinate, max_coordinate - sized.height);
+            keep_lettering_base(project(), delta, ref, sized);
+            const auto found = project().layout.find(ref);
+            if (found == project().layout.end() || found->second != sized) delta.layout.put(ref, sized);
+        }
+        return EditResult{};
+    });
+}
+EditResult Editor::resize_relationships(const std::map<ElementRef, Rect>& boxes) {
+    return impl_->edit("Resize relationship", [&](Delta& delta) {
+        for (const auto& [ref, box] : boxes) {
+            if (!std::holds_alternative<RelationshipId>(ref)) return failure("Only a relationship can be resized here.");
+            if (!exists(project(), ref)) return failure("The relationship no longer exists.");
+            // Clamped rather than refused: a size comes from an edge being
+            // dragged, and a drag that runs past the end is asking for the
+            // end, not for nothing to happen.
+            auto sized = box;
+            sized.width = std::clamp(sized.width, min_entity_width, max_entity_width);
+            sized.height = std::clamp(sized.height, min_entity_height, max_entity_height);
+            sized.x = std::clamp(sized.x, -max_coordinate, max_coordinate - sized.width);
+            sized.y = std::clamp(sized.y, -max_coordinate, max_coordinate - sized.height);
+            keep_lettering_base(project(), delta, ref, sized);
+            const auto found = project().layout.find(ref);
+            if (found == project().layout.end() || found->second != sized) delta.layout.put(ref, sized);
+        }
+        return EditResult{};
+    });
+}
+EditResult Editor::resize_attributes(const std::map<ElementRef, Rect>& boxes) {
+    return impl_->edit("Resize attribute", [&](Delta& delta) {
+        for (const auto& [ref, box] : boxes) {
+            if (!std::holds_alternative<AttributeId>(ref)) return failure("Only an attribute can be resized here.");
+            if (!exists(project(), ref)) return failure("The attribute no longer exists.");
+            // Clamped rather than refused, as for an entity: a drag that runs
+            // past the end is asking for the end, not for nothing to happen.
+            auto sized = box;
+            sized.width = std::clamp(sized.width, min_entity_width, max_entity_width);
+            sized.height = std::clamp(sized.height, min_entity_height, max_entity_height);
+            sized.x = std::clamp(sized.x, -max_coordinate, max_coordinate - sized.width);
+            sized.y = std::clamp(sized.y, -max_coordinate, max_coordinate - sized.height);
+            keep_lettering_base(project(), delta, ref, sized);
             const auto found = project().layout.find(ref);
             if (found == project().layout.end() || found->second != sized) delta.layout.put(ref, sized);
         }
@@ -1785,6 +2675,7 @@ EditResult Editor::erase(const std::vector<ElementRef>& elements,
                 else if constexpr (std::is_same_v<T, SpecializationId>) delta.specializations.remove(id);
                 else if constexpr (std::is_same_v<T, PictureId>) delta.pictures.remove(id);
                 else if constexpr (std::is_same_v<T, NoteId>) delta.notes.remove(id);
+                else if constexpr (std::is_same_v<T, RelationId>) { /* removed with schema state below */ }
                 else {
                     delta.relationships.remove(id);
                     for (const auto& participant : project().relationships.at(id).participants)
@@ -1797,6 +2688,7 @@ EditResult Editor::erase(const std::vector<ElementRef>& elements,
             // validation never sees one pointing at something that is gone.
             if (project().colours.contains(ref)) delta.colours.remove(ref);
             if (project().transparency.contains(ref)) delta.transparency.remove(ref);
+            if (project().lettering.contains(ref)) delta.lettering.remove(ref);
         }
         // A triangle without its supertype means nothing, so it goes with it;
         // a deleted subtype is simply detached from the ones that survive.
@@ -1851,13 +2743,7 @@ EditResult Editor::erase(const std::vector<ElementRef>& elements,
             if (const auto* anchor = std::get_if<TextAnchor>(&target)) return !gone.contains(anchor->owner);
             return !cut_connectors.contains(std::get<ConnectorRef>(target));
         };
-        for (const auto& [id, comment] : project().comments) {
-            if (std::all_of(comment.targets.begin(), comment.targets.end(), still_there)) continue;
-            auto value = comment;
-            std::erase_if(value.targets, [&](const CommentTarget& target) { return !still_there(target); });
-            if (value.targets.empty()) delta.comments.remove(id);
-            else delta.comments.put(id, std::move(value));
-        }
+        unpin_comments(project(), delta, [&](const CommentTarget& target) { return !still_there(target); });
         // An answer about an element outlives it no more than a remark does.
         // A decision left pointing at something deleted is not merely stale:
         // validate() refuses it, and refusing it here refuses the whole
@@ -1906,10 +2792,34 @@ EditResult Editor::erase(const std::vector<ElementRef>& elements,
         if (decided != project().decisions) delta.decisions = std::move(decided);
 
         auto overrides = project().schema;
+        std::erase_if(overrides.relations, [&](const auto& entry) { return gone_relations.contains(entry.first); });
+        std::erase_if(overrides.foreign_keys, [&](const auto& entry) {
+            const bool drop = gone_relations.contains(entry.second.from) || gone_relations.contains(entry.second.to);
+            if (drop) gone_keys.insert(entry.first);
+            return drop;
+        });
         std::erase_if(overrides.added, [&](const auto& entry) { return gone_relations.contains(entry.first); });
         std::erase_if(overrides.hidden, [&](const AttributeId& id) { return gone.contains(ElementRef{id}); });
         std::erase_if(overrides.key_names, [&](const auto& entry) { return gone_relations.contains(entry.first); });
         std::erase_if(overrides.counting_keys, [&](const auto& id) { return gone_relations.contains(id); });
+        std::erase_if(overrides.foreign_key_names, [&](const auto& entry) { return gone_keys.contains(entry.first.key); });
+        // An order given to a table's columns goes with the table, and loses
+        // each column whose element goes with these.
+        std::set<SchemaColumnId> gone_columns;
+        for (const auto& [relation, columns] : project().schema.added)
+            if (gone_relations.contains(relation))
+                for (const auto& column : columns) gone_columns.insert(column.id);
+        std::erase_if(overrides.column_order, [&](const auto& entry) { return gone_relations.contains(entry.first); });
+        forget_in_orders(overrides, [&](const ColumnIdentity& column) {
+            return std::visit([&](const auto& id) {
+                using T = std::decay_t<decltype(id)>;
+                if constexpr (std::is_same_v<T, AttributeId>) return gone.contains(ElementRef{id});
+                else if constexpr (std::is_same_v<T, SchemaColumnId>) return gone_columns.contains(id);
+                else if constexpr (std::is_same_v<T, ForeignKeyColumn>) return gone_keys.contains(id.key);
+                else if constexpr (std::is_same_v<T, InventedKeyColumn>) return gone_relations.contains(id.relation);
+                else return gone.contains(ElementRef{id.specialization});
+            }, column);
+        });
         if (overrides != project().schema) delta.schema = std::move(overrides);
 
         // The schema's own arrangement is presentation, exactly as the diagram's
@@ -1970,6 +2880,8 @@ EditResult Editor::duplicate(const std::vector<ElementRef>& elements, double dx,
                     auto value = project().notes.at(id);
                     value.id = new_id;
                     delta.notes.put(new_id, std::move(value));
+                } else if constexpr (std::is_same_v<T, RelationId>) {
+                    // Native duplication is handled by the schema editor.
                 } else {
                     auto value = project().relationships.at(id);
                     value.id = new_id;
@@ -1999,6 +2911,9 @@ EditResult Editor::duplicate(const std::vector<ElementRef>& elements, double dx,
             if (colour != project().colours.end()) delta.colours.put(replacement, colour->second);
             const auto faded = project().transparency.find(original);
             if (faded != project().transparency.end()) delta.transparency.put(replacement, faded->second);
+            // And its name is drawn the size the original's is.
+            const auto lettering = project().lettering.find(original);
+            if (lettering != project().lettering.end()) delta.lettering.put(replacement, lettering->second);
         }
         EditResult result;
         if (!elements.empty()) result.created = mapping.at(elements.front());

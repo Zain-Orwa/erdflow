@@ -21,11 +21,11 @@ if(ERDFLOW_SANITIZERS AND NOT MSVC)
     target_link_options(erdflow_warnings INTERFACE -fsanitize=address,undefined)
 endif()
 
-add_library(erdflow_domain domain/model.cpp domain/schema_preview.cpp)
+add_library(erdflow_domain domain/model.cpp domain/schema_preview.cpp domain/diagram_from_schema.cpp)
 target_include_directories(erdflow_domain PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(erdflow_domain PRIVATE erdflow_warnings)
 
-add_library(erdflow_application application/editor.cpp)
+add_library(erdflow_application application/editor.cpp application/history.cpp)
 target_link_libraries(erdflow_application PUBLIC erdflow_domain PRIVATE erdflow_warnings)
 
 add_library(erdflow_infrastructure infrastructure/project_store.cpp)
@@ -38,8 +38,9 @@ add_library(erdflow_canvas app/desktop/diagram_view.cpp app/desktop/theme.cpp ap
                           app/desktop/document_export.cpp)
 target_link_libraries(erdflow_canvas PUBLIC erdflow_application Qt6::Widgets Qt6::Svg PRIVATE erdflow_warnings)
 
-add_library(erdflow_desktop app/desktop/main_window.cpp app/desktop/schema_view.cpp app/desktop/notice.cpp
-                            app/desktop/home_page.cpp app/desktop/home_live_demo.cpp app/desktop/home_demo_scenes.cpp app/desktop/home_demo_canvas.cpp app/desktop/app_top_bar.cpp app/desktop/home_sidebar.cpp app/desktop/home_learning_panel.cpp app/desktop/start_route_card.cpp app/desktop/project_details_form.cpp app/desktop/welcome_flow_illustration.cpp app/desktop/ribbon.cpp app/desktop/icons.cpp
+add_library(erdflow_desktop app/desktop/main_window.cpp app/desktop/schema_view.cpp app/desktop/schema_explorer.cpp app/desktop/schema_facts.cpp
+                            app/desktop/notice.cpp
+                            app/desktop/home_page.cpp app/desktop/home_live_demo.cpp app/desktop/home_demo_scenes.cpp app/desktop/home_demo_canvas.cpp app/desktop/conceptual_examples.cpp app/desktop/app_top_bar.cpp app/desktop/home_sidebar.cpp app/desktop/home_learning_panel.cpp app/desktop/start_route_card.cpp app/desktop/project_details_form.cpp app/desktop/welcome_flow_illustration.cpp app/desktop/ribbon.cpp app/desktop/icons.cpp
                             app/desktop/symbols.cpp app/desktop/symbol_picker.cpp
                             app/desktop/export_dialog.cpp app/desktop/search_bar.cpp)
 target_link_libraries(erdflow_desktop PUBLIC erdflow_canvas Qt6::Svg PRIVATE erdflow_warnings)
@@ -61,6 +62,7 @@ qt_add_resources(erdflow_desktop "erdflow_icons"
         assets/icons/data.svg assets/icons/explorer.svg assets/icons/properties.svg
         assets/icons/validate.svg assets/icons/theme.svg assets/icons/settings.svg
         assets/icons/full-view.svg assets/icons/close.svg
+        assets/icons/panel-left.svg assets/icons/panel-right.svg assets/icons/side-panels.svg
 )
 
 qt_add_resources(erdflow_desktop "erdflow_icons_on_dark"
@@ -78,8 +80,18 @@ qt_add_resources(erdflow_desktop "erdflow_icons_on_dark"
         assets/icons-on-dark/data.svg assets/icons-on-dark/explorer.svg assets/icons-on-dark/properties.svg
         assets/icons-on-dark/validate.svg assets/icons-on-dark/theme.svg assets/icons-on-dark/settings.svg
         assets/icons-on-dark/full-view.svg assets/icons-on-dark/close.svg
+        assets/icons-on-dark/panel-left.svg assets/icons-on-dark/panel-right.svg assets/icons-on-dark/side-panels.svg
 )
 
+
+# Marks drawn on data rather than on commands: the primary key's golden key.
+# Kept apart from the icon sets, so it is the same key whichever set is chosen.
+qt_add_resources(erdflow_desktop "erdflow_marks"
+    PREFIX "/erdflow/marks"
+    BASE "assets/marks"
+    FILES
+        assets/marks/primary-key.svg
+)
 
 # The line-art set: Lucide for the ordinary commands, ERDFlow's own for the
 # database shapes Lucide has no icon for. Every file names its colour as the
@@ -92,6 +104,11 @@ qt_add_resources(erdflow_desktop "erdflow_icons_outline"
         assets/icons-outline/key.svg
         assets/icons-outline/select.svg assets/icons-outline/entity.svg
         assets/icons-outline/attribute.svg assets/icons-outline/relationship.svg
+        assets/icons-outline/schema-relationships.svg
+        assets/icons-outline/database.svg assets/icons-outline/file-text.svg
+        assets/icons-outline/shield.svg assets/icons-outline/link.svg assets/icons-outline/zap.svg
+        assets/icons-outline/ban.svg assets/icons-outline/circle-dashed.svg
+        assets/icons-outline/fingerprint.svg
         assets/icons-outline/isa.svg assets/icons-outline/connect.svg
         assets/icons-outline/note.svg assets/icons-outline/symbols.svg assets/icons-outline/picture.svg
         assets/icons-outline/export.svg
@@ -103,6 +120,7 @@ qt_add_resources(erdflow_desktop "erdflow_icons_outline"
         assets/icons-outline/properties.svg assets/icons-outline/validate.svg
         assets/icons-outline/theme.svg assets/icons-outline/settings.svg
         assets/icons-outline/full-view.svg assets/icons-outline/close.svg
+        assets/icons-outline/panel-left.svg assets/icons-outline/panel-right.svg assets/icons-outline/side-panels.svg
         # The Home screen's own: its sidebar, its learning panel and its bar.
         # Lucide throughout, so the page reads as one family with the rest.
         assets/icons-outline/house.svg assets/icons-outline/recent.svg
@@ -113,6 +131,8 @@ qt_add_resources(erdflow_desktop "erdflow_icons_outline"
         assets/icons-outline/flow.svg assets/icons-outline/chevron-right.svg
         assets/icons-outline/chevron-down.svg assets/icons-outline/appearance.svg
         assets/icons-outline/sparkles.svg
+        # The schema's Arrange, in the header of a schema drawn by hand.
+        assets/icons-outline/layers.svg
 )
 
 add_executable(erdflow app/desktop/main.cpp)
@@ -152,4 +172,7 @@ if(BUILD_TESTING)
         ERDFLOW_VISUAL_OUTPUT="${CMAKE_BINARY_DIR}/visual-output")
     add_test(NAME visual COMMAND visual_tests)
     set_tests_properties(canvas theme desktop desktop_smoke visual PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
+    # The desktop suite drives the whole window through both workspaces and
+    # outgrew 30 s in Debug with the Schema Explorer's tests (Zain, 2026-09-29).
+    set_tests_properties(desktop PROPERTIES TIMEOUT 60)
 endif()

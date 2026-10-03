@@ -58,8 +58,14 @@ namespace {
 // gives generated relations stable identities of their own; version 27 adds
 // the description captured with a project's other creation details; version
 // 28 records which bridges were chosen to be keyed by their participants'
-// foreign keys.
-constexpr int current_format_version = 28;
+// foreign keys; version 29 keeps the size an element's name is drawn for;
+// version 30 holds tables and foreign keys made on the schema itself, in a
+// project that starts from its schema; version 31 keeps a name typed over a
+// foreign key the conversion made; version 32 keeps each schema column's place
+// in its table's primary key, so a key of several columns no longer follows
+// the order the table lists them in; version 33 keeps the order somebody gave
+// the columns of a table worked out from the diagram.
+constexpr int current_format_version = 33;
 QString text(const std::string& value) { return QString::fromUtf8(value.data(), static_cast<qsizetype>(value.size())); }
 Uuid bytes_of(const QUuid& value) {
     Uuid result;
@@ -103,6 +109,7 @@ QJsonObject reference(const ElementRef& ref) {
         : std::holds_alternative<AttributeId>(ref) ? "attribute"
         : std::holds_alternative<SpecializationId>(ref) ? "specialization"
         : std::holds_alternative<PictureId>(ref) ? "picture"
+        : std::holds_alternative<RelationId>(ref) ? "relation"
         : std::holds_alternative<NoteId>(ref) ? "note" : "relationship";
     return {{"type", QLatin1String(type)}, {"id", uuid_text(uuid(ref))}};
 }
@@ -312,9 +319,52 @@ std::uint32_t parse_length(const QJsonValue& value) {
         invalid("A logical length must be a whole, non-negative number within 1,000,000.");
     return static_cast<std::uint32_t>(number);
 }
+// A column's place in its table's primary key: whole, not negative, and no
+// further down than a table could have columns. Validation then checks the
+// places against the key they number.
+std::uint32_t parse_key_order(const QJsonValue& value) {
+    if (!value.isDouble()) invalid("A column's place in its key must be a number.");
+    const auto number = value.toDouble();
+    if (!std::isfinite(number) || number < 0 || number != std::floor(number) || number > static_cast<double>(max_elements))
+        invalid("A column's place in its key must be a whole, non-negative number.");
+    return static_cast<std::uint32_t>(number);
+}
 bool parse_flag(const QJsonValue& value, const char* what) {
     if (!value.isBool()) invalid(QString("The %1 flag must be true or false.").arg(QLatin1String(what)));
     return value.toBool();
+}
+
+// A column of a table worked out from the diagram, by what it was made from
+// rather than by where it stands, tagged with its kind as a comment's target
+// is.
+QJsonObject column_identity_object(const ColumnIdentity& column) {
+    return std::visit([](const auto& id) -> QJsonObject {
+        using T = std::decay_t<decltype(id)>;
+        if constexpr (std::is_same_v<T, AttributeId>)
+            return {{"kind", QLatin1String("attribute")}, {"id", uuid_text(id.value)}};
+        else if constexpr (std::is_same_v<T, SchemaColumnId>)
+            return {{"kind", QLatin1String("column")}, {"id", uuid_text(id.value)}};
+        else if constexpr (std::is_same_v<T, ForeignKeyColumn>)
+            return {{"kind", QLatin1String("foreign_key")}, {"key", uuid_text(id.key.value)},
+                    {"part", static_cast<double>(id.part)}};
+        else if constexpr (std::is_same_v<T, InventedKeyColumn>)
+            return {{"kind", QLatin1String("key")}, {"relation", uuid_text(id.relation.value)}};
+        else
+            return {{"kind", QLatin1String("discriminator")}, {"specialization", uuid_text(id.specialization.value)}};
+    }, column);
+}
+ColumnIdentity parse_column_identity(const QJsonValue& value) {
+    const auto kind = string(value.toObject().value("kind"));
+    if (kind == "attribute") return AttributeId{parse_id(object(value, {"kind", "id"})["id"])};
+    if (kind == "column") return SchemaColumnId{parse_id(object(value, {"kind", "id"})["id"])};
+    if (kind == "foreign_key") {
+        const auto o = object(value, {"kind", "key", "part"});
+        return ForeignKeyColumn{ForeignKeyId{parse_id(o["key"])}, parse_length(o["part"])};
+    }
+    if (kind == "key") return InventedKeyColumn{RelationId{parse_id(object(value, {"kind", "relation"})["relation"])}};
+    if (kind == "discriminator")
+        return DiscriminatorColumn{SpecializationId{parse_id(object(value, {"kind", "specialization"})["specialization"])}};
+    invalid("Unsupported column kind in a column order.");
 }
 
 // Where the schema has been edited away from the diagram. Written as its own
@@ -323,6 +373,13 @@ bool parse_flag(const QJsonValue& value, const char* what) {
 // cannot settle, and these are somebody editing its result. A file from before
 // this existed simply has no section, which reads as no differences at all.
 QJsonObject encode_schema(const SchemaOverrides& schema) {
+    QJsonArray relations, foreign_keys;
+    for (const auto& [id, table] : schema.relations)
+        relations.append(QJsonObject{{"id", uuid_text(id.value)}, {"name", text(table.name)},
+            {"description", text(table.description)}, {"comment", text(table.comment)}});
+    for (const auto& [id, key] : schema.foreign_keys)
+        foreign_keys.append(QJsonObject{{"id", uuid_text(id.value)}, {"from", uuid_text(key.from.value)},
+            {"to", uuid_text(key.to.value)}, {"column", uuid_text(key.column.value)}, {"target", uuid_text(key.target.value)}});
     QJsonArray added;
     for (const auto& [relation, columns] : schema.added) {
         QJsonArray of_table;
@@ -333,7 +390,8 @@ QJsonObject encode_schema(const SchemaOverrides& schema) {
                 {"scale", static_cast<double>(column.scale)}, {"identifier", column.identifier},
                 {"required", column.required}, {"unique", column.unique},
                 {"auto_increment", column.auto_increment},
-                {"comment", text(column.comment)}});
+                {"comment", text(column.comment)},
+                {"key_order", static_cast<double>(column.key_order)}});
         added.append(QJsonObject{{"relation", uuid_text(relation.value)}, {"columns", of_table}});
     }
     QJsonArray hidden;
@@ -343,22 +401,58 @@ QJsonObject encode_schema(const SchemaOverrides& schema) {
         keys.append(QJsonObject{{"relation", uuid_text(relation.value)}, {"name", text(chosen)}});
     QJsonArray counting;
     for (const auto& relation : schema.counting_keys) counting.append(uuid_text(relation.value));
+    QJsonArray key_names;
+    for (const auto& [column, chosen] : schema.foreign_key_names)
+        key_names.append(QJsonObject{{"key", uuid_text(column.key.value)},
+                                     {"part", static_cast<double>(column.part)}, {"name", text(chosen)}});
+    QJsonArray column_order;
+    for (const auto& [relation, columns] : schema.column_order) {
+        QJsonArray listed;
+        for (const auto& column : columns) listed.append(column_identity_object(column));
+        column_order.append(QJsonObject{{"relation", uuid_text(relation.value)}, {"columns", listed}});
+    }
     return QJsonObject{{"added", added}, {"hidden", hidden}, {"keys", keys},
-                       {"counting_keys", counting}};
+                       {"counting_keys", counting}, {"standalone", schema.standalone},
+                       {"relations", relations}, {"foreign_keys", foreign_keys},
+                       {"foreign_key_names", key_names}, {"column_order", column_order}};
 }
 
 SchemaOverrides parse_schema(const QJsonValue& value, bool named_keys, bool counted,
-                            bool relational) {
-    auto o = counted ? object(value, {"added", "hidden", "keys", "counting_keys"})
+                            bool relational, bool native, bool renamed_keys, bool ordered_keys,
+                            bool ordered_columns) {
+    auto o = ordered_columns ? object(value, {"added", "hidden", "keys", "counting_keys", "standalone", "relations",
+                                              "foreign_keys", "foreign_key_names", "column_order"})
+           : renamed_keys ? object(value, {"added", "hidden", "keys", "counting_keys", "standalone", "relations",
+                                           "foreign_keys", "foreign_key_names"})
+           : native ? object(value, {"added", "hidden", "keys", "counting_keys", "standalone", "relations", "foreign_keys"})
+           : counted ? object(value, {"added", "hidden", "keys", "counting_keys"})
            : named_keys ? object(value, {"added", "hidden", "keys"})
                         : object(value, {"added", "hidden"});
     SchemaOverrides schema;
+    if (native) {
+        schema.standalone = parse_flag(o["standalone"], "standalone");
+        for (const auto& item : array(o["relations"])) {
+            const auto row = object(item, {"id", "name", "description", "comment"});
+            Relation table{RelationId{parse_id(row["id"])}, string(row["name"]),
+                string(row["description"], max_description_bytes), string(row["comment"], max_comment_bytes)};
+            if (!schema.relations.emplace(table.id, table).second) invalid("Duplicate relation identity.");
+        }
+        for (const auto& item : array(o["foreign_keys"])) {
+            const auto row = object(item, {"id", "from", "to", "column", "target"});
+            SchemaForeignKey key{ForeignKeyId{parse_id(row["id"])}, RelationId{parse_id(row["from"])},
+                RelationId{parse_id(row["to"])}, SchemaColumnId{parse_id(row["column"])}, SchemaColumnId{parse_id(row["target"])} };
+            if (!schema.foreign_keys.emplace(key.id, key).second) invalid("Duplicate foreign key identity.");
+        }
+    }
     for (const auto& item : array(o["added"])) {
         auto entry = relational ? object(item, {"relation", "columns"})
                                 : object(item, {"element", "columns"});
         std::vector<SchemaColumn> columns;
         for (const auto& one : array(entry["columns"])) {
-            auto c = counted
+            auto c = ordered_keys
+                ? object(one, {"id", "name", "type", "length", "scale", "identifier",
+                               "required", "unique", "comment", "auto_increment", "key_order"})
+                : counted
                 ? object(one, {"id", "name", "type", "length", "scale", "identifier",
                                "required", "unique", "comment", "auto_increment"})
                 : object(one, {"id", "name", "type", "length", "scale", "identifier",
@@ -373,9 +467,14 @@ SchemaOverrides parse_schema(const QJsonValue& value, bool named_keys, bool coun
             column.unique = parse_flag(c["unique"], "unique");
             if (counted) column.auto_increment = parse_flag(c["auto_increment"], "auto_increment");
             column.comment = string(c["comment"], max_comment_bytes);
+            if (ordered_keys) column.key_order = parse_key_order(c["key_order"]);
             columns.push_back(std::move(column));
         }
         if (columns.empty()) continue;
+        // Before version 32 a key of several columns was read in the order the
+        // table listed them, so that is the order it is given now, once: the
+        // file means exactly what it meant.
+        if (!ordered_keys) number_primary_key(columns);
         const auto owner = relational ? RelationId{parse_id(entry["relation"])}
                                       : relation_from(parse_ref(entry["element"]));
         if (!schema.added.emplace(owner, std::move(columns)).second)
@@ -396,6 +495,29 @@ SchemaOverrides parse_schema(const QJsonValue& value, bool named_keys, bool coun
             if (!schema.counting_keys.insert(relational ? RelationId{parse_id(item)}
                                                         : relation_from(parse_ref(item))).second)
                 invalid("Duplicate counting key.");
+    // Version 31 keeps the names typed over foreign keys the conversion made.
+    if (renamed_keys)
+        for (const auto& item : array(o["foreign_key_names"])) {
+            const auto entry = object(item, {"key", "part", "name"});
+            const ForeignKeyColumn column{ForeignKeyId{parse_id(entry["key"])},
+                                          parse_length(entry["part"])};
+            if (!schema.foreign_key_names.emplace(column, string(entry["name"])).second)
+                invalid("Duplicate foreign key name.");
+        }
+    // Version 33 keeps the order somebody gave a derived table's columns. A
+    // file from before has none, and every table is listed as the conversion
+    // makes it, which is all it could say. Whether each column is still there
+    // is validation's question, not the reader's.
+    if (ordered_columns)
+        for (const auto& item : array(o["column_order"])) {
+            const auto entry = object(item, {"relation", "columns"});
+            const RelationId relation{parse_id(entry["relation"])};
+            std::vector<ColumnIdentity> columns;
+            for (const auto& one : array(entry["columns"])) columns.push_back(parse_column_identity(one));
+            if (columns.empty()) continue;
+            if (!schema.column_order.emplace(relation, std::move(columns)).second)
+                invalid("Duplicate column order table.");
+        }
     return schema;
 }
 QJsonObject comment_target(const CommentTarget& target) {
@@ -429,6 +551,7 @@ ElementRef parse_ref(const QJsonValue& value) {
     if (type == "specialization") return SpecializationId{id};
     if (type == "picture") return PictureId{id};
     if (type == "note") return NoteId{id};
+    if (type == "relation") return RelationId{id};
     invalid("Unsupported element type.");
 }
 // A picture's bytes travel as base64 text. Anything that is not base64, or
@@ -496,6 +619,8 @@ double number(const QJsonValue& value) {
 // the three things put the foreign key there, so the kind is written beside
 // the identifier and read back the same way.
 QJsonObject encode_link(const LinkSource& link) {
+    if (const auto* id = std::get_if<ForeignKeyId>(&link))
+        return {{"kind", QLatin1String("foreign_key")}, {"id", uuid_text(id->value)}};
     if (std::holds_alternative<ParticipantId>(link))
         return {{"kind", QLatin1String("participant")},
                 {"id", uuid_text(std::get<ParticipantId>(link).value)}};
@@ -512,6 +637,7 @@ LinkSource parse_link(const QJsonValue& value) {
     if (kind == "participant") return LinkSource{ParticipantId{id}};
     if (kind == "attribute") return LinkSource{AttributeId{id}};
     if (kind == "subtype") return LinkSource{EntityId{id}};
+    if (kind == "foreign_key") return LinkSource{ForeignKeyId{id}};
     invalid("Unsupported schema link kind.");
 }
 
@@ -817,6 +943,9 @@ QByteArray ErdxProjectStore::encode(const Project& project) {
     QJsonArray transparency;
     for (const auto& [ref, percent] : project.transparency)
         transparency.append(QJsonObject{{"element", reference(ref)}, {"percent", percent}});
+    QJsonArray lettering;
+    for (const auto& [ref, base] : project.lettering)
+        lettering.append(QJsonObject{{"element", reference(ref)}, {"width", base.width}, {"height", base.height}});
     QJsonArray pictures, notes;
     for (const auto& [id, picture] : project.pictures)
         pictures.append(QJsonObject{{"id", uuid_text(id.value)}, {"name", text(picture.name)},
@@ -851,7 +980,7 @@ QByteArray ErdxProjectStore::encode(const Project& project) {
         {"entities", entities}, {"attributes", attributes}, {"relationships", relationships},
         {"layout", layout}, {"connectors", connectors}, {"colours", colours},
         {"specializations", specializations}, {"pictures", pictures}, {"notes", notes},
-        {"comments", comments}, {"transparency", transparency},
+        {"comments", comments}, {"transparency", transparency}, {"lettering", lettering},
         {"decisions", encode_decisions(project.decisions)},
         {"schema", encode_schema(project.schema)},
         {"schema_layout", encode_layout(project.schema_layout)},
@@ -947,6 +1076,11 @@ application::LoadResult ErdxProjectStore::decode(const QByteArray& input) {
         // form. Older files had nowhere to store it, and therefore open with
         // an empty description rather than having one invented for them.
         const bool described = number_version >= 27;
+        // Version 29 keeps the size an element had when it was first resized
+        // by hand, which its name is drawn for. A file written before it has
+        // no such section, which reads correctly as nothing having been
+        // resized that way, every name drawn at its ordinary size.
+        const bool lettered = number_version >= 29;
         // Version 21 records where the schema differs from the diagram. A file
         // written before it simply has no such section, which reads correctly
         // as the two agreeing about everything.
@@ -964,7 +1098,9 @@ application::LoadResult ErdxProjectStore::decode(const QByteArray& input) {
         // which reads correctly as every generated key still carrying the name
         // the rule gave it.
         const bool named_keys = number_version >= 24;
-        const auto data = described
+        const auto data = lettered
+            ? object(root["project"], {"id", "name", "description", "entities", "attributes", "relationships", "layout", "connectors", "specializations", "colours", "pictures", "notes", "comments", "transparency", "lettering", "decisions", "schema", "schema_layout", "background"})
+            : described
             ? object(root["project"], {"id", "name", "description", "entities", "attributes", "relationships", "layout", "connectors", "specializations", "colours", "pictures", "notes", "comments", "transparency", "decisions", "schema", "schema_layout", "background"})
             : arranged
             ? object(root["project"], {"id", "name", "entities", "attributes", "relationships", "layout", "connectors", "specializations", "colours", "pictures", "notes", "comments", "transparency", "decisions", "schema", "schema_layout", "background"})
@@ -1182,6 +1318,14 @@ application::LoadResult ErdxProjectStore::decode(const QByteArray& input) {
                     invalid("Duplicate element transparency.");
             }
         }
+        if (lettered) {
+            for (const auto& value : array(data["lettering"])) {
+                const auto o = object(value, {"element", "width", "height"});
+                if (!project.lettering.emplace(parse_ref(o["element"]),
+                                               LetteringBase{number(o["width"]), number(o["height"])}).second)
+                    invalid("Duplicate element lettering.");
+            }
+        }
         if (figures) {
             for (const auto& value : array(data["pictures"])) {
                 const auto o = object(value, {"id", "name", "description", "image"});
@@ -1241,7 +1385,9 @@ application::LoadResult ErdxProjectStore::decode(const QByteArray& input) {
             if (named != "convertible" && named != "basic") invalid("Unsupported conceptual mode.");
         }
         if (catalogued) project.decisions = parse_decisions(data["decisions"], relational, number_version >= 28);
-        if (diverged) project.schema = parse_schema(data["schema"], named_keys, generated, relational);
+        if (diverged) project.schema = parse_schema(data["schema"], named_keys, generated, relational, number_version >= 30,
+                                                         number_version >= 31, number_version >= 32,
+                                                         number_version >= 33);
         if (arranged) project.schema_layout = parse_layout(data["schema_layout"], pulled_tables, relational);
         if (papered) {
             const auto o = object(data["background"], {"style", "strength", "image"});
