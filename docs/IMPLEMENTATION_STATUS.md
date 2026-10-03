@@ -7,7 +7,7 @@
 > look like afterwards, and whether it is a gain or a loss. He decides.
 > Full rule: [CLAUDE.md](../CLAUDE.md).
 
-**Updated:** 2026-09-23
+**Updated:** 2026-09-27
 
 **Scope:** Part 1 — a single-page Conceptual ERD editor foundation.
 
@@ -16,6 +16,250 @@ Domain Model, Scale, and Roadmap documents also describe capabilities that have
 not been built yet. Their presence in those documents is not a completion claim.
 
 ## What works
+
+- **Approved full-window start cards** (2026-09-27). The raised pale-blue
+  window is now the whole card, including its title, three dots, preview and
+  centered blue **+ Create** button. The inner preview window and its shadow
+  are removed; no divider separates the preview from the action. SQL retains
+  its Coming soon badge and disabled route. Create with AI remains constructed
+  and available through `set_ai_offered`, hidden by default. Existing preview
+  scenes, animation controls, accessibility and route wiring are retained.
+
+- **Optional compact schema view** (2026-09-27). Under Relational Design →
+  Appearance → Table detail, **Compact schema** hides the Column/Type/Constraints
+  heading row, type and constraint columns, and table configuration footers,
+  retaining names, PK/FK
+  marks and relationship lines. The choice is remembered; full detail remains
+  the default. Compact tables fit their column and table names. Hand-set sizes
+  are preserved and restored when returning to **Names, types and constraints**.
+  A compact table's header carries its name alone: the *ENTITY …* / *BRIDGE
+  FOR …* tag, which could only be cut to a few letters and an ellipsis at that
+  width, is left out. While compact, tables are moved but not pulled by their
+  edges, so a size given there never folds the full view's columns.
+- **A project can start from its schema** (2026-09-27, ADR-021 Step B). Home's
+  *Relational Schema* card is enabled: its **+ Create** opens an untitled
+  project whose Relational Design fills the window, with no diagram behind it
+  (`Editor::new_schema_project`, `SchemaOverrides::standalone`). While it
+  starts from its schema, Full, Close and the header's *Relational Design*
+  button are put away, since there is no diagram to go back to, and the
+  narrowing chips too, since every table came from here. The status line says
+  how many tables there are and that there is no diagram yet, and columns are
+  drawn upright rather than in the italic that means "not on the diagram".
+  - *Its tools are in the header* (2026-09-27). The bar the schema carries in
+    a diagram project -- its title, its state, Arrange and Appearance -- is
+    put away, since the header already says *Relational Design*, and the
+    header carries instead **Table** (the table mark, from each icon set:
+    *schema* in the coloured set, *relational* in the line art, drawn in the
+    painted one), **Connect ▾**, **Arrange ▾** and **Appearance ▾**, the last
+    two opening the very menus the schema's bar opens. What the bar said
+    (*2 tables · no diagram yet*, types open, ends not connected) is said in
+    the status line where a diagram's counts are. The title gives way before
+    the tools do and is said whole on hover, so the header fits a window 1440
+    wide. **Convert to Conceptual Design** stands in the Conceptual preview's
+    bar beside Close, and on the Design menu. Converting gives the tools back
+    to the schema's own bar.
+  - *The header reads as groups* (2026-09-27): **← Home**; a two-part switch
+    **Schema | Conceptual**, Schema first and lit in the accent, in place of
+    the *RELATIONAL DESIGN* badge (Conceptual is the button that raises the
+    preview, and lights softly while it is up; Schema puts the preview away);
+    a hairline; the title with a pencil that asks for the project's name as
+    the Explorer does; room; **Table**, **Connect ▾**, **Arrange ▾** (layers
+    mark) and **Appearance ▾** (its own mark) on one quiet, rounded style; a
+    hairline; **Undo** and **Redo**, lighter; a hairline; the search, with a
+    glass, *Search schema design…*, 240 wide where there is room and down to
+    150 where there is not; **Theme ▾**. Nothing in it says *Relational*.
+    The title keeps its width up to 140 so the search narrows first. The
+    empty schema says *Create a table to start designing your schema.*
+    Dressed by stylesheet rules keyed on the header's `schemaFirst`
+    property (`MainWindow::wear_schema_first_header`); converting puts the
+    diagram's header back exactly as it was.
+  - *Connect* is the diagram's tool with its own mark: pressed, a press
+    anywhere on a column's row (not only its key gutter) draws a foreign key,
+    and letting go anywhere on a table points at that table's primary key
+    where it has one key column (`SchemaView::set_connecting`). Used once it
+    is put down again; a double click locks it (*Connect 🔒*); Escape or a
+    second press puts it down. Its arrow carries how the lines run -- *Around
+    the tables* or *Straight there*, the same entries as in Arrange.
+  - *Tables* are made by **Table** in the header, by a double
+    click on the empty schema, or by *Add table here* on its right-click
+    menu. A table is put where it was asked for and its name opened for
+    typing; it starts with one column, an `int` primary key named for the
+    table -- `TableID`, and `StudentID` once the table is named `Student`
+    (`Editor::create_relation`). A key still called by the table's old name
+    follows a rename in the same edit; a key named by hand keeps its name
+    (`Editor::rename_table`; Zain, 2026-09-27, replacing the plain `ID`). Columns are added from the slot under a
+    table, as on any schema, and named in their row. A column is made the
+    primary key, or taken off it, from its right-click menu. A table is
+    deleted from its menu or with Delete, taking its foreign keys with it,
+    and the History says *Deleted Table "Employee" with its 3 columns*.
+  - *A foreign key* is drawn by pressing a column's key gutter (where `PK` and
+    `FK` are written) and letting go on the primary-key row it points at, in
+    another table or its own; the line follows the pointer, and the row under
+    it is washed in the accent where it can be pointed at. The column's menu
+    offers the same as *References ▸ Table.Column*, and *Remove the foreign
+    key*. The column takes the key's type in the same edit, and a change to
+    the key's type or size is carried to every foreign key pointing at it.
+    Let go anywhere else, or on a column that is not a key, it says why where
+    the hand let go. A foreign key's own type, and taking the key off a
+    column something points at, are refused with the reason
+    (`Editor::add_foreign_key`, `SchemaView::linked`).
+  - *The schema is the main surface, and the Conceptual Design rises from
+    below it* (2026-09-27) -- a diagram and its schema turned the other way
+    up. The schema fills the stage from the top with no grip at its top edge,
+    since it is not a curtain raised over anything. The header's
+    **Conceptual Design** button, in the place a diagram's *Relational
+    Design* button stands, raises a panel from the bottom of the stage over
+    the lower part of the schema: a grip at its top (drag, arrow keys, double
+    click for half or full, the height remembered), its title, what it shows
+    (*2 entities · 1 relationship · preview only*, and how many things the
+    rules could not carry exactly, listed on hover), and **Close**. It shows
+    the diagram **Convert** would draw -- the same rules, from the same table
+    places and element sizes (`MainWindow::schema_conversion_inputs`) -- on a
+    canvas of its own over an editor of its own, worked out again whenever
+    the schema changes, and fitted to the diagram when it opens. Nothing is
+    converted and nothing is written to the project. It is panned and zoomed;
+    anything that would change it (a double click, a right click, Delete,
+    typing) is turned away with the reason beside the pointer and in the
+    status line, since a change there would be lost with the next edit to the
+    schema. Converting puts the preview and its button away and gives the
+    schema back its grip; Undo brings them back.
+- **A schema drawn by hand converts into its diagram** (2026-09-27).
+  **Convert to Conceptual Design** (in the Conceptual preview's bar and on
+  the Design menu) draws, in one edit,
+  every table as an entity and every foreign key as a relationship, by the
+  course rules run backwards (`domain::diagram_from_schema`,
+  `Editor::convert_schema_to_diagram`): a table's primary key columns become
+  its key attributes (ADR-021 §5a); a foreign key is one-to-many from the
+  table it points at, one-to-one where it is `UNIQUE`, the side pointed at
+  taking part totally where it is `NOT NULL`; a key into the same table is a
+  relationship of the entity with itself, its two sides given roles (the
+  key's word, *Manager*, and the table's, *Employee*); and a join table --
+  two `NOT NULL` foreign keys into tables that nothing points back at, keyed
+  by the pair, by a whole-number key of its own, or by nothing -- is a
+  many-to-many relationship with its other columns as attributes. A
+  relationship is named for the role a foreign key plays where its name says
+  one, and *Has* otherwise. Afterwards the diagram is the model and the
+  schema is worked out from it, as in a project begun as a diagram, so edits
+  on either side reach the other (Zain chose this over an unlinked copy).
+  Table names (the project's naming is set to *As the diagram draws them*),
+  column names, types and sizes, `NOT NULL`, `UNIQUE`, `IDENTITY`, what every
+  foreign key points at and what it was called, each table's place and size,
+  hand-shaped lines, colours and comments are carried across, so the schema
+  reads the same. The diagram keeps the schema's arrangement, left to right
+  and top to bottom, with each entity's attributes above and below it and
+  each relationship placed clear of them; an element whose name would be cut
+  short is made wide enough for it (`width_for_name`), and every other is
+  made at its default size. What the rules cannot say exactly -- foreign keys
+  listed after a table's other columns, a key made for a table that had
+  none, a foreign key that was part of a primary key -- is said in the status
+  line and beside the diagram. The diagram comes in front with the schema
+  open beneath it; one Undo gives the schema drawn by hand back.
+- **A foreign key can be renamed on any schema** (2026-09-27). Double-clicking
+  a foreign key the conversion made opens its name for typing, as every other
+  column's does. A typed name is kept (`SchemaOverrides::foreign_key_names`,
+  `Editor::rename_foreign_key`) and no longer follows the key it points at, as
+  a typed table name no longer follows its entity; clearing it hands the name
+  back to the rule. Its hint says so. This replaces the refusal "A foreign key
+  is named for the key it points at", by Zain's choice.
+- **Create with AI is switched off for now** (2026-09-26). One constant,
+  `create_with_ai_offered` in `start_route_card.hpp`, is `false`: every
+  card still makes its Create with AI exactly as before, but does not show
+  it, and **+ Create** stands alone in the middle of the card at the size
+  it has beside it. Setting the constant to `true` brings the pair back
+  exactly as it was, + Create on the left and Create with AI on the right,
+  the two centred together (`StartRouteCard::set_ai_offered` does the same
+  for one card). The card's size and content are unchanged.
+- **A Home card's two actions light up under the pointer** (2026-09-26).
+  Pointed at, **+ Create** is drawn brighter with a pale edge, and **Create
+  with AI** takes a soft blue tint and an accent outline; each lights alone,
+  and is exactly as it was at rest once the pointer leaves. Create with AI
+  lights up though it is disabled (a style sheet gives a disabled button no
+  hover, so the card marks it `lit` as the pointer enters and leaves, and
+  styles the mark). Size, place, words, the spark, the pressed look and what
+  pressing does are unchanged, and so is the card
+  (`StartRouteCard::eventFilter`, the `lit` rules in `StartRouteCard::wear`).
+- **The shared-name type list is only as wide as its entries** (2026-09-26).
+  Under **Columns that share a name**, each name's **Give them all a type…**
+  box is stretched across its row, and Qt opened its list at least as wide as
+  the box, most of the window. The list now opens only as wide as its widest
+  entry (with room for its scrollbar and a menu entry's margins), from the
+  box's left edge; the box itself, the entries, their order and what
+  choosing one does are unchanged (`SnugComboBox` in `main_window.cpp`, used
+  for that box alone). The width is measured from the entries' words in the
+  lettering each is drawn in: on macOS the list is drawn as a menu, whose
+  entries report the list's width rather than their words', and the first
+  version, sized by that, cut longer entries short (fixed the same day). The
+  families' titles in that list (— Exact numerics — and so on) are set a
+  little bold and in the theme's grey, so they read as headings over the
+  types beneath them.
+- **Back to Home, always** (2026-09-26). **← Back to Home** stands first in
+  the workspace's header whatever the project is and however it was opened,
+  on the diagram and on the schema, whether the schema shares the stage or
+  fills the window, since Home is the door every project is come in by and
+  a change of mind can always go back to choose another card. It returns to
+  Home as the Home command does, leaving the project open behind it. (It
+  first came only with an example or the template opened from Home; Zain
+  asked for it everywhere the same day.)
+- **Return from Home to the workspace** (2026-09-27). Once a workspace has
+  been in front, Home's top bar offers the way back into it beside Theme:
+  **Return to Conceptual Design →**, or **Return to Relational Design →** when
+  the schema had the whole window. It leaves Home, which puts the workspace
+  back exactly as it was, schema and full view included. A fresh start, with
+  no workspace yet, shows nothing there (`AppTopBar::set_return_to`,
+  `MainWindow::show_home`).
+- **The template is a starting frame, not the example** (2026-09-26).
+  **Templates** (Home's sidebar, and New from template) used to open the
+  University example. It now opens the general things a diagram is made of,
+  each named for what it is: an Entity with an Attribute, a Relationship, and
+  another Entity with an Attribute, joined through the relationship with every
+  line unlocked, untitled and unsaved (`MainWindow::load_template`). The
+  bodies are at their default sizes except the diamond, drawn 280 x 120 so
+  its word is not cut short, as the example's Enrollment Date oval is. The
+  example itself is unchanged and still opens from Examples.
+- **History** (2026-09-26). **View → History**, the last entry in View (and
+  so the last button on the ribbon's View row), opens a panel on the right
+  listing every step Undo can take back, oldest first, each said in words
+  with the time it was made: *Created Entity "Student"*, *Added Attribute
+  "student_id" to "Student"*, *Moved Entity "Course"*, *Deleted Relationship
+  "Enrolls"*, *Renamed Table "Student" to "Students"*, *Added Column "grade"
+  to "Students"*, *Deleted Entity "Course" with its 2 attributes*. The first
+  row, **Start**, is the project before the oldest step kept. Pressing a row
+  goes to just after that step by undoing or redoing; steps undone stay in
+  the list, fainter and in italics, until a new edit takes their place,
+  exactly as Redo has them. It is the undo history itself, not a second
+  record, so the two always agree, and like it it starts again when a
+  project is opened or created and keeps what the 32 MiB budget keeps. Each
+  step's words are worked out as it is made, from what it changed
+  (`application/history.hpp`: `HistoryEntry`, `HistoryChange`, `describe`;
+  `Editor::history`, `history_position`, `go_to`), and each keeps the list of
+  things it changed so a fuller account can be given later. Who made a step
+  is not recorded yet; the entry is where it will go once there are accounts
+  and several people and agents at work.
+
+- Attributes can be resized by their edges and corners, as entities are
+  (2026-09-26, fix). Their eight handles were drawn, but a drag was sized by
+  the symbol's corner-only rule, and letting go sent the new size to the
+  symbols' command, which refused it with "Only a symbol can be resized".
+  They now use the entity's pull and their own command,
+  `Editor::resize_attributes` ("Resize attribute"), clamped to the entity's
+  limits.
+
+- An entity's, relationship's or attribute's name is drawn with its box once
+  the box has been resized by hand (2026-09-26). The first resize by a handle
+  or through Properties keeps the size the element had as the size its name
+  is drawn for (`Project::lettering`, saved from format version 29), and the
+  name then grows and shrinks with the box by the smaller of the two changes
+  (`domain::lettering_factor`, held between a quarter and sixteen times):
+  a corner pulled out to twice the size draws the name twice as tall, while
+  pulling only the width out gives a long name room without enlarging it.
+  It follows the box live while a handle is pulled, the rename box follows
+  it too, and a copy keeps it. An element never resized has no entry and is
+  drawn exactly as before, so every existing diagram is unchanged.
+
+- Conceptual relationship diamonds can be resized with the existing selection
+  handles on all four edges and corners. The label stays centered and connectors
+  follow the boundary during dragging. Resize is undoable; defaults and existing
+  document dimensions remain unchanged until explicitly resized.
 
 - The diagram has paper of its own, chosen under **View → Background** and so
   also on the Design row: **None**, the plain canvas its theme gives it;
@@ -238,6 +482,56 @@ not been built yet. Their presence in those documents is not a completion claim.
   element and returns to Select. Double-clicking the tool locks it, marking the
   button with a padlock, so it keeps placing until another tool is chosen or
   Escape is pressed. Select cannot be locked.
+- An attribute placed with the Attribute tool stands on its own and is
+  connected by hand, whatever is selected (2026-09-26). It used to be joined
+  to a selected entity, relationship or composite attribute. To attach
+  attributes as they are placed, an owner is locked instead, in any of
+  three places: the open padlock an entity, relationship or composite
+  attribute wears in its top-left corner while it is selected; **Lock as
+  attribute owner** in its right-click menu; or the same button under its
+  name in Properties. The owner then wears a closed padlock there, and
+  every attribute placed is attached to it with its line drawn; with the
+  Attribute tool locked too, one after another. Pressing the closed padlock,
+  which also answers with the Attribute tool in hand, or **Unlock attribute
+  owner** in the other two places, lets it go, as does deleting the owner,
+  a composite being made plain, or another project being opened. Only one
+  owner is locked at a time. The lock is not saved in the file. Connecting
+  two entities still creates the relationship between them, as before.
+- An attribute put down within a short reach (100 units) of another
+  entity, relationship or composite attribute, and nearer to it than to the
+  locked owner, is asked about before anything is placed (2026-09-26): "You
+  are locked to Mentor, but this attribute is nearer Student." **Continue**
+  attaches it to the locked owner, and that element is not asked about
+  again while the lock lasts; **Unlock** lets the lock go and places the
+  attribute on its own, to be connected by hand; **Cancel** places nothing.
+- **An attribute's line leaves its owner from the middle of the side facing
+  it** (2026-09-26, replacing the sliding join and its stub). Every
+  attribute on one side of an entity, relationship or composite attribute
+  leaves from the same point (the middle of a box's edge, a diamond's point,
+  an ellipse's end), each by its own straight line in every line style,
+  with no stub, so lines never hook round or run across the body. Moving
+  an attribute about on that side leaves the point where it is; carried past
+  a corner, its line moves to the middle of the side it now faces (Zain
+  chose this over a point fixed wherever the attribute goes). Nothing is
+  stored, so the line stays unlocked; one pinned by hand, or dragged to a
+  point, is drawn straight from where it was pinned. Attributes placed on a
+  locked owner are unlocked like any other and follow the same rule (they
+  used to be pinned to a shared exit).
+- **Connect no longer pins a line where it was clicked** (2026-09-26).
+  "Join where I click", which was the default and pinned both ends there,
+  is gone from Connect's arrow, and with it the choice it was one half of;
+  a choice remembered from before is ignored. Every line Connect draws
+  starts unlocked. Lines already pinned in saved diagrams stay pinned until
+  unlocked by their padlock or right-click.
+- A click anywhere in the window outside the diagram puts down whatever
+  tool is in hand, locked or not, and takes up Select (2026-09-26): the
+  Explorer, Properties, the ribbon, the header, the Relational Design panel
+  and so on. Inside the diagram a click does what the tool does, placing
+  what it places. The diagram's own zoom controls and scrollbars count as
+  inside it, and a button that chooses a tool still chooses that tool.
+  The click itself still does its ordinary job, and the tool is put down
+  once it has, so a name being typed on the diagram is kept as before
+  (`MainWindow::pressed_outside_canvas`, watched by `PressWatch`).
 - Selecting an element draws every link touching it heavier and lifts it above
   the other links, so what it connects to can be read at a glance.
 - Single/multiple/rubber-band selection, Select All, zoom (mouse wheel, or a
@@ -324,7 +618,10 @@ not been built yet. Their presence in those documents is not a completion claim.
   there, and is then an element like any other to drag or place by its
   coordinates. The
   relationship, both of its sides and their joins are one edit, so one undo
-  takes the whole thing back.
+  takes the whole thing back. Its two lines start unlocked (2026-09-26):
+  neither end is pinned to where the entity was clicked, whatever Connect's
+  join setting, so each slides round its shapes as they move, until it is
+  locked by hand. Every other connection Connect makes is unchanged.
 - Weak entities and identifying relationships: an entity's **Kind** in
   Properties is Regular or Weak, and a relationship's is Regular, Identifying
   or Associative. A weak entity is drawn with a double border and its key
@@ -723,6 +1020,11 @@ their own and a history of their own — is still a later and separate thing.
   put to the user before the diagram is touched, and declining records the
   difference rather than refusing it. The panel says how far the two levels
   have come apart.
+- **Bold connectors** (2026-09-25). A line between tables is drawn at 2.6 px,
+  3.4 px under the pointer or when its table is picked out, and its
+  cardinality ends at 2.2 px, so connections read at a glance across a full
+  schema. Only the weight changed; routes, colours and notation are as
+  before. The diagram canvas is untouched.
 - **Connectors under the hand.** Orthogonal and row-exact, routed around the
   tables or straight through, kept apart in lanes and fanned where several
   land on one row. Any straight run can be pushed sideways; either end can be
@@ -887,7 +1189,8 @@ their own and a history of their own — is still a later and separate thing.
 
   Behaviour is unchanged by design. Relations made by hand, schema-first
   projects, SQL import and three-way reconciliation are the next steps and are
-  not built.
+  not built. (Relations made by hand and schema-first projects, with their
+  conversion into a diagram, were built on 2026-09-27; see *What works*.)
 
 **Not implemented.** `readiness()` itself and the gate it feeds (Phase 14);
 relational objects with identities of their own, and editing them as such
@@ -969,19 +1272,18 @@ they would read from.
   user-defined key only through a column added on the schema and made its
   primary key. ADR-021 §5b records this conflict, which is open and waiting
   for Zain's decision.
-- **A primary key is marked twice**, with the letters `PK` and a solid golden
-  key beside them, upright with its teeth pointing down. The key is artwork in
-  the icon set (`key.svg`) rather than a shape drawn in code, so it is a key
-  rather than an approximation of one, with a painted fallback for the sets that
-  have no file for it. It is filled rather than outlined for the reason the
-  diagram's padlock is: it is read at a glance in a small space, where a
-  hairline reads as a smudge. The gold keeps
-  the theme's warning hue and is raised in saturation and brightness until it
-  looks like a key, since an ink chosen to be read as words is a bronze on light
-  paper. The glyph comes from the icon set in use rather than being drawn into
-  the schema, so it follows the chosen artwork like every other icon, and the
-  key gutter is wide enough to hold both marks rather than the mark being shrunk
-  to fit.
+- **A primary key is marked twice**, with a golden key and the letters `PK`
+  (the key redrawn 2026-09-26, to Zain's reference). The key is a polished
+  golden key held bow up and pointing down, with the teeth at its foot: its
+  own vector drawing, `assets/marks/primary-key.svg`, with a gold gradient,
+  a darker gold edge, a hole that shows what is behind it, and a soft shine.
+  It is drawn through `primary_key_mark()` in `icons.cpp`, so a table can wear
+  the same key later. It is the same key whichever icon set is chosen, and it
+  goes grey, keeping its shading, under the Plain theme. It stands right
+  before `PK` so the two read as one mark beside the name. The row, its
+  height, the gutter and the letters are as they were. (Before, the key was
+  the icon set's key glyph, inked in the theme's warning hue raised to gold,
+  at the gutter's far left.)
 - **A foreign key is always marked `FK`, in green** (2026-09-24). This holds
   when the column is also part of a composite primary key, as the participant
   keys of a bridge are when somebody chooses them. The gutter never shows a
@@ -1084,7 +1386,10 @@ records what a key the conversion invented has been
 renamed to; version 21 records where the schema differs from the diagram;
 version 22 records how it has been arranged; version 23 records how tall a
 table has been pulled as well as how wide; version 28 records which bridges
-somebody chose to key by their participants' foreign keys. Older files open,
+somebody chose to key by their participants' foreign keys; version 29 keeps the
+size an element's name is drawn for; version 30 holds a schema drawn by hand --
+its tables and the foreign keys between them -- in a project that starts from
+its schema; version 31 keeps a name typed over a foreign key. Older files open,
 and read correctly as having none of these.
 
 The Part 1 checklist is a coverage inventory, not a replacement for semantic
@@ -1114,11 +1419,13 @@ outside the repository at `erdflow-notes/UI-AZURE-TASKS.md`. What is built:
   the work.
 - **The top of Home.** The native menu bar (File · Home · Edit · Insert ·
   Design · View · Help) stays on Home. The ribbon's rows give way, while Home
-  is up, to a slim bar (`AppTopBar`) carrying only the ERDFlow mark, a
-  **Settings** button and a **Theme ▼** control, as Zain settled (ADR-022
-  §9.14). Theme opens the window's own theme menu, with its preview on hover.
-  Settings holds the window's own Theme, Icons and Notation menus. The ribbon
-  row that was in front comes back when Home is left. The status line stays.
+  is up, to a slim bar (`AppTopBar`) carrying only the ERDFlow mark and a
+  **Theme ▼** control (ADR-022 §9.14). Theme opens the window's own theme
+  menu, with its preview on hover. The bar's own Settings gear, and the
+  divider between it and Theme, were taken out on 2026-09-26 (Zain: one
+  Settings, not two); Settings is the sidebar's row, which holds the
+  window's own Theme, Icons and Notation menus. The ribbon row that was in
+  front comes back when Home is left. The status line stays.
 - **Opens filling the screen.** An ordinary launch shows the window
   maximised. 1440 × 920 is the size it returns to when un-maximised, and a
   run with `--screenshot` or `--size` is shown at that size, or the one asked
@@ -1172,16 +1479,17 @@ outside the repository at `erdflow-notes/UI-AZURE-TASKS.md`. What is built:
     at most 320 px, on one level. A column is also kept small enough that the
     illustration's top stays on the page and both pictures end clear of
     *Create a new project*.
-  - *The line:* one smooth line joins them, running from a port on the
-    page's right edge to a port on the platform's near corner. It passes
-    under both ends of the subtitle, so it never crosses a word. It is a
-    rounded tube in one light blue (Zain, 2026-09-25): deeper at its edges,
-    paler towards its middle, with light along its centre, over a soft
-    glow. Nothing is fixed on it.
+  - *The line:* one smooth line joins them. It comes out from under the
+    page's right edge and goes in under the platform, past its near corner,
+    with nothing fixed at either end. It passes under both ends of the
+    subtitle, so it never crosses a word. It is a rounded tube in one light
+    blue (Zain, 2026-09-25): deeper at its edges, paler towards its middle,
+    with light along its centre, over a soft glow. Nothing is fixed on it.
     - *Electrons:* four coloured electrons travel along it on the
       illustration's clock, cyan and violet going to the database, amber
       and green coming back. They move when the orbit moves and rest where
-      it rests.
+      it rests. They are hidden inside the page and under the platform,
+      so they come out of one and go into the other.
     - *The page lights up:* when an electron coming back reaches the page,
       the page glows in that electron's colour for a second and a half.
     - *Cost:* only the pixels round each electron, and the page while it
@@ -1280,7 +1588,10 @@ outside the repository at `erdflow-notes/UI-AZURE-TASKS.md`. What is built:
     of the accent across the row.
 
   The chosen card is told apart only gently, by a slightly firmer edge and
-  a faint light at its top; it has no heavy blue outline. A card holding a
+  a faint light at its top; it has no heavy blue outline. A card that can
+  be taken, while pointed at or reached by the keyboard, is coloured a
+  little deeper than the others and than itself at rest: the hover colour
+  carried towards the accent, with the hover edge (Zain, 2026-09-25). A card holding a
   preview keeps no room for the description it does not draw, so its parts
   sit close together.
 - **Each preview is a raised tile of tinted glass, like the hero's welcome
@@ -1311,10 +1622,11 @@ outside the repository at `erdflow-notes/UI-AZURE-TASKS.md`. What is built:
   - *Behaviour:* it is a sign and does nothing when pressed. The keyboard
     passes over it, and it is read out as, for example, "Convert to Schema,
     Back to ERD".
-  *Relational Schema* and *SQL Project* are shown in their
-  places, marked *Coming soon* and not enabled, each saying why in its
-  tooltip: the first waits for ADR-021 Step B, the second for SQL to be
-  parsed into Relational Design and round-tripped (ADR-022 §9.2).
+  *SQL Project* is shown in its place, marked *Coming soon* and not
+  enabled, saying why in its tooltip: it waits for SQL to be parsed into
+  Relational Design and round-tripped (ADR-022 §9.2). *Relational Schema*
+  was marked the same way until 2026-09-27, when ADR-021 Step B was built;
+  its **+ Create** now opens a project that starts from its schema.
 - **Nothing is asked under the cards** (ADR-022 §9.19): the page ends with
   them. Conceptual's **+ Create** opens a new, untitled conceptual project,
   as File › New project does, and nothing is written until it is saved.
@@ -1386,6 +1698,24 @@ outside the repository at `erdflow-notes/UI-AZURE-TASKS.md`. What is built:
   What stays is its own: Arrange, Appearance, undo and redo, its search and
   the theme. The Conceptual workspace keeps Select, Entity, Attribute,
   Relationship, Specialization, Connect and Note.
+- **Undo and redo beside the schema whenever it is open** (2026-09-25).
+  The header's Undo and Redo, the same actions the Edit menu has, now show
+  whenever Relational Design is open, not only while it has the whole
+  window. Before, with the schema sharing the stage, the only Undo buttons
+  were on the ribbon's Home row, so with any other tab in front there was
+  none on screen. Its search and the theme still come out only in full
+  view, since otherwise the diagram's own are showing
+  (`MainWindow::place_schema_header_tools`). The keyboard's Undo reached the
+  schema in both layouts already.
+- **The schema panel is always the stage's width** (2026-09-26, fix). The
+  panel is laid over the stage by hand, and was laid out again only when the
+  window changed size. Pulling Properties (or Explorer) wider or narrower,
+  or closing and opening it, changes the stage without changing the window,
+  so the panel kept its old width: a strip of diagram showed between it and
+  Properties, or it ran on under the stage's edge. The stage is now watched
+  and the panel is laid out whenever the stage is resized, so it follows a
+  side panel's edge continuously while it is dragged. Only the panel's
+  width changes; the tables, their places and the zoom are untouched.
 - **Reference pictures and an audit** (`tests/visual_tests.cpp`, the `visual`
   suite). Home, the illustration on its own, a card at rest, under the
   pointer, chosen and *Coming soon*, a sidebar row under the pointer, and
@@ -1415,8 +1745,10 @@ Not built yet, though some of it is on screen:
   today, behind one function where a native reading would plug in (ADR-022
   §9.9).
 - Relational Design is still a panel over the diagram rather than a
-  workspace of its own. It cannot yet make a table by hand (ADR-021 Step B),
-  so it has no Table tool to offer, and Insert has no relational entries.
+  workspace of its own. In a project that starts from its schema it makes
+  tables by hand (2026-09-27), from its own bar; the ribbon has no Table tool
+  and Insert has no relational entries yet. A schema worked out from a
+  diagram still gains tables only from the diagram.
   SQL and Data are not built, so there is nothing of theirs to dress.
 - Reference pictures exist for one system and release. The audit is
   offscreen and does not prove what a real screen reader announces.

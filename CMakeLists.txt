@@ -21,11 +21,11 @@ if(ERDFLOW_SANITIZERS AND NOT MSVC)
     target_link_options(erdflow_warnings INTERFACE -fsanitize=address,undefined)
 endif()
 
-add_library(erdflow_domain domain/model.cpp domain/schema_preview.cpp)
+add_library(erdflow_domain domain/model.cpp domain/schema_preview.cpp domain/diagram_from_schema.cpp)
 target_include_directories(erdflow_domain PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(erdflow_domain PRIVATE erdflow_warnings)
 
-add_library(erdflow_application application/editor.cpp)
+add_library(erdflow_application application/editor.cpp application/history.cpp)
 target_link_libraries(erdflow_application PUBLIC erdflow_domain PRIVATE erdflow_warnings)
 
 add_library(erdflow_infrastructure infrastructure/project_store.cpp)
@@ -81,6 +81,15 @@ qt_add_resources(erdflow_desktop "erdflow_icons_on_dark"
 )
 
 
+# Marks drawn on data rather than on commands: the primary key's golden key.
+# Kept apart from the icon sets, so it is the same key whichever set is chosen.
+qt_add_resources(erdflow_desktop "erdflow_marks"
+    PREFIX "/erdflow/marks"
+    BASE "assets/marks"
+    FILES
+        assets/marks/primary-key.svg
+)
+
 # The line-art set: Lucide for the ordinary commands, ERDFlow's own for the
 # database shapes Lucide has no icon for. Every file names its colour as the
 # surrounding text's, so one set of files serves every palette. Lucide is ISC
@@ -113,6 +122,8 @@ qt_add_resources(erdflow_desktop "erdflow_icons_outline"
         assets/icons-outline/flow.svg assets/icons-outline/chevron-right.svg
         assets/icons-outline/chevron-down.svg assets/icons-outline/appearance.svg
         assets/icons-outline/sparkles.svg
+        # The schema's Arrange, in the header of a schema drawn by hand.
+        assets/icons-outline/layers.svg
 )
 
 add_executable(erdflow app/desktop/main.cpp)

@@ -20,7 +20,13 @@ namespace erdflow::desktop {
 enum class Glyph {
     New, Open, Save, Undo, Redo, Select, Entity, Attribute, Relationship,
     Isa, Connect, Pan, Fit, Check, Duplicate, Rename, Delete, Theme,
-    Picture, Note, FullView, Dismiss, Symbols, Export, Search, Key
+    Picture, Note, FullView, Dismiss, Symbols, Export, Search, Key,
+    // A table, the element a Relational Design is drawn with (Zain,
+    // 2026-09-27), as Entity is the Conceptual design's.
+    Table,
+    // The schema's Arrange and Appearance menus, in the header of a schema
+    // drawn by hand (Zain, 2026-09-27).
+    Arrange, Appearance
 };
 
 // Which set a glyph is taken from. Painted follows the theme's colours and
@@ -46,6 +52,13 @@ enum class IconMode { Normal, Modern, Outline };
 // its extension. An empty pixmap means there is no such drawing; the caller
 // decides what stands in, since a row with words beside it can do without.
 [[nodiscard]] QPixmap outline_pixmap(const QString& name, const QColor& ink, int size);
+// The primary key's mark (Zain, 2026-09-26): a polished golden key held bow up
+// and pointing down, drawn from its own vector file in assets/marks rather than
+// from an icon set, so it is the same key whichever set is chosen. Made at the
+// given size and pixel ratio; greyed, keeping its shading, for a theme with no
+// colour. Drawn beside PK on the schema's key columns, and kept here so a
+// table can wear the very same key later.
+[[nodiscard]] QPixmap primary_key_mark(int size, qreal ratio, bool greyed);
 // The same line art with its closed shapes filled in the ink too, for a mark
 // that has to read as solid at a small size -- the spark on Create with AI.
 // Its open strokes are drawn as they are.

@@ -10,6 +10,7 @@
 #include "diagram_view.hpp"
 
 #include "icons.hpp"
+#include "schema_selection.hpp"
 
 #include <QPainterPath>
 #include <QPixmap>
@@ -20,6 +21,7 @@ class QLineEdit;
 #include <map>
 #include <optional>
 #include <set>
+#include <variant>
 #include <vector>
 
 namespace erdflow::application { class Editor; struct EditResult; }
@@ -89,6 +91,15 @@ public:
     // than one with a gap under its last row.
     void set_tables_resizable(bool resizable);
     [[nodiscard]] bool tables_resizable() const { return tables_resizable_; }
+    // Compact schema (Zain, 2026-09-27): every table shows its key marks and its
+    // columns' names and nothing more -- no heading row, no Type, no
+    // Constraints or configuration footer -- each table as wide as its names.
+    // Off unless chosen. While
+    // it is on, sizes given by hand are set aside and tables are not pulled
+    // about, so a narrow size given here never folds the columns of the full
+    // view; turned off, every table is exactly as it was.
+    void set_names_only(bool on);
+    [[nodiscard]] bool names_only() const { return names_only_; }
     [[nodiscard]] bool lines_give_way() const { return lines_give_way_; }
     [[nodiscard]] SchemaRouting routing() const { return routing_; }
     [[nodiscard]] Notation notation() const { return notation_; }
@@ -130,6 +141,19 @@ public:
     // to it are matched on this, so it is part of what the selection means
     // rather than an internal convenience.
     [[nodiscard]] std::optional<std::size_t> selected_table() const;
+    // What is chosen on the schema, in the schema's own terms (Zain,
+    // 2026-09-27, Stage 1): kept here and nowhere else -- the tables marked
+    // above, and the column or line picked on them -- and read by everything
+    // that shows it. Told through chose, as the marks are. Choosing is how the
+    // schema is being looked at, so it never reaches the Editor.
+    [[nodiscard]] SchemaSelection selection_now() const;
+    // Choose something from elsewhere, and show it here as if it had been
+    // pressed: what the Explorer will do.
+    void choose(const SchemaSelection& wanted);
+    // The handle for the column drawn at a table and row, and where the
+    // column a handle names is drawn now, if it still is.
+    [[nodiscard]] std::optional<SchemaColumnRef> column_ref(std::size_t table, std::size_t row) const;
+    [[nodiscard]] std::optional<std::pair<std::size_t, std::size_t>> locate(const SchemaColumnRef& column) const;
     // Told whenever the selection changes, so whatever is showing the state of
     // the schema can follow it.
     std::function<void()> chose;
@@ -252,6 +276,45 @@ public:
     // Open the name of a table, or of one of its columns, for typing. Public so
     // that a menu can offer renaming as well as a double click.
     void begin_rename(std::size_t table, std::optional<std::size_t> column);
+    // The same, for a column the schema holds on its own, and for a table,
+    // found by what they are rather than where they are drawn: a table or a
+    // column made a moment ago is named where it has just appeared.
+    void open_column_for(domain::SchemaColumnId column);
+    void open_table_for(const domain::ElementRef& table);
+
+    // A schema drawn by hand (Zain, 2026-09-27), where a project starts from
+    // its schema and there is no diagram behind it. A foreign key is drawn by
+    // pressing a column's key gutter -- where PK and FK are written -- and
+    // letting go on the row it is to point at. The view says which row was
+    // taken to which; whether that makes a foreign key is the Editor's, and
+    // anything wrong with it is said where the hand let go.
+    struct Linked {
+        std::size_t from_table = 0;
+        std::size_t from_row = 0;
+        std::size_t to_table = 0;
+        std::size_t to_row = 0;
+        QPoint at;   // where the hand let go, in screen coordinates
+    };
+    std::function<void(const Linked&)> linked;
+    // Connect in hand (Zain, 2026-09-27): the Connect tool in the top bar,
+    // as the Conceptual canvas has one. While it is on, a press anywhere on a
+    // column's row draws a foreign key from it, not only on its key gutter,
+    // and letting go anywhere on a table points at that table's primary key
+    // where it has one key column to mean. Escape puts it down, and says so.
+    void set_connecting(bool on);
+    [[nodiscard]] bool connecting() const { return connecting_; }
+    std::function<void(bool)> connecting_changed;
+    // Somewhere on the empty schema asked for a table, by a double click
+    // there, in the view's own coordinates. Only where the schema is drawn by
+    // hand: on a schema worked out from a diagram a table comes from the
+    // diagram.
+    std::function<void(QPointF at)> add_table;
+    // The empty schema asked what can be done there, by the right button: the
+    // place in the view's coordinates, and where a menu should open.
+    std::function<void(QPointF at, QPoint menu_at)> asked_nowhere;
+    // Delete pressed while the schema has the keyboard, for whatever is
+    // marked. Only where the schema is drawn by hand.
+    std::function<void()> delete_asked;
 
 protected:
     void paintEvent(QPaintEvent* event) override;
@@ -554,16 +617,59 @@ private:
     // The line under the pointer, drawn a little heavier with its corners shown
     // so that it is clear which one a drag would take hold of.
     std::optional<domain::LinkSource> hovered_;
+    // Whether this schema is drawn by hand rather than worked out from a
+    // diagram, which is what decides whether its key gutters draw foreign keys.
+    [[nodiscard]] bool drawn_by_hand() const;
+    // The row whose key gutter is under the point, where the schema is drawn
+    // by hand: which table, and which row.
+    [[nodiscard]] std::optional<std::pair<std::size_t, std::size_t>> gutter_at(QPointF point) const;
+    // A foreign key being drawn: from which row, where the press was, and
+    // whether the hand has yet travelled far enough for it to be a drag
+    // rather than a click. The line follows the pointer until it is let go.
+    struct Linking {
+        std::size_t table = 0;
+        std::size_t row = 0;
+        QPointF press;
+        bool travelled = false;
+    };
+    std::optional<Linking> linking_;
+    QPointF linking_to_;
+    // The column or the line picked on the schema, beside the tables marked.
+    // A column counts while its table is marked; a line while none is.
+    std::optional<std::variant<SchemaColumnRef, domain::ForeignKeyId>> picked_;
+    void pick(std::optional<std::variant<SchemaColumnRef, domain::ForeignKeyId>> what);
+    // The key a line stands for, and the line a key is drawn as.
+    [[nodiscard]] std::optional<domain::ForeignKeyId> key_of(const domain::LinkSource& link) const;
+    [[nodiscard]] std::optional<domain::LinkSource> link_of(domain::ForeignKeyId key) const;
+    bool connecting_ = false;
+    // The row under the point, on a schema drawn by hand with Connect in
+    // hand; and a table's only primary-key row, where it has exactly one.
+    [[nodiscard]] std::optional<std::pair<std::size_t, std::size_t>> connect_row_at(QPointF point) const;
+    [[nodiscard]] std::optional<std::size_t> sole_key(std::size_t table) const;
+    void draw_linking(QPainter& painter) const;
     // The tables a drag carries, each with where it stood when taken hold of,
     // and where the pointer was then. The table pressed, ordinarily; every
     // marked table when the one pressed is among several marked.
     std::vector<std::pair<domain::ElementRef, QPointF>> carried_;
+    // The lines shaped by hand that a drag carries whole, because both of
+    // their tables are among those carried, and how far the drag has taken
+    // them. Their corners, and any end left off its table, move the same
+    // distance as the tables, so the shape a hand gave a line travels with
+    // what it joins rather than being left behind (Zain, 2026-09-25). An end
+    // on its table already follows it, being kept as a place on the table.
+    std::vector<domain::LinkSource> carried_lines_;
+    QPointF carried_by_;
+    [[nodiscard]] static Shape moved_by(Shape shape, QPointF by);
+    [[nodiscard]] static domain::SchemaLine as_line(const Shape& shape);
     QPointF carried_from_;
     SchemaShowing showing_ = SchemaShowing::Everything;
     QString looking_for_;
     SchemaRouting routing_ = SchemaRouting::AroundTables;
     bool lines_give_way_ = false;
     bool tables_resizable_ = true;
+    bool names_only_ = false;
+    // How tall the row naming the columns is: none when only the names show.
+    [[nodiscard]] double heading_room() const;
     // What is marked. One is the ordinary case and behaves as it always did:
     // the table is ringed, what it is joined to is ringed with it, and the
     // rest of the schema fades. Several is a deliberate act -- a band drawn

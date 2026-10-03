@@ -260,6 +260,49 @@ which one gives way is Zain's decision.
 
 ---
 
+## 5c. Step B, and the way back to the diagram (Zain, 2026-09-27)
+
+Built, with Zain's answers to the questions it raised. Recorded here rather
+than folded into §3 and §5a, which say what was true when they were written.
+
+- **A project can start from its schema.** `SchemaOverrides::standalone` marks
+  it; its relations (`Relation`) and foreign keys (`SchemaForeignKey`) have
+  identities issued by the generator and no origin. Such a project holds no
+  conceptual elements. Format version 30. Home's *Relational Schema* card is
+  enabled for it, which is the condition §6 set: relations with no origin;
+  tables, columns, keys and foreign keys created and edited; layout and a
+  save/load round trip; a project with no Conceptual ERD at all.
+- **A foreign key is drawn by hand**, from a column's key gutter onto the
+  primary-key row it points at, or from the column's menu. It points at a
+  table's only primary key column (or a unique one), and takes that key's
+  type, which follows the key from then on.
+- **Converting to a Conceptual ERD hands the project to the diagram.** Zain
+  chose this over an unlinked copy and over a separate new project: one
+  model, convertible both ways. Afterwards the project is one begun as a
+  diagram, its schema derived again, and edits on either side reach the
+  other. §5a is the rule for keys in this direction, and holds: a relation's
+  primary key becomes the entity's key attribute and nothing is invented
+  beside it. A join table becomes a many-to-many relationship, and converts
+  back to the same bridge. What the schema said is carried across so the
+  derived schema reads the same; where the rules cannot say it exactly, the
+  conversion says so in words.
+- **A table drawn by hand names its key for itself.** It starts with an
+  `int` primary key called after the table, `StudentID` rather than `ID`, the
+  rule the derivation already used for a key it generates for an entity. A
+  key still called by the table's old name follows a rename in the same edit;
+  one named by hand keeps its name. Zain asked for this over the plain `ID`
+  the first version gave every table.
+- **A foreign key can be renamed on any schema** (format version 31). A typed
+  name is kept and no longer follows its key, as a typed table name no longer
+  follows its entity. Zain chose this over the old refusal, and it is what
+  lets a converted schema keep names such as `ManagerID`.
+
+Still not built: a table made by hand in a project begun as a diagram (a
+relation with no origin beside derived ones), reconciliation when the two
+disagree (Phase 25), SQL import, and SQL generation from the schema.
+
+---
+
 ## 6. Relationship to other decisions
 
 - **ADR-001** — distinct typed identity per level. This implements it for the

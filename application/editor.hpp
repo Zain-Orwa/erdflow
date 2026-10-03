@@ -6,6 +6,8 @@
 // covered by this — fix it and say what was wrong. Full rule: CLAUDE.md.
 #pragma once
 
+#include "application/history.hpp"
+#include "domain/diagram_from_schema.hpp"
 #include "domain/model.hpp"
 
 #include <cstdint>
@@ -46,15 +48,56 @@ public:
     [[nodiscard]] std::string undo_label() const;
     [[nodiscard]] std::string redo_label() const;
     [[nodiscard]] std::size_t history_bytes() const;
+    // The History (Zain, 2026-09-26): every step still kept, oldest first,
+    // each described in words. The first history_position() of them are in
+    // effect; the rest have been undone and wait to be redone, until a new
+    // edit takes their place, exactly as Undo and Redo have always had them.
+    [[nodiscard]] std::vector<HistoryEntry> history() const;
+    [[nodiscard]] std::size_t history_position() const;
+    // Undoes or redoes, one step at a time, until that many steps are in
+    // effect: 0 is the project as it was before the oldest step kept. The
+    // steps themselves are unchanged by the move, so Undo and Redo carry on
+    // from wherever it lands.
+    EditResult go_to(std::size_t position);
 
     void new_project();
+    // A project that starts from its schema (Zain, 2026-09-27): no diagram,
+    // and tables made on the schema itself until it is converted into one.
+    // Like new_project it is a fresh start rather than an edit, so undo does
+    // not reach back past it.
+    void new_schema_project();
+    // Tables made by hand, in a project that starts from its schema. A new
+    // table is put where it is asked for, and begins with one column, ID, its
+    // primary key, so there is a row to type over and a key to point at.
+    EditResult create_relation(std::string name, std::optional<domain::Point> at = {});
+    EditResult erase_relation(domain::RelationId id);
+    // One column made to point at a table's primary key -- another table's,
+    // or its own table's, as a manager's is. The column takes the key's type
+    // in the same edit, since a foreign key and what it points at must agree.
+    // A column already pointing somewhere keeps its foreign key, pointed
+    // at the new place.
+    EditResult add_foreign_key(domain::RelationId from, domain::SchemaColumnId column,
+                               domain::RelationId to, domain::SchemaColumnId target);
+    EditResult erase_foreign_key(domain::ForeignKeyId id);
+    // The schema drawn as the Conceptual ERD it would have come from, in one
+    // edit (Zain, 2026-09-27). Afterwards the diagram is the model and the
+    // schema follows from it, as in a project begun as a diagram. `tables` is
+    // where each table sits on the schema now, where it stays; what could not
+    // be carried across exactly is told in `notes`, one sentence each.
+    EditResult convert_schema_to_diagram(const std::map<domain::RelationId, domain::Point>& tables,
+                                         const domain::DiagramSizes& sizes,
+                                         std::vector<std::string>* notes = nullptr);
     EditResult replace_project(domain::Project project);
     void mark_saved(std::uint64_t revision);
     EditResult rename_project(std::string name);
     EditResult describe_project(std::string description);
     EditResult create_entity(std::string name, domain::Rect rect);
+    // A shape for the link to its owner can be given with it, as for
+    // set_attribute_owner, so an attribute placed pinned to a point on its
+    // owner is one step of history.
     EditResult create_attribute(std::string name, domain::Rect rect,
-                                std::optional<domain::AttributeOwner> owner = {});
+                                std::optional<domain::AttributeOwner> owner = {},
+                                domain::Connector shape = {});
     EditResult create_relationship(std::string name, domain::Rect rect);
     // An ISA triangle: one supertype, and the subtypes attached to it. The
     // constraint and completeness decide how it converts to relations later.
@@ -211,6 +254,10 @@ public:
     // given a name of its own, remembered against the table it belongs to.
     EditResult rename_table(domain::ElementRef ref, std::string name);
     EditResult rename_schema_key(domain::ElementRef table, std::string chosen);
+    // A name typed over a foreign key the conversion made (Zain,
+    // 2026-09-27). It is kept, and no longer follows the key it points at;
+    // empty hands the name back to the rule.
+    EditResult rename_foreign_key(domain::ForeignKeyColumn column, std::string chosen);
     EditResult rename_schema_column(domain::SchemaColumnId id, std::string name);
     EditResult set_schema_column_type(domain::SchemaColumnId id, domain::LogicalType type);
     EditResult erase_schema_column(domain::SchemaColumnId id);
@@ -223,8 +270,13 @@ public:
     // Moving tables, and giving back any lines the move displaced. The two
     // travel together because they are one thing the user did: a line handed
     // back in an edit of its own would leave undo taking them apart.
-    EditResult move_schema_tables(const std::map<domain::ElementRef, domain::Point>& places,
-                                  const std::vector<domain::LinkSource>& give_way = {});
+    // Lines shaped by hand whose two tables both moved travel with them: they
+    // arrive here already moved, and are written in the same edit, so one
+    // undo takes the tables and the lines back together.
+    EditResult move_schema_tables(
+        const std::map<domain::ElementRef, domain::Point>& places,
+        const std::vector<domain::LinkSource>& give_way = {},
+        const std::vector<std::pair<domain::LinkSource, domain::SchemaLine>>& carried = {});
     // Pulling tables by their edges. A table answers to all four of them and
     // to its corners, so a pull carries a width, a height, and -- where the
     // edge that was pulled is one that moves the table's top-left corner --
@@ -297,6 +349,10 @@ public:
     // says which was done; and it refuses anything that is not an entity, so
     // the command cannot quietly reshape the rest of the diagram.
     EditResult resize_entities(const std::map<domain::ElementRef, domain::Rect>& boxes);
+    // Relationship diamonds use the same edge and corner gesture as entities.
+    EditResult resize_relationships(const std::map<domain::ElementRef, domain::Rect>& boxes);
+    // And so do attributes, whose names want width as an entity's does.
+    EditResult resize_attributes(const std::map<domain::ElementRef, domain::Rect>& boxes);
     // A connector carries one signed perpendicular bend. Passing no offset
     // restores automatic routing rather than storing a zero-length bend.
     EditResult bend_connector(domain::ConnectorRef ref, std::optional<double> offset);

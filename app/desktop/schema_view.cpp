@@ -577,20 +577,6 @@ void SchemaView::set_icon_mode(IconMode mode) {
     update();
 }
 
-// The gold a key is drawn in.
-//
-// A theme's warning ink is chosen to be read as words on that theme's paper, so
-// on a light one it is a dark bronze -- right for the letters PK and wrong for a
-// key, which should look like a key. Its hue is kept and its saturation and
-// brightness are raised until it reads as gold, then held back from going pale
-// enough to disappear on light paper. Derived rather than fixed, so a theme that
-// warns in another hue still gets a key of its own rather than somebody else's.
-QColor key_gold(const QColor& warning, bool dark_paper) {
-    const auto hue = warning.hsvHue() < 0 ? 42 : warning.hsvHue();
-    return QColor::fromHsv(hue, std::clamp(int(warning.hsvSaturation() * 1.02), 170, 255),
-                           dark_paper ? 235 : 205);
-}
-
 // The key drawn beside PK, kept until the size, the ink or the set it is taken
 // from changes. Asking for it again on every row of every repaint is the kind
 // of work a drag across a large schema pays for a hundred times a second.
@@ -602,17 +588,11 @@ const QPixmap& SchemaView::key_mark(int side) {
         key_mark_mode_ = icon_mode_;
         key_mark_ink_ = theme_->warning;
         key_mark_ratio_ = ratio;
-        // Inked as the letters are, so the mark and the word it stands beside
-        // are plainly one thing.
-        auto palette = *theme_;
-        // A theme with no colour has no gold to raise the ink to, so the key
-        // is drawn in the letters' own grey rather than a paler one.
-        const auto gold = colourless(theme_->id)
-            ? theme_->warning
-            : key_gold(theme_->warning, theme_->canvas.lightnessF() < 0.5);
-        palette.text = gold;
-        palette.accent = gold;
-        key_mark_ = glyph_icon(Glyph::Key, palette, side, icon_mode_).pixmap(QSize(side, side), ratio);
+        // The golden key Zain chose (2026-09-26): held bow up and pointing
+        // down, its own polished drawing rather than a glyph from the icon
+        // set, and the same key a table will wear. Grey where the theme has
+        // no colour.
+        key_mark_ = primary_key_mark(side, ratio, colourless(theme_->id));
     }
     return key_mark_;
 }
@@ -651,6 +631,16 @@ void SchemaView::refresh() {
                                 return table.origin && *table.origin == ref;
                             });
     });
+    // And a column or line picked that is no longer there, likewise.
+    if (picked_) {
+        const auto still = std::visit([this](const auto& what) {
+            if constexpr (std::is_same_v<std::decay_t<decltype(what)>, SchemaColumnRef>)
+                return locate(what).has_value();
+            else
+                return link_of(what).has_value();
+        }, *picked_);
+        if (!still) picked_.reset();
+    }
     shaping_.reset();
     arrange();
     reroute();
@@ -749,6 +739,16 @@ std::vector<domain::LinkSource> SchemaView::lines_over_tables() const {
     return crossing;
 }
 
+void SchemaView::set_names_only(bool on) {
+    if (names_only_ == on) return;
+    names_only_ = on;
+    arrange();
+    reroute();
+    update();
+}
+
+double SchemaView::heading_room() const { return names_only_ ? 0.0 : heading_height; }
+
 void SchemaView::set_tables_resizable(bool resizable) {
     if (tables_resizable_ == resizable) return;
     tables_resizable_ = resizable;
@@ -796,12 +796,21 @@ SchemaView::Columns SchemaView::columns_of(const domain::PreviewTable& table) co
 // width nobody chose would be hiding work rather than showing it.
 double SchemaView::natural_width(const domain::PreviewTable& table) const {
     const auto room = columns_of(table);
+    // With only the names shown, a table is as wide as its keys and names.
+    if (names_only_) {
+        auto title_font = font();
+        title_font.setBold(true);
+        const auto title_width = QFontMetricsF(title_font).horizontalAdvance(
+            QString::fromStdString(table.name)) + 18;
+        return std::clamp(std::max(gutter_width + room.name, title_width),
+                          domain::min_table_width, domain::max_table_width);
+    }
     return std::clamp(gutter_width + room.name + room.type + room.rules,
                       domain::min_table_width, domain::max_table_width);
 }
 
 double SchemaView::width_of(const domain::PreviewTable& table) const {
-    if (!table.origin) return natural_width(table);
+    if (!table.origin || names_only_) return natural_width(table);
     if (const auto held = resizing_to_.find(*table.origin); held != resizing_to_.end())
         return held->second.box.width();
     const auto& widths = editor_.project().schema_layout.widths;
@@ -814,7 +823,7 @@ double SchemaView::width_of(const domain::PreviewTable& table) const {
 // own columns. A table that gains a column afterwards therefore grows past the
 // height it was given rather than hiding the new one.
 double SchemaView::height_of(const domain::PreviewTable& table, double natural) const {
-    if (!table.origin) return natural;
+    if (!table.origin || names_only_) return natural;
     if (const auto held = resizing_to_.find(*table.origin); held != resizing_to_.end())
         return std::max(natural, held->second.box.height());
     const auto& heights = editor_.project().schema_layout.heights;
@@ -823,7 +832,7 @@ double SchemaView::height_of(const domain::PreviewTable& table, double natural) 
 }
 
 double SchemaView::natural_height(const domain::PreviewTable& table, double wide) const {
-    return header_height + heading_height + row_height * static_cast<double>(table.columns.size())
+    return header_height + heading_room() + row_height * static_cast<double>(table.columns.size())
          + footer_height(table, wide);
 }
 
@@ -862,7 +871,7 @@ Qt::CursorShape SchemaView::cursor_for(Pull pull) {
 }
 
 std::optional<SchemaView::Resizing> SchemaView::edge_at(QPointF point) const {
-    if (!tables_resizable_) return std::nullopt;
+    if (!tables_resizable_ || names_only_) return std::nullopt;
     for (std::size_t i = placed_.size(); i-- > 0;) {
         if (!preview_.tables[i].origin) continue;
         const auto& box = placed_[i].box;
@@ -937,7 +946,10 @@ void SchemaView::set_looking_for(const QString& looking_for) {
     looking_for_ = wanted;
     // Looking for something is a broader question than asking about one
     // table, so it puts down whatever was being asked about.
-    if (!looking_for_.isEmpty()) selected_.clear();
+    if (!looking_for_.isEmpty()) {
+        selected_.clear();
+        picked_.reset();
+    }
     update();
     if (chose) chose();
 }
@@ -952,8 +964,11 @@ void SchemaView::set_answering(std::optional<Answering> which, bool size) {
 void SchemaView::select(std::optional<domain::ElementRef> table) {
     std::vector<domain::ElementRef> wanted;
     if (table) wanted.push_back(*table);
-    if (selected_ == wanted) return;
+    if (selected_ == wanted && !picked_) return;
     selected_ = std::move(wanted);
+    // Marking tables is choosing tables: whatever column or line had been
+    // picked is put down with what was marked before.
+    picked_.reset();
     update();
     if (chose) chose();
 }
@@ -962,6 +977,7 @@ void SchemaView::toggle_mark(const domain::ElementRef& table) {
     const auto found = std::find(selected_.begin(), selected_.end(), table);
     if (found != selected_.end()) selected_.erase(found);
     else selected_.push_back(table);
+    picked_.reset();
     update();
     if (chose) chose();
 }
@@ -971,17 +987,33 @@ void SchemaView::select_all() {
     for (const auto& table : preview_.tables)
         if (table.origin && std::find(every.begin(), every.end(), *table.origin) == every.end())
             every.push_back(*table.origin);
-    if (selected_ == every) return;
+    if (selected_ == every && !picked_) return;
     selected_ = std::move(every);
+    picked_.reset();
     update();
     if (chose) chose();
 }
 
 void SchemaView::keyPressEvent(QKeyEvent* event) {
+    // Escape puts Connect down, as it puts a tool down on the diagram.
+    if (event->key() == Qt::Key_Escape && connecting_) {
+        set_connecting(false);
+        if (connecting_changed) connecting_changed(false);
+        event->accept();
+        return;
+    }
     // Select All gathers every table, as it gathers everything on the diagram,
     // so the whole schema can be taken hold of and moved as one.
     if (event->matches(QKeySequence::SelectAll)) {
         select_all();
+        event->accept();
+        return;
+    }
+    // On a schema drawn by hand, Delete takes away what is marked, as it
+    // does on the diagram.
+    if ((event->key() == Qt::Key_Delete || event->key() == Qt::Key_Backspace) && drawn_by_hand()
+        && delete_asked && !selected_.empty()) {
+        delete_asked();
         event->accept();
         return;
     }
@@ -1078,6 +1110,7 @@ void SchemaView::tidy() {
     shaping_.reset();
     shaping_shape_.reset();
     dragging_at_.clear();
+    carried_lines_.clear();
     resizing_to_.clear();
     const auto result = editor_.tidy_schema();
     if (arranged) arranged(result);
@@ -1108,7 +1141,7 @@ void SchemaView::resizeEvent(QResizeEvent* event) {
 // table goes, the pointer has to find the answers too, and an edge being
 // pulled has to know how short the table may be made.
 double SchemaView::footer_height(const domain::PreviewTable& table, double wide) const {
-    if (table.decisions.empty()) return 0.0;
+    if (names_only_ || table.decisions.empty()) return 0.0;
     auto asking_font = font();
     asking_font.setPointSizeF(std::max(7.0, font().pointSizeF() - 1.0));
     // Measured bold, because the answer in force is drawn bold and every chip
@@ -1157,7 +1190,7 @@ void SchemaView::arrange() {
         const auto& table = preview_.tables[i];
         const auto wide = width_of(table);
         const auto footer = footer_height(table, wide);
-        const auto natural = header_height + heading_height
+        const auto natural = header_height + heading_room()
                            + row_height * static_cast<double>(table.columns.size()) + footer;
         const auto height = height_of(table, natural);
         // The automatic arrangement is worked out for every table, whether or
@@ -1184,7 +1217,7 @@ void SchemaView::arrange() {
         // simply a roomier table.
         const auto deep = table.columns.empty()
             ? row_height
-            : std::max(row_height, (height - header_height - heading_height - footer)
+            : std::max(row_height, (height - header_height - heading_room() - footer)
                                        / static_cast<double>(table.columns.size()));
         placed_[i].rows.clear();
         placed_[i].cells.clear();
@@ -1211,8 +1244,8 @@ void SchemaView::arrange() {
         // Nothing springs back. The width is wherever a hand left it, and
         // every column returns, in the reverse order, as it is widened again.
         const auto beside = wide - gutter_width;
-        const bool shows_rules = beside - type_room - room.rules >= name_floor;
-        const bool shows_type = shows_rules || beside - type_room >= name_floor;
+        const bool shows_rules = !names_only_ && beside - type_room - room.rules >= name_floor;
+        const bool shows_type = !names_only_ && (shows_rules || beside - type_room >= name_floor);
         // Where the rules between the columns fall: one for each column that
         // is still being shown beyond the names.
         placed_[i].dividers.clear();
@@ -1222,7 +1255,7 @@ void SchemaView::arrange() {
         else if (shows_type)
             placed_[i].dividers = {right - type_room};
         for (std::size_t row = 0; row < table.columns.size(); ++row) {
-            const QRectF where(at.x(), at.y() + header_height + heading_height
+            const QRectF where(at.x(), at.y() + header_height + heading_room()
                                    + deep * static_cast<double>(row),
                                wide, deep);
             placed_[i].rows.push_back(where);
@@ -1257,9 +1290,9 @@ void SchemaView::arrange() {
             }
             placed_[i].cells.push_back(cell);
         }
-        auto below = at.y() + header_height + heading_height
+        auto below = at.y() + header_height + heading_room()
                    + deep * static_cast<double>(table.columns.size()) + footer_pad;
-        for (std::size_t d = 0; d < table.decisions.size(); ++d) {
+        for (std::size_t d = 0; !names_only_ && d < table.decisions.size(); ++d) {
             placed_[i].asked.push_back(QRectF(at.x() + 9, below, wide - 18, question_height));
             below += question_height;
             auto left = at.x() + 9;
@@ -1326,7 +1359,32 @@ SchemaView::Shape SchemaView::shape_of(const domain::LinkSource& link) const {
     const auto& lines = editor_.project().schema_layout.lines;
     const auto found = lines.find(domain::foreign_key_from(link));
     if (found == lines.end()) return {};
+    // Carried whole by a drag, it is where the drag has taken it.
+    if (!dragging_at_.empty()
+        && std::find(carried_lines_.begin(), carried_lines_.end(), link) != carried_lines_.end())
+        return moved_by(as_shape(found->second), carried_by_);
     return as_shape(found->second);
+}
+
+SchemaView::Shape SchemaView::moved_by(Shape shape, QPointF by) {
+    for (auto& corner : shape.route) corner += by;
+    if (shape.from && !shape.from->on_table) shape.from->at += by;
+    if (shape.to && !shape.to->on_table) shape.to->at += by;
+    return shape;
+}
+
+domain::SchemaLine SchemaView::as_line(const Shape& shape) {
+    domain::SchemaLine line;
+    line.route.reserve(shape.route.size());
+    for (const auto& corner : shape.route) line.route.push_back(domain::Point{corner.x(), corner.y()});
+    const auto taken = [](const std::optional<EndAnchor>& end) {
+        return end ? std::optional<domain::SchemaEnd>{
+                         domain::SchemaEnd{end->on_table, domain::Point{end->at.x(), end->at.y()}}}
+                   : std::nullopt;
+    };
+    line.from = taken(shape.from);
+    line.to = taken(shape.to);
+    return line;
 }
 
 bool SchemaView::line_is_shaped(const domain::LinkSource& link) const {
@@ -1472,7 +1530,7 @@ QString SchemaView::size_text(const domain::PreviewColumn& column) {
 }
 
 QString SchemaView::provenance_of(const domain::PreviewTable& table) const {
-    if (!table.origin) return {};
+    if (!table.origin || std::holds_alternative<domain::RelationId>(*table.origin)) return {};
     const auto called = [&](const domain::ElementRef& ref) {
         return QString::fromStdString(domain::name(editor_.project(), ref));
     };
@@ -1539,6 +1597,12 @@ std::optional<std::size_t> SchemaView::row_at(std::size_t table, QPointF point) 
 // there because the relationship that put it there is.
 void SchemaView::contextMenuEvent(QContextMenuEvent* event) {
     const auto found = table_at(event->pos());
+    // The empty schema, where it is drawn by hand, is where a table is added.
+    if (!found && drawn_by_hand() && asked_nowhere) {
+        asked_nowhere(QPointF(event->pos()), event->globalPos());
+        event->accept();
+        return;
+    }
     if (!found || !asked) { QWidget::contextMenuEvent(event); return; }
     asked(Spot{*found, row_at(*found, event->pos()), event->globalPos()});
     event->accept();
@@ -1556,6 +1620,15 @@ void SchemaView::mousePressEvent(QMouseEvent* event) {
         event->accept();
         return;
     }
+    // With Connect in hand, a row draws a foreign key wherever it is pressed,
+    // before anything else on it answers: the tool says what the press is for.
+    if (const auto from = connect_row_at(event->position())) {
+        linking_ = Linking{from->first, from->second, event->position(), false};
+        linking_to_ = event->position();
+        select(preview_.tables[from->first].origin);
+        setCursor(Qt::CrossCursor);
+        return;
+    }
     // A line answers before the table it crosses. An end lies on a table's
     // outline, and a run pushed behind a table is drawn over it while the
     // pointer is on it -- so if the table answered first, what is plainly on
@@ -1564,6 +1637,13 @@ void SchemaView::mousePressEvent(QMouseEvent* event) {
     if (auto line = line_at(event->position())) {
         shaping_ = *line;
         hovered_ = shaping_->link;
+        // Pressing a line chooses the foreign key it stands for, and nothing
+        // else (Stage 1): the tables put down, as a press on the diagram's
+        // line puts down its shapes.
+        if (const auto key = key_of(shaping_->link)) {
+            select(std::nullopt);
+            pick(*key);
+        }
         // The cursor keeps saying which way the run goes while it is held,
         // rather than becoming a closed hand that says nothing about it.
         setCursor(run_cursor(event->position()).value_or(Qt::ClosedHandCursor));
@@ -1579,6 +1659,7 @@ void SchemaView::mousePressEvent(QMouseEvent* event) {
     // dragging the table a little first.
     if (const auto hit = rules_at(event->position())) {
         select(preview_.tables[hit->table].origin);
+        if (const auto column = column_ref(hit->table, hit->row)) pick(*column);
         // Opened under the cell rather than under the pointer, so the list
         // stands below what it is about and does not cover it.
         if (rules_asked)
@@ -1589,6 +1670,7 @@ void SchemaView::mousePressEvent(QMouseEvent* event) {
     if (const auto cell = type_cell_at(event->position())) {
         const auto& table = preview_.tables[cell->table];
         select(table.origin);
+        if (const auto column = column_ref(cell->table, cell->row)) pick(*column);
         const auto& drawn = placed_[cell->table].cells[cell->row];
         const auto below = mapToGlobal((cell->size ? drawn.size : drawn.type).bottomLeft().toPoint())
                          + QPoint(0, 4);
@@ -1616,6 +1698,18 @@ void SchemaView::mousePressEvent(QMouseEvent* event) {
         setCursor(cursor_for(edge->pull));
         return;
     }
+    // On a schema drawn by hand, a row's key gutter draws a foreign key from
+    // that row rather than picking the table up (Zain, 2026-09-27). The rest
+    // of the row, and the header, still move the table, and a press held
+    // down still gathers it.
+    if (const auto from = gutter_at(event->position());
+        from && !(event->modifiers() & (Qt::ShiftModifier | Qt::ControlModifier))) {
+        linking_ = Linking{from->first, from->second, event->position(), false};
+        linking_to_ = event->position();
+        select(preview_.tables[from->first].origin);
+        setCursor(Qt::CrossCursor);
+        return;
+    }
     if (const auto found = table_at(event->position())) {
         const auto& table = preview_.tables[*found];
         // Held down, a press adds the table to what is marked or takes it out
@@ -1632,6 +1726,14 @@ void SchemaView::mousePressEvent(QMouseEvent* event) {
         dragging_ = *found;
         setCursor(Qt::ClosedHandCursor);
         if (!is_marked(table)) select(table.origin);
+        // A press on one of its rows chooses that column too, and on its
+        // heading the table alone (Stage 1). Either way the table is taken
+        // hold of as before.
+        if (const auto row = row_at(*found, event->position())) {
+            if (const auto column = column_ref(*found, *row)) pick(*column);
+        } else {
+            pick(std::nullopt);
+        }
         // What the hand carries: the table pressed and, where that table is
         // one of several marked, every one of them, each from where it stands
         // now. A gathered group moves together and keeps its arrangement.
@@ -1642,6 +1744,17 @@ void SchemaView::mousePressEvent(QMouseEvent* event) {
             if (one.origin && (t == *found || is_marked(one)))
                 carried_.emplace_back(*one.origin, placed_[t].box.topLeft());
         }
+        carried_by_ = {};
+        carried_lines_.clear();
+        const auto is_carried = [&](std::size_t t) {
+            return t < preview_.tables.size() && preview_.tables[t].origin
+                && std::any_of(carried_.begin(), carried_.end(),
+                               [&](const auto& one) { return one.first == *preview_.tables[t].origin; });
+        };
+        for (const auto& routed : routes_)
+            if (routed.link && line_is_shaped(*routed.link) && is_carried(routed.from_table)
+                && is_carried(routed.to_table))
+                carried_lines_.push_back(*routed.link);
         return;
     }
     // Pressing the empty canvas asks about nothing, which puts the whole
@@ -1658,6 +1771,16 @@ void SchemaView::mouseMoveEvent(QMouseEvent* event) {
     // something is being dragged: a table under the pointer in the middle of a
     // gesture is not a table being considered.
     pointer_ = event->position();
+    // A foreign key being drawn follows the pointer until it is let go. Below
+    // a few pixels of travel it is still a click, and draws nothing.
+    if (linking_) {
+        linking_to_ = event->position();
+        if (std::hypot(linking_to_.x() - linking_->press.x(), linking_to_.y() - linking_->press.y())
+            > shaping_travel)
+            linking_->travelled = true;
+        update();
+        return;
+    }
     // A band drawn from the empty canvas, growing under the hand. Nothing is
     // marked while it grows: what it has caught is settled when it is let go,
     // so a band dragged across the schema and back again marks what it ends
@@ -1740,6 +1863,11 @@ void SchemaView::mouseMoveEvent(QMouseEvent* event) {
             return;
         }
         if (const auto edge = edge_at(event->position())) { setCursor(cursor_for(edge->pull)); return; }
+        // A key gutter that draws a foreign key says so by the pointer.
+        if (gutter_at(event->position()) || connect_row_at(event->position())) {
+            setCursor(Qt::CrossCursor);
+            return;
+        }
         setCursor(table_at(event->position()) ? Qt::OpenHandCursor : Qt::ArrowCursor);
         return;
     }
@@ -1757,12 +1885,44 @@ void SchemaView::mouseMoveEvent(QMouseEvent* event) {
         moved.setY(std::max(moved.y(), -from.y()));
     }
     for (const auto& [carried, from] : carried_) dragging_at_[carried] = from + moved;
+    carried_by_ = moved;
     arrange();
     reroute();
     update();
 }
 
 void SchemaView::mouseReleaseEvent(QMouseEvent* event) {
+    // A foreign key drawn by hand, let go on a row: which row was taken to
+    // which is handed on, and whether that makes a foreign key is the
+    // Editor's to say. Let go anywhere else, it says where it should have
+    // been let go, where the hand is.
+    if (linking_) {
+        const auto from = *linking_;
+        linking_.reset();
+        update();
+        const auto here = event->position();
+        const auto at = mapToGlobal(here.toPoint());
+        if (from.travelled) {
+            const auto table = table_at(here);
+            auto row = table ? row_at(*table, here) : std::nullopt;
+            // With Connect in hand, letting go anywhere on a table means its
+            // primary key, where it has one key column to mean: the hand says
+            // which table, and the key is found rather than aimed at.
+            if (connecting_ && table && (!row || !preview_.tables[*table].columns[*row].primary_key))
+                if (const auto key = sole_key(*table)) row = key;
+            if (table && row) {
+                if (linked) linked(Linked{from.table, from.row, *table, *row, at});
+            } else if (warned && from.table < preview_.tables.size()
+                       && from.row < preview_.tables[from.table].columns.size()) {
+                warned(tr("Let go on a primary key to make %1 a foreign key.")
+                           .arg(QString::fromStdString(preview_.tables[from.table].columns[from.row].name)),
+                       at);
+            }
+        }
+        setCursor(gutter_at(here) || connect_row_at(here) ? Qt::CrossCursor
+                  : table_at(here) ? Qt::OpenHandCursor : Qt::ArrowCursor);
+        return;
+    }
     // What the band caught. A table counts as caught when the band touches it
     // at all rather than when it swallows it whole: a band drawn across a row
     // of tables is meant to take them, and asking for every edge to be inside
@@ -1772,6 +1932,7 @@ void SchemaView::mouseReleaseEvent(QMouseEvent* event) {
         band_.reset();
         const bool adding = (event->modifiers() & (Qt::ShiftModifier | Qt::ControlModifier)) != 0;
         if (!adding) selected_.clear();
+        picked_.reset();
         for (std::size_t t = 0; t < placed_.size() && t < preview_.tables.size(); ++t) {
             const auto& table = preview_.tables[t];
             if (!table.origin || !placed_[t].box.intersects(caught)) continue;
@@ -1904,12 +2065,17 @@ void SchemaView::commit_arrangement() {
     } else if (!dragging_at_.empty()) {
         std::map<domain::ElementRef, domain::Point> places;
         for (const auto& [table, at] : dragging_at_) places.emplace(table, domain::Point{at.x(), at.y()});
-        dragging_at_.clear();
+        // The lines the drag carried whole are written where it took them.
+        std::vector<std::pair<domain::LinkSource, domain::SchemaLine>> carried;
+        for (const auto& link : carried_lines_) carried.emplace_back(link, as_line(shape_of(link)));
         // A line told to give way is given back in the same edit as the move
         // that displaced it, so one undo takes both back together rather than
         // leaving the line released and the table where it was.
-        result = editor_.move_schema_tables(
-            places, lines_give_way_ ? lines_over_tables() : std::vector<domain::LinkSource>{});
+        const auto give_way = lines_give_way_ ? lines_over_tables() : std::vector<domain::LinkSource>{};
+        dragging_at_.clear();
+        carried_lines_.clear();
+        carried_by_ = {};
+        result = editor_.move_schema_tables(places, give_way, carried);
     } else if (shaping_shape_) {
         domain::SchemaLine line;
         line.route.reserve(shaping_shape_->second.route.size());
@@ -2089,6 +2255,12 @@ void SchemaView::mouseDoubleClickEvent(QMouseEvent* event) {
             event->accept();
             return;
         }
+        // The empty schema, where it is drawn by hand, makes a table there.
+        if (drawn_by_hand() && add_table) {
+            add_table(event->position());
+            event->accept();
+            return;
+        }
         QWidget::mouseDoubleClickEvent(event);
         return;
     }
@@ -2164,6 +2336,19 @@ void SchemaView::open_column_for(domain::AttributeId attribute) {
     }
 }
 
+void SchemaView::open_column_for(domain::SchemaColumnId column) {
+    for (std::size_t t = 0; t < preview_.tables.size(); ++t) {
+        const auto& columns = preview_.tables[t].columns;
+        for (std::size_t c = 0; c < columns.size(); ++c)
+            if (columns[c].added == column) { begin_rename(t, c); return; }
+    }
+}
+
+void SchemaView::open_table_for(const domain::ElementRef& table) {
+    for (std::size_t t = 0; t < preview_.tables.size(); ++t)
+        if (preview_.tables[t].origin == table) { begin_rename(t, std::nullopt); return; }
+}
+
 void SchemaView::commit_rename() {
     if (!naming_what_ || !naming_) return;
     const auto what = *naming_what_;
@@ -2197,12 +2382,28 @@ void SchemaView::cancel_rename() {
 QString SchemaView::hint_for(std::size_t table, std::optional<std::size_t> column) const {
     if (table >= preview_.tables.size()) return {};
     const auto& subject = preview_.tables[table];
-    if (!column)
+    if (!column) {
+        if (subject.origin && std::holds_alternative<domain::RelationId>(*subject.origin))
+            return tr("Double-click to rename this table.");
         return subject.origin ? tr("Double-click to rename this table. It renames what it came from "
                                    "on the diagram, so both say the same thing.")
                               : QString{};
+    }
     if (*column >= subject.columns.size()) return {};
     const auto& one = subject.columns[*column];
+    // A schema drawn by hand has no diagram for a column to be on or off.
+    if (drawn_by_hand()) {
+        if (one.foreign_key && one.references && *one.references < preview_.tables.size()) {
+            const auto& target = preview_.tables[*one.references];
+            const auto key = one.references_column < target.columns.size()
+                ? QString::fromStdString(target.columns[one.references_column].name) : QString{};
+            return tr("A foreign key to %1.%2. Double-click to rename it; drag from its key gutter onto "
+                      "another primary key to point it there instead.")
+                .arg(QString::fromStdString(target.name), key);
+        }
+        return tr("Double-click to rename this column. Drag from its key gutter onto a primary key to "
+                  "make it a foreign key.");
+    }
     switch (one.origin_kind) {
     case domain::ColumnOrigin::Generated:
         return one.primary_key
@@ -2215,7 +2416,8 @@ QString SchemaView::hint_for(std::size_t table, std::optional<std::size_t> colum
     case domain::ColumnOrigin::SchemaOnly:
         return tr("This column is in Relational Design and not on the diagram. Double-click to rename it.");
     case domain::ColumnOrigin::ForeignKey:
-        return tr("A foreign key. It is named for the key it points at, and follows when that is renamed.");
+        return tr("A foreign key. It is named for the key it points at, and follows when that is renamed, "
+                  "until it is given a name of its own: double-click to rename it.");
     case domain::ColumnOrigin::Discriminator:
         return tr("The conversion made this column, to say which kind of row this is.");
     }
@@ -2228,6 +2430,10 @@ bool SchemaView::event(QEvent* happening) {
         const auto where = QPointF(asking->pos());
         QString words;
         if (const auto table = table_at(where)) words = hint_for(*table, row_at(*table, where));
+        if (const auto gutter = gutter_at(where))
+            words = preview_.tables[gutter->first].columns[gutter->second].foreign_key
+                ? tr("Drag from here onto another primary key to point this foreign key there instead.")
+                : tr("Drag from here onto a primary key to make this column a foreign key.");
         if (words.isEmpty()) QToolTip::hideText();
         else QToolTip::showText(asking->globalPos(), words, this);
         happening->accept();
@@ -2642,10 +2848,18 @@ void SchemaView::paintEvent(QPaintEvent*) {
 
     if (preview_.tables.empty()) {
         painter.setPen(theme_->muted);
+        // A schema drawn by hand has no entity to wait for: it starts from a
+        // table (Zain, 2026-09-27).
         painter.drawText(rect(), Qt::AlignCenter,
-                         "Draw an entity and its Relational Design appears here.");
+                         drawn_by_hand() ? "Create a table to start designing your schema."
+                                         : "Draw an entity and its Relational Design appears here.");
         return;
     }
+    const auto chosen_row = [this]() -> std::optional<std::pair<std::size_t, std::size_t>> {
+        const auto now = selection_now();
+        if (const auto* column = std::get_if<ChosenColumn>(&now)) return locate(column->column);
+        return std::nullopt;
+    }();
 
     // Every line is routed before any is drawn, then all the knockouts, then
     // all the lines. The order matters: a knockout laid down after a line would
@@ -2655,8 +2869,14 @@ void SchemaView::paintEvent(QPaintEvent*) {
         painter.setPen(QPen(theme_->canvas, 6, Qt::SolidLine, Qt::FlatCap, Qt::MiterJoin));
         painter.drawPath(routed.path);
     }
+    // The line chosen is picked out as the one under the pointer is.
+    const auto chosen_line = [this]() -> std::optional<domain::LinkSource> {
+        const auto now = selection_now();
+        if (const auto* key = std::get_if<ChosenForeignKey>(&now)) return link_of(key->key);
+        return std::nullopt;
+    }();
     const auto lit = [&](const Routed& routed) {
-        return hovered_ && routed.link && *routed.link == *hovered_;
+        return routed.link && ((hovered_ && *routed.link == *hovered_) || (chosen_line && *routed.link == *chosen_line));
     };
     // A line is only as prominent as the tables it joins: faded at either end,
     // it fades too, or the schema would be crossed by lines leading to nothing
@@ -2679,15 +2899,17 @@ void SchemaView::paintEvent(QPaintEvent*) {
     // asked by pressing it. Laid before the lines, so the colours still sit
     // on top and crossings still read.
     if (const auto asking = selected_table()) {
-        painter.setPen(QPen(theme_->text, 5.0, Qt::SolidLine, Qt::FlatCap, Qt::MiterJoin));
+        painter.setPen(QPen(theme_->text, 6.0, Qt::SolidLine, Qt::FlatCap, Qt::MiterJoin));
         for (const auto& routed : routes_) {
             if (routed.from_table != *asking && routed.to_table != *asking) continue;
             if (!line_shown(routed)) continue;
             painter.drawPath(routed.path);
         }
     }
+    // Drawn bold, so a connection reads at a glance across a full schema
+    // (Zain, 2026-09-25), and bolder still under the pointer.
     for (const auto& routed : routes_) {
-        painter.setPen(QPen(dim(routed.colour, line_shown(routed)), lit(routed) ? 2.6 : 1.8,
+        painter.setPen(QPen(dim(routed.colour, line_shown(routed)), lit(routed) ? 3.4 : 2.6,
                             Qt::SolidLine, Qt::FlatCap, Qt::MiterJoin));
         painter.drawPath(routed.path);
     }
@@ -2702,7 +2924,7 @@ void SchemaView::paintEvent(QPaintEvent*) {
                 return QPointF(at.x() + step.x() * along + across.x() * side,
                                at.y() + step.y() * along + across.y() * side);
             };
-            painter.setPen(QPen(dim(routed.colour, line_shown(routed)), 1.5));
+            painter.setPen(QPen(dim(routed.colour, line_shown(routed)), 2.2));
             painter.setBrush(Qt::NoBrush);
             if (notation_ == Notation::Chen || notation_ == Notation::MinMax) {
                 // The label stands beside the line rather than on it, on
@@ -2788,7 +3010,10 @@ void SchemaView::paintEvent(QPaintEvent*) {
         // Where the table came from, said in the header. A reader learning the
         // rules needs to know that Enrolleds is a bridge and Phones is a
         // multivalued attribute, and the schema is the only place that says so.
-        const auto came_from = provenance_of(table);
+        // Not in the compact schema, which gives each table its name alone:
+        // cut down to a table only as wide as its names, the badge was never
+        // more than a few letters and an ellipsis.
+        const auto came_from = names_only_ ? QString() : provenance_of(table);
         // A hovered table wears a plus at the right of its header, so the room
         // the header has for words is that much less while it is worn. Taken
         // off here rather than drawn over, or the badge and the plus would sit
@@ -2847,7 +3072,7 @@ void SchemaView::paintEvent(QPaintEvent*) {
         // gutter stops here and the footer is shaded apart. Read off the rows
         // themselves, since a table pulled taller shares that room out between
         // them and its rows are deeper than the standard one.
-        const auto rows_end = placed_[t].rows.empty() ? box.top() + header_height + heading_height
+        const auto rows_end = placed_[t].rows.empty() ? box.top() + header_height + heading_room()
                                                       : placed_[t].rows.back().bottom();
 
         // The gutter holding the keys, closed by a rule running the height of
@@ -2873,6 +3098,8 @@ void SchemaView::paintEvent(QPaintEvent*) {
         // columns underneath, where telling them apart is what matters.
         const auto heading_top = box.top() + header_height;
         const auto heading_end = heading_top + heading_height;
+        // With only the names shown there is no row naming the columns.
+        if (!names_only_) {
         painter.setPen(QPen(dim(edge, here), 1.0));
         painter.drawLine(QPointF(box.left() + 1, heading_end), QPointF(box.right() - 1, heading_end));
         {
@@ -2914,11 +3141,19 @@ void SchemaView::paintEvent(QPaintEvent*) {
             }
             painter.setFont(mono);
         }
+        }
 
         painter.setFont(mono);
         for (std::size_t row = 0; row < table.columns.size(); ++row) {
             const auto& column = table.columns[row];
             const auto& where = placed_[t].rows[row];
+            // The column chosen on its own wears a quiet wash of the accent,
+            // so what Properties is showing is plain here too (Stage 1).
+            if (chosen_row && chosen_row->first == t && chosen_row->second == row) {
+                auto wash = theme_->accent;
+                wash.setAlpha(38);
+                painter.fillRect(where.adjusted(1, 0.5, -1, -0.5), wash);
+            }
             if (row) {
                 painter.setPen(QPen(dim(edge, here), 0.6));
                 painter.drawLine(QPointF(where.left() + 1, where.top()), QPointF(where.right() - 1, where.top()));
@@ -2938,8 +3173,13 @@ void SchemaView::paintEvent(QPaintEvent*) {
                         const auto& mark = key_mark(side);
                         const auto was = painter.opacity();
                         if (!here) painter.setOpacity(was * 0.45);
-                        painter.drawPixmap(QPointF(where.left() + 2,
-                                                   where.top() + (where.height() - side) / 2), mark);
+                        // Stood right before PK, so the key and its letters
+                        // read as one mark beside the name (Zain,
+                        // 2026-09-26): the drawing's key reaches 72% across
+                        // its square, and its teeth end a hair short of P.
+                        const auto letters_at = where.left() + gutter_width - 4 - lettered;
+                        const auto left = std::max(where.left() + 1, letters_at - 3 - side * 0.72);
+                        painter.drawPixmap(QPointF(left, where.top() + (where.height() - side) / 2), mark);
                         painter.setOpacity(was);
                     }
                 }
@@ -2948,7 +3188,9 @@ void SchemaView::paintEvent(QPaintEvent*) {
             // italic. It is a real column and reads as one; the slant is only
             // to say that the diagram does not know about it, which is a thing
             // the reader chose and should be able to see at a glance.
-            const bool only_here = column.origin_kind == domain::ColumnOrigin::SchemaOnly;
+            // A schema drawn by hand has no diagram to be missing from, so
+            // its columns stand upright.
+            const bool only_here = column.origin_kind == domain::ColumnOrigin::SchemaOnly && !drawn_by_hand();
             if (only_here) {
                 auto slanted = mono;
                 slanted.setItalic(true);
@@ -3210,9 +3452,9 @@ void SchemaView::paintEvent(QPaintEvent*) {
         // A line that is being faded is not being shown, so it is not lifted
         // over the tables either, however near the pointer happens to be.
         if (!lit(routed) || !line_shown(routed)) continue;
-        painter.setPen(QPen(theme_->canvas, 6, Qt::SolidLine, Qt::FlatCap, Qt::MiterJoin));
+        painter.setPen(QPen(theme_->canvas, 7, Qt::SolidLine, Qt::FlatCap, Qt::MiterJoin));
         painter.drawPath(routed.path);
-        painter.setPen(QPen(routed.colour, 2.6, Qt::SolidLine, Qt::FlatCap, Qt::MiterJoin));
+        painter.setPen(QPen(routed.colour, 3.4, Qt::SolidLine, Qt::FlatCap, Qt::MiterJoin));
         painter.drawPath(routed.path);
     }
 
@@ -3226,6 +3468,7 @@ void SchemaView::paintEvent(QPaintEvent*) {
     // what is being looked at. Before the hovered line's grips, which give up
     // early, so a band is drawn whether or not a line happens to be hovered.
     draw_band(painter);
+    draw_linking(painter);
 
     // The line under the pointer shows a round grip at each end, which is what
     // moves where the line meets its table. Its runs carry no marks: a run is
@@ -3252,6 +3495,169 @@ void SchemaView::paintEvent(QPaintEvent*) {
 // being looked at. Drawn in the theme's accent -- the colour the rest of the
 // application uses for what is chosen -- filled faintly so the tables under it
 // can still be seen being caught.
+bool SchemaView::drawn_by_hand() const { return editor_.project().schema.standalone; }
+
+std::optional<std::pair<std::size_t, std::size_t>> SchemaView::gutter_at(QPointF point) const {
+    if (!drawn_by_hand()) return std::nullopt;
+    const auto table = table_at(point);
+    if (!table) return std::nullopt;
+    const auto row = row_at(*table, point);
+    if (!row) return std::nullopt;
+    if (point.x() > placed_[*table].rows[*row].left() + gutter_width) return std::nullopt;
+    return std::pair{*table, *row};
+}
+
+void SchemaView::set_connecting(bool on) {
+    if (connecting_ == on) return;
+    connecting_ = on;
+    if (!on) linking_.reset();
+    setCursor(Qt::ArrowCursor);
+    update();
+}
+
+std::optional<std::pair<std::size_t, std::size_t>> SchemaView::connect_row_at(QPointF point) const {
+    if (!connecting_ || !drawn_by_hand()) return std::nullopt;
+    const auto table = table_at(point);
+    if (!table) return std::nullopt;
+    const auto row = row_at(*table, point);
+    if (!row) return std::nullopt;
+    return std::pair{*table, *row};
+}
+
+void SchemaView::pick(std::optional<std::variant<SchemaColumnRef, domain::ForeignKeyId>> what) {
+    if (picked_ == what) return;
+    picked_ = std::move(what);
+    update();
+    if (chose) chose();
+}
+
+std::optional<domain::ForeignKeyId> SchemaView::key_of(const domain::LinkSource& link) const {
+    for (const auto& table : preview_.tables)
+        for (const auto& column : table.columns)
+            if (column.link && *column.link == link && column.key_id) return column.key_id;
+    return std::nullopt;
+}
+
+std::optional<domain::LinkSource> SchemaView::link_of(domain::ForeignKeyId key) const {
+    for (const auto& table : preview_.tables)
+        for (const auto& column : table.columns)
+            if (column.key_id && *column.key_id == key && column.link) return column.link;
+    return std::nullopt;
+}
+
+std::optional<SchemaColumnRef> SchemaView::column_ref(std::size_t table, std::size_t row) const {
+    if (table >= preview_.tables.size() || row >= preview_.tables[table].columns.size()) return std::nullopt;
+    const auto& owner = preview_.tables[table];
+    const auto& column = owner.columns[row];
+    // Its own identity first, where it has one; then what the schema keeps
+    // it by; and last where it was worked out from.
+    if (column.added) return SchemaColumnRef{owner.id, *column.added};
+    if (column.origin_kind == domain::ColumnOrigin::ForeignKey && column.key_id)
+        return SchemaColumnRef{owner.id, domain::ForeignKeyColumn{*column.key_id, column.reference_part}};
+    if (column.origin_kind == domain::ColumnOrigin::Generated) return SchemaColumnRef{owner.id, GeneratedKey{}};
+    if (column.origin_kind == domain::ColumnOrigin::Discriminator) return SchemaColumnRef{owner.id, Discriminator{}};
+    if (column.origin) return SchemaColumnRef{owner.id, WorkedOutFrom{*column.origin}};
+    return std::nullopt;
+}
+
+std::optional<std::pair<std::size_t, std::size_t>> SchemaView::locate(const SchemaColumnRef& column) const {
+    for (std::size_t t = 0; t < preview_.tables.size(); ++t) {
+        if (preview_.tables[t].id != column.table) continue;
+        for (std::size_t row = 0; row < preview_.tables[t].columns.size(); ++row)
+            if (const auto here = column_ref(t, row); here && *here == column) return std::pair{t, row};
+    }
+    return std::nullopt;
+}
+
+SchemaSelection SchemaView::selection_now() const {
+    const auto marked = [this](const domain::PreviewTable& table) {
+        return table.origin && std::find(selected_.begin(), selected_.end(), *table.origin) != selected_.end();
+    };
+    if (picked_) {
+        if (const auto* column = std::get_if<SchemaColumnRef>(&*picked_)) {
+            if (const auto at = locate(*column); at && marked(preview_.tables[at->first]))
+                return ChosenColumn{*column};
+        } else if (selected_.empty()) {
+            return ChosenForeignKey{std::get<domain::ForeignKeyId>(*picked_)};
+        }
+    }
+    // The tables marked, in the order they were marked, each by its own
+    // identity rather than by the element it came from.
+    std::vector<domain::RelationId> tables;
+    for (const auto& ref : selected_)
+        for (const auto& table : preview_.tables)
+            if (table.origin && *table.origin == ref
+                && std::find(tables.begin(), tables.end(), table.id) == tables.end())
+                tables.push_back(table.id);
+    if (tables.empty()) return NothingChosen{};
+    if (tables.size() == 1) return ChosenTable{tables.front()};
+    return ChosenTables{std::move(tables)};
+}
+
+void SchemaView::choose(const SchemaSelection& wanted) {
+    const auto origin_of = [this](domain::RelationId id) -> std::optional<domain::ElementRef> {
+        for (const auto& table : preview_.tables)
+            if (table.id == id) return table.origin;
+        return std::nullopt;
+    };
+    if (const auto* one = std::get_if<ChosenTable>(&wanted)) {
+        select(origin_of(one->table));
+    } else if (const auto* several = std::get_if<ChosenTables>(&wanted)) {
+        std::vector<domain::ElementRef> marks;
+        for (const auto id : several->tables)
+            if (const auto origin = origin_of(id)) marks.push_back(*origin);
+        selected_ = std::move(marks);
+        picked_.reset();
+        update();
+        if (chose) chose();
+    } else if (const auto* column = std::get_if<ChosenColumn>(&wanted)) {
+        select(origin_of(column->column.table));
+        pick(column->column);
+    } else if (const auto* key = std::get_if<ChosenForeignKey>(&wanted)) {
+        select(std::nullopt);
+        pick(key->key);
+    } else {
+        select(std::nullopt);
+    }
+}
+
+std::optional<std::size_t> SchemaView::sole_key(std::size_t table) const {
+    if (table >= preview_.tables.size()) return std::nullopt;
+    std::optional<std::size_t> found;
+    const auto& columns = preview_.tables[table].columns;
+    for (std::size_t i = 0; i < columns.size(); ++i) {
+        if (!columns[i].primary_key) continue;
+        if (found) return std::nullopt;
+        found = i;
+    }
+    return found;
+}
+
+// The foreign key being drawn: a line from the row's gutter to the pointer,
+// in the accent the rest of the application marks what is being done with,
+// and the row under the pointer washed in it where it can be pointed at --
+// a primary key -- and in grey where it cannot.
+void SchemaView::draw_linking(QPainter& painter) const {
+    if (!linking_ || !linking_->travelled || !theme_) return;
+    if (linking_->table >= placed_.size() || linking_->row >= placed_[linking_->table].rows.size()) return;
+    const auto& from_row = placed_[linking_->table].rows[linking_->row];
+    const QPointF from(from_row.left() + gutter_width / 2, from_row.center().y());
+    if (const auto table = table_at(linking_to_))
+        if (const auto row = row_at(*table, linking_to_); row && *row < preview_.tables[*table].columns.size()) {
+            const bool itself = *table == linking_->table && *row == linking_->row;
+            const bool can = preview_.tables[*table].columns[*row].primary_key && !itself;
+            auto wash = can ? theme_->accent : theme_->muted;
+            wash.setAlphaF(0.2f);
+            painter.fillRect(placed_[*table].rows[*row], wash);
+        }
+    painter.setPen(QPen(theme_->accent, 2.0, Qt::DashLine, Qt::RoundCap));
+    painter.drawLine(from, linking_to_);
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(theme_->accent);
+    painter.drawEllipse(from, 3.5, 3.5);
+    painter.setBrush(Qt::NoBrush);
+}
+
 void SchemaView::draw_band(QPainter& painter) const {
     if (!band_) return;
     auto wash = theme_->accent;

@@ -21,7 +21,9 @@
 #include <QTimer>
 #include <functional>
 #include <map>
+#include <memory>
 #include <optional>
+#include <utility>
 #include <vector>
 
 class QAction;
@@ -38,6 +40,7 @@ class QToolButton;
 class QVBoxLayout;
 class QStandardItemModel;
 class QTreeView;
+class QTreeWidget;
 
 namespace erdflow::desktop {
 
@@ -66,6 +69,10 @@ public:
     void set_icon_mode(IconMode mode);
     [[nodiscard]] IconMode icon_mode() const { return icon_mode_; }
     void load_example();
+    // A new project started from the template: not the example, but the
+    // general things a diagram is made of, named for what they are (Zain,
+    // 2026-09-26).
+    void load_template();
     // Places a picture read from a file, centred on the given canvas point or
     // else in the middle of the view. The file's own bytes are kept when it is
     // a PNG or JPEG of modest size; anything else is re-encoded, scaled down if
@@ -154,6 +161,9 @@ private:
     // derived from the model every time it is shown, and holds nothing.
     SchemaView* schema_ = nullptr;
     QWidget* schema_panel_ = nullptr;
+    // The area the diagram and the schema panel share. Watched, because it is
+    // resized by the side panels as well as by the window.
+    QWidget* stage_ = nullptr;
     QScrollArea* schema_scroll_ = nullptr;
     QLabel* schema_state_ = nullptr;
     // The schema's own settings, as groups of choices in its two menus
@@ -185,6 +195,9 @@ private:
     void show_schema(bool shown);
     // The whole window for the schema, and back again.
     void set_schema_full(bool full);
+    // What the header offers the schema: undo and redo while it is open,
+    // and its search and the theme too while it has the whole window.
+    void place_schema_header_tools();
     bool schema_full_ = false;
     bool laying_out_schema_ = false;
     // The diagram's own furniture, put away while the schema has the window.
@@ -230,8 +243,100 @@ private:
     void ask_column_size(const domain::PreviewColumn& column, QPoint at);
     void rename_from_schema(const SchemaView::Spot& spot, const QString& typed);
     void add_schema_column(domain::ElementRef table, bool schema_only = false);
+    // A schema drawn by hand (Zain, 2026-09-27). A table made where it was
+    // asked for and opened for its name; a foreign key drawn from one row to
+    // another; the schema turned into the diagram it would have come from.
+    void add_schema_table(std::optional<QPointF> at);
+    void link_schema_rows(const SchemaView::Linked& link);
+    void convert_schema_to_diagram();
+    // What the window offers follows whether the project starts from its
+    // schema: while it does, Relational Design has the whole window and
+    // cannot be closed onto a diagram that is not there, and it offers Add
+    // table and Convert; once converted, the diagram comes in front with the
+    // schema open beneath it. Asked on every refresh, acting only when that
+    // changes.
+    void follow_schema_first();
+    bool schema_first_ = false;
+    domain::ProjectId schema_first_project_;
+    QToolButton* schema_add_table_ = nullptr;
+    QPushButton* schema_convert_ = nullptr;
+    QWidget* schema_narrowing_ = nullptr;
+    // The schema's tools in the header while the project starts from its
+    // schema (Zain, 2026-09-27): Table, Connect, Arrange and Appearance, up
+    // where the header already says Relational Design, in place of the bar
+    // on the schema that held them.
+    QWidget* schema_top_tools_ = nullptr;
+    // Connect on the schema, and whether a double click locked it so it
+    // stays in hand for several foreign keys, as a tool on the diagram does.
+    QAction* schema_connect_ = nullptr;
+    bool schema_connect_locked_ = false;
+    void choose_schema_connect(bool on, bool locked);
+    // The header of a schema drawn by hand, put on or taken off.
+    void wear_schema_first_header(bool first);
+    // The Schema workspace's own Explorer and Properties (Zain, 2026-09-27,
+    // Stage 1), held in the same two docks the diagram's are, which carry the
+    // schema's while a project starts from its schema and their own again
+    // afterwards. The docks, their places, widths, closing and the View menu
+    // are shared; what is in them is not. Both only read what is chosen on the
+    // schema, which is kept by the schema view alone.
+    // The header of a schema drawn by hand runs the whole width of the
+    // window, over its Explorer and Properties, as the diagram's tool row runs
+    // over the diagram's: held in a dock along the top while the project
+    // starts from its schema, and back in the workspace otherwise.
+    QDockWidget* header_dock_ = nullptr;
+    QVBoxLayout* workspace_layout_ = nullptr;
+    QTreeView* schema_explorer_ = nullptr;
+    QStandardItemModel* schema_explorer_model_ = nullptr;
+    QScrollArea* schema_properties_ = nullptr;
+    void wear_schema_panels(bool schema);
+    void show_schema_panels();
+    void refresh_schema_explorer();
+    void refresh_schema_properties();
+    QAction* schema_search_mark_ = nullptr;
+    // What a schema drawn by hand is converted from: where each table is on
+    // the schema now, and how big each kind of element is made. Asked by
+    // Convert and by the Conceptual preview alike, so the preview shows
+    // exactly the diagram Convert would draw.
+    [[nodiscard]] std::pair<std::map<domain::RelationId, domain::Point>, domain::DiagramSizes>
+    schema_conversion_inputs() const;
+    // The Conceptual Design a schema drawn by hand would become (Zain,
+    // 2026-09-27): the schema raised over a diagram, turned the other way up.
+    // While a project starts from its schema, the schema is the main surface
+    // and this rises over the lower part of it. It is drawn on a canvas of its
+    // own, from a copy of the project worked out again whenever the schema
+    // changes, so nothing is converted and nothing is written.
+    void show_conceptual(bool shown);
+    void lay_out_conceptual();
+    void refresh_conceptual();
+    std::unique_ptr<application::Editor> conceptual_editor_;
+    DiagramView* conceptual_ = nullptr;
+    QWidget* conceptual_panel_ = nullptr;
+    QLabel* conceptual_state_ = nullptr;
+    bool conceptual_open_ = false;
+    // What was last drawn there -- which project, at which revision, with its
+    // tables where -- so it is only worked out again when one of them changes.
+    struct ConceptualDrawn {
+        domain::ProjectId project;
+        std::uint64_t revision = 0;
+        std::map<domain::RelationId, domain::Point> places;
+        bool operator==(const ConceptualDrawn&) const = default;
+    };
+    std::optional<ConceptualDrawn> conceptual_drawn_;
+    double conceptual_share_ = 0.62;
+    double conceptual_share_at_grab_ = 0.62;
     void remove_schema_column(domain::ElementRef table, const domain::PreviewColumn& column);
     QDockWidget* validation_dock_ = nullptr;
+    // The History (Zain, 2026-09-26): every step Undo can take back, in the
+    // order it was made, each in words, and any of them a place to go back
+    // or forward to. A panel of its own, closed until it is opened from View.
+    // The way back to Home, always there in the workspace's header.
+    QPushButton* back_to_home_ = nullptr;
+    QDockWidget* history_dock_ = nullptr;
+    QTreeWidget* history_list_ = nullptr;
+    // What the panel last showed, so it is only rebuilt when there is more.
+    std::uint64_t history_shown_ = 0;
+    void build_history();
+    void refresh_history(bool again = false);
     QLabel* document_label_ = nullptr;
     QLabel* count_label_ = nullptr;
     QLabel* zoom_label_ = nullptr;
@@ -256,6 +361,9 @@ private:
     // assumed Home row, comes back afterwards.
     std::vector<QPointer<QWidget>> hidden_chrome_for_home_;
     bool home_chrome_hidden_ = false;
+    // Whether a workspace has been in front yet, so Home can offer the way
+    // back into it (Zain, 2026-09-27). A fresh start has none to return to.
+    bool workspace_seen_ = false;
     // Projects opened, saved or created lately, newest first, read from and
     // kept in the settings. The Home screen's Recent row and the Home menu
     // both open this one menu.
@@ -409,6 +517,8 @@ private:
     void build_shell();
     void build_actions();
     void choose_tool(Tool tool, bool locked);
+    // Back to Select after a click outside the diagram.
+    void pressed_outside_canvas(QWidget* pressed);
     void choose_line_style(LineStyle style);
     void refresh_tool_labels();
     void refresh_icons();
@@ -441,6 +551,10 @@ private:
     // discarded or saved. The Home routes use the result so cancelling never
     // navigates away or renames the project that was already open.
     bool begin_new_project();
+    // The same, for a project that starts from its schema (Zain, 2026-09-27):
+    // Relational Design fills the window, with no diagram behind it until the
+    // schema is converted into one.
+    bool begin_new_schema_project();
     void new_project();
     bool open_dialog();
     // Says where each of the Home screen's rows and links goes. Done once every

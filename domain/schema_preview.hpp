@@ -96,6 +96,10 @@ struct PreviewColumn {
     // The key's own identity, derived from that link. What a line drawn by
     // hand is remembered against, for the same reason a relation has one.
     std::optional<ForeignKeyId> key_id;
+    // Which column of the key it points at this is, for a key of several
+    // columns; 0 for a key of one. With key_id, what a typed name is kept
+    // against.
+    std::uint32_t reference_part = 0;
     // Whether the row it points at need not exist, and whether the relationship
     // behind it is one to one. Together these decide how the line is drawn.
     bool optional_link = false;
