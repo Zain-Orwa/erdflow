@@ -253,6 +253,16 @@ public:
     // Nothing is returned until the pointer has been over it, so a caller can
     // fall back to the middle of the view rather than guess at the corner.
     [[nodiscard]] std::optional<QPointF> pointer_place() const;
+    // The element every attribute placed is attached to, locked by hand from
+    // its right-click menu or from Properties (Zain, 2026-09-26). With none
+    // locked, an attribute is placed on its own, whatever is selected, and is
+    // connected by hand. Only an entity, a relationship or a composite
+    // attribute holds attributes, so only one of those can be locked. The
+    // lock belongs to the session, not to the file, and goes when its element
+    // does or when another project is opened.
+    void set_attribute_owner(std::optional<domain::ElementRef> owner);
+    [[nodiscard]] std::optional<domain::ElementRef> attribute_owner() const;
+    [[nodiscard]] bool can_own_attributes(const domain::ElementRef& ref) const;
 
     std::function<void(const application::EditResult&)> on_edit;
     std::function<void(const std::vector<domain::ElementRef>&)> on_selection;
@@ -271,6 +281,9 @@ public:
     // offer what belongs to it rather than to the diagram -- putting back the
     // raft of view controls, for one, which the canvas knows nothing about.
     std::function<void(QMenu&)> on_canvas_menu;
+    // Told when the attribute owner is locked or released by hand, so
+    // Properties can show which way its toggle stands.
+    std::function<void()> on_attribute_owner;
 
 protected:
     void drawBackground(QPainter*, const QRectF&) override;

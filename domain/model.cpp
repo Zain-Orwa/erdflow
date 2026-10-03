@@ -289,6 +289,13 @@ std::vector<CommentId> comments_on_connector(const Project& project, const Conne
     });
 }
 
+// Held between a quarter and sixteen times ordinary, so a box pulled to
+// either extreme still draws a name that is some size rather than none.
+double lettering_factor(const LetteringBase& base, double width, double height) {
+    if (base.width <= 0 || base.height <= 0) return 1.0;
+    return std::clamp(std::min(width / base.width, height / base.height), 0.25, 16.0);
+}
+
 std::string name(const Project& project, const ElementRef& ref) {
     return visit_element(project, ref, [](const auto* element) { return element ? element->name : std::string{}; });
 }
@@ -662,6 +669,16 @@ std::vector<Issue> validate(const Project& project) {
     for (const auto& [ref, percent] : project.transparency) {
         if (!exists(project, ref)) error("transparency.reference.missing", "A transparency refers to a missing element.", ref);
         if (percent > max_transparency) error("transparency.invalid", "Transparency is a percentage from 0 to 100.", ref);
+    }
+    if (project.lettering.size() > max_elements) error("lettering.limit", "The lettering entries exceed the element limit.");
+    for (const auto& [ref, base] : project.lettering) {
+        if (!exists(project, ref)) error("lettering.reference.missing", "A lettering size refers to a missing element.", ref);
+        else if (!std::holds_alternative<EntityId>(ref) && !std::holds_alternative<RelationshipId>(ref)
+                 && !std::holds_alternative<AttributeId>(ref))
+            error("lettering.kind", "Only an entity, a relationship or an attribute has a lettering size.", ref);
+        if (!std::isfinite(base.width) || !std::isfinite(base.height) || base.width <= 0 || base.height <= 0
+            || base.width > max_coordinate || base.height > max_coordinate)
+            error("lettering.invalid", "A lettering size must be a positive width and height.", ref);
     }
     // What turning an attribute into a column will need. A file that arrives
     // holding nonsense is refused whether or not anyone is currently looking

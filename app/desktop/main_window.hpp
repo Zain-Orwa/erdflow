@@ -38,6 +38,7 @@ class QToolButton;
 class QVBoxLayout;
 class QStandardItemModel;
 class QTreeView;
+class QTreeWidget;
 
 namespace erdflow::desktop {
 
@@ -66,6 +67,10 @@ public:
     void set_icon_mode(IconMode mode);
     [[nodiscard]] IconMode icon_mode() const { return icon_mode_; }
     void load_example();
+    // A new project started from the template: not the example, but the
+    // general things a diagram is made of, named for what they are (Zain,
+    // 2026-09-26).
+    void load_template();
     // Places a picture read from a file, centred on the given canvas point or
     // else in the middle of the view. The file's own bytes are kept when it is
     // a PNG or JPEG of modest size; anything else is re-encoded, scaled down if
@@ -232,6 +237,17 @@ private:
     void add_schema_column(domain::ElementRef table, bool schema_only = false);
     void remove_schema_column(domain::ElementRef table, const domain::PreviewColumn& column);
     QDockWidget* validation_dock_ = nullptr;
+    // The History (Zain, 2026-09-26): every step Undo can take back, in the
+    // order it was made, each in words, and any of them a place to go back
+    // or forward to. A panel of its own, closed until it is opened from View.
+    // The way back to Home, always there in the workspace's header.
+    QPushButton* back_to_home_ = nullptr;
+    QDockWidget* history_dock_ = nullptr;
+    QTreeWidget* history_list_ = nullptr;
+    // What the panel last showed, so it is only rebuilt when there is more.
+    std::uint64_t history_shown_ = 0;
+    void build_history();
+    void refresh_history(bool again = false);
     QLabel* document_label_ = nullptr;
     QLabel* count_label_ = nullptr;
     QLabel* zoom_label_ = nullptr;
@@ -256,6 +272,9 @@ private:
     // assumed Home row, comes back afterwards.
     std::vector<QPointer<QWidget>> hidden_chrome_for_home_;
     bool home_chrome_hidden_ = false;
+    // Whether a workspace has been in front yet, so Home can offer the way
+    // back into it (Zain, 2026-09-27). A fresh start has none to return to.
+    bool workspace_seen_ = false;
     // Projects opened, saved or created lately, newest first, read from and
     // kept in the settings. The Home screen's Recent row and the Home menu
     // both open this one menu.
@@ -409,6 +428,8 @@ private:
     void build_shell();
     void build_actions();
     void choose_tool(Tool tool, bool locked);
+    // Back to Select after a click outside the diagram.
+    void pressed_outside_canvas(QWidget* pressed);
     void choose_line_style(LineStyle style);
     void refresh_tool_labels();
     void refresh_icons();

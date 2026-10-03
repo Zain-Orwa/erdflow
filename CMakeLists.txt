@@ -25,7 +25,7 @@ add_library(erdflow_domain domain/model.cpp domain/schema_preview.cpp)
 target_include_directories(erdflow_domain PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(erdflow_domain PRIVATE erdflow_warnings)
 
-add_library(erdflow_application application/editor.cpp)
+add_library(erdflow_application application/editor.cpp application/history.cpp)
 target_link_libraries(erdflow_application PUBLIC erdflow_domain PRIVATE erdflow_warnings)
 
 add_library(erdflow_infrastructure infrastructure/project_store.cpp)

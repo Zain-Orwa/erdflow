@@ -12,6 +12,7 @@
 #include <QMenu>
 #include <QPainter>
 #include <QPainterPath>
+#include <QPushButton>
 #include <QToolButton>
 
 namespace erdflow::desktop {
@@ -131,26 +132,6 @@ private:
     ThemeId theme_ = ThemeId::Azure;
     QPixmap resting_, lit_, arrow_, arrow_lit_;
 };
-
-class Divider final : public QWidget {
-public:
-    explicit Divider(QWidget* parent) : QWidget(parent) {
-        setObjectName("appTopBarSeparator");
-        setAttribute(Qt::WA_TransparentForMouseEvents, true);
-        setFixedSize(21, bar_height);
-    }
-    void wear(ThemeId id) { theme_ = id; update(); }
-
-protected:
-    void paintEvent(QPaintEvent*) override {
-        QPainter painter(this);
-        painter.setPen(QPen(tokens(theme_).border_soft, 1.0));
-        painter.drawLine(QPointF(width() / 2.0, 14), QPointF(width() / 2.0, height() - 14));
-    }
-
-private:
-    ThemeId theme_ = ThemeId::Azure;
-};
 } // namespace
 
 AppTopBar::AppTopBar(QWidget* parent) : QWidget(parent) {
@@ -164,11 +145,15 @@ AppTopBar::AppTopBar(QWidget* parent) : QWidget(parent) {
     brand_ = new Brand(this);
     row->addWidget(brand_);
     row->addStretch(1);
-    settings_ = new Control("appTopBarSettings", "Settings", "settings", false, this);
-    separator_ = new Divider(this);
+    // Settings is reached from the sidebar's own row, so the bar carries no
+    // second one (Zain, 2026-09-26): only Theme stands at its right, with the
+    // way back into the workspace beside it once there is one. Made first, so
+    // the keyboard reaches them in the order they are read.
+    return_ = new QPushButton(this);
+    return_->setObjectName("appTopBarReturn");
+    return_->hide();
+    row->addWidget(return_, 0, Qt::AlignVCenter);
     theme_button_ = new Control("appTopBarTheme", "Theme", "appearance", true, this);
-    row->addWidget(settings_);
-    row->addWidget(separator_);
     row->addWidget(theme_button_);
     wear(theme_);
 }
@@ -176,14 +161,16 @@ AppTopBar::AppTopBar(QWidget* parent) : QWidget(parent) {
 void AppTopBar::wear(ThemeId id) {
     theme_ = id;
     static_cast<Brand*>(brand_)->wear(id);
-    static_cast<Control*>(settings_)->wear(id);
-    static_cast<Divider*>(separator_)->wear(id);
     static_cast<Control*>(theme_button_)->wear(id);
     update();
 }
 
-void AppTopBar::attach_settings_menu(QMenu* menu) { settings_->setMenu(menu); }
 void AppTopBar::attach_theme_menu(QMenu* menu) { theme_button_->setMenu(menu); }
+void AppTopBar::set_return_to(const QString& workspace) {
+    return_->setText(QStringLiteral("Return to %1  →").arg(workspace));
+    return_->setToolTip(QStringLiteral("Go back into %1, as you left it.").arg(workspace));
+    return_->setVisible(!workspace.isEmpty());
+}
 
 QSize AppTopBar::sizeHint() const { return {960, bar_height}; }
 QSize AppTopBar::minimumSizeHint() const { return {320, bar_height}; }

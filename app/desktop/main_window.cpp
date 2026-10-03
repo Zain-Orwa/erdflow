@@ -41,6 +41,7 @@
 #include <QFrame>
 #include <QKeyEvent>
 #include <QLineEdit>
+#include <QMouseEvent>
 #include <QIntValidator>
 #include <QListWidget>
 #include <QScreen>
@@ -68,6 +69,8 @@
 #include <QToolBar>
 #include <QToolButton>
 #include <QTreeView>
+#include <QTreeWidget>
+#include <QDateTime>
 #include <QVariantAnimation>
 #include <QEasingCurve>
 #include <QVBoxLayout>
@@ -920,6 +923,31 @@ protected:
     }
 };
 
+// Tells the window about every press made in it, wherever it lands. Watched
+// on the application rather than widget by widget, because a press anywhere
+// outside the diagram counts, and the window has no list of every widget in
+// it. A press that nothing under the pointer took is passed on up to each
+// parent in turn, so only the widget first pressed is reported: the one with
+// no child of its own under the pointer.
+class PressWatch final : public QObject {
+public:
+    PressWatch(QWidget* window, std::function<void(QWidget*)> pressed)
+        : QObject(window), window_(window), pressed_(std::move(pressed)) {}
+protected:
+    bool eventFilter(QObject* watched, QEvent* event) override {
+        if (event->type() != QEvent::MouseButtonPress) return QObject::eventFilter(watched, event);
+        auto* widget = qobject_cast<QWidget*>(watched);
+        if (!widget || widget->window() != window_) return QObject::eventFilter(watched, event);
+        if (widget->childAt(static_cast<QMouseEvent*>(event)->position().toPoint()))
+            return QObject::eventFilter(watched, event);
+        pressed_(widget);
+        return QObject::eventFilter(watched, event);
+    }
+private:
+    QWidget* window_;
+    std::function<void(QWidget*)> pressed_;
+};
+
 void finish_field_edit() {
     auto* widget = QApplication::focusWidget();
     if (!qobject_cast<QLineEdit*>(widget) && !qobject_cast<QPlainTextEdit*>(widget)) return;
@@ -949,6 +977,7 @@ MainWindow::MainWindow(application::Editor& editor, application::ProjectStore& s
     setMinimumSize(560, 460);
     build_shell();
     build_actions();
+    build_history();
     // The tabs go on once every action and menu they are built from exists.
     ribbon_ = new Ribbon(*this);
     wire_home();
@@ -964,6 +993,8 @@ MainWindow::MainWindow(application::Editor& editor, application::ProjectStore& s
         tool_actions_.at(tool)->setChecked(true);
         refresh_tool_labels();
     };
+    canvas_->on_attribute_owner = [this] { refresh_properties(); };
+    qApp->installEventFilter(new PressWatch(this, [this](QWidget* pressed) { pressed_outside_canvas(pressed); }));
     canvas_->on_status = [this](const QString& message) { statusBar()->showMessage(message, 7000); };
     canvas_->on_zoom = [this](double factor) {
         zoom_label_->setText(QString::number(qRound(factor * 100)) + "%");
@@ -980,6 +1011,7 @@ MainWindow::~MainWindow() {
     canvas_->on_edit = {};
     canvas_->on_selection = {};
     canvas_->on_tool = {};
+    canvas_->on_attribute_owner = {};
     canvas_->on_status = {};
     canvas_->on_zoom = {};
     // Some of what the window listens to speaks up while the window is being
@@ -1352,6 +1384,17 @@ void MainWindow::build_shell() {
     header->setObjectName("workspaceHeader");
     auto* header_layout = new QHBoxLayout(header);
     header_layout->setContentsMargins(22, 14, 22, 14);
+    // The way back to Home, which is the door every project is come in by
+    // (Zain, 2026-09-26): first in the header, where a way back is looked
+    // for, on the diagram and on the schema, whatever the project and however
+    // it was opened, so a change of mind can always go back and choose
+    // another card. What is open stays open behind Home, as the Home command
+    // leaves it.
+    back_to_home_ = new QPushButton(QStringLiteral("← Back to Home"), header);
+    back_to_home_->setObjectName("backToHome");
+    back_to_home_->setToolTip("Return to the Home screen. The project stays open.");
+    connect(back_to_home_, &QPushButton::clicked, this, [this] { show_home(true); });
+    header_layout->addWidget(back_to_home_);
     auto* badge = new QLabel("CONCEPTUAL", header);
     badge->setObjectName("workspaceBadge");
     header_layout->addWidget(badge);
@@ -2082,10 +2125,9 @@ void MainWindow::build_actions() {
     home_menu->addSeparator();
     auto* examples = home_menu->addAction("Open example", this, [this] { load_example(); });
     examples->setObjectName("homeExamples");
-    // A template is a project copied and left untitled (ADR-016). The bundled
-    // University project is the one there is, and load_example leaves it
-    // untitled and unsaved, which is exactly what starting from a template is.
-    auto* templates = home_menu->addAction("New from template", this, [this] { load_example(); });
+    // A template is a project left untitled and unsaved (ADR-016). It is the
+    // general starting frame, not the University example (Zain, 2026-09-26).
+    auto* templates = home_menu->addAction("New from template", this, [this] { load_template(); });
     templates->setObjectName("homeTemplates");
 
     // Design: what is done to the model as a whole rather than to one thing in
@@ -2261,28 +2303,14 @@ void MainWindow::build_actions() {
         line_actions_[style] = entry;
         connect(entry, &QAction::triggered, this, [this, style] { choose_line_style(style); });
     }
-    // Where a new line meets each shape is the other thing Connect decides
-    // about the lines it draws, so that choice sits on the same arrow. It is
-    // remembered between sessions: it is a way of working, not a property of
-    // one diagram.
-    canvas_->set_join_mode(QSettings().value("joinMode", "clicked").toString() == "automatic"
-        ? JoinMode::Automatic : JoinMode::WhereClicked);
-    line_menu->addSeparator();
-    auto* join_group = new QActionGroup(this);
-    for (const auto mode : {JoinMode::WhereClicked, JoinMode::Automatic}) {
-        auto* entry = line_menu->addAction(mode == JoinMode::WhereClicked ? "Join where I click" : "Join automatically");
-        entry->setCheckable(true);
-        entry->setChecked(mode == canvas_->join_mode());
-        entry->setActionGroup(join_group);
-        entry->setObjectName(mode == JoinMode::WhereClicked ? "joinWhereClicked" : "joinAutomatic");
-        entry->setToolTip(mode == JoinMode::WhereClicked
-            ? "Each end of a new line is pinned to the point you click on the shape. Drag a selected line's end to move it."
-            : "Each end of a new line slides around its shape to face the other end as things move.");
-        connect(entry, &QAction::triggered, this, [this, mode] {
-            canvas_->set_join_mode(mode);
-            QSettings().setValue("joinMode", mode == JoinMode::Automatic ? "automatic" : "clicked");
-        });
-    }
+    // A line Connect draws is never pinned to where it was clicked (Zain,
+    // 2026-09-26). "Join where I click" pinned both ends there, and was the
+    // default: a join pinned on a side facing away from its other end hooked
+    // round or ran across the shape. It is no longer offered, and so neither
+    // is the choice it was one half of, whatever was remembered from before.
+    // Every new line starts unlocked; one that is wanted fixed is locked by
+    // hand, and either end of a selected line can still be dragged to a point.
+    canvas_->set_join_mode(JoinMode::Automatic);
     auto* connect_button = new QToolButton(toolbar);
     connect_button->setObjectName("connectButton");
     connect_button->setDefaultAction(connect_action);
@@ -2712,6 +2740,7 @@ void MainWindow::refresh() {
     refresh_explorer();
     refresh_properties();
     refresh_validation();
+    refresh_history();
     undo_->setEnabled(editor_.can_undo());
     redo_->setEnabled(editor_.can_redo());
     undo_->setText(editor_.can_undo() ? "Undo " + text(editor_.undo_label()) : "Undo");
@@ -2956,6 +2985,23 @@ void MainWindow::refresh_properties() {
         if (value != name(editor_.project(), ref)) show_result(editor_.rename(ref, value));
     });
     layout->addLayout(form);
+    // The same lock the element's right-click menu offers (Zain, 2026-09-26):
+    // while it is on, every attribute placed is attached to this. Kept near
+    // the top, where it is seen, since a relationship's panel runs long.
+    if (canvas_->can_own_attributes(ref)) {
+        const bool holding = canvas_->attribute_owner() == ref;
+        auto* owner_lock = new QPushButton(holding ? "Unlock attribute owner" : "Lock as attribute owner", panel);
+        owner_lock->setObjectName("attributeOwnerLock");
+        owner_lock->setCheckable(true);
+        owner_lock->setChecked(holding);
+        owner_lock->setToolTip(holding
+            ? "Stop attaching attributes to this. Each one placed then stands on its own."
+            : "Attach every attribute placed from now on to this, with its line drawn.");
+        connect(owner_lock, &QPushButton::clicked, this, [this, ref](bool on) {
+            canvas_->set_attribute_owner(on ? std::optional<ElementRef>{ref} : std::nullopt);
+        });
+        layout->addWidget(owner_lock);
+    }
     if (const auto* entity_id = std::get_if<EntityId>(&ref)) {
         // Regular or weak. A weak entity is identified through an identifying
         // relationship rather than by a key of its own.
@@ -3565,6 +3611,90 @@ void MainWindow::build_comment_section(QWidget* panel, QVBoxLayout* layout) {
     }
 }
 
+// The History, as a panel of its own beside the others (Zain, 2026-09-26):
+// every step Undo can take back, oldest first, said in words, with the time it
+// was made. Pressing one goes back or forward to just after it, by undoing or
+// redoing; pressing Start goes back to before the oldest step kept. Steps
+// that have been undone stay, fainter, until a new edit takes their place.
+// It is closed until opened, and its entry goes at the end of View, after
+// everything already there, so nothing there moves to make room for it.
+void MainWindow::build_history() {
+    history_dock_ = new QDockWidget("History", this);
+    history_dock_->setObjectName("historyDock");
+    history_list_ = new QTreeWidget(history_dock_);
+    history_list_->setObjectName("historyList");
+    history_list_->setAccessibleName("History");
+    history_list_->setColumnCount(2);
+    history_list_->setHeaderHidden(true);
+    history_list_->setRootIsDecorated(false);
+    history_list_->setUniformRowHeights(true);
+    history_list_->setSelectionMode(QAbstractItemView::SingleSelection);
+    history_list_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    history_list_->header()->setStretchLastSection(false);
+    history_list_->header()->setSectionResizeMode(0, QHeaderView::Stretch);
+    history_list_->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    history_dock_->setWidget(history_list_);
+    addDockWidget(Qt::RightDockWidgetArea, history_dock_);
+    history_dock_->hide();
+    // A press and an activation can both arrive for one click; the second
+    // finds the history already where it was asked to be, and does nothing.
+    const auto go_to = [this](QTreeWidgetItem* item) {
+        if (!item) return;
+        const auto row = history_list_->indexOfTopLevelItem(item);
+        if (row < 0 || static_cast<std::size_t>(row) == editor_.history_position()) return;
+        if (notice_) notice_->put_away();
+        finish_field_edit();
+        canvas_->cancel_interaction();
+        show_result(editor_.go_to(static_cast<std::size_t>(row)));
+    };
+    connect(history_list_, &QTreeWidget::itemClicked, this, [go_to](QTreeWidgetItem* item) { go_to(item); });
+    connect(history_list_, &QTreeWidget::itemActivated, this, [go_to](QTreeWidgetItem* item) { go_to(item); });
+    // Kept up to date only while it can be seen, and brought up to date the
+    // moment it can.
+    connect(history_dock_, &QDockWidget::visibilityChanged, this, [this](bool shown) {
+        if (shown) refresh_history(true);
+    });
+    if (auto* view = findChild<QMenu*>("viewMenu")) {
+        view->addSeparator();
+        auto* toggle = history_dock_->toggleViewAction();
+        toggle->setObjectName("viewHistory");
+        toggle->setToolTip("Every change made, in order. Press one to go back to it.");
+        view->addAction(toggle);
+    }
+}
+
+void MainWindow::refresh_history(bool again) {
+    if (!history_list_ || !history_dock_->isVisible()) return;
+    if (!again && history_shown_ == editor_.revision()) return;
+    history_shown_ = editor_.revision();
+    const auto entries = editor_.history();
+    const auto& colors = theme(theme_);
+    const QSignalBlocker quiet(history_list_);
+    history_list_->clear();
+    auto* start = new QTreeWidgetItem(history_list_, QStringList{"Start", QString{}});
+    start->setToolTip(0, "The project as it was before the oldest change kept here: as it was opened or created.");
+    for (const auto& entry : entries) {
+        const auto when = QDateTime::fromMSecsSinceEpoch(
+            std::chrono::duration_cast<std::chrono::milliseconds>(entry.when.time_since_epoch()).count());
+        auto* item = new QTreeWidgetItem(history_list_,
+                                         QStringList{text(entry.description), when.toString("HH:mm:ss")});
+        item->setToolTip(0, text(entry.description) + "\n" + text(entry.label) + " · "
+                                + QLocale().toString(when, QLocale::ShortFormat)
+                                + (entry.in_effect ? QString{} : QStringLiteral("\nUndone. Press it to redo it.")));
+        item->setTextAlignment(1, Qt::AlignRight | Qt::AlignVCenter);
+        item->setForeground(1, colors.muted);
+        if (!entry.in_effect) {
+            auto font = item->font(0);
+            font.setItalic(true);
+            item->setFont(0, font);
+            item->setForeground(0, colors.muted);
+        }
+    }
+    auto* current = history_list_->topLevelItem(static_cast<int>(editor_.history_position()));
+    history_list_->setCurrentItem(current);
+    history_list_->scrollToItem(current);
+}
+
 void MainWindow::refresh_validation() {
     issue_model_->clear();
     issue_model_->setHorizontalHeaderLabels({"Level", "Object", "Message"});
@@ -3646,6 +3776,27 @@ void MainWindow::choose_tool(Tool tool, bool locked) {
     canvas_->set_tool(tool, locked);
     canvas_->setFocus();
     refresh_tool_labels();
+}
+
+// A click anywhere in the window outside the diagram puts down the tool in
+// hand, locked or not, and takes up Select (Zain, 2026-09-26). Inside the
+// diagram a click does what the tool does, placing what it places. The
+// diagram's own zoom controls and scrollbars are part of it, since they are
+// how the place for the next element is found. A button that chooses a tool
+// is left to choose it.
+//
+// Handed back once the click has been dealt with rather than as it lands,
+// so a name being typed on the diagram is kept by the click that moves away
+// from it, as it always has been, instead of being dropped by the tool going.
+void MainWindow::pressed_outside_canvas(QWidget* pressed) {
+    if (!canvas_ || canvas_->tool() == Tool::Select) return;
+    if (pressed == canvas_ || canvas_->isAncestorOf(pressed)) return;
+    if (const auto* button = qobject_cast<QToolButton*>(pressed); button && button->defaultAction())
+        for (const auto& [tool, action] : tool_actions_)
+            if (button->defaultAction() == action) return;
+    QTimer::singleShot(0, this, [this] {
+        if (canvas_ && canvas_->tool() != Tool::Select) canvas_->set_tool(Tool::Select);
+    });
 }
 
 void MainWindow::place_canvas_controls() {
@@ -3820,6 +3971,8 @@ void MainWindow::apply_appearance(ThemeId id) {
     refreshing_ = true;
     refresh_properties();
     refreshing_ = was_refreshing;
+    // So are the History's fainter steps.
+    refresh_history(true);
 }
 
 void MainWindow::preview_theme(ThemeId id) {
@@ -4082,7 +4235,16 @@ void MainWindow::show_home(bool on) {
         for (const auto& chrome : hidden_chrome_for_home_) if (chrome) chrome->show();
         hidden_chrome_for_home_.clear();
         home_chrome_hidden_ = false;
+        workspace_seen_ = true;
     }
+    // Home offers the way back into the workspace it was come to from, named
+    // for whichever was in front: the schema if it had the whole window, the
+    // conceptual diagram otherwise (Zain, 2026-09-27). Returning is leaving
+    // Home, which puts everything back exactly as it was.
+    if (on && home_)
+        home_->top_bar()->set_return_to(!workspace_seen_ ? QString{}
+                                        : schema_full_ ? QStringLiteral("Relational Design")
+                                                       : QStringLiteral("Conceptual Design"));
     pages_->setCurrentIndex(on ? 0 : 1);
 }
 
@@ -4175,8 +4337,8 @@ void MainWindow::wire_home() {
     settings_menu_->setObjectName("settingsMenu");
     for (const char* name : {"themeMenu", "iconMenu", "notationMenu"})
         if (auto* menu = findChild<QMenu*>(name)) settings_menu_->addMenu(menu);
-    home_->top_bar()->attach_settings_menu(settings_menu_);
     home_->top_bar()->attach_theme_menu(findChild<QMenu*>("themeMenu"));
+    connect(home_->top_bar()->return_button(), &QPushButton::clicked, this, [this] { show_home(false); });
 
     auto* rail = home_->sidebar();
     // A menu opened from a row stands beside it, as a submenu would.
@@ -4190,9 +4352,10 @@ void MainWindow::wire_home() {
     rail->set_callback(HomeSection::OpenProject, [this] { open_dialog(); });
     rail->set_callback(HomeSection::Recent, beside(HomeSection::Recent, recent_menu_));
     rail->set_callback(HomeSection::Examples, [this] { load_example(); });
-    // Templates are projects (ADR-016), and the bundled University project is
-    // the one there is. It opens untitled and unsaved, as a template should.
-    rail->set_callback(HomeSection::Templates, [this] { load_example(); });
+    // Templates are projects (ADR-016). The one there is is the general
+    // starting frame, not the example (Zain, 2026-09-26), opened untitled and
+    // unsaved, as a template should be.
+    rail->set_callback(HomeSection::Templates, [this] { load_template(); });
     // Bringing in work that already exists. Today that is an ERDFlow project
     // or a picture carrying one; SQL and database sources join it when there
     // is a Relational Design to read them into.
@@ -5596,6 +5759,32 @@ void MainWindow::refresh_export_actions() {
     // go quiet, rather than the row appearing and disappearing as work starts.
     const auto anything = !canvas_->diagram_bounds().isEmpty();
     for (auto* action : export_actions_) action->setEnabled(anything);
+}
+
+// The template is a starting frame, not a worked example (Zain, 2026-09-26):
+// the general things an ERD is made of, each named for what it is -- an
+// entity with an attribute, a relationship, and another entity with an
+// attribute -- ready to be renamed into a model of something. The bodies are
+// at their default sizes but for the diamond, and every line starts unlocked.
+// It opens untitled and unsaved, as a project started from a template does
+// (ADR-016).
+void MainWindow::load_template() {
+    if (!confirm_discard()) return;
+    show_home(false);
+    application::Editor starting(ids_);
+    const auto body = [](double centre_x, double centre_y, const BodySize& size) {
+        return domain::Rect{centre_x - size.width / 2, centre_y - size.height / 2, size.width, size.height};
+    };
+    const auto left = std::get<EntityId>(*starting.create_entity("Entity", body(-340, 0, entity_body)).created);
+    const auto right = std::get<EntityId>(*starting.create_entity("Entity", body(340, 0, entity_body)).created);
+    // The diamond is drawn wider than a new one, as the example's Enrollment
+    // Date is, so the template does not open on its own word cut short.
+    starting.relate(left, right, body(0, 0, BodySize{280, 120}), "Relationship");
+    starting.create_attribute("Attribute", body(-340, -160, attribute_body), AttributeOwner{ElementRef{left}});
+    starting.create_attribute("Attribute", body(340, -160, attribute_body), AttributeOwner{ElementRef{right}});
+    show_result(editor_.replace_project(starting.project()));
+    path_.clear();
+    canvas_->fit_diagram();
 }
 
 void MainWindow::load_example() {

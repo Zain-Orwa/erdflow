@@ -6,6 +6,7 @@
 // covered by this — fix it and say what was wrong. Full rule: CLAUDE.md.
 #pragma once
 
+#include "application/history.hpp"
 #include "domain/model.hpp"
 
 #include <cstdint>
@@ -46,6 +47,17 @@ public:
     [[nodiscard]] std::string undo_label() const;
     [[nodiscard]] std::string redo_label() const;
     [[nodiscard]] std::size_t history_bytes() const;
+    // The History (Zain, 2026-09-26): every step still kept, oldest first,
+    // each described in words. The first history_position() of them are in
+    // effect; the rest have been undone and wait to be redone, until a new
+    // edit takes their place, exactly as Undo and Redo have always had them.
+    [[nodiscard]] std::vector<HistoryEntry> history() const;
+    [[nodiscard]] std::size_t history_position() const;
+    // Undoes or redoes, one step at a time, until that many steps are in
+    // effect: 0 is the project as it was before the oldest step kept. The
+    // steps themselves are unchanged by the move, so Undo and Redo carry on
+    // from wherever it lands.
+    EditResult go_to(std::size_t position);
 
     void new_project();
     EditResult replace_project(domain::Project project);
@@ -53,8 +65,12 @@ public:
     EditResult rename_project(std::string name);
     EditResult describe_project(std::string description);
     EditResult create_entity(std::string name, domain::Rect rect);
+    // A shape for the link to its owner can be given with it, as for
+    // set_attribute_owner, so an attribute placed pinned to a point on its
+    // owner is one step of history.
     EditResult create_attribute(std::string name, domain::Rect rect,
-                                std::optional<domain::AttributeOwner> owner = {});
+                                std::optional<domain::AttributeOwner> owner = {},
+                                domain::Connector shape = {});
     EditResult create_relationship(std::string name, domain::Rect rect);
     // An ISA triangle: one supertype, and the subtypes attached to it. The
     // constraint and completeness decide how it converts to relations later.
@@ -297,6 +313,10 @@ public:
     // says which was done; and it refuses anything that is not an entity, so
     // the command cannot quietly reshape the rest of the diagram.
     EditResult resize_entities(const std::map<domain::ElementRef, domain::Rect>& boxes);
+    // Relationship diamonds use the same edge and corner gesture as entities.
+    EditResult resize_relationships(const std::map<domain::ElementRef, domain::Rect>& boxes);
+    // And so do attributes, whose names want width as an entity's does.
+    EditResult resize_attributes(const std::map<domain::ElementRef, domain::Rect>& boxes);
     // A connector carries one signed perpendicular bend. Passing no offset
     // restores automatic routing rather than storing a zero-length bend.
     EditResult bend_connector(domain::ConnectorRef ref, std::optional<double> offset);

@@ -191,8 +191,17 @@ protected:
         if (const auto glow = page_glow(seconds, t); glow.strength > 0 && event->rect().intersects(page_box()))
             draw_page_glow(p, glow);
         if (!wave_.isEmpty()
-            && event->rect().intersects(wave_.boundingRect().adjusted(-12, -12, 12, 12).toAlignedRect()))
+            && event->rect().intersects(wave_.boundingRect().adjusted(-12, -12, 12, 12).toAlignedRect())) {
+            // Inside the page the tube is under it, and so are they.
+            QPainterPath everywhere;
+            everywhere.addRect(rect());
+            QPainterPath page;
+            page.addRoundedRect(QRectF(-page_width / 2, -page_height / 2, page_width, page_height), 10, 10);
+            p.save();
+            p.setClipPath(everywhere.subtracted(lean().map(page)));
             draw_lights(p, t, seconds);
+            p.restore();
+        }
         // The cards' shadows are few and cheap, and drawn as they are needed:
         // only where what is being repainted reaches them.
         QRectF row;
@@ -269,7 +278,9 @@ private:
         const auto& words = scene_.words;
         const auto under = words.bottom();
         const auto& text = scene_.subtitle;
-        const auto start = lean().map(QPointF(page_width / 2, page_height * 0.22));
+        // It starts a little inside the page, which is drawn over it, so the
+        // tube comes out from under the page's edge.
+        const auto start = lean().map(QPointF(page_width / 2 - 14, page_height * 0.22));
         std::vector<QPointF> through{start};
         if (start.y() < under + 12) through.emplace_back(text.left() - 6, under + 12);
         through.emplace_back(std::max(words.left() + words.width() * 0.20, text.left() + 34), under + 28);
@@ -293,9 +304,9 @@ private:
     // The line between the page and the database is a tube (Zain,
     // 2026-09-25): one light blue, shaded across its width as a rounded tube
     // is -- deeper at its edges, paler towards its middle, with light caught
-    // along its centre -- over a soft glow, and plugged into a port at the
-    // page and at the platform. Nothing is fixed on it; what travels along it
-    // is drawn live, over this.
+    // along its centre -- over a soft glow. Nothing is fixed on it, not even
+    // at its ends: it comes out from under the page and goes in under the
+    // database's platform. What travels along it is drawn live, over this.
     void draw_line(QPainter& p, const Tokens& t) const {
         if (wave_.isEmpty()) return;
         const auto blue = t.primary;
@@ -313,19 +324,6 @@ private:
         }
         p.setPen(pen(tint(white, 235), 1.4));
         p.drawPath(wave_);
-        const auto port = [&](QPointF where) {
-            p.setPen(Qt::NoPen);
-            p.setBrush(tint(blue, 50));
-            p.drawEllipse(where, 8.5, 8.5);
-            p.setPen(QPen(tint(blue, 230), 1.4));
-            p.setBrush(tint(white, 245));
-            p.drawEllipse(where, 4.6, 4.6);
-            p.setPen(Qt::NoPen);
-            p.setBrush(blue);
-            p.drawEllipse(where, 2.0, 2.0);
-        };
-        port(wave_.pointAtPercent(0));
-        port(wave_.pointAtPercent(1));
     }
 
     // Electrons travelling along the tube both ways, each in a colour of its
@@ -564,14 +562,28 @@ private:
     // soft, wide shadow under each card that lifts it off the page.
     void draw_cards(QPainter& p, const Tokens& t, const QRectF& row) const {
         glow(p, row.center() + QPointF(0, 12), row.width() * 0.6, row.height() * 0.62, tint(t.primary, 14));
-        const auto shade = t.shadow_card.ink;
+        // The shadow is where the light does not reach, so it is drawn in the
+        // theme's shadow ink rather than in its accent (Zain, 2026-09-27): an
+        // accent under a card is a coloured halo, not a lift, and on a
+        // high-contrast or dark theme it glared -- yellow round every card,
+        // or cyan. A breath of the accent is kept where the page is light,
+        // and none where it is dark. It lies under the card and a little to
+        // its sides, as light from above casts it, and fades out over many
+        // fine steps, so it has no edge anywhere.
+        const bool dark = t.window_background.lightness() < 128;
+        const auto shade = dark ? QColor(0, 0, 0) : blend(QColor(15, 23, 42), t.primary, 0.15);
+        const int steps = 16;
+        const double darkest = dark ? 0.30 : 0.10;
         p.setPen(Qt::NoPen);
         for (const auto& card : scene_.cards)
-            for (int step = 10; step >= 1; --step) {
+            for (int step = steps; step >= 1; --step) {
+                const auto spread = static_cast<double>(step);
                 QPainterPath under;
-                under.addRoundedRect(card.adjusted(-step, -step + 6, step, step + 8), t.radius_large_card + step,
-                                     t.radius_large_card + step);
-                p.fillPath(under, tint(shade, 5));
+                under.addRoundedRect(card.adjusted(-spread * 0.55, 6 + spread * 0.25, spread * 0.55, 4 + spread * 0.9),
+                                     t.radius_large_card + spread * 0.6, t.radius_large_card + spread * 0.6);
+                // Each ring adds a little, so the middle is darkest and the
+                // rim is nothing.
+                p.fillPath(under, tint(shade, static_cast<int>(std::lround(255 * darkest / steps * 1.6))));
             }
     }
 
@@ -1116,8 +1128,9 @@ void HomePage::place_hero() {
             const auto unit = hero_->drawing_scale();
             scene.database = QPointF(hero_holder_->pos()) + hero_->orbit_centre();
             scene.database_unit = unit;
-            // The line plugs into the platform at its near corner.
-            scene.landing = scene.database + QPointF(-89 * unit, 38 * unit);
+            // The line goes in under the platform, a little in from its near
+            // corner, so its end is hidden by the platform drawn over it.
+            scene.landing = scene.database + QPointF(-68 * unit, 40 * unit);
             hero_holder_->raise();
         }
     }
@@ -1219,12 +1232,15 @@ bool HomePage::centre_needs_scrolling() const {
 void HomePage::showEvent(QShowEvent* event) {
     QWidget::showEvent(event);
     // The keyboard starts on the chosen card's + Create, so Return starts it.
-    // Left to Qt it lands on whatever was made first, which is the Settings
-    // button in the bar.
+    // Left to Qt it lands on whatever was made first, which is the bar's way
+    // back into the workspace when it is showing, and Theme otherwise, now
+    // that Settings is only the sidebar's row.
     QTimer::singleShot(0, this, [this] {
         if (!isVisible()) return;
         const auto* holder = QApplication::focusWidget();
-        if (holder && isAncestorOf(holder) && holder != top_bar_->settings_button()) return;
+        if (holder && isAncestorOf(holder) && holder != top_bar_->theme_button()
+            && holder != top_bar_->return_button())
+            return;
         for (auto* card : cards_)
             if (card->route() == chosen_) card->create_button()->setFocus(Qt::OtherFocusReason);
     });

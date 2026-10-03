@@ -58,8 +58,8 @@ namespace {
 // gives generated relations stable identities of their own; version 27 adds
 // the description captured with a project's other creation details; version
 // 28 records which bridges were chosen to be keyed by their participants'
-// foreign keys.
-constexpr int current_format_version = 28;
+// foreign keys; version 29 keeps the size an element's name is drawn for.
+constexpr int current_format_version = 29;
 QString text(const std::string& value) { return QString::fromUtf8(value.data(), static_cast<qsizetype>(value.size())); }
 Uuid bytes_of(const QUuid& value) {
     Uuid result;
@@ -817,6 +817,9 @@ QByteArray ErdxProjectStore::encode(const Project& project) {
     QJsonArray transparency;
     for (const auto& [ref, percent] : project.transparency)
         transparency.append(QJsonObject{{"element", reference(ref)}, {"percent", percent}});
+    QJsonArray lettering;
+    for (const auto& [ref, base] : project.lettering)
+        lettering.append(QJsonObject{{"element", reference(ref)}, {"width", base.width}, {"height", base.height}});
     QJsonArray pictures, notes;
     for (const auto& [id, picture] : project.pictures)
         pictures.append(QJsonObject{{"id", uuid_text(id.value)}, {"name", text(picture.name)},
@@ -851,7 +854,7 @@ QByteArray ErdxProjectStore::encode(const Project& project) {
         {"entities", entities}, {"attributes", attributes}, {"relationships", relationships},
         {"layout", layout}, {"connectors", connectors}, {"colours", colours},
         {"specializations", specializations}, {"pictures", pictures}, {"notes", notes},
-        {"comments", comments}, {"transparency", transparency},
+        {"comments", comments}, {"transparency", transparency}, {"lettering", lettering},
         {"decisions", encode_decisions(project.decisions)},
         {"schema", encode_schema(project.schema)},
         {"schema_layout", encode_layout(project.schema_layout)},
@@ -947,6 +950,11 @@ application::LoadResult ErdxProjectStore::decode(const QByteArray& input) {
         // form. Older files had nowhere to store it, and therefore open with
         // an empty description rather than having one invented for them.
         const bool described = number_version >= 27;
+        // Version 29 keeps the size an element had when it was first resized
+        // by hand, which its name is drawn for. A file written before it has
+        // no such section, which reads correctly as nothing having been
+        // resized that way, every name drawn at its ordinary size.
+        const bool lettered = number_version >= 29;
         // Version 21 records where the schema differs from the diagram. A file
         // written before it simply has no such section, which reads correctly
         // as the two agreeing about everything.
@@ -964,7 +972,9 @@ application::LoadResult ErdxProjectStore::decode(const QByteArray& input) {
         // which reads correctly as every generated key still carrying the name
         // the rule gave it.
         const bool named_keys = number_version >= 24;
-        const auto data = described
+        const auto data = lettered
+            ? object(root["project"], {"id", "name", "description", "entities", "attributes", "relationships", "layout", "connectors", "specializations", "colours", "pictures", "notes", "comments", "transparency", "lettering", "decisions", "schema", "schema_layout", "background"})
+            : described
             ? object(root["project"], {"id", "name", "description", "entities", "attributes", "relationships", "layout", "connectors", "specializations", "colours", "pictures", "notes", "comments", "transparency", "decisions", "schema", "schema_layout", "background"})
             : arranged
             ? object(root["project"], {"id", "name", "entities", "attributes", "relationships", "layout", "connectors", "specializations", "colours", "pictures", "notes", "comments", "transparency", "decisions", "schema", "schema_layout", "background"})
@@ -1180,6 +1190,14 @@ application::LoadResult ErdxProjectStore::decode(const QByteArray& input) {
                     invalid("Transparency is a whole percentage from 0 to 100.");
                 if (!project.transparency.emplace(parse_ref(o["element"]), static_cast<std::uint8_t>(percent)).second)
                     invalid("Duplicate element transparency.");
+            }
+        }
+        if (lettered) {
+            for (const auto& value : array(data["lettering"])) {
+                const auto o = object(value, {"element", "width", "height"});
+                if (!project.lettering.emplace(parse_ref(o["element"]),
+                                               LetteringBase{number(o["width"]), number(o["height"])}).second)
+                    invalid("Duplicate element lettering.");
             }
         }
         if (figures) {
