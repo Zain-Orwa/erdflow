@@ -296,6 +296,13 @@ QWidget#workspaceHeader[schemaFirst="true"] QToolButton#schemaUndo:hover { backg
 QWidget#workspaceHeader[schemaFirst="true"] QToolButton#schemaRedo:hover { background: @hover@; border-color: @hoveredge@; }
 QWidget#workspaceHeader[schemaFirst="true"] QLineEdit#schemaSearch { background: @base@; border: 1px solid @border@; border-radius: 7px; padding: 5px 8px; min-height: 20px; }
 QWidget#workspaceHeader[schemaFirst="true"] QToolButton#schemaTheme { background: @base@; border-radius: 7px; padding: 5px 24px 5px 10px; min-height: 20px; }
+/* Relational Design's Open example drops a menu, so its arrow is placed level
+   with its mark, in rules of its own; dressed as the Theme button beside it,
+   in either header. */
+QToolButton#openRelationalExample { border-color: @border@; background: @panel@; padding: 5px 22px 5px 9px; }
+QToolButton#openRelationalExample::menu-indicator { subcontrol-origin: padding; subcontrol-position: center right; right: 4px; width: 12px; }
+QToolButton#openRelationalExample:hover, QToolButton#openRelationalExample:pressed { border-color: @accent@; background: @base@; color: @text@; }
+QWidget#workspaceHeader[schemaFirst="true"] QToolButton#openRelationalExample { background: @base@; border-radius: 7px; padding: 5px 24px 5px 10px; min-height: 20px; }
 QToolBar#ribbonTabs { background: @panel@; border-bottom: 1px solid @border@; padding: 0px; spacing: 0px; }
 QToolBar#ribbonTabs QToolButton { background: transparent; color: @text@; border: none; border-bottom: 2px solid transparent; border-radius: 0px; padding: 6px 13px 4px 13px; }
 QToolBar#ribbonTabs QToolButton:hover { background: @hover@; color: @text@; border-bottom-color: @hoveredge@; }

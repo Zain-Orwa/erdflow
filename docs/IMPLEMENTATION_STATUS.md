@@ -50,6 +50,9 @@ read as still to do.
 - Projects that start from their schema, drawn by hand and converted into
   their diagram; a foreign key renamed on any schema.
 - The **Company Database** and **University Database** examples.
+- Relational Design's own examples, **Company Database — Relational** and
+  **University Database — Relational**, and its template, **Basic
+  Relational Schema** (2026-10-05).
 - **A key drawn on a relationship** keys the relationship's own table, and is
   allowed exactly where there is one: a many-to-many or associative
   relationship (Zain, 2026-10-05; ADR-021 §5b, its open conflict closed).
@@ -1725,6 +1728,52 @@ examples are unchanged. There is no separate
 partial-key kind; Dependent's *Name* is drawn as a key on a weak entity, which
 the canvas underlines in dashes as a partial key.
 
+Relational Design has examples of its own (2026-10-05, ADR-022 §9.23):
+**File → Company Database — Relational** / **University Database —
+Relational**, the same two in the **Home** menu and the header's Open
+example, offered while Relational Design is in front
+(`build_company_database_relational`, `build_university_database_relational`
+in `app/desktop/relational_examples.cpp`). They are the same two domains
+designed again as tables -- not converted from the diagrams above -- and each
+opens as a project that starts from its schema, clean and untitled on disk,
+with no diagram. Every table, column, key and foreign key is made by the
+Editor's schema commands, as the Table tool, Connect and Properties make
+them: a table placed where it stands with its key named for it, each column
+typed and ruled, surrogate keys counting themselves up (IDENTITY), and each
+foreign key connected to the key it references.
+
+- **Company Database — Relational** -- 22 tables, 25 foreign keys. Office,
+  Job, Department, Employee, Skill, Client, Project, Team, Task, Invoice,
+  Payment, Product and Supplier; junction tables EmployeeSkill,
+  ProjectAssignment, TeamMember, TeamProject, ProjectProduct and
+  SupplierProduct, each keyed by its two foreign keys and carrying the
+  relationship's own columns; EmployeePhone and DepartmentLocation for what
+  may be held more than once; Dependent keyed by (EmployeeID,
+  DependentName). Employee.SupervisorID references Employee itself;
+  Department.ManagerID is a unique foreign key to Employee, left empty until
+  a manager is appointed.
+- **University Database — Relational** -- 21 tables, 26 foreign keys.
+  Faculty, Department, Professor, Program, Course, Classroom, Section, Exam,
+  Assignment, Student, LibraryBook, Club and Scholarship; junction tables
+  Enrollment, CoursePrerequisite (both keys referencing Course), ClubMember,
+  StudentScholarship and ExamResult (one result for each student in each
+  exam); BookLoan with a key of its own, since a book may be borrowed again;
+  StudentPhone and BookAuthor for what may be held more than once.
+  Department.HeadID is a unique foreign key to Professor.
+
+Both are laid out by hand, grouped by area with each junction table beside
+the tables it joins: no table over another, no line through a table, and no
+line or width stored, so every line still routes itself when a table is
+moved. Age is not a column in either, since it is worked out rather than
+stored.
+
+**New from template: Basic Relational Schema**, in the same places
+(`build_basic_relational_schema`), is Relational Design's template: Parent
+(ParentID, Name) and Child (ChildID, Name, ParentID), Child.ParentID
+referencing Parent.ParentID, keys whole numbers and names nvarchar(100), NOT
+NULL. It opens untitled, as the Conceptual template does, with the two keys
+level so the line between them runs straight.
+
 The normal startup is an empty project. Text properties commit on focus loss;
 geometry changes use **Apply position and size**.
 
@@ -2506,6 +2555,18 @@ outside the repository at `erdflow-notes/UI-AZURE-TASKS.md`. What is built:
   while the diagram is in front, and not while Relational Design is
   (2026-10-04). Relational Design has no examples or templates of its own
   yet; they are the next piece of work (Zain, 2026-10-04).
+- **Relational Design has its own examples and template** (Zain,
+  2026-10-05; ADR-022 §9.23), which replaces the last sentence above. While
+  Relational Design is in front, the File menu and the Home menu offer
+  *Company Database — Relational*, *University Database — Relational* and
+  *New from template: Basic Relational Schema*, and the header has an Open
+  example of its own: a folder mark with its menu arrow, named on hover,
+  dropping the same three. While the diagram is in front they are put away
+  and the Conceptual ones are offered, as before. The header of a schema
+  drawn by hand had no room for a worded button at the 1440 px reference
+  width, so the mark is what Zain chose; with a long project name the
+  header is still too wide at 1440 px, and it is the mark, last in the row,
+  that goes past the edge (ADR-022 §9.23).
 - Home's text is in the specification's pixel sizes. Where one of Azure's
   colours would put ordinary text under 4.5:1 it is deepened only as far as
   needed: Create Project and the chosen row use `#1976D2`, and the learning
@@ -2608,6 +2669,16 @@ Not built yet, though some of it is on screen:
 | Usable | Focused property editing, named undo actions, usable example, warnings that permit unfinished drafts, protected open/save. | Screen-reader support, broader keyboard/high-DPI/device checks, and production polish remain unverified. |
 
 ## Verification
+
+**2026-10-05**, after Relational Design's examples and template were added,
+the keyless-entity edit of 2026-10-03 was reverted, and ADR-021 §5b was
+decided (a key drawn on a relationship with a table of its own): six of the
+seven suites pass in Debug and in Release -- `core`, `persistence`, `canvas`,
+`theme`, `desktop` (about 52 s in Debug and 42 s in Release) and
+`desktop_smoke`. Only `visual` fails, on two reference pictures, conceptual
+(3.30736 %) and relational-design (7.29392 %; 6.98843 % before the header
+gained Relational Design's Open example mark). No reference picture was
+retaken.
 
 **As of 2026-10-02, five of the seven CTest suites pass, in Debug and in
 Release.** The two that do not:

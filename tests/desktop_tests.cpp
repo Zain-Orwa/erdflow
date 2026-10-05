@@ -9,6 +9,7 @@
 #include "app/desktop/export_dialog.hpp"
 #include "app/desktop/home_page.hpp"
 #include "app/desktop/conceptual_examples.hpp"
+#include "app/desktop/relational_examples.hpp"
 #include "app/desktop/home_demo_canvas.hpp"
 #include "app/desktop/home_demo_scenes.hpp"
 #include "app/desktop/home_sidebar.hpp"
@@ -558,6 +559,474 @@ int main(int argc, char **argv)
             require(offered(schema_first, false), "A schema drawn by hand is not offered the Conceptual ones");
             require(child<QAction>(schema_first, "importFromOtherTools")->isVisible(),
                     "Only the entry for other tools' formats");
+        }
+        // Relational Design's own examples and template (Zain, 2026-10-05):
+        // projects that start from their schema, drawn with the Editor's schema
+        // commands rather than converted from the Conceptual examples, and
+        // offered -- in the File menu, the Home menu and the header's Open
+        // example -- only while Relational Design is in front.
+        {
+            using Names = std::vector<std::string>;
+            const auto sorted = [](Names names)
+            {
+                std::sort(names.begin(), names.end());
+                return names;
+            };
+            const auto table_names = [&](const domain::Project &project)
+            {
+                Names names;
+                for (const auto &[id, relation] : project.schema.relations)
+                    names.push_back(relation.name);
+                return sorted(names);
+            };
+            const auto relation_named = [](const domain::Project &project, const std::string &name)
+            {
+                for (const auto &[id, relation] : project.schema.relations)
+                    if (relation.name == name)
+                        return id;
+                throw std::runtime_error("No table called " + name);
+            };
+            const auto column_named = [&](const domain::Project &project, const std::string &table,
+                                          const std::string &name) -> const domain::SchemaColumn &
+            {
+                for (const auto &column : project.schema.added.at(relation_named(project, table)))
+                    if (column.name == name)
+                        return column;
+                throw std::runtime_error("No column called " + table + "." + name);
+            };
+            const auto holds = [](const std::vector<domain::SchemaColumn> &columns, domain::SchemaColumnId id)
+            {
+                return std::any_of(columns.begin(), columns.end(), [&](const auto &column)
+                                   { return column.id == id; });
+            };
+            // The table a column references, or nothing.
+            const auto referenced = [&](const domain::Project &project, const std::string &table,
+                                        const std::string &name) -> std::string
+            {
+                const auto id = column_named(project, table, name).id;
+                for (const auto &[key, reference] : project.schema.foreign_keys)
+                    if (reference.column == id)
+                        return project.schema.relations.at(reference.to).name;
+                return {};
+            };
+            // A table's primary key, its columns in the key's own order.
+            const auto key_of = [&](const domain::Project &project, const std::string &table)
+            {
+                std::vector<std::pair<std::uint32_t, std::string>> parts;
+                for (const auto &column : project.schema.added.at(relation_named(project, table)))
+                    if (column.identifier)
+                        parts.emplace_back(column.key_order, column.name);
+                std::sort(parts.begin(), parts.end());
+                Names names;
+                for (const auto &part : parts)
+                    names.push_back(part.second);
+                return names;
+            };
+            // What makes a schema sound: drawn by hand with no diagram behind it;
+            // every table with columns of its own, typed, none named twice, and a
+            // primary key numbered from one; every foreign key a real one -- its
+            // column in the table it leaves, its target the whole primary key of
+            // the table it references, of the same type -- and no column holding
+            // two. The schema worked out from it says the same.
+            const auto sound = [&](const domain::Project &project)
+            {
+                const auto &schema = project.schema;
+                if (!schema.standalone || !project.entities.empty() || !project.attributes.empty() ||
+                    !project.relationships.empty() || !project.specializations.empty())
+                    return false;
+                std::set<std::string> tables;
+                for (const auto &[id, relation] : schema.relations)
+                {
+                    if (!tables.insert(relation.name).second || !schema.added.contains(id))
+                        return false;
+                    std::set<std::string> columns;
+                    std::vector<std::uint32_t> key;
+                    for (const auto &column : schema.added.at(id))
+                    {
+                        if (!columns.insert(column.name).second || column.logical_type == domain::LogicalType::Unset)
+                            return false;
+                        if (column.identifier && !column.required)
+                            return false;
+                        if (column.identifier)
+                            key.push_back(column.key_order);
+                    }
+                    std::sort(key.begin(), key.end());
+                    if (key.empty())
+                        return false;
+                    for (std::size_t k = 0; k < key.size(); ++k)
+                        if (key[k] != k + 1)
+                            return false;
+                }
+                std::set<domain::SchemaColumnId> holding;
+                for (const auto &[id, reference] : schema.foreign_keys)
+                {
+                    if (!holding.insert(reference.column).second || !schema.added.contains(reference.from) ||
+                        !schema.added.contains(reference.to))
+                        return false;
+                    const auto &from = schema.added.at(reference.from);
+                    const auto &to = schema.added.at(reference.to);
+                    if (!holds(from, reference.column) || !holds(to, reference.target))
+                        return false;
+                    const auto &held = *std::find_if(from.begin(), from.end(), [&](const auto &column)
+                                                     { return column.id == reference.column; });
+                    const auto &target = *std::find_if(to.begin(), to.end(), [&](const auto &column)
+                                                       { return column.id == reference.target; });
+                    const auto keys = std::count_if(to.begin(), to.end(), [](const auto &column)
+                                                    { return column.identifier; });
+                    if (!target.identifier || keys != 1 || held.logical_type != target.logical_type ||
+                        held.length != target.length || held.scale != target.scale)
+                        return false;
+                }
+                const auto preview = domain::schema_preview(project);
+                if (preview.tables.size() != schema.relations.size())
+                    return false;
+                std::size_t referencing = 0;
+                for (const auto &table : preview.tables)
+                {
+                    if (std::none_of(table.columns.begin(), table.columns.end(), [](const auto &column)
+                                     { return column.primary_key; }))
+                        return false;
+                    for (const auto &column : table.columns)
+                        if (column.foreign_key && column.references)
+                            ++referencing;
+                }
+                return referencing == schema.foreign_keys.size();
+            };
+            // A junction's primary key is the foreign keys to the two tables it
+            // joins, and nothing else.
+            const auto junction = [&](const domain::Project &project, const std::string &table,
+                                      const std::string &first, const std::string &second)
+            {
+                Names parents;
+                for (const auto &name : key_of(project, table))
+                    parents.push_back(referenced(project, table, name));
+                return parents == Names{first, second};
+            };
+
+            // Company Database -- Relational.
+            application::Editor company(ids);
+            desktop::build_company_database_relational(company);
+            const auto &company_schema = company.project();
+            require(company_schema.name == "Company Database — Relational", "The relational company example is named");
+            require(sound(company_schema),
+                    "Company Database — Relational is a sound schema drawn by hand, with no diagram made first");
+            require(table_names(company_schema) ==
+                        sorted({"Client", "Department", "DepartmentLocation", "Dependent", "Employee",
+                                "EmployeePhone", "EmployeeSkill", "Invoice", "Job", "Office", "Payment", "Product",
+                                "Project", "ProjectAssignment", "ProjectProduct", "Skill", "Supplier",
+                                "SupplierProduct", "Task", "Team", "TeamMember", "TeamProject"}) &&
+                        company_schema.schema.foreign_keys.size() == 25,
+                    "Company Database — Relational has its twenty-two tables and twenty-five foreign keys");
+            require(junction(company_schema, "EmployeeSkill", "Employee", "Skill") &&
+                        junction(company_schema, "ProjectAssignment", "Employee", "Project") &&
+                        junction(company_schema, "TeamMember", "Team", "Employee") &&
+                        junction(company_schema, "TeamProject", "Team", "Project") &&
+                        junction(company_schema, "ProjectProduct", "Project", "Product") &&
+                        junction(company_schema, "SupplierProduct", "Supplier", "Product"),
+                    "Each many-to-many relationship is a junction table keyed by its two foreign keys");
+            require(key_of(company_schema, "Dependent") == Names{"EmployeeID", "DependentName"} &&
+                        referenced(company_schema, "Dependent", "EmployeeID") == "Employee",
+                    "A dependent is keyed through the employee it depends on");
+            require(key_of(company_schema, "EmployeePhone") == Names{"EmployeeID", "PhoneNumber"} &&
+                        key_of(company_schema, "DepartmentLocation") == Names{"DepartmentID", "Location"},
+                    "What may be held more than once has a table of its own");
+            require(referenced(company_schema, "Employee", "SupervisorID") == "Employee" &&
+                        !column_named(company_schema, "Employee", "SupervisorID").required,
+                    "A supervisor is a foreign key into the same table, and may be empty");
+            require(referenced(company_schema, "Department", "ManagerID") == "Employee" &&
+                        column_named(company_schema, "Department", "ManagerID").unique,
+                    "A department's manager is a unique foreign key to Employee");
+            require(referenced(company_schema, "Employee", "DepartmentID") == "Department" &&
+                        column_named(company_schema, "Employee", "DepartmentID").required &&
+                        referenced(company_schema, "Payment", "InvoiceID") == "Invoice" &&
+                        referenced(company_schema, "Invoice", "ClientID") == "Client" &&
+                        referenced(company_schema, "Task", "ProjectID") == "Project",
+                    "One-to-many relationships are foreign keys in the table on the many side");
+            require(column_named(company_schema, "Employee", "EmployeeID").auto_increment &&
+                        !column_named(company_schema, "EmployeeSkill", "EmployeeID").auto_increment,
+                    "A key that stands for nothing but the row counts itself up; one taken from another table "
+                    "does not");
+
+            // University Database -- Relational.
+            application::Editor university(ids);
+            desktop::build_university_database_relational(university);
+            const auto &university_schema = university.project();
+            require(university_schema.name == "University Database — Relational",
+                    "The relational university example is named");
+            require(sound(university_schema),
+                    "University Database — Relational is a sound schema drawn by hand, with no diagram made first");
+            require(table_names(university_schema) ==
+                        sorted({"Assignment", "BookAuthor", "BookLoan", "Classroom", "Club", "ClubMember", "Course",
+                                "CoursePrerequisite", "Department", "Enrollment", "Exam", "ExamResult", "Faculty",
+                                "LibraryBook", "Professor", "Program", "Scholarship", "Section", "Student",
+                                "StudentPhone", "StudentScholarship"}) &&
+                        university_schema.schema.foreign_keys.size() == 26,
+                    "University Database — Relational has its twenty-one tables and twenty-six foreign keys");
+            require(junction(university_schema, "Enrollment", "Student", "Section") &&
+                        junction(university_schema, "CoursePrerequisite", "Course", "Course") &&
+                        junction(university_schema, "ClubMember", "Student", "Club") &&
+                        junction(university_schema, "StudentScholarship", "Student", "Scholarship") &&
+                        junction(university_schema, "ExamResult", "Exam", "Student"),
+                    "Enrollment, prerequisites, club members, scholarships and exam results are junction tables");
+            require(key_of(university_schema, "BookLoan") == Names{"BookLoanID"} &&
+                        referenced(university_schema, "BookLoan", "StudentID") == "Student" &&
+                        referenced(university_schema, "BookLoan", "LibraryBookID") == "LibraryBook",
+                    "A book loan has a key of its own, and foreign keys to the student and the book");
+            require(key_of(university_schema, "StudentPhone") == Names{"StudentID", "PhoneNumber"} &&
+                        key_of(university_schema, "BookAuthor") == Names{"LibraryBookID", "AuthorName"},
+                    "What may be held more than once has a table of its own");
+            require(referenced(university_schema, "Department", "HeadID") == "Professor" &&
+                        column_named(university_schema, "Department", "HeadID").unique &&
+                        referenced(university_schema, "Section", "CourseID") == "Course" &&
+                        referenced(university_schema, "Student", "AdvisorID") == "Professor",
+                    "A department's head is a unique foreign key, and one-to-many relationships are foreign keys");
+
+            // The template: two tables and the foreign key between them, no more.
+            application::Editor starting(ids);
+            desktop::build_basic_relational_schema(starting);
+            const auto &basic = starting.project();
+            require(basic.name == "Untitled" && sound(basic), "The template opens untitled, as a schema drawn by hand");
+            require(table_names(basic) == Names{"Child", "Parent"} && basic.schema.foreign_keys.size() == 1,
+                    "The template is Parent and Child, and one foreign key");
+            const auto said = [&](const std::string &table)
+            {
+                Names columns;
+                for (const auto &column : basic.schema.added.at(relation_named(basic, table)))
+                    columns.push_back(column.name);
+                return columns;
+            };
+            const auto &parent_key = column_named(basic, "Parent", "ParentID");
+            const auto &child_key = column_named(basic, "Child", "ChildID");
+            const auto &parent_id = column_named(basic, "Child", "ParentID");
+            const auto &reference = basic.schema.foreign_keys.begin()->second;
+            require(said("Parent") == Names{"ParentID", "Name"} && said("Child") == Names{"ChildID", "Name", "ParentID"},
+                    "Parent holds ParentID and Name; Child holds ChildID, Name and ParentID");
+            require(key_of(basic, "Parent") == Names{"ParentID"} && key_of(basic, "Child") == Names{"ChildID"} &&
+                        parent_key.logical_type == domain::LogicalType::Int &&
+                        child_key.logical_type == domain::LogicalType::Int,
+                    "Each table's primary key is a whole number named for it");
+            require(reference.from == relation_named(basic, "Child") && reference.to == relation_named(basic, "Parent") &&
+                        reference.column == parent_id.id && reference.target == parent_key.id && parent_id.required &&
+                        !parent_id.identifier,
+                    "Child.ParentID references Parent.ParentID, and every child has a parent");
+            for (const auto *table : {"Parent", "Child"})
+            {
+                const auto &name = column_named(basic, table, "Name");
+                require(name.logical_type == domain::LogicalType::NVarchar && name.length == 100 && name.required,
+                        "Name is nvarchar(100), NOT NULL");
+            }
+
+            // The Conceptual examples are as they were.
+            application::Editor conceptual_company(ids);
+            desktop::build_company_database(conceptual_company);
+            application::Editor conceptual_university(ids);
+            desktop::build_university_database(conceptual_university);
+            require(conceptual_company.project().name == "Company Database" &&
+                        conceptual_company.project().entities.size() == 14 &&
+                        conceptual_company.project().attributes.size() == 87 &&
+                        conceptual_company.project().relationships.size() == 17 &&
+                        !conceptual_company.project().schema.standalone &&
+                        conceptual_university.project().name == "University Database" &&
+                        conceptual_university.project().entities.size() == 14 &&
+                        conceptual_university.project().attributes.size() == 81 &&
+                        conceptual_university.project().relationships.size() == 19 &&
+                        !conceptual_university.project().schema.standalone,
+                    "The Conceptual examples are unchanged diagrams");
+
+            // A schema drawn by hand from nothing is as it was.
+            application::Editor blank(ids);
+            blank.new_schema_project();
+            const auto blank_table = blank.create_relation("Table", domain::Point{0, 0});
+            require(blank_table.ok && blank.project().schema.relations.size() == 1 &&
+                        blank.project().schema.added.begin()->second.front().name == "TableID" &&
+                        blank.project().name == "Untitled",
+                    "A new Relational Schema project still starts empty, and its tables still name their keys");
+
+            // Where they are offered.
+            application::Editor opened(ids);
+            infrastructure::ErdxProjectStore opened_store;
+            desktop::MainWindow relational(opened, opened_store, ids);
+            relational.resize(1440, 1080);
+            relational.show();
+            relational.show_home(false);
+            settle();
+            const char *relational_only[] = {"fileExampleCompanyRelational", "fileExampleUniversityRelational",
+                                             "fileTemplateRelational", "homeExampleCompanyRelational",
+                                             "homeExampleUniversityRelational", "homeTemplateRelational"};
+            auto *header_button = child<QToolButton>(relational, "openRelationalExample");
+            const auto offered = [&](bool expected)
+            {
+                return std::all_of(std::begin(relational_only), std::end(relational_only), [&](const char *name)
+                                   { return child<QAction>(relational, name)->isVisible() == expected; }) &&
+                       header_button->isVisible() == expected;
+            };
+            const auto conceptual_offered = [&](bool expected)
+            {
+                return child<QAction>(relational, "fileExampleCompany")->isVisible() == expected &&
+                       child<QAction>(relational, "homeExampleCompany")->isVisible() == expected &&
+                       child<QAction>(relational, "fileTemplate")->isVisible() == expected;
+            };
+            require(offered(false) && conceptual_offered(true),
+                    "On the diagram, Relational Design's examples and template are not offered, and the Conceptual "
+                    "ones are");
+            auto *file_menu = child<QMenu>(relational, "fileMenu");
+            auto *home_menu = child<QMenu>(relational, "homeMenu");
+            for (const char *name : {"fileExampleCompanyRelational", "fileExampleUniversityRelational",
+                                     "fileTemplateRelational"})
+                require(file_menu->actions().contains(child<QAction>(relational, name)) &&
+                            header_button->menu() &&
+                            header_button->menu()->actions().contains(child<QAction>(relational, name)),
+                        "In the File menu and in the header's Open example");
+            for (const char *name : {"homeExampleCompanyRelational", "homeExampleUniversityRelational",
+                                     "homeTemplateRelational"})
+                require(home_menu->actions().contains(child<QAction>(relational, name)), "In the Home menu");
+            require(child<QAction>(relational, "fileExampleCompanyRelational")->text() == "Company Database — Relational" &&
+                        child<QAction>(relational, "fileExampleUniversityRelational")->text() ==
+                            "University Database — Relational" &&
+                        child<QAction>(relational, "fileTemplateRelational")->text() ==
+                            "New from template: Basic Relational Schema" &&
+                        child<QAction>(relational, "homeExampleCompanyRelational")->text() ==
+                            "Company Database — Relational" &&
+                        child<QAction>(relational, "homeTemplateRelational")->text() ==
+                            "New from template: Basic Relational Schema",
+                    "Each is named for what it opens");
+            require(header_button->toolTip() == "Open example" &&
+                        header_button->popupMode() == QToolButton::InstantPopup &&
+                        header_button->toolButtonStyle() == Qt::ToolButtonIconOnly,
+                    "The header's Open example is a mark that drops them, named on hover");
+            // A diagram's schema given the whole window is Relational Design in
+            // front, and back again.
+            relational.open_schema(true);
+            settle_for(450);
+            require(offered(true) && conceptual_offered(false) &&
+                        !child<QPushButton>(relational, "openExample")->isVisible(),
+                    "With Relational Design in front, its own are offered and the Conceptual ones are put away");
+            child<QPushButton>(relational, "schemaFull")->click();
+            settle();
+            require(offered(false) && conceptual_offered(true), "Back on the diagram, they are put away again");
+            relational.open_schema(true);
+            settle_for(450);
+
+            // Each opens from its entry as a project that starts from its schema:
+            // no diagram made first, untitled on disk and clean, Relational
+            // Design in front, laid out by hand with every line routing itself.
+            QTemporaryDir relational_files;
+            require(relational_files.isValid(), "A folder for the Relational examples' files");
+            struct Opening
+            {
+                QAction *entry;
+                const char *name;
+                const domain::Project *built;
+            };
+            const Opening openings[] = {
+                {child<QAction>(relational, "fileExampleCompanyRelational"), "Company Database — Relational",
+                 &company_schema},
+                {child<QAction>(relational, "homeExampleUniversityRelational"), "University Database — Relational",
+                 &university_schema},
+                {header_button->menu()->actions().back(), "Untitled", &basic},
+            };
+            for (const auto &opening : openings)
+            {
+                require(opening.entry->isVisible() && opening.entry->isEnabled(), "The entry can be chosen");
+                opening.entry->trigger();
+                settle_for(450);
+                const auto &project = relational.editor().project();
+                require(project.name == opening.name && sound(project) &&
+                            table_names(project) == table_names(*opening.built) &&
+                            project.schema.foreign_keys.size() == opening.built->schema.foreign_keys.size(),
+                        "It opens as the schema it is built as, drawn by hand with no diagram");
+                require(!relational.editor().dirty() && !relational.editor().can_undo(),
+                        "It opens clean, with nothing to undo");
+                require(offered(true) && conceptual_offered(false) &&
+                            child<QAction>(relational, "designConvert")->isVisible(),
+                        "Relational Design is in front, offering its own, and Convert is there as for any schema "
+                        "drawn by hand");
+                auto *view = relational.schema();
+                require(view && view->preview().tables.size() == project.schema.relations.size(), "Every table is drawn");
+                // Laid out by hand: every table placed, none over another or
+                // crowding it, and every line routes itself around the tables
+                // it does not join.
+                require(project.schema_layout.tables.size() == project.schema.relations.size() &&
+                            project.schema_layout.lines.empty() && project.schema_layout.widths.empty(),
+                        "Every table is placed, and no line or width is stored");
+                const auto boxes = view->table_boxes();
+                for (std::size_t i = 0; i < boxes.size(); ++i)
+                    for (std::size_t j = i + 1; j < boxes.size(); ++j)
+                        require(!boxes[i].adjusted(-30, -30, 30, 30).intersects(boxes[j]),
+                                "No table lies over another, or crowds it");
+                const auto lines = view->line_shapes();
+                require(lines.size() == project.schema.foreign_keys.size(), "A line for every foreign key");
+                for (const auto &route : lines)
+                    for (std::size_t s = 0; s + 1 < route.size(); ++s)
+                        for (const auto &box : boxes)
+                        {
+                            const QRectF inside = box.adjusted(3, 3, -3, -3);
+                            const QRectF run = QRectF(route[s], route[s + 1]).normalized().adjusted(-0.1, -0.1, 0.1, 0.1);
+                            require(!run.intersects(inside), "No line runs through a table");
+                        }
+                // Saved and opened again, it comes back exactly as it was, clean.
+                const auto saved_at = relational_files.filePath(QString::fromUtf8(opening.name) + ".erdx");
+                const auto kept = relational.editor().project();
+                require(opened_store.save(saved_at.toStdString(), kept).ok, "A Relational example saves");
+                const auto reloaded = opened_store.load(saved_at.toStdString());
+                require(reloaded && *reloaded.project == kept, "And loads back exactly as it was");
+                require(relational.open_path(saved_at) && relational.editor().project() == kept &&
+                            !relational.editor().dirty() && relational.editor().project().schema.standalone,
+                        "And opens in the window as it was saved, clean, still a schema drawn by hand");
+            }
+
+            // Worked on as any schema drawn by hand: a table made, a column given
+            // to it and typed, and a foreign key connected to Employee's key, each
+            // one step, undone back to the example exactly and redone.
+            child<QAction>(relational, "fileExampleCompanyRelational")->trigger();
+            settle_for(300);
+            const auto as_opened = opened.project();
+            const auto audit = opened.create_relation("Audit", domain::Point{100, 2400});
+            require(audit.ok, "A table is made on the example");
+            const auto audit_id = std::get<domain::RelationId>(*audit.created);
+            const auto employee_id = relation_named(opened.project(), "Employee");
+            require(opened.add_schema_column(domain::ElementRef{audit_id}, "Note").ok &&
+                        opened.set_schema_column_type(opened.project().schema.added.at(audit_id).back().id,
+                                                      domain::LogicalType::NVarchar)
+                            .ok &&
+                        opened.connect_foreign_key(audit_id, std::nullopt, "EmployeeID", employee_id,
+                                                   opened.project().schema.added.at(employee_id).front().id)
+                            .ok &&
+                        sound(opened.project()) && opened.project().schema.foreign_keys.size() == 26,
+                    "A column is added to it and connected to Employee's key");
+            for (int step = 0; step < 4; ++step)
+                require(opened.undo().ok, "Each step undoes");
+            require(opened.project() == as_opened && !opened.dirty() && !opened.can_undo(),
+                    "Undone, the example is exactly as it opened");
+            for (int step = 0; step < 4; ++step)
+                require(opened.redo().ok, "Each step redoes");
+            require(opened.project().schema.relations.size() == 23 && opened.project().schema.foreign_keys.size() == 26,
+                    "Redone, the table and its foreign key are back");
+            for (int step = 0; step < 4; ++step)
+                opened.undo();
+            opened.mark_saved(opened.revision());
+
+            // Unsaved work is never thrown away by opening one: Cancel keeps it.
+            require(opened.create_relation("Unsaved", domain::Point{100, 2400}).ok && opened.dirty(),
+                    "The open schema has unsaved work");
+            const auto unsaved = opened.project();
+            auto *other_example = child<QAction>(relational, "fileExampleUniversityRelational");
+            dismiss(QMessageBox::Cancel);
+            other_example->trigger();
+            settle();
+            require(opened.project() == unsaved && opened.dirty(), "Cancel keeps the unsaved schema");
+            opened.undo();
+            opened.mark_saved(opened.revision());
+
+            // A Conceptual example opened from Relational Design is a diagram
+            // again, and whichever workspace is then in front offers only its own.
+            relational.load_company_database();
+            settle_for(450);
+            require(!opened.project().schema.standalone && opened.project().entities.size() == 14 &&
+                        child<QAction>(relational, "fileExampleCompany")->isVisible() !=
+                            child<QAction>(relational, "fileExampleCompanyRelational")->isVisible(),
+                    "The Conceptual example still opens as a diagram, and only one workspace's are offered");
+            opened.mark_saved(opened.revision());
         }
         // A key belongs to an entity, or to a relationship with a table of its
         // own (Zain, 2026-10-05; ADR-021 §5b). Properties offers a key

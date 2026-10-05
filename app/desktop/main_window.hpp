@@ -80,6 +80,12 @@ namespace erdflow::desktop
         // general things a diagram is made of, named for what they are (Zain,
         // 2026-09-26).
         void load_template();
+        // Relational Design's own (Zain, 2026-10-05): the Company and University
+        // domains drawn as schemas from the start, and the Relational template,
+        // each opened as a project that starts from its schema.
+        void load_company_database_relational();
+        void load_university_database_relational();
+        void load_relational_template();
         // Places a picture read from a file, centred on the given canvas point or
         // else in the middle of the view. The file's own bytes are kept when it is
         // a PNG or JPEG of modest size; anything else is re-encoded, scaled down if
@@ -624,6 +630,10 @@ namespace erdflow::desktop
         // Relational Design fills the window, with no diagram behind it until the
         // schema is converted into one.
         bool begin_new_schema_project();
+        // Opens what `build` draws in a fresh project that starts from its schema,
+        // as an example or the template is opened: unsaved work asked about
+        // first, and the result untitled on disk and clean.
+        void load_schema_project(void (*build)(application::Editor &));
         void new_project();
         bool open_dialog();
         // Says where each of the Home screen's rows and links goes. Done once every
