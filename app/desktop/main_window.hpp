@@ -11,6 +11,7 @@
 #include "icons.hpp"
 #include "home_page.hpp"
 #include "notice.hpp"
+#include "relational_examples.hpp"
 #include "schema_view.hpp"
 #include "application/project_store.hpp"
 
@@ -633,7 +634,7 @@ namespace erdflow::desktop
         // Opens what `build` draws in a fresh project that starts from its schema,
         // as an example or the template is opened: unsaved work asked about
         // first, and the result untitled on disk and clean.
-        void load_schema_project(void (*build)(application::Editor &));
+        void load_schema_project(void (*build)(application::Editor &, const TableWidth &));
         void new_project();
         bool open_dialog();
         // Says where each of the Home screen's rows and links goes. Done once every

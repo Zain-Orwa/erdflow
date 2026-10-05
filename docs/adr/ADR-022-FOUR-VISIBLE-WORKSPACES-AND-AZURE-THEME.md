@@ -1134,6 +1134,12 @@ Conceptual examples.
   on any schema drawn by hand. Many-to-many relationships are junction tables
   keyed by their two foreign keys, what may be held more than once has a table
   of its own, and a weak entity is keyed through its owner.
+- **Their columns of tables stand apart by measured width** (2026-10-06).
+  Heights are fixed by the rows, but widths are measured from the lettering,
+  which Windows draws larger at the same point size, and Windows CI found
+  tables crowding one another. Each column of tables now stands 150 px clear
+  of the widest table in the column before it (94 px in the template), as the
+  schema measures them. On macOS every table is exactly where it was placed.
 - **One template**, *Basic Relational Schema*: Parent (ParentID, Name) and
   Child (ChildID, Name, ParentID), with Child.ParentID referencing
   Parent.ParentID. It opens untitled, as the Conceptual template does. Its

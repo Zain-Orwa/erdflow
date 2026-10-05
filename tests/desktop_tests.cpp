@@ -974,6 +974,31 @@ int main(int argc, char **argv)
                             !relational.editor().dirty() && relational.editor().project().schema.standalone,
                         "And opens in the window as it was saved, clean, still a schema drawn by hand");
             }
+            // Lettered larger -- Windows draws a point size at 96 dpi where macOS
+            // draws it at 72 -- every table is wider, and each column of tables
+            // still stands clear of the one before it, since where it stands is
+            // measured rather than fixed (2026-10-06).
+            {
+                auto *view = relational.schema();
+                const auto was = view->font();
+                auto larger = was;
+                larger.setPointSizeF(was.pointSizeF() * 96.0 / 72.0);
+                view->setFont(larger);
+                for (const char *entry : {"fileExampleCompanyRelational", "fileExampleUniversityRelational",
+                                          "fileTemplateRelational"})
+                {
+                    child<QAction>(relational, entry)->trigger();
+                    settle_for(300);
+                    const auto boxes = view->table_boxes();
+                    require(boxes.size() == relational.editor().project().schema.relations.size(),
+                            "Lettered larger, every table is drawn");
+                    for (std::size_t i = 0; i < boxes.size(); ++i)
+                        for (std::size_t j = i + 1; j < boxes.size(); ++j)
+                            require(!boxes[i].adjusted(-30, -30, 30, 30).intersects(boxes[j]),
+                                    "Lettered larger, no table lies over another, or crowds it");
+                }
+                view->setFont(was);
+            }
 
             // Worked on as any schema drawn by hand: a table made, a column given
             // to it and typed, and a foreign key connected to Employee's key, each

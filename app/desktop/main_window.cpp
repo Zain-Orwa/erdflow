@@ -10698,13 +10698,20 @@ namespace erdflow::desktop
     // front whole, as the Conceptual ones are: nothing is converted, and no
     // diagram is made first. The schema opens at its top-left corner, where each
     // of them begins.
-    void MainWindow::load_schema_project(void (*build)(application::Editor &))
+    void MainWindow::load_schema_project(void (*build)(application::Editor &, const TableWidth &))
     {
         if (!confirm_discard())
             return;
         show_home(false);
         application::Editor example(ids_);
-        build(example);
+        // Measured as the schema will draw each table, so the columns of tables
+        // stand clear of one another in whatever size this platform letters
+        // them (2026-10-06).
+        TableWidth width;
+        if (schema_)
+            width = [this](const domain::PreviewTable &table)
+            { return schema_->full_width(table); };
+        build(example, width);
         show_result(editor_.replace_project(example.project()));
         path_.clear();
         if (schema_scroll_)

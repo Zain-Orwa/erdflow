@@ -6,8 +6,13 @@
 // covered by this — fix it and say what was wrong. Full rule: CLAUDE.md.
 #pragma once
 
+#include <functional>
+
 namespace erdflow::application {
 class Editor;
+}
+namespace erdflow::domain {
+struct PreviewTable;
 }
 
 namespace erdflow::desktop {
@@ -24,13 +29,21 @@ namespace erdflow::desktop {
 // examples, designed again as tables: junction tables for what is many to many,
 // a table for what may be held more than once, and a weak entity keyed through
 // its owner. The Conceptual examples are separate and are left as they are.
-void build_company_database_relational(application::Editor& editor);
-void build_university_database_relational(application::Editor& editor);
+//
+// Every table's height is a matter of its rows, but its width is measured from
+// its lettering, which each platform draws at its own size. Given how wide the
+// schema will draw a table, each column of tables is stood a set distance
+// clear of the widest table in the column before it, so the columns never run
+// into one another (2026-10-06). On macOS that is exactly where they are
+// placed; with no width given they are left there.
+using TableWidth = std::function<double(const domain::PreviewTable&)>;
+void build_company_database_relational(application::Editor& editor, const TableWidth& width = {});
+void build_university_database_relational(application::Editor& editor, const TableWidth& width = {});
 
 // The template: not an example, but the least a relational schema is -- a
 // table with its primary key, and another whose foreign key references it --
 // named for what each is, ready to be renamed and extended. Opened untitled,
 // as the Conceptual template is.
-void build_basic_relational_schema(application::Editor& editor);
+void build_basic_relational_schema(application::Editor& editor, const TableWidth& width = {});
 
 } // namespace erdflow::desktop

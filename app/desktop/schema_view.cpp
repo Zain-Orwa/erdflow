@@ -813,6 +813,14 @@ double SchemaView::natural_width(const domain::PreviewTable& table) const {
                       domain::min_table_width, domain::max_table_width);
 }
 
+// As natural_width measures a table with every column shown, whichever way
+// the schema is presented at the moment.
+double SchemaView::full_width(const domain::PreviewTable& table) const {
+    const auto room = columns_of(table);
+    return std::clamp(gutter_width + room.name + room.type + room.rules,
+                      domain::min_table_width, domain::max_table_width);
+}
+
 double SchemaView::width_of(const domain::PreviewTable& table) const {
     if (!table.origin || names_only_) return natural_width(table);
     if (const auto held = resizing_to_.find(*table.origin); held != resizing_to_.end())

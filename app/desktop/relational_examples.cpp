@@ -7,11 +7,16 @@
 #include "app/desktop/relational_examples.hpp"
 
 #include "application/editor.hpp"
+#include "domain/schema_preview.hpp"
 
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <stdexcept>
 #include <variant>
+#include <vector>
 
 namespace erdflow::desktop {
 namespace {
@@ -108,6 +113,31 @@ public:
         return id;
     }
 
+    // Each column of tables -- those placed at one x -- stood `gap` clear of
+    // the widest table in the column before it, as `width` measures them,
+    // once every table holds all its columns. The places given above were
+    // worked out from the widths macOS draws, where nothing moves; where the
+    // lettering is drawn wider or narrower, the columns move with it rather
+    // than into one another. Each table keeps its height on the page.
+    void stand_columns_apart(const TableWidth& width, double gap) {
+        const auto& placed = editor_.project().schema_layout.tables;
+        const auto preview = schema_preview(editor_.project());
+        std::map<double, std::vector<const PreviewTable*>> columns;
+        for (const auto& table : preview.tables) columns[placed.at(table.id).x].push_back(&table);
+        std::map<ElementRef, Point> places;
+        std::optional<double> next;
+        for (const auto& [x, tables] : columns) {
+            const auto at = next.value_or(x);
+            double widest = 0;
+            for (const auto* table : tables) {
+                widest = std::max(widest, width(*table));
+                if (at != x) places.emplace(ElementRef{table->id}, Point{at, placed.at(table->id).y});
+            }
+            next = std::round(at + widest + gap);
+        }
+        if (!places.empty()) must(editor_.move_schema_tables(places));
+    }
+
 private:
     SchemaColumnId connect(RelationId table, std::optional<SchemaColumnId> column, const char* name, RelationId to) {
         ForeignKeyId made{};
@@ -132,7 +162,7 @@ constexpr auto unique = Rows::Unique;
 
 } // namespace
 
-void build_company_database_relational(application::Editor& editor) {
+void build_company_database_relational(application::Editor& editor, const TableWidth& width) {
     editor.new_schema_project();
     editor.rename_project("Company Database — Relational");
     Schema s(editor);
@@ -302,9 +332,13 @@ void build_company_database_relational(application::Editor& editor) {
     s.key_part_refers(project_product, "ProductID", product);
     s.key_refers(supplier_product, "SupplierID", supplier);
     s.key_part_refers(supplier_product, "ProductID", product);
+
+    // The lanes between the columns are 150 clear, room for the lines that
+    // run down them.
+    if (width) s.stand_columns_apart(width, 150);
 }
 
-void build_university_database_relational(application::Editor& editor) {
+void build_university_database_relational(application::Editor& editor, const TableWidth& width) {
     editor.new_schema_project();
     editor.rename_project("University Database — Relational");
     Schema s(editor);
@@ -466,9 +500,11 @@ void build_university_database_relational(application::Editor& editor) {
     s.key_part_refers(club_member, "ClubID", club);
     s.key_refers(student_scholarship, "StudentID", student);
     s.key_part_refers(student_scholarship, "ScholarshipID", scholarship);
+
+    if (width) s.stand_columns_apart(width, 150);
 }
 
-void build_basic_relational_schema(application::Editor& editor) {
+void build_basic_relational_schema(application::Editor& editor, const TableWidth& width) {
     editor.new_schema_project();
     Schema s(editor);
     // Each key named for its table, as the Table tool names it, so renaming a
@@ -481,6 +517,7 @@ void build_basic_relational_schema(application::Editor& editor) {
     s.column(parent, "Name", words(100), required);
     s.column(child, "Name", words(100), required);
     s.refer(child, "ParentID", parent, required);
+    if (width) s.stand_columns_apart(width, 94);
 }
 
 } // namespace erdflow::desktop

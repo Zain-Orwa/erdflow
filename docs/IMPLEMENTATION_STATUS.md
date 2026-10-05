@@ -1767,6 +1767,16 @@ line or width stored, so every line still routes itself when a table is
 moved. Age is not a column in either, since it is worked out rather than
 stored.
 
+A table's height is a matter of its rows, but its width is measured from its
+lettering, which each platform draws at its own size (2026-10-06, found when
+Windows CI's tables crowded one another). So each column of tables -- the
+tables placed at one x -- stands 150 px clear of the widest table in the
+column before it, as the schema measures them (94 px in the template), and
+moves with the lettering rather than into its neighbour
+(`SchemaView::full_width`). On macOS that is exactly where every table was
+placed; nothing there moved. Built without a schema to measure against, as
+the tests build them, the tables stay where they are placed.
+
 **New from template: Basic Relational Schema**, in the same places
 (`build_basic_relational_schema`), is Relational Design's template: Parent
 (ParentID, Name) and Child (ChildID, Name, ParentID), Child.ParentID
