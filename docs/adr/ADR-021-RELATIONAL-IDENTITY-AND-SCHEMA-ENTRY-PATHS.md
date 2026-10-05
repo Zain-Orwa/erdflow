@@ -10,7 +10,8 @@
 **Status:** Accepted
 
 **Amended:** 2026-10-01 -- §5b, how a column that is both keys is marked (see
-the note there).
+the note there). 2026-10-05 -- §5b, the open conflict over a key drawn on a
+relationship, decided (see the note there).
 
 **Date:** 2026-09-22
 **Project:** ERDFlow
@@ -272,6 +273,23 @@ Identifier tick or by the schema's primary-key toggle, is refused. Today a
 bridge can only get a user-defined key through a column added on the schema
 and made its primary key. The two rules cannot both stand as written, and
 which one gives way is Zain's decision.
+
+> **Decided 2026-10-05 (Zain).** Rule 1 stands, and the validation rule gives
+> way where it has to: **a key attribute may be owned by a relationship only
+> when the relationship is represented by its own table** in the Relational
+> Schema -- a many-to-many relationship, which becomes a bridge, or an
+> associative one. There it is the table's primary key, exactly as rule 1
+> says, by the kind, the Identifier tick or the schema's primary-key toggle.
+> A one-to-one or one-to-many relationship becomes a foreign key in a
+> participant's table and has no table to key, so a key on it stays refused
+> (`attribute.key.relationship`, now conditional), with a message that says
+> why. A change that would take a keyed relationship's table away -- a side
+> made one, a side cut or its entity deleted, the associative shape taken off
+> -- is refused the same way until the key is made an ordinary attribute;
+> the key is never dropped, demoted or ignored. Whether a relationship has a
+> table of its own is decided in one place, `domain::has_own_table`, which
+> the conversion uses too. The file format is unchanged: a key and its owner
+> were always written, and opening and saving apply the same rule.
 
 ---
 

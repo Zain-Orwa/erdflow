@@ -526,10 +526,7 @@ SchemaPreview schema_preview(const Project& project) {
     //    each many-to-many: a bridge with its own key and FK-only participant rows.
     std::set<std::size_t> participant_keys; // explicit strategies waiting for their referenced keys
     for (const auto& [id, relationship] : project.relationships) {
-        const auto many = std::count_if(relationship.participants.begin(), relationship.participants.end(),
-                                        [](const Participant& side) { return side.maximum == Cardinality::Many; });
-        const bool bridge = relationship.associative || many >= 2;
-        if (!bridge) continue;
+        if (!has_own_table(relationship)) continue;
         PreviewTable table;
         table.origin = ElementRef{id};
         const auto named = project.decisions.junction_name.find(id);

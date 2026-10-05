@@ -2358,6 +2358,133 @@ void drawn_keys_are_the_primary_key() {
             CHECK((key_names(table) == std::vector<std::string>{"First", "Last"}));
 }
 
+// A key drawn on a relationship keys the relationship's own table, so it is
+// allowed exactly where the relationship has one -- many-to-many, or
+// associative -- and nowhere else (Zain, 2026-10-05; ADR-021 §5b). Whatever
+// would leave a key on a relationship with no table of its own is refused,
+// saying why: never dropped, demoted or ignored.
+void relationship_keys_need_a_table_of_their_own() {
+    TestIds ids;
+    Editor editor(ids);
+    const auto student = entity(editor, "Student");
+    const auto course = entity(editor, "Course");
+    const auto professor = entity(editor, "Professor");
+    const auto department = entity(editor, "Department");
+    const auto keyed = [&](EntityId owner, const std::string& name) {
+        const auto made = attribute(editor, name, ElementRef{owner});
+        CHECK(editor.set_attribute_kind(made, AttributeKind::Key));
+        return made;
+    };
+    const auto student_id = keyed(student, "StudentID");
+    keyed(course, "CourseID");
+    keyed(professor, "ProfessorID");
+    keyed(department, "DepartmentID");
+    const auto table_from = [](const Project& project, const ElementRef& origin) {
+        for (const auto& table : schema_preview(project).tables)
+            if (table.origin == origin) return table;
+        throw std::runtime_error("No table was made from that element");
+    };
+    const auto sided = [&](RelationshipId rel, EntityId target, Cardinality maximum) {
+        const auto side = connect(editor, rel, target);
+        CHECK(editor.update_participant(rel, side, maximum, Participation::Partial, ""));
+        return side;
+    };
+    // Students take courses, many to many; a professor advises many students;
+    // a professor heads one department.
+    const auto takes = relationship(editor, "Takes");
+    const auto taker = sided(takes, student, Cardinality::Many);
+    sided(takes, course, Cardinality::Many);
+    const auto advises = relationship(editor, "Advises");
+    sided(advises, professor, Cardinality::One);
+    sided(advises, student, Cardinality::Many);
+    const auto heads = relationship(editor, "Heads");
+    sided(heads, professor, Cardinality::One);
+    sided(heads, department, Cardinality::One);
+    CHECK(has_own_table(editor.project().relationships.at(takes)));
+    CHECK(!has_own_table(editor.project().relationships.at(advises)));
+    CHECK(!has_own_table(editor.project().relationships.at(heads)));
+
+    // Many to many: the key is allowed, and it is the bridge's whole primary
+    // key. The participants' foreign keys stay ordinary foreign keys beside
+    // it, and the bridge is asked nothing about its key.
+    const auto number = attribute(editor, "EnrollmentNumber", ElementRef{takes});
+    CHECK(editor.set_attribute_kind(number, AttributeKind::Key));
+    CHECK(editor.project().attributes.at(number).kind == AttributeKind::Key);
+    CHECK(editor.project().attributes.at(number).identifier && editor.project().attributes.at(number).required);
+    const auto bridge = table_from(editor.project(), ElementRef{takes});
+    CHECK(bridge.primary_key.size() == 1);
+    CHECK(bridge.columns[bridge.primary_key.front()].name == "EnrollmentNumber");
+    CHECK(bridge.columns[bridge.primary_key.front()].origin == number);
+    const auto foreign_keys = std::count_if(bridge.columns.begin(), bridge.columns.end(), [](const PreviewColumn& column) {
+        return column.foreign_key && column.references && !column.primary_key;
+    });
+    CHECK(foreign_keys == 2);
+    CHECK(bridge.decisions.empty());
+
+    // One to many and one to one: there is no table to key, so a key there is
+    // refused, saying why and naming both, and nothing is changed.
+    const auto clear_refusal = [](const EditResult& result, const std::string& key, const std::string& owner) {
+        return !result && result.error.find("allowed only when the relationship is represented by its own table")
+                              != std::string::npos
+            && result.error.find(key + " is a key of " + owner) != std::string::npos
+            && result.error.find("must first be made an ordinary attribute") != std::string::npos;
+    };
+    const auto since = attribute(editor, "Since", ElementRef{advises});
+    const auto before = editor.project();
+    CHECK(clear_refusal(editor.set_attribute_kind(since, AttributeKind::Key), "Since", "Advises"));
+    CHECK(clear_refusal(editor.set_attribute_rules(since, true, true, false), "Since", "Advises"));
+    CHECK(editor.project() == before);
+    const auto term = attribute(editor, "Term", ElementRef{heads});
+    CHECK(clear_refusal(editor.set_attribute_kind(term, AttributeKind::Key), "Term", "Heads"));
+    CHECK(editor.project().attributes.at(term).kind == AttributeKind::Normal);
+
+    // A key moved onto a relationship: onto one with a table of its own it
+    // may go, onto one without it may not.
+    const auto ticket = attribute(editor, "Ticket", ElementRef{course});
+    CHECK(editor.set_attribute_kind(ticket, AttributeKind::Key));
+    CHECK(clear_refusal(editor.set_attribute_owner(ticket, ElementRef{advises}), "Ticket", "Advises"));
+    CHECK(editor.set_attribute_owner(ticket, ElementRef{takes}));
+    CHECK(editor.project().attributes.at(ticket).owner == AttributeOwner{ElementRef{takes}});
+    CHECK(editor.undo());
+
+    // Once Takes carries a key, nothing may take its table away while the key
+    // is there: a side made one, both sides at once, a side cut or its entity
+    // deleted. Each is refused, saying why, and Takes is left as it was.
+    const auto kept = editor.project();
+    const auto sides = editor.project().relationships.at(takes).participants;
+    CHECK(clear_refusal(editor.update_participant(takes, taker, Cardinality::One, Participation::Partial, ""),
+                        "EnrollmentNumber", "Takes"));
+    CHECK(clear_refusal(editor.set_cardinality(taker, Cardinality::One), "EnrollmentNumber", "Takes"));
+    CHECK(clear_refusal(editor.set_ratio(takes, Cardinality::One, Cardinality::Many), "EnrollmentNumber", "Takes"));
+    CHECK(clear_refusal(editor.disconnect(takes, sides.back().id), "EnrollmentNumber", "Takes"));
+    CHECK(clear_refusal(editor.erase({ElementRef{course}}), "EnrollmentNumber", "Takes"));
+    CHECK(editor.project() == kept);
+    // An associative relationship has a table whatever its sides hold, so a
+    // key on one stays while its sides change -- and taking the associative
+    // shape away from it is refused once its sides no longer make a bridge.
+    CHECK(editor.set_associative(takes, true));
+    CHECK(editor.update_participant(takes, taker, Cardinality::One, Participation::Partial, ""));
+    CHECK(table_from(editor.project(), ElementRef{takes}).primary_key.size() == 1);
+    CHECK(clear_refusal(editor.set_associative(takes, false), "EnrollmentNumber", "Takes"));
+    CHECK(editor.undo());
+    CHECK(editor.undo());
+    CHECK(editor.project() == kept);
+
+    // With the key made ordinary first, the same change goes through as it
+    // always has, and the bridge goes with it.
+    CHECK(editor.set_attribute_kind(number, AttributeKind::Normal));
+    CHECK(editor.update_participant(takes, taker, Cardinality::One, Participation::Partial, ""));
+    CHECK(!has_own_table(editor.project().relationships.at(takes)));
+    const auto unbridged = schema_preview(editor.project());
+    CHECK(std::none_of(unbridged.tables.begin(), unbridged.tables.end(),
+                       [&](const PreviewTable& table) { return table.origin == ElementRef{takes}; }));
+
+    // An entity's keys are untouched by any of it.
+    CHECK(editor.project().attributes.at(student_id).kind == AttributeKind::Key);
+    CHECK((table_from(editor.project(), ElementRef{student}).primary_key.size() == 1));
+    CHECK(!blocks(editor.project()));
+}
+
 // An answer about an element, and a column the schema added to it, are as much
 // part of that element's story as a remark pinned to it. Deleting the element
 // used to leave them behind: validate() refuses a decision that points at
@@ -4809,6 +4936,7 @@ int main() {
         {"identity and work in progress", identity_and_work_in_progress},
         {"the diagram becomes tables", the_diagram_becomes_tables},
         {"drawn keys are the primary key", drawn_keys_are_the_primary_key},
+        {"relationship keys need a table of their own", relationship_keys_need_a_table_of_their_own},
         {"tables are named for many rows", tables_are_named_for_many_rows},
         {"commands and stable undo", commands_and_stable_undo},
         {"project descriptions are bounded undoable edits", project_description_is_a_bounded_undoable_edit},

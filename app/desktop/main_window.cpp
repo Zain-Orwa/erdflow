@@ -4664,7 +4664,11 @@ namespace erdflow::desktop
                 if (const auto *attr = std::get_if<AttributeId>(&candidate);
                     attr && project.attributes.at(*attr).kind != AttributeKind::Composite)
                     continue;
-                if (attribute.kind == AttributeKind::Key && std::holds_alternative<RelationshipId>(candidate))
+                // A key may belong to a relationship only where the relationship
+                // has a table of its own to key (Zain, 2026-10-05; ADR-021 §5b).
+                if (const auto *relationship = std::get_if<RelationshipId>(&candidate);
+                    relationship && attribute.kind == AttributeKind::Key &&
+                    !domain::has_own_table(project.relationships.at(*relationship)))
                     continue;
                 owners.push_back(candidate);
                 owner->addItem(kind_label(candidate) + ": " + display_name(project, candidate));
@@ -4675,7 +4679,9 @@ namespace erdflow::desktop
             connect(owner, &QComboBox::activated, this, [this, attribute_id, owners](int index)
                     { show_result(editor_.set_attribute_owner(attribute_id, owners.at(static_cast<std::size_t>(index)))); });
             layout->addLayout(attr_form);
-            layout->addWidget(hint("Composite attributes can own other attributes. Key attributes belong to entities.", panel));
+            layout->addWidget(hint("Composite attributes can own other attributes. A key attribute belongs to an entity, "
+                                   "or to a many-to-many or associative relationship, which has a table of its own.",
+                                   panel));
         }
         if (const auto *specialization_id = std::get_if<SpecializationId>(&ref))
         {

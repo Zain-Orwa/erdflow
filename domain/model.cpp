@@ -235,6 +235,11 @@ RelationshipKind relationship_kind(const Relationship& relationship) {
     if (relationship.associative) return RelationshipKind::Associative;
     return relationship.identifying ? RelationshipKind::Identifying : RelationshipKind::Regular;
 }
+bool has_own_table(const Relationship& relationship) {
+    const auto many = std::count_if(relationship.participants.begin(), relationship.participants.end(),
+                                    [](const Participant& side) { return side.maximum == Cardinality::Many; });
+    return relationship.associative || many >= 2;
+}
 ElementRef target_ref(const ParticipantTarget& target) {
     if (const auto* entity = std::get_if<EntityId>(&target)) return *entity;
     return std::get<RelationshipId>(target);
@@ -479,8 +484,25 @@ std::vector<Issue> validate(const Project& project) {
             error("attribute.owner.specialization", "A specialization holds no attributes of its own.", ref);
         if (attribute.owner && is_figure(*attribute.owner))
             error("attribute.owner.figure", "A picture or a note holds no attributes.", ref);
-        if (attribute.kind == AttributeKind::Key && attribute.owner && std::holds_alternative<RelationshipId>(*attribute.owner))
-            error("attribute.key.relationship", "A relationship-owned attribute cannot be an entity identifier.", ref);
+        // A key drawn on a relationship keys the relationship's own table, so it
+        // is allowed only where the relationship has one (Zain, 2026-10-05;
+        // ADR-021 §5b). Every edit is checked against the model it leaves, so
+        // a change to the relationship that would take its table away from
+        // under a key is refused as surely as the key itself.
+        if (attribute.kind == AttributeKind::Key && attribute.owner)
+            if (const auto* holder = std::get_if<RelationshipId>(&*attribute.owner)) {
+                const auto relationship = project.relationships.find(*holder);
+                if (relationship != project.relationships.end() && !has_own_table(relationship->second)) {
+                    const auto& key = attribute.name;
+                    const auto& owner = relationship->second.name;
+                    error("attribute.key.relationship",
+                          "A relationship key is allowed only when the relationship is represented by its own "
+                          "table, which only a many-to-many or associative relationship is. " + key
+                              + " is a key of " + owner + ", so " + owner + " must be many-to-many or associative, or "
+                              + key + " must first be made an ordinary attribute.",
+                          ref);
+                }
+            }
     }
     // Iterative traversal with coloring is linear and cannot overflow the stack
     // even for a hostile file containing thousands of nested attributes.
