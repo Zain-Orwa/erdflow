@@ -3439,13 +3439,21 @@ namespace erdflow::desktop
                 import_actions_.push_back(action);
         file->addMenu(import_menu);
         file->addSeparator();
-        file->addAction("Open example", this, &MainWindow::load_example);
+        auto *open_example = file->addAction("Open example", this, &MainWindow::load_example);
+        open_example->setObjectName("fileOpenExample");
         auto *company_example = file->addAction("Company Database", this, &MainWindow::load_company_database);
         company_example->setObjectName("fileExampleCompany");
         company_example->setToolTip("A large company Conceptual diagram for testing the workspace.");
         auto *university_example = file->addAction("University Database", this, &MainWindow::load_university_database);
         university_example->setObjectName("fileExampleUniversityDatabase");
         university_example->setToolTip("A large university Conceptual diagram for testing the workspace.");
+        // Templates are projects (ADR-016). The one there is is the general
+        // starting frame, not the example (Zain, 2026-09-26), opened untitled and
+        // unsaved, as a template should be. It stands with the examples here,
+        // in the workspace it starts, now that Home's rail no longer offers it
+        // (Zain, 2026-10-03).
+        auto *file_template = file->addAction("New from template", this, &MainWindow::load_template);
+        file_template->setObjectName("fileTemplate");
         file->addSeparator();
         file->addAction("&Quit", QKeySequence::Quit, this, &QWidget::close);
         auto *edit = new QMenu("&Edit", this);
@@ -6098,18 +6106,6 @@ namespace erdflow::desktop
         rail->set_callback(HomeSection::OpenProject, [this]
                            { open_dialog(); });
         rail->set_callback(HomeSection::Recent, beside(HomeSection::Recent, recent_menu_));
-        rail->set_callback(HomeSection::Examples, [this]
-                           { load_example(); });
-        // Templates are projects (ADR-016). The one there is is the general
-        // starting frame, not the example (Zain, 2026-09-26), opened untitled and
-        // unsaved, as a template should be.
-        rail->set_callback(HomeSection::Templates, [this]
-                           { load_template(); });
-        // Bringing in work that already exists. Today that is an ERDFlow project
-        // or a picture carrying one; SQL and database sources join it when there
-        // is a Relational Design to read them into.
-        rail->set_callback(HomeSection::Import, [this]
-                           { open_dialog(); });
         rail->set_callback(HomeSection::Settings, beside(HomeSection::Settings, settings_menu_));
         rail->set_callback(HomeSection::Help, beside(HomeSection::Help, findChild<QMenu *>("helpMenu")));
 
@@ -7030,6 +7026,17 @@ namespace erdflow::desktop
             badge->setText(relational ? "RELATIONAL DESIGN" : "CONCEPTUAL");
         if (auto *picture = findChild<QAction *>("insertPicture"))
             picture->setVisible(!relational);
+        // Examples, the template and Import belong to the design they work on,
+        // not to Home (Zain, 2026-10-03), in every menu that offers them. Every
+        // example and the template are Conceptual diagrams, and Import brings in
+        // a project's diagram, so they are offered while the diagram is in front
+        // and put away with it. What Relational Design can import is what other
+        // tools write, and its entry, which says why it cannot be used yet, stays.
+        for (const char *name : {"fileOpenExample", "fileExampleCompany", "fileExampleUniversityDatabase",
+                                 "fileTemplate", "importProject", "importPicture", "homeExamples",
+                                 "homeExampleCompany", "homeExampleUniversityDatabase", "homeTemplates"})
+            if (auto *entry = findChild<QAction *>(name))
+                entry->setVisible(!relational);
     }
 
     void MainWindow::set_schema_full(bool full)

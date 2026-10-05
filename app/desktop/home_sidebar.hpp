@@ -27,25 +27,25 @@ namespace erdflow::desktop {
 
 // The places named by the Home screen's left rail. This is navigation, not the
 // four-level product model: several entries are commands or catalogues.
+//
+// Examples, Templates and Import are not here: each belongs to the design it
+// works on, and is offered in that workspace rather than on Home (Zain,
+// 2026-10-03).
 enum class HomeSection {
     Home,
     OpenProject,
     Recent,
-    Examples,
-    Templates,
-    Import,
     Settings,
     Help,
 };
 
 // No New Project row: the Home screen's cards are where a project is started
 // (Zain, 2026-09-24, ADR-022 section 9.20).
-inline constexpr std::size_t home_section_count = 8;
+inline constexpr std::size_t home_section_count = 5;
 
-// Which group a row belongs to. A rule is drawn between each of the first
-// three; the last is pushed to the foot of the rail, where settings and help
-// are looked for.
-enum class HomeGroup { Start, Bring, Import, Foot };
+// Which group a row belongs to. The first runs down from the top; the last is
+// pushed to the foot of the rail, where settings and help are looked for.
+enum class HomeGroup { Start, Foot };
 
 struct HomeNavigationDefinition {
     HomeSection section;
@@ -59,9 +59,6 @@ struct HomeNavigationDefinition {
 
 // Kept in one public, immutable table so production code and tests ask the
 // same source for the required order and copy.
-//
-// Import sits under Examples and Templates with a rule between them, as the
-// reference draws it -- Zain confirmed the rule on 2026-09-24.
 [[nodiscard]] const std::array<HomeNavigationDefinition, home_section_count>&
 home_navigation();
 

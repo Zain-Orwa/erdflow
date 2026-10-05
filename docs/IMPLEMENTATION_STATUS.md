@@ -2465,6 +2465,23 @@ outside the repository at `erdflow-notes/UI-AZURE-TASKS.md`. What is built:
   the only tutorial there is yet. There is no *Open an example project* link,
   because the sidebar's Examples row does that (ADR-022 §9.20). *Design today. Build tomorrow.* is set in
   light italic over the wave at its foot.
+- **Examples, Templates and Import are offered in the workspace they belong
+  to, not on Home's rail** (Zain, 2026-10-03). The rail is Home, Open
+  Project and Recent, then Settings and Help at its foot; this replaces what
+  the entries above and ADR-022 §9.14 and §9.20 say about its Examples,
+  Templates and Import rows. Every example and the template are Conceptual
+  diagrams, so they stand in the File menu -- the ribbon's File tab --
+  beside Import: *Open example*, *Company Database*, *University Database*
+  and, new there, *New from template*; Import's own tab and the header's
+  *Open example* are as they were. While Relational Design is in front, a
+  schema drawn by hand or a diagram's schema given the whole window, those
+  entries and Import's two ERDFlow formats are put away
+  (`MainWindow::set_workspace_in_front`), and Import keeps only *From
+  another tool…*, still unavailable with its reason. The Home menu in the
+  menu bar offers its examples and *New from template* on the same terms:
+  while the diagram is in front, and not while Relational Design is
+  (2026-10-04). Relational Design has no examples or templates of its own
+  yet; they are the next piece of work (Zain, 2026-10-04).
 - Home's text is in the specification's pixel sizes. Where one of Azure's
   colours would put ordinary text under 4.5:1 it is deepened only as far as
   needed: Create Project and the chosen row use `#1976D2`, and the learning

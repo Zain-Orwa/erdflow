@@ -171,11 +171,6 @@ const std::array<HomeNavigationDefinition, home_section_count>& home_navigation(
         {HomeSection::OpenProject, HomeGroup::Start, "homeNavOpenProject", "homeActionOpenProject",
          "Open Project", "open"},
         {HomeSection::Recent, HomeGroup::Start, "homeNavRecent", "homeActionRecent", "Recent", "recent"},
-        {HomeSection::Examples, HomeGroup::Bring, "homeNavExamples", "homeActionExamples",
-         "Examples", "examples"},
-        {HomeSection::Templates, HomeGroup::Bring, "homeNavTemplates", "homeActionTemplates",
-         "Templates", "templates"},
-        {HomeSection::Import, HomeGroup::Import, "homeNavImport", "homeActionImport", "Import", "import"},
         {HomeSection::Settings, HomeGroup::Foot, "homeNavSettings", "homeActionSettings",
          "Settings", "settings"},
         {HomeSection::Help, HomeGroup::Foot, "homeNavHelp", "homeActionHelp", "Help", "help"},
@@ -254,7 +249,7 @@ void HomeSidebar::resizeEvent(QResizeEvent* event) {
 }
 
 void HomeSidebar::lay_out() {
-    // The first three groups run down from the top with a rule between each;
+    // The groups above the foot run down from the top with a rule between each;
     // the foot group is stood on the bottom edge, and whatever room is left
     // over lies between, which is the flexible space the specification asks
     // for.

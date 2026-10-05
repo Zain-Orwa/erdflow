@@ -421,6 +421,9 @@ is approved. See `docs/DEVELOPMENT.md`.
 > **Amended by §9.20:** the cards are titled *Conceptual Design (ERD)*,
 > *Relational Schema* and *SQL Project*. The sidebar has no New Project row,
 > and the learning panel has no *Open an example project* link.
+>
+> **Amended by §9.22:** Examples, Templates and Import are no longer in the
+> sidebar. Each is offered in the workspace it works on.
 
 Zain reviewed the Home screen as built and corrected it. None of this is a
 silent revision: §6 and §9.11 carry pointers here and keep their own text.
@@ -742,6 +745,11 @@ The Home and card reference pictures were taken again. The More options
 picture from §9.18 was removed.
 
 ### 9.20 Navigation cleanup and the Relational Schema card, 2026-09-24
+
+> **Amended by §9.22:** the sidebar is now Home, Open Project, Recent ·
+> (space) · Settings, Help. Examples, Templates and Import moved into the
+> workspaces, so the learning panel's missing example link is now reached
+> from the Conceptual workspace's menus.
 
 Zain removed two entries that duplicated something already on Home, and
 renamed one card.
@@ -1079,3 +1087,29 @@ Home picture was retaken.
   about 7 px at the reference size. That is what the real panel looks like
   made small.
 - The Home picture and the four card pictures were retaken.
+
+### 9.22 Examples, Templates and Import belong to their workspace, 2026-10-03
+
+Zain moved Examples, Templates and Import off Home's sidebar. They are not
+global: each works on one design level, so each is offered in the workspace
+it belongs to (2026-10-03), and in every menu that offers it (2026-10-04).
+
+- **The sidebar** is Home, Open Project, Recent · (space) · Settings, Help.
+  Its Import row only opened the Open dialog, which Open Project still does.
+- **Conceptual Design** offers every existing example and the template, since
+  all of them are Conceptual diagrams: in the File menu, which is also the
+  ribbon's File tab (*Open example*, *Company Database*, *University
+  Database*, and *New from template*, added there), in the Home menu of the
+  menu bar, and through the header's *Open example*. Import is File ›
+  Import and the ribbon's Import tab, unchanged: an ERDFlow project, a
+  picture carrying one, and *From another tool…*, unavailable with its
+  reason.
+- **Relational Design** is offered none of those while it is in front -- a
+  schema drawn by hand, or a diagram's schema given the whole window. Its
+  Import keeps only *From another tool…*, since what it would read is what
+  other tools write about tables. It has no examples or templates of its
+  own yet; they are the next piece of work.
+- Nothing about what an example, the template or an import makes changed,
+  and no shared code was copied: the same entries are shown or put away as
+  the workspace in front changes (`MainWindow::set_workspace_in_front`).
+- The Home and sidebar reference pictures still pass and were not retaken.
