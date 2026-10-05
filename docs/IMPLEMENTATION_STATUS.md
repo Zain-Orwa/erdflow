@@ -7,7 +7,7 @@
 > look like afterwards, and whether it is a gain or a loss. He decides.
 > Full rule: [CLAUDE.md](../CLAUDE.md).
 
-**Updated:** 2026-10-02
+**Updated:** 2026-10-05
 
 **Scope:** Part 1 — the Conceptual ERD editor, one page per project, and
 Relational Design: a schema worked out from the diagram, or drawn by hand in a
@@ -517,6 +517,35 @@ to build in Part 1* at the end. The state of the test suites is under
   to a schema drawn by hand always goes at the end. Task 4A is complete;
   Task 4B is complete as this foundation; the reordering interaction is
   pending, with its gesture undecided.
+- **A derived table lists its columns by key role, and an owner's attributes
+  in the order they were made** (2026-10-03; format version 34).
+  `schema_preview` lists each table worked out from the diagram in three
+  groups once its key is taken: the primary key's columns, a column that is a
+  foreign key as well among them; then every other column; then the columns
+  that are only foreign keys. Each group keeps the order the conversion made
+  it in, and `primary_key` and every `references_column` are carried along, so
+  no key or foreign key changes meaning. A stored column order (Task 4B) is
+  still applied after it, and a schema drawn by hand is not regrouped. Within
+  the conversion an owner's attributes -- and a composite's parts, in the
+  composite's place -- come in the order they were created:
+  `Attribute::creation_order` is one past the largest in the project when an
+  attribute is made, and again the first time an attribute still called
+  *Attribute* (the name the canvas places it with), or nothing, is given a
+  name of its own -- so ellipses placed first and named afterwards list in
+  the order they are named. Naming it again, or changing its owner, never
+  changes it; it is given anew, after everything already there and in the
+  originals' order, to what Duplicate, Import and *Convert to Conceptual
+  Design* bring in. Equal
+  numbers, possible only in a project built some other way, fall back to the
+  order of identities. This replaces the identity order the Task 4A entry
+  above describes for a key of several attributes. The Conceptual Explorer
+  lists attributes in the same order. Format 34 writes the number on every
+  attribute; an older file is numbered as it opens in the order of its
+  identities, which is how it listed before, and opening it neither writes the
+  file nor leaves the project unsaved. Foreign keys, invented keys and
+  discriminators keep, within their group, the order the conversion gives
+  them: a foreign key follows its relationship's identity, which no stored
+  order governs.
 - **Disconnecting a side takes the names typed over its foreign key**
   (fixed 2026-10-02). `Editor::disconnect` left them behind, and a name for
   a key that is gone is refused, so a side whose foreign key had a part

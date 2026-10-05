@@ -17,6 +17,7 @@
 #include <array>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <set>
 #include <stdexcept>
 #include <vector>
@@ -65,7 +66,7 @@ namespace {
 // in its table's primary key, so a key of several columns no longer follows
 // the order the table lists them in; version 33 keeps the order somebody gave
 // the columns of a table worked out from the diagram.
-constexpr int current_format_version = 33;
+constexpr int current_format_version = 34;
 QString text(const std::string& value) { return QString::fromUtf8(value.data(), static_cast<qsizetype>(value.size())); }
 Uuid bytes_of(const QUuid& value) {
     Uuid result;
@@ -327,6 +328,16 @@ std::uint32_t parse_key_order(const QJsonValue& value) {
     const auto number = value.toDouble();
     if (!std::isfinite(number) || number < 0 || number != std::floor(number) || number > static_cast<double>(max_elements))
         invalid("A column's place in its key must be a whole, non-negative number.");
+    return static_cast<std::uint32_t>(number);
+}
+// When an attribute was created, counted against the project's others:
+// whole, not negative, and within the numbers an attribute can hold.
+std::uint32_t parse_creation_order(const QJsonValue& value) {
+    if (!value.isDouble()) invalid("An attribute's creation order must be a number.");
+    const auto number = value.toDouble();
+    if (!std::isfinite(number) || number < 0 || number != std::floor(number)
+        || number > static_cast<double>(std::numeric_limits<std::uint32_t>::max()))
+        invalid("An attribute's creation order must be a whole, non-negative number.");
     return static_cast<std::uint32_t>(number);
 }
 bool parse_flag(const QJsonValue& value, const char* what) {
@@ -906,7 +917,8 @@ QByteArray ErdxProjectStore::encode(const Project& project) {
             {"length", static_cast<double>(attribute.length)},
             {"scale", static_cast<double>(attribute.scale)}, {"identifier", attribute.identifier},
             {"required", attribute.required}, {"unique", attribute.unique},
-            {"auto_increment", attribute.auto_increment}});
+            {"auto_increment", attribute.auto_increment},
+            {"creation_order", static_cast<double>(attribute.creation_order)}});
     for (const auto& [id, relationship] : project.relationships) {
         QJsonArray participants;
         for (const auto& p : relationship.participants)
@@ -1098,6 +1110,11 @@ application::LoadResult ErdxProjectStore::decode(const QByteArray& input) {
         // which reads correctly as every generated key still carrying the name
         // the rule gave it.
         const bool named_keys = number_version >= 24;
+        // Version 34 records when each attribute was created, which is what an
+        // owner's attributes are listed by. A file written before it has no
+        // such number, and is numbered as it opens in the order its
+        // attributes were listed in then: the order of their identities.
+        const bool creation_ordered = number_version >= 34;
         const auto data = lettered
             ? object(root["project"], {"id", "name", "description", "entities", "attributes", "relationships", "layout", "connectors", "specializations", "colours", "pictures", "notes", "comments", "transparency", "lettering", "decisions", "schema", "schema_layout", "background"})
             : described
@@ -1145,7 +1162,10 @@ application::LoadResult ErdxProjectStore::decode(const QByteArray& input) {
             if (!project.entities.emplace(entity.id, entity).second) invalid("Duplicate entity identifier.");
         }
         for (const auto& value : array(data["attributes"])) {
-            auto o = generated
+            auto o = creation_ordered
+                ? object(value, {"id", "name", "description", "kind", "owner", "comment", "type", "length",
+                                 "scale", "identifier", "required", "unique", "auto_increment", "creation_order"})
+                : generated
                 ? object(value, {"id", "name", "description", "kind", "owner", "comment", "type", "length",
                                  "scale", "identifier", "required", "unique", "auto_increment"})
                 : catalogued
@@ -1169,7 +1189,15 @@ application::LoadResult ErdxProjectStore::decode(const QByteArray& input) {
                 attribute.unique = parse_flag(o["unique"], "unique");
                 if (generated) attribute.auto_increment = parse_flag(o["auto_increment"], "auto_increment");
             }
+            if (creation_ordered) attribute.creation_order = parse_creation_order(o["creation_order"]);
             if (!project.attributes.emplace(attribute.id, attribute).second) invalid("Duplicate attribute identifier.");
+        }
+        if (!creation_ordered) {
+            std::uint32_t next = 0;
+            for (auto& [id, attribute] : project.attributes) {
+                (void)id;
+                attribute.creation_order = ++next;
+            }
         }
         std::size_t participant_count = 0;
         for (const auto& value : array(data["relationships"])) {

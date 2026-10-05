@@ -7,6 +7,7 @@
 #include "app/desktop/diagram_view.hpp"
 #include "app/desktop/document_export.hpp"
 #include "app/desktop/picture_export.hpp"
+#include "domain/schema_preview.hpp"
 
 #include <QApplication>
 #include <QBuffer>
@@ -2748,6 +2749,54 @@ void composite_owner_padlock_tests() {
     require(!view.attribute_owner(), "Nor can it be locked any other way");
 }
 
+// Placed by hand and named afterwards, attributes are listed in the order they
+// are named (Zain, 2026-10-03): four clicked down right to left with the locked
+// Attribute tool, then renamed in place 1, 2, 3, 4 from left to right. The
+// order they were placed in alone would list 4, 3, 2 after the key.
+void attributes_named_on_the_canvas_list_in_naming_order() {
+    SequentialIds ids;
+    application::Editor editor(ids);
+    const auto entity = *editor.create_entity("Entity", {-74, 140, 148, 86}).created;
+    desktop::DiagramView view(editor);
+    view.resize(1100, 800);
+    view.show();
+    view.actual_size();
+    view.centerOn(0, 0);
+    QApplication::processEvents();
+    view.set_attribute_owner(entity);
+    view.set_tool(desktop::Tool::Attribute, true);
+    std::vector<domain::AttributeId> placed;
+    for (const auto& at : {QPointF(260, -60), QPointF(80, -140), QPointF(-100, -140), QPointF(-280, -60)}) {
+        click(view, at);
+        const auto chosen = view.selected_elements();
+        require(chosen.size() == 1 && std::holds_alternative<domain::AttributeId>(chosen.front()),
+                "A click places an attribute");
+        placed.push_back(std::get<domain::AttributeId>(chosen.front()));
+        require(editor.project().attributes.at(placed.back()).name == "Attribute",
+                "It is placed under the name the canvas gives every new attribute");
+    }
+    view.set_tool(desktop::Tool::Select);
+    // Named left to right, so the last placed is named first.
+    const std::vector<std::pair<std::size_t, QString>> naming{{3, "1"}, {2, "2"}, {1, "3"}, {0, "4"}};
+    for (const auto& [which, name] : naming) {
+        view.synchronize();
+        QApplication::processEvents();
+        const auto& box = editor.project().layout.at(domain::ElementRef{placed[which]});
+        const auto centre = view.mapFromScene(QPointF(box.x + box.width / 2, box.y + box.height / 2));
+        mouse(view, QEvent::MouseButtonDblClick, centre, Qt::LeftButton, Qt::LeftButton);
+        require(view.renaming(), "Double-clicking an attribute opens its name in place");
+        view.viewport()->findChild<QLineEdit*>("inlineName")->setText(name);
+        view.commit_rename();
+        require(editor.project().attributes.at(placed[which]).name == name.toStdString(), "The name is taken");
+    }
+    require(editor.set_attribute_kind(placed[3], domain::AttributeKind::Key), "1 is made the key");
+    std::vector<std::string> listed;
+    for (const auto& table : domain::schema_preview(editor.project()).tables)
+        for (const auto& column : table.columns) listed.push_back(column.name);
+    require((listed == std::vector<std::string>{"1", "2", "3", "4"}),
+            "The schema lists the attributes in the order they were named, the key first");
+}
+
 // The triangle is placed like any other element and wired up by hand. The first
 // entity connected is what it generalises; every one after that is a subtype.
 void inheritance_connection_tests() {
@@ -4062,6 +4111,7 @@ int main(int argc, char** argv) {
         tool_locking_tests();
         attribute_owner_tests();
         composite_owner_padlock_tests();
+        attributes_named_on_the_canvas_list_in_naming_order();
         inheritance_connection_tests();
         inheritance_deletion_tests();
         inheritance_orientation_tests();

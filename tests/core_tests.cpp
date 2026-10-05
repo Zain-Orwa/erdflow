@@ -4275,6 +4275,535 @@ void generated_foreign_keys_keep_the_key_scale() {
     CHECK((shape_in(editor.project(), "Stocks", "StoreNo") == TypeShape{LogicalType::Numeric, 9, 4}));
 }
 
+// Identities whose order says nothing about when they were issued (Zain,
+// 2026-10-03). Counting down, each sorts before the one issued before it, as
+// a wall clock set back makes them; shuffled, they come in no order at all, as
+// a burst of Qt's can; counting up, they come in order, as TestIds' do.
+struct UnorderedIds final : IdGenerator {
+    enum class Way { Up, Down, Shuffled };
+    Way way = Way::Down;
+    std::uint64_t up = 1;
+    std::uint64_t down = std::uint64_t{1} << 48;
+    std::uint64_t state = 20261003;
+    Uuid next() override {
+        std::uint64_t value = 0;
+        if (way == Way::Up) value = up++;
+        else if (way == Way::Down) value = down--;
+        else {
+            state = state * 6364136223846793005ULL + 1442695040888963407ULL;
+            value = state >> 8;
+        }
+        Uuid id;
+        id.bytes[6] = 0x70;
+        id.bytes[8] = 0x80;
+        for (unsigned i = 0; i < 7; ++i) id.bytes[15 - i] = static_cast<std::uint8_t>((value >> (8U * i)) & 0xffU);
+        return id;
+    }
+};
+using Names = std::vector<std::string>;
+// The table one element became, and what its columns are called in order.
+PreviewTable table_made_from(const Project& project, const ElementRef& origin) {
+    for (const auto& table : schema_preview(project).tables)
+        if (table.origin == origin) return table;
+    throw std::runtime_error("No table was made from that element");
+}
+Names columns_listed(const PreviewTable& table) {
+    Names names;
+    for (const auto& column : table.columns) names.push_back(column.name);
+    return names;
+}
+// An owner's attributes as their identities alone would list them.
+Names by_identity(const Project& project, const ElementRef& owner) {
+    Names names;
+    for (const auto& [id, attribute] : project.attributes) {
+        (void)id;
+        if (attribute.owner == owner) names.push_back(attribute.name);
+    }
+    return names;
+}
+AttributeId key_attribute(Editor& editor, const std::string& name, const ElementRef& owner) {
+    const auto made = attribute(editor, name, owner);
+    CHECK(editor.set_attribute_kind(made, AttributeKind::Key));
+    return made;
+}
+RelationshipId related(Editor& editor, EntityId first, Cardinality first_max, EntityId second, Cardinality second_max,
+                       const std::string& name) {
+    const auto made = editor.relate(first, second, {}, name);
+    CHECK(made && made.created);
+    const auto id = std::get<RelationshipId>(*made.created);
+    const auto sides = editor.project().relationships.at(id).participants;
+    CHECK(editor.update_participant(id, sides[0].id, first_max, Participation::Partial, ""));
+    CHECK(editor.update_participant(id, sides[1].id, second_max, Participation::Partial, ""));
+    return id;
+}
+std::uint32_t creation_order_of(const Editor& editor, AttributeId id) {
+    return editor.project().attributes.at(id).creation_order;
+}
+
+// An owner's attributes are listed in the order they were created, whatever
+// identities they carry. Each attribute here is given an identity that sorts
+// before the last one's, as a clock set back gives them, so listing them by
+// identity lists them backwards: the 1, 5, 4, 3, 2 the schema showed.
+void attributes_are_listed_in_the_order_they_were_created() {
+    UnorderedIds ids;
+    Editor editor(ids);
+    const auto student = entity(editor, "Student");
+    std::vector<AttributeId> made;
+    for (const char* name : {"1", "2", "3", "4", "5"}) made.push_back(attribute(editor, name, ElementRef{student}));
+    CHECK(editor.set_attribute_kind(made[0], AttributeKind::Key));
+    CHECK((by_identity(editor.project(), ElementRef{student}) == Names{"5", "4", "3", "2", "1"}));
+    for (std::size_t i = 0; i < made.size(); ++i) CHECK(creation_order_of(editor, made[i]) == i + 1);
+    const auto table = table_made_from(editor.project(), ElementRef{student});
+    CHECK((columns_listed(table) == Names{"1", "2", "3", "4", "5"}));
+    CHECK(table.columns[0].primary_key && table.primary_key == std::vector<std::size_t>{0});
+    // Converted again, the same exactly.
+    CHECK(schema_preview(editor.project()) == schema_preview(editor.project()));
+
+    // What they are called says nothing about their order.
+    const auto contact = entity(editor, "Contact");
+    for (const char* name : {"Zebra", "Email", "BirthDate"}) attribute(editor, name, ElementRef{contact});
+    CHECK((columns_listed(table_made_from(editor.project(), ElementRef{contact}))
+           == Names{"ContactID", "Zebra", "Email", "BirthDate"}));
+
+    // Attributes built some other way, numbered alike, are listed by identity,
+    // and one made afterwards is listed after them.
+    auto unnumbered = editor.project();
+    for (auto& [id, value] : unnumbered.attributes) {
+        (void)id;
+        value.creation_order = 0;
+    }
+    Editor opened(ids);
+    CHECK(opened.replace_project(unnumbered));
+    CHECK((columns_listed(table_made_from(opened.project(), ElementRef{student})) == Names{"1", "5", "4", "3", "2"}));
+    attribute(opened, "6", ElementRef{student});
+    CHECK(columns_listed(table_made_from(opened.project(), ElementRef{student})).back() == "6");
+
+    // Only at the largest number an attribute can hold is nothing more made,
+    // and then nothing changes.
+    auto full = editor.project();
+    full.attributes.at(made[4]).creation_order = std::numeric_limits<std::uint32_t>::max();
+    Editor crowded(ids);
+    CHECK(crowded.replace_project(full));
+    const auto before = crowded.project();
+    CHECK(!crowded.create_attribute("7", {}, ElementRef{student}));
+    CHECK(!crowded.duplicate({ElementRef{student}}));
+    CHECK(crowded.project() == before);
+}
+
+// A key made in the middle heads its table; the others keep the order they
+// were made in around it.
+void a_key_made_in_the_middle_heads_its_table() {
+    UnorderedIds ids;
+    Editor editor(ids);
+    const auto row = entity(editor, "Row");
+    std::map<std::string, AttributeId> made;
+    for (const char* name : {"A", "B", "C", "D", "E"}) made.emplace(name, attribute(editor, name, ElementRef{row}));
+    CHECK(editor.set_attribute_kind(made.at("C"), AttributeKind::Key));
+    const auto table = table_made_from(editor.project(), ElementRef{row});
+    CHECK((columns_listed(table) == Names{"C", "A", "B", "D", "E"}));
+    CHECK(table.columns[0].primary_key && table.primary_key == std::vector<std::size_t>{0});
+}
+
+// Three groups, each in the order it was made in: the key, with any of its
+// columns that are foreign keys as well; then every other column; then the
+// foreign keys alone. On a diagram an attribute is never a foreign key -- a
+// relationship puts one there -- so a foreign key keeps the place among its
+// own the conversion has always given it: the order of its relationships.
+void key_roles_group_the_columns_and_each_group_keeps_creation_order() {
+    UnorderedIds ids;
+    ids.way = UnorderedIds::Way::Up;
+    Editor editor(ids);
+    const auto department = entity(editor, "Department");
+    const auto advisor = entity(editor, "Advisor");
+    const auto item = entity(editor, "Item");
+    ids.way = UnorderedIds::Way::Down;
+    key_attribute(editor, "DeptID", ElementRef{department});
+    key_attribute(editor, "AdvisorID", ElementRef{advisor});
+    // Made in the order A, the foreign key D, C, the key E, the foreign key F.
+    attribute(editor, "A", ElementRef{item});
+    ids.way = UnorderedIds::Way::Up;
+    related(editor, department, Cardinality::One, item, Cardinality::Many, "D");
+    ids.way = UnorderedIds::Way::Down;
+    attribute(editor, "C", ElementRef{item});
+    key_attribute(editor, "E", ElementRef{item});
+    ids.way = UnorderedIds::Way::Up;
+    related(editor, advisor, Cardinality::One, item, Cardinality::Many, "F");
+    const auto preview = schema_preview(editor.project());
+    const auto items = table_made_from(editor.project(), ElementRef{item});
+    CHECK((columns_listed(items) == Names{"E", "A", "C", "DepartmentDeptID", "AdvisorID"}));
+    CHECK(items.columns[0].primary_key && !items.columns[0].foreign_key);
+    for (const std::size_t row : {1U, 2U}) CHECK(!items.columns[row].primary_key && !items.columns[row].foreign_key);
+    const auto points_at = [&](const PreviewColumn& column) {
+        const auto& target = preview.tables.at(*column.references);
+        return target.name + "." + target.columns.at(column.references_column).name;
+    };
+    for (const std::size_t row : {3U, 4U}) CHECK(items.columns[row].foreign_key && !items.columns[row].primary_key);
+    CHECK(points_at(items.columns[3]) == "Departments.DeptID");
+    CHECK(points_at(items.columns[4]) == "Advisors.AdvisorID");
+
+    // A bridge keyed by the pair it joins: the pair, key and foreign key at
+    // once, heads it, and its own attributes follow in the order they were made.
+    ids.way = UnorderedIds::Way::Up;
+    const auto student = entity(editor, "Student");
+    const auto course = entity(editor, "Course");
+    ids.way = UnorderedIds::Way::Down;
+    key_attribute(editor, "StudentID", ElementRef{student});
+    key_attribute(editor, "CourseID", ElementRef{course});
+    ids.way = UnorderedIds::Way::Up;
+    const auto takes = related(editor, student, Cardinality::Many, course, Cardinality::Many, "Takes");
+    CHECK(editor.set_bridge_key(takes, BridgeKey::Pair));
+    ids.way = UnorderedIds::Way::Down;
+    attribute(editor, "Grade", ElementRef{takes});
+    attribute(editor, "Mark", ElementRef{takes});
+    CHECK((by_identity(editor.project(), ElementRef{takes}) == Names{"Mark", "Grade"}));
+    const auto bridge = table_made_from(editor.project(), ElementRef{takes});
+    CHECK((columns_listed(bridge) == Names{"StudentID", "CourseID", "Grade", "Mark"}));
+    for (const std::size_t row : {0U, 1U}) CHECK(bridge.columns[row].primary_key && bridge.columns[row].foreign_key);
+    CHECK((bridge.primary_key == std::vector<std::size_t>{0, 1}));
+}
+
+// A composite's parts are listed where the composite would be, in the order
+// they were made in; the composite itself converts as it always has.
+void composite_parts_keep_the_order_they_were_made_in() {
+    UnorderedIds ids;
+    Editor editor(ids);
+    const auto student = entity(editor, "Student");
+    key_attribute(editor, "StudentID", ElementRef{student});
+    const auto name = attribute(editor, "Name", ElementRef{student});
+    CHECK(editor.set_attribute_kind(name, AttributeKind::Composite));
+    for (const char* part : {"First", "Mid", "Last"}) attribute(editor, part, ElementRef{name});
+    attribute(editor, "BirthDate", ElementRef{student});
+    attribute(editor, "Age", ElementRef{student});
+    CHECK((by_identity(editor.project(), ElementRef{name}) == Names{"Last", "Mid", "First"}));
+    CHECK((columns_listed(table_made_from(editor.project(), ElementRef{student}))
+           == Names{"StudentID", "First", "Mid", "Last", "BirthDate", "Age"}));
+}
+
+// Where an attribute is drawn has nothing to do with its order.
+void moving_an_attribute_does_not_reorder_its_table() {
+    UnorderedIds ids;
+    Editor editor(ids);
+    const auto row = entity(editor, "Row");
+    std::vector<AttributeId> made;
+    double x = 0;
+    for (const char* name : {"A", "B", "C"}) {
+        const auto result = editor.create_attribute(name, {x, -200, 150, 60}, ElementRef{row});
+        CHECK(result && result.created);
+        made.push_back(std::get<AttributeId>(*result.created));
+        x += 200;
+    }
+    const auto attributes = editor.project().attributes;
+    CHECK(editor.move({{ElementRef{made[2]}, Rect{-400, -200, 150, 60}}}));
+    CHECK(editor.project().layout.at(ElementRef{made[2]}).x < editor.project().layout.at(ElementRef{made[0]}).x);
+    CHECK(editor.project().attributes == attributes);
+    CHECK((columns_listed(table_made_from(editor.project(), ElementRef{row})) == Names{"RowID", "A", "B", "C"}));
+}
+
+// Connecting an attribute to its owner, or moving it to another, is not
+// creating it: its number stays, and so does its place.
+void connecting_attributes_does_not_reorder_them() {
+    UnorderedIds ids;
+    Editor editor(ids);
+    const auto row = entity(editor, "Row");
+    const auto a = attribute(editor, "A");
+    const auto b = attribute(editor, "B");
+    const auto c = attribute(editor, "C");
+    for (const auto id : {c, a, b}) CHECK(editor.set_attribute_owner(id, ElementRef{row}));
+    CHECK(creation_order_of(editor, a) == 1 && creation_order_of(editor, b) == 2 && creation_order_of(editor, c) == 3);
+    CHECK((columns_listed(table_made_from(editor.project(), ElementRef{row})) == Names{"RowID", "A", "B", "C"}));
+    // The same for a composite's parts, connected to it in another order.
+    const auto name = attribute(editor, "Name", ElementRef{row});
+    CHECK(editor.set_attribute_kind(name, AttributeKind::Composite));
+    const auto first = attribute(editor, "First");
+    const auto middle = attribute(editor, "Middle");
+    const auto last = attribute(editor, "Last");
+    for (const auto id : {last, first, middle}) CHECK(editor.set_attribute_owner(id, ElementRef{name}));
+    CHECK((columns_listed(table_made_from(editor.project(), ElementRef{row}))
+           == Names{"RowID", "A", "B", "C", "First", "Middle", "Last"}));
+}
+
+// A copy is made after everything already there, in the order of what it
+// copies, whatever identities the burst of copying hands out.
+void copies_keep_the_order_of_their_originals() {
+    UnorderedIds ids;
+    ids.way = UnorderedIds::Way::Shuffled;
+    Editor editor(ids);
+    const auto row = entity(editor, "Row");
+    for (const char* name : {"A", "B", "C", "D", "E"}) attribute(editor, name, ElementRef{row});
+    const Names wanted{"RowID", "A", "B", "C", "D", "E"};
+    std::vector<EntityId> copies;
+    std::uint32_t largest = 5;
+    int scrambled = 0;
+    for (int n = 0; n < 200; ++n) {
+        const auto copy = editor.duplicate({ElementRef{row}});
+        CHECK(copy && copy.created);
+        const auto made = std::get<EntityId>(*copy.created);
+        copies.push_back(made);
+        std::map<std::string, std::uint32_t> numbers;
+        for (const auto& [id, value] : editor.project().attributes)
+            if (value.owner == ElementRef{made}) numbers.emplace(value.name, value.creation_order);
+        CHECK((numbers == std::map<std::string, std::uint32_t>{
+            {"A", largest + 1}, {"B", largest + 2}, {"C", largest + 3}, {"D", largest + 4}, {"E", largest + 5}}));
+        largest += 5;
+        if (by_identity(editor.project(), ElementRef{made}) != Names{"A", "B", "C", "D", "E"}) ++scrambled;
+    }
+    // The identities did come out of order, so they could not have listed the copies.
+    CHECK(scrambled > 0);
+    const auto preview = schema_preview(editor.project());
+    for (const auto& copy : copies) {
+        const auto table = std::find_if(preview.tables.begin(), preview.tables.end(),
+                                        [&](const PreviewTable& one) { return one.origin == ElementRef{copy}; });
+        CHECK(table != preview.tables.end());
+        CHECK(columns_listed(*table) == wanted);
+    }
+    // One attribute copied on its own stays with its owner, made last.
+    const auto b = std::find_if(editor.project().attributes.begin(), editor.project().attributes.end(),
+                                [&](const auto& entry) { return entry.second.name == "B" && entry.second.owner == ElementRef{row}; });
+    CHECK(editor.duplicate({ElementRef{b->first}}));
+    CHECK((columns_listed(table_made_from(editor.project(), ElementRef{row})) == Names{"RowID", "A", "B", "C", "D", "E", "B"}));
+}
+
+// What an import brings is made after everything already there, in the order
+// it was made in where it came from.
+void imports_keep_the_order_of_their_source() {
+    UnorderedIds source_ids;
+    source_ids.way = UnorderedIds::Way::Shuffled;
+    source_ids.state = 7;
+    Editor source(source_ids);
+    const auto origin = entity(source, "Source");
+    for (const char* name : {"A", "B", "C", "D", "E"}) attribute(source, name, ElementRef{origin});
+    UnorderedIds ids;
+    ids.way = UnorderedIds::Way::Shuffled;
+    Editor editor(ids);
+    const auto here = entity(editor, "Here");
+    for (const char* name : {"X", "Y", "Z"}) attribute(editor, name, ElementRef{here});
+    std::set<EntityId> seen{here};
+    std::vector<EntityId> imported;
+    std::uint32_t largest = 3;
+    int scrambled = 0;
+    for (int n = 0; n < 100; ++n) {
+        CHECK(editor.merge_project(source.project(), 0, 0));
+        EntityId made{};
+        for (const auto& [id, value] : editor.project().entities) {
+            (void)value;
+            if (!seen.contains(id)) made = id;
+        }
+        CHECK(seen.insert(made).second);
+        imported.push_back(made);
+        std::map<std::string, std::uint32_t> numbers;
+        for (const auto& [id, value] : editor.project().attributes)
+            if (value.owner == ElementRef{made}) numbers.emplace(value.name, value.creation_order);
+        CHECK((numbers == std::map<std::string, std::uint32_t>{
+            {"A", largest + 1}, {"B", largest + 2}, {"C", largest + 3}, {"D", largest + 4}, {"E", largest + 5}}));
+        largest += 5;
+        if (by_identity(editor.project(), ElementRef{made}) != Names{"A", "B", "C", "D", "E"}) ++scrambled;
+    }
+    CHECK(scrambled > 0);
+    const auto preview = schema_preview(editor.project());
+    for (const auto& one : imported) {
+        const auto table = std::find_if(preview.tables.begin(), preview.tables.end(),
+                                        [&](const PreviewTable& candidate) { return candidate.origin == ElementRef{one}; });
+        CHECK(table != preview.tables.end());
+        CHECK((columns_listed(*table) == Names{"SourceID", "A", "B", "C", "D", "E"}));
+    }
+    CHECK((columns_listed(table_made_from(editor.project(), ElementRef{here})) == Names{"HereID", "X", "Y", "Z"}));
+}
+
+// The number belongs to the attribute, so Undo and Redo bring it back with it.
+void creation_order_survives_undo_and_redo() {
+    UnorderedIds ids;
+    Editor editor(ids);
+    const auto row = entity(editor, "Row");
+    const auto a = attribute(editor, "A", ElementRef{row});
+    const auto b = attribute(editor, "B", ElementRef{row});
+    CHECK(creation_order_of(editor, b) == 2);
+    // Made, undone, redone.
+    CHECK(editor.undo());
+    CHECK(!editor.project().attributes.contains(b));
+    CHECK(editor.redo());
+    CHECK(creation_order_of(editor, b) == 2);
+    // Deleted, brought back, deleted again, brought back.
+    CHECK(editor.erase({ElementRef{b}}));
+    CHECK(!editor.project().attributes.contains(b));
+    CHECK(editor.undo());
+    CHECK(creation_order_of(editor, b) == 2);
+    CHECK((columns_listed(table_made_from(editor.project(), ElementRef{row})) == Names{"RowID", "A", "B"}));
+    CHECK(editor.redo());
+    CHECK(!editor.project().attributes.contains(b));
+    CHECK(editor.undo());
+    // Connected, undone, redone.
+    const auto c = attribute(editor, "C");
+    CHECK(creation_order_of(editor, c) == 3);
+    CHECK(editor.set_attribute_owner(c, ElementRef{row}));
+    CHECK(creation_order_of(editor, c) == 3);
+    CHECK(editor.undo());
+    CHECK(!editor.project().attributes.at(c).owner && creation_order_of(editor, c) == 3);
+    CHECK(editor.redo());
+    CHECK(editor.project().attributes.at(c).owner == ElementRef{row} && creation_order_of(editor, c) == 3);
+    CHECK((columns_listed(table_made_from(editor.project(), ElementRef{row})) == Names{"RowID", "A", "B", "C"}));
+    // Moved to another owner and back by Undo: the number never changes.
+    const auto other = entity(editor, "Other");
+    CHECK(editor.set_attribute_owner(a, ElementRef{other}));
+    CHECK(creation_order_of(editor, a) == 1);
+    CHECK((columns_listed(table_made_from(editor.project(), ElementRef{row})) == Names{"RowID", "B", "C"}));
+    CHECK(editor.undo());
+    CHECK(creation_order_of(editor, a) == 1);
+    CHECK((columns_listed(table_made_from(editor.project(), ElementRef{row})) == Names{"RowID", "A", "B", "C"}));
+}
+
+// The columns the conversion invents mean what they meant: the same keys, the
+// same foreign keys pointing at the same columns. Only where they stand
+// follows the groups -- key, the rest, foreign keys alone -- which puts a
+// discriminator, being neither, above a foreign key.
+void generated_columns_keep_their_meaning() {
+    UnorderedIds ids;
+    ids.way = UnorderedIds::Way::Up;
+    Editor editor(ids);
+    const auto made_entity = [&](const char* name) {
+        ids.way = UnorderedIds::Way::Up;
+        return entity(editor, name);
+    };
+    const auto made_attribute = [&](const char* name, ElementRef owner, AttributeKind kind = AttributeKind::Normal) {
+        ids.way = UnorderedIds::Way::Down;
+        const auto id = attribute(editor, name, owner);
+        if (kind != AttributeKind::Normal) CHECK(editor.set_attribute_kind(id, kind));
+        return id;
+    };
+    const auto relate = [&](EntityId first, Cardinality first_max, EntityId second, Cardinality second_max,
+                            const char* name) {
+        ids.way = UnorderedIds::Way::Up;
+        return related(editor, first, first_max, second, second_max, name);
+    };
+    const auto student = made_entity("Student");
+    made_attribute("StudentID", ElementRef{student}, AttributeKind::Key);
+    made_attribute("Phone", ElementRef{student}, AttributeKind::Multivalued);
+    made_attribute("Email", ElementRef{student});
+    const auto course = made_entity("Course");
+    made_attribute("CourseID", ElementRef{course}, AttributeKind::Key);
+    const auto enrolled = relate(student, Cardinality::Many, course, Cardinality::Many, "Enrolled");
+    made_attribute("Grade", ElementRef{enrolled});
+    const auto takes = relate(student, Cardinality::Many, course, Cardinality::Many, "Takes");
+    CHECK(editor.set_bridge_key(takes, BridgeKey::Pair));
+    made_attribute("Mark", ElementRef{takes});
+    const auto employee = made_entity("Employee");
+    made_attribute("EmpID", ElementRef{employee}, AttributeKind::Key);
+    const auto log = made_entity("Log");
+    made_attribute("Entry", ElementRef{log});
+    relate(employee, Cardinality::One, log, Cardinality::Many, "Writes");
+    const auto hierarchy = [&](const char* parent_name, const char* key, const char* note,
+                               const std::vector<std::pair<const char*, const char*>>& children, IsaStrategy strategy) {
+        const auto parent = made_entity(parent_name);
+        made_attribute(key, ElementRef{parent}, AttributeKind::Key);
+        made_attribute(note, ElementRef{parent});
+        ids.way = UnorderedIds::Way::Up;
+        const auto isa = editor.create_specialization("ISA", {}, Inheritance::Specialization);
+        CHECK(isa && isa.created);
+        const auto id = std::get<SpecializationId>(*isa.created);
+        CHECK(editor.set_supertype(id, parent));
+        for (const auto& [child_name, fact] : children) {
+            const auto child = made_entity(child_name);
+            made_attribute(fact, ElementRef{child});
+            ids.way = UnorderedIds::Way::Up;
+            CHECK(editor.attach_subtype(id, child));
+        }
+        CHECK(editor.set_isa_strategy(id, strategy));
+        return parent;
+    };
+    const auto vehicle = hierarchy("Vehicle", "VIN", "VehicleNote", {{"Car", "CarFact"}, {"Truck", "TruckFact"}},
+                                   IsaStrategy::SingleTable);
+    relate(employee, Cardinality::One, vehicle, Cardinality::Many, "Drives");
+    hierarchy("Person", "PersonID", "PersonNote", {{"Staff", "StaffFact"}}, IsaStrategy::PerSubclass);
+    hierarchy("Shape", "ShapeID", "ShapeNote", {{"Circle", "CircleFact"}}, IsaStrategy::PerConcrete);
+
+    const auto preview = schema_preview(editor.project());
+    // Each column as name, key, foreign key and what it points at.
+    const auto facts = [&](const std::string& table_name) {
+        Names said;
+        for (const auto& table : preview.tables) {
+            if (table.name != table_name) continue;
+            for (const auto& column : table.columns) {
+                auto line = column.name;
+                if (column.primary_key) line += " PK";
+                if (column.foreign_key) line += " FK";
+                if (column.references) {
+                    const auto& target = preview.tables.at(*column.references);
+                    line += " -> " + target.name + "." + target.columns.at(column.references_column).name;
+                }
+                said.push_back(line);
+            }
+            Names key;
+            for (const auto row : table.primary_key) key.push_back(table.columns.at(row).name);
+            said.push_back("key: " + [&] { std::string all; for (const auto& part : key) all += part + " "; return all; }());
+        }
+        return said;
+    };
+    CHECK((facts("Students") == Names{"StudentID PK", "Email", "key: StudentID "}));
+    CHECK((facts("Enrolleds") == Names{"EnrolledID PK", "Grade", "StudentID FK -> Students.StudentID",
+                                       "CourseID FK -> Courses.CourseID", "key: EnrolledID "}));
+    CHECK((facts("Takes") == Names{"StudentID PK FK -> Students.StudentID", "CourseID PK FK -> Courses.CourseID",
+                                   "Mark", "key: StudentID CourseID "}));
+    CHECK((facts("Phones") == Names{"PhoneID PK", "Phone", "StudentID FK -> Students.StudentID", "key: PhoneID "}));
+    CHECK((facts("Logs") == Names{"LogID PK", "Entry", "EmployeeEmpID FK -> Employees.EmpID", "key: LogID "}));
+    CHECK((facts("Vehicles") == Names{"VIN PK", "VehicleNote", "CarFact", "TruckFact", "Type",
+                                      "EmployeeEmpID FK -> Employees.EmpID", "key: VIN "}));
+    CHECK((facts("Staff") == Names{"StaffID PK", "StaffFact", "PersonID FK -> Persons.PersonID", "key: StaffID "}));
+    CHECK((facts("Circles") == Names{"ShapeID PK", "CircleID PK", "ShapeNote", "CircleFact", "key: ShapeID CircleID "}));
+}
+
+// Attributes placed first and named afterwards are listed in the order they
+// are named (Zain, 2026-10-03): placed as the canvas places them, called
+// "Attribute", each takes its place the first time it is given a name of its
+// own. Here four are placed right to left and named 1, 2, 3, 4 left to right,
+// as in erdflow-reversed.erdx, whose placing order alone listed 4, 3, 2.
+void attributes_placed_unnamed_list_in_the_order_they_are_named() {
+    UnorderedIds ids;
+    Editor editor(ids);
+    const auto row = entity(editor, "Entity");
+    std::vector<AttributeId> placed;   // right to left
+    for (int n = 0; n < 4; ++n) placed.push_back(attribute(editor, "Attribute", ElementRef{row}));
+    const auto listed_now = [&] { return columns_listed(table_made_from(editor.project(), ElementRef{row})); };
+    // "1" named and made the key; "2" named after it follows the two still
+    // waiting for a name, which keep the places they were put down in.
+    CHECK(editor.rename(ElementRef{placed[3]}, "1"));
+    CHECK(editor.set_attribute_kind(placed[3], AttributeKind::Key));
+    CHECK(editor.rename(ElementRef{placed[2]}, "2"));
+    CHECK((listed_now() == Names{"1", "Attribute", "Attribute", "2"}));
+    CHECK(editor.rename(ElementRef{placed[1]}, "3"));
+    CHECK(editor.rename(ElementRef{placed[0]}, "4"));
+    CHECK((listed_now() == Names{"1", "2", "3", "4"}));
+    // Undoing a naming gives the old place back with the old name; redoing it
+    // names it again in the same place.
+    CHECK(editor.undo());   // "4"
+    CHECK((listed_now() == Names{"1", "Attribute", "2", "3"}));
+    CHECK(editor.redo());
+    CHECK((listed_now() == Names{"1", "2", "3", "4"}));
+    // Named again, nothing moves.
+    const auto before = creation_order_of(editor, placed[2]);
+    CHECK(editor.rename(ElementRef{placed[2]}, "Two"));
+    CHECK(creation_order_of(editor, placed[2]) == before);
+    CHECK((listed_now() == Names{"1", "Two", "3", "4"}));
+    // A blank name is not a name of its own: cleared, the attribute keeps its
+    // place, and named after that it takes the next one.
+    const auto fifth = attribute(editor, "Attribute", ElementRef{row});
+    CHECK(editor.rename(ElementRef{fifth}, ""));
+    const auto sixth = attribute(editor, "Late", ElementRef{row});
+    CHECK((listed_now() == Names{"1", "Two", "3", "4", "", "Late"}));
+    CHECK(editor.rename(ElementRef{fifth}, "Five"));
+    CHECK((listed_now() == Names{"1", "Two", "3", "4", "Late", "Five"}));
+    // One made with a name of its own keeps its place when renamed.
+    CHECK(editor.rename(ElementRef{sixth}, "Later"));
+    CHECK((listed_now() == Names{"1", "Two", "3", "4", "Later", "Five"}));
+    // A composite's parts placed and then named take the order of naming too.
+    const auto name = attribute(editor, "Name", ElementRef{row});
+    CHECK(editor.set_attribute_kind(name, AttributeKind::Composite));
+    std::vector<AttributeId> parts;
+    for (int n = 0; n < 3; ++n) parts.push_back(attribute(editor, "Attribute", ElementRef{name}));
+    CHECK(editor.rename(ElementRef{parts[2]}, "First"));
+    CHECK(editor.rename(ElementRef{parts[0]}, "Mid"));
+    CHECK(editor.rename(ElementRef{parts[1]}, "Last"));
+    CHECK((listed_now() == Names{"1", "Two", "3", "4", "Later", "Five", "First", "Mid", "Last"}));
+}
+
 int main() {
     const std::pair<const char*, std::function<void()>> tests[] = {
         {"identity and work in progress", identity_and_work_in_progress},
@@ -4344,6 +4873,19 @@ int main() {
         {"disconnecting a side takes everything that depends on it", disconnecting_a_side_takes_everything_that_depends_on_it},
         {"hand-drawn foreign keys keep the key scale", hand_drawn_foreign_keys_keep_the_key_scale},
         {"generated foreign keys keep the key scale", generated_foreign_keys_keep_the_key_scale},
+        {"attributes are listed in the order they were created", attributes_are_listed_in_the_order_they_were_created},
+        {"a key made in the middle heads its table", a_key_made_in_the_middle_heads_its_table},
+        {"key roles group the columns and each group keeps creation order",
+         key_roles_group_the_columns_and_each_group_keeps_creation_order},
+        {"composite parts keep the order they were made in", composite_parts_keep_the_order_they_were_made_in},
+        {"moving an attribute does not reorder its table", moving_an_attribute_does_not_reorder_its_table},
+        {"connecting attributes does not reorder them", connecting_attributes_does_not_reorder_them},
+        {"copies keep the order of their originals", copies_keep_the_order_of_their_originals},
+        {"imports keep the order of their source", imports_keep_the_order_of_their_source},
+        {"creation order survives undo and redo", creation_order_survives_undo_and_redo},
+        {"generated columns keep their meaning", generated_columns_keep_their_meaning},
+        {"attributes placed unnamed list in the order they are named",
+         attributes_placed_unnamed_list_in_the_order_they_are_named},
     };
     std::size_t failures = 0;
     for (const auto& [name, test] : tests) {

@@ -93,6 +93,22 @@ namespace
         QApplication::processEvents();
         QApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
     }
+    // Identities handed out newest-first, each sorting before the one issued
+    // before it, as a wall clock set back makes them.
+    struct BackwardIds final : application::IdGenerator
+    {
+        std::uint64_t counter = std::uint64_t{1} << 48;
+        domain::Uuid next() override
+        {
+            domain::Uuid id;
+            id.bytes[6] = 0x70;
+            id.bytes[8] = 0x80;
+            const auto value = counter--;
+            for (unsigned i = 0; i < 7; ++i)
+                id.bytes[15 - i] = static_cast<std::uint8_t>((value >> (8U * i)) & 0xffU);
+            return id;
+        }
+    };
     // Some work is deliberately not done on the instant it is asked for. A theme
     // hovered in the menu is shown once the pointer has settled rather than while
     // it is still travelling, so a test waiting for one has to let the clock run
@@ -452,6 +468,36 @@ int main(int argc, char **argv)
     try
     {
         infrastructure::QtIdGenerator ids;
+        // The Explorer lists attributes in the order they were made (Zain,
+        // 2026-10-03), under their owner and in the group of them all, as the
+        // schema lists them -- not by their identities, which here run backwards.
+        {
+            BackwardIds backward;
+            application::Editor model(backward);
+            const auto student = std::get<domain::EntityId>(*model.create_entity("Student", {}).created);
+            for (const char *number : {"1", "2", "3", "4", "5"})
+                require(model.create_attribute(number, {}, domain::ElementRef{student}).ok, "An attribute is made");
+            const auto name = std::get<domain::AttributeId>(*model.create_attribute("Name", {}, domain::ElementRef{student}).created);
+            require(model.set_attribute_kind(name, domain::AttributeKind::Composite).ok, "Name is made composite");
+            for (const char *part : {"First", "Mid", "Last"})
+                require(model.create_attribute(part, {}, domain::ElementRef{name}).ok, "A part is made");
+            infrastructure::ErdxProjectStore ordered_store;
+            desktop::MainWindow ordered_window(model, ordered_store, backward);
+            ordered_window.resize(1440, 920);
+            ordered_window.show();
+            ordered_window.show_home(false);
+            settle();
+            const auto &rows = *child<QTreeView>(ordered_window, "explorer")->model();
+            const auto top = rows.index(0, 0);
+            const auto student_row = row_saying(rows, row_saying(rows, top, "Entities"), "Student");
+            require(rows_said(rows, student_row) == QStringList{"1", "2", "3", "4", "5", "Name"},
+                    "An entity's attributes are listed in the order they were made");
+            require(rows_said(rows, row_saying(rows, student_row, "Name")) == QStringList{"First", "Mid", "Last"},
+                    "A composite's parts are listed in the order they were made");
+            require(rows_said(rows, row_saying(rows, top, "Attributes"))
+                        == QStringList{"1", "2", "3", "4", "5", "Name", "First", "Mid", "Last"},
+                    "The group of all attributes lists them in the order they were made");
+        }
         // Automatic ends follow column rows, including vertically stacked tables.
         {
             application::Editor model(ids);

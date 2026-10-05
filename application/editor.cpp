@@ -9,8 +9,10 @@
 
 #include <algorithm>
 #include <functional>
+#include <limits>
 #include <set>
 #include <stdexcept>
+#include <string_view>
 #include <type_traits>
 #include <utility>
 
@@ -545,6 +547,31 @@ std::vector<HistoryChange> summarise(const Delta& delta, const Project& now) {
     return changes;
 }
 
+// The creation order the next attribute made is given: one past the largest
+// any attribute in the project holds, so it lists after every one of them.
+// Several made at once take the numbers after it in turn. Nothing is given
+// once the numbers would run out, which takes four thousand million
+// attributes made in one project.
+std::optional<std::uint32_t> next_creation_order(const Project& project, std::size_t count) {
+    std::uint64_t largest = 0;
+    for (const auto& [id, attribute] : project.attributes) {
+        (void)id;
+        largest = std::max<std::uint64_t>(largest, attribute.creation_order);
+    }
+    if (largest + count > std::numeric_limits<std::uint32_t>::max()) return std::nullopt;
+    return static_cast<std::uint32_t>(largest + 1);
+}
+// Attributes put in the order they were created; a tie, which only an
+// attribute built some other way can have, in the order of their identities.
+void sort_by_creation(std::vector<AttributeId>& ids, const std::map<AttributeId, Attribute>& attributes) {
+    std::sort(ids.begin(), ids.end(), [&](AttributeId a, AttributeId b) {
+        const auto first = attributes.at(a).creation_order;
+        const auto second = attributes.at(b).creation_order;
+        return first != second ? first < second : a < b;
+    });
+}
+constexpr const char* creation_orders_spent = "No more attributes can be created in this project.";
+
 std::set<ElementRef> owned_closure(const Project& project, const std::vector<ElementRef>& selection) {
     std::set<ElementRef> result;
     std::vector<ElementRef> pending;
@@ -775,8 +802,11 @@ EditResult Editor::create_entity(std::string name, Rect rect) {
 EditResult Editor::create_attribute(std::string name, Rect rect, std::optional<AttributeOwner> owner,
                                    Connector shape) {
     return impl_->edit("Create attribute", [&](Delta& delta) {
+        const auto order = next_creation_order(project(), 1);
+        if (!order) return failure(creation_orders_spent);
         const AttributeId id{impl_->next_id()};
-        delta.attributes.put(id, Attribute{.id = id, .name = std::move(name), .kind = AttributeKind::Normal, .owner = owner});
+        delta.attributes.put(id, Attribute{.id = id, .name = std::move(name), .kind = AttributeKind::Normal, .owner = owner,
+                                           .creation_order = *order});
         delta.layout.put(ElementRef{id}, rect);
         if (owner && !shape.automatic()) delta.connectors.put(ConnectorRef{id}, std::move(shape));
         return EditResult{true, {}, ElementRef{id}, {}};
@@ -973,6 +1003,17 @@ EditResult Editor::merge_project(const Project& other, double dx, double dy) {
         for (const auto& [id, value] : other.specializations) { (void)value; claim(ElementRef{id}); }
         for (const auto& [id, value] : other.pictures) { (void)value; claim(ElementRef{id}); }
         for (const auto& [id, value] : other.notes) { (void)value; claim(ElementRef{id}); }
+        // Every incoming attribute is a new one here, numbered after all that
+        // are already drawn and in the order it was created in where it came
+        // from, so the identities just issued cannot decide how it is listed.
+        std::vector<AttributeId> incoming;
+        for (const auto& [id, value] : other.attributes) { (void)value; incoming.push_back(id); }
+        sort_by_creation(incoming, other.attributes);
+        const auto first_order = next_creation_order(project(), incoming.size());
+        if (!first_order) return failure(creation_orders_spent);
+        std::map<AttributeId, std::uint32_t> renumbered;
+        for (std::size_t i = 0; i < incoming.size(); ++i)
+            renumbered.emplace(incoming[i], *first_order + static_cast<std::uint32_t>(i));
 
         // The links are renamed too, so a shape drawn on an incoming line
         // follows it in rather than being left pointing at the old identity.
@@ -991,6 +1032,7 @@ EditResult Editor::merge_project(const Project& other, double dx, double dy) {
             auto value = attribute;
             value.id = std::get<AttributeId>(mapping.at(ElementRef{id}));
             if (value.owner) value.owner = mapping.at(*value.owner);
+            value.creation_order = renumbered.at(id);
             delta.attributes.put(value.id, std::move(value));
         }
         for (const auto& [id, relationship] : other.relationships) {
@@ -1058,10 +1100,31 @@ EditResult Editor::merge_project(const Project& other, double dx, double dy) {
     });
 }
 
+// The name the canvas gives an attribute as it is placed (DiagramView). Until
+// it is given another, the attribute has no name of its own yet.
+constexpr std::string_view placed_attribute_name = "Attribute";
+
 EditResult Editor::rename(ElementRef ref, std::string name) {
     return impl_->edit("Rename element", [&](Delta& delta) {
         const auto characters = character_count(name);
-        auto result = edit_element(project(), delta, ref, [&](auto& value) { value.name = std::move(name); });
+        // Attributes are placed first and named afterwards, several at a time,
+        // and are listed in the order they are named (Zain, 2026-10-03). So the
+        // first time an attribute still called by the name it was placed with,
+        // or by none, is given a name of its own, it takes the next creation
+        // order, after every attribute there. Naming it again never moves it,
+        // and Undo gives the old number back with the old name.
+        std::optional<std::uint32_t> named_now;
+        if (const auto* id = std::get_if<AttributeId>(&ref)) {
+            const auto found = project().attributes.find(*id);
+            const auto unnamed = [](const std::string& text) { return text.empty() || text == placed_attribute_name; };
+            if (found != project().attributes.end() && unnamed(found->second.name) && !unnamed(name))
+                named_now = next_creation_order(project(), 1);
+        }
+        auto result = edit_element(project(), delta, ref, [&](auto& value) {
+            value.name = std::move(name);
+            if constexpr (std::is_same_v<std::decay_t<decltype(value)>, Attribute>)
+                if (named_now) value.creation_order = *named_now;
+        });
         if (result) hold_anchors(project(), delta, ref, TextField::Name, characters);
         return result;
     });
@@ -1519,8 +1582,22 @@ EditResult Editor::convert_schema_to_diagram(const std::map<RelationId, Point>& 
         const auto& now = made.project;
         for (const auto& [id, entity] : now.entities)
             if (!project().entities.contains(id)) delta.entities.put(id, entity);
-        for (const auto& [id, attribute] : now.attributes)
-            if (!project().attributes.contains(id)) delta.attributes.put(id, attribute);
+        // Each column that became an attribute is a new attribute, numbered in
+        // the order the conversion made them: it issues their identities
+        // sorted, in the order of the tables and their columns.
+        std::vector<AttributeId> made_now;
+        for (const auto& [id, attribute] : now.attributes) {
+            (void)attribute;
+            if (!project().attributes.contains(id)) made_now.push_back(id);
+        }
+        sort_by_creation(made_now, now.attributes);
+        const auto first_order = next_creation_order(project(), made_now.size());
+        if (!first_order) return failure(creation_orders_spent);
+        for (std::size_t i = 0; i < made_now.size(); ++i) {
+            auto attribute = now.attributes.at(made_now[i]);
+            attribute.creation_order = *first_order + static_cast<std::uint32_t>(i);
+            delta.attributes.put(made_now[i], std::move(attribute));
+        }
         for (const auto& [id, relationship] : now.relationships)
             if (!project().relationships.contains(id)) delta.relationships.put(id, relationship);
         for (const auto& [ref, box] : now.layout)
@@ -2836,6 +2913,18 @@ EditResult Editor::erase(const std::vector<ElementRef>& elements,
 EditResult Editor::duplicate(const std::vector<ElementRef>& elements, double dx, double dy) {
     return impl_->edit("Duplicate elements", [&](Delta& delta) {
         const auto copied = owned_closure(project(), elements);
+        // A copy is a new attribute: numbered after every existing one, in the
+        // order its original was created in, so the copies list as their
+        // originals do whatever identities they are given.
+        std::vector<AttributeId> originals;
+        for (const auto& ref : copied)
+            if (const auto* id = std::get_if<AttributeId>(&ref)) originals.push_back(*id);
+        sort_by_creation(originals, project().attributes);
+        const auto first_order = next_creation_order(project(), originals.size());
+        if (!first_order) return failure(creation_orders_spent);
+        std::map<AttributeId, std::uint32_t> renumbered;
+        for (std::size_t i = 0; i < originals.size(); ++i)
+            renumbered.emplace(originals[i], *first_order + static_cast<std::uint32_t>(i));
         std::map<ElementRef, ElementRef> mapping;
         for (const auto& ref : copied) {
             mapping.emplace(ref, std::visit([&](const auto& id) -> ElementRef {
@@ -2854,6 +2943,7 @@ EditResult Editor::duplicate(const std::vector<ElementRef>& elements, double dx,
                 } else if constexpr (std::is_same_v<T, AttributeId>) {
                     auto value = project().attributes.at(id);
                     value.id = new_id;
+                    value.creation_order = renumbered.at(id);
                     if (value.owner && mapping.contains(*value.owner)) value.owner = mapping.at(*value.owner);
                     delta.attributes.put(new_id, std::move(value));
                     // A copy keeps the shape of the link it was copied from.

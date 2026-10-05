@@ -123,12 +123,18 @@ std::size_t last_word_start(const std::string& name) {
     return start;
 }
 
-// Everything owned by one element, in the project's own order so a schema
-// drawn twice comes out the same.
+// Everything owned by one element, in the order it was created (Zain,
+// 2026-10-03): whatever identities the attributes were given, wherever they
+// were dragged and whenever they were connected. A tie, which only an
+// attribute built some other way can have, keeps the order of identities, so
+// a schema drawn twice comes out the same.
 std::vector<std::pair<AttributeId, Attribute>> owned_by(const Project& project, const ElementRef& owner) {
     std::vector<std::pair<AttributeId, Attribute>> found;
     for (const auto& [id, attribute] : project.attributes)
         if (attribute.owner && *attribute.owner == owner) found.emplace_back(id, attribute);
+    std::stable_sort(found.begin(), found.end(), [](const auto& a, const auto& b) {
+        return a.second.creation_order < b.second.creation_order;
+    });
     return found;
 }
 
@@ -343,6 +349,47 @@ std::vector<std::size_t> key_columns(const PreviewTable& table) {
     });
     for (std::size_t n = 0; n < slots.size(); ++n) keys[slots[n]] = added[n];
     return keys;
+}
+
+// Each table worked out from the diagram, its columns in three groups once its
+// key has been taken: the primary key's columns, one that is a foreign key as
+// well among them; then every column that is neither; then the columns that
+// are foreign keys only (Zain, 2026-10-03). Within a group the columns keep
+// the order the conversion made them in. The table's own key, and every
+// foreign key that points into the table, are carried to where the columns
+// now stand, so what they are and what they point at does not change.
+void group_columns(SchemaPreview& preview) {
+    const auto group_of = [](const PreviewColumn& column) {
+        if (column.primary_key && !column.ignored) return 0;
+        return column.foreign_key ? 2 : 1;
+    };
+    // For each table regrouped, where each column as made now stands.
+    std::vector<std::vector<std::size_t>> moved_to(preview.tables.size());
+    for (std::size_t t = 0; t < preview.tables.size(); ++t) {
+        auto& table = preview.tables[t];
+        std::vector<std::size_t> listed(table.columns.size());   // the rows as made, in their new order
+        for (std::size_t row = 0; row < listed.size(); ++row) listed[row] = row;
+        std::stable_sort(listed.begin(), listed.end(), [&](std::size_t a, std::size_t b) {
+            return group_of(table.columns[a]) < group_of(table.columns[b]);
+        });
+        if (std::is_sorted(listed.begin(), listed.end())) continue;   // grouped as made already
+        std::vector<std::size_t> to(table.columns.size());
+        std::vector<PreviewColumn> columns;
+        columns.reserve(listed.size());
+        for (std::size_t place = 0; place < listed.size(); ++place) {
+            to[listed[place]] = place;
+            columns.push_back(std::move(table.columns[listed[place]]));
+        }
+        table.columns = std::move(columns);
+        for (auto& row : table.primary_key) row = to[row];
+        moved_to[t] = std::move(to);
+    }
+    for (auto& table : preview.tables)
+        for (auto& column : table.columns) {
+            if (!column.references || *column.references >= moved_to.size()) continue;
+            const auto& to = moved_to[*column.references];
+            if (column.references_column < to.size()) column.references_column = to[column.references_column];
+        }
 }
 
 // Each table worked out from the diagram, listed in the order somebody gave
@@ -895,6 +942,8 @@ SchemaPreview schema_preview(const Project& project) {
     // foreign key's parts point at, is settled here and never read again from
     // where columns happen to stand.
     for (auto& table : preview.tables) table.primary_key = key_columns(table);
+    // Then its columns take their groups: key, the rest, foreign keys only.
+    group_columns(preview);
     // Only then is a table listed in an order somebody gave it.
     arrange_columns(project, preview);
     return preview;
