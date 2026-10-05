@@ -240,6 +240,21 @@ struct Attribute {
     // type and the length, because that is where everything the column will
     // need already lives.
     bool auto_increment = false;
+    // When this attribute was created, counted against every other attribute
+    // in the project: a later one has a larger number. It is what the
+    // attributes of one owner are listed by, in the schema they become and in
+    // the Explorer, so they keep the order they were made in whatever their
+    // identities, wherever they are dragged and whenever they are connected
+    // (Zain, 2026-10-03). An attribute placed on the canvas is created
+    // without a name of its own and named afterwards, so it takes a new
+    // number, after every existing one, the first time it is named: placed
+    // ellipses are listed in the order they are named. Otherwise the number
+    // never changes -- not when the attribute is renamed again, nor when it
+    // changes owner -- and a copy or an import is given new numbers after
+    // every existing one, in the order its originals had. Nought is what an
+    // attribute built some other way starts as; ties are listed in the order
+    // of their identities.
+    std::uint32_t creation_order = 0;
     auto operator<=>(const Attribute&) const = default;
 };
 // A participant attaches to an entity, or to an associative relationship that

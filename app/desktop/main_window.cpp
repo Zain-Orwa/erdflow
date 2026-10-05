@@ -4278,12 +4278,23 @@ namespace erdflow::desktop
             const auto drawn = canvas_->element_preview(ref, explorer_shape);
             return drawn.isNull() ? glyph_icon(fallback, colors, explorer_shape.height(), icon_mode_) : QIcon(drawn);
         };
+        // Attributes are listed in the order they were created, under each
+        // owner and in the group of them all, as the schema lists them.
+        std::vector<std::pair<AttributeId, std::uint32_t>> attributes_made;
+        for (const auto &[id, attribute] : attributes)
+            attributes_made.emplace_back(id, attribute.creation_order);
+        std::stable_sort(attributes_made.begin(), attributes_made.end(), [](const auto &a, const auto &b)
+                         { return a.second < b.second; });
         const auto owned_by = [&](const ElementRef &owner)
         {
             std::vector<AttributeId> owned;
-            for (const auto &[id, attribute] : attributes)
+            for (const auto &[id, made] : attributes_made)
+            {
+                (void)made;
+                const auto &attribute = attributes.at(id);
                 if (attribute.owner && *attribute.owner == owner)
                     owned.push_back(id);
+            }
             return owned;
         };
         // An element's own attributes are listed beneath it, one level in, so an
@@ -4337,7 +4348,7 @@ namespace erdflow::desktop
             }
         };
         append("Entities", Glyph::Entity, editor_.project().entities, true);
-        append("Attributes", Glyph::Attribute, attributes, false);
+        append("Attributes", Glyph::Attribute, attributes_made, false);
         append("Relationships", Glyph::Relationship, editor_.project().relationships, true);
         // Visual aids are listed only when there are any, so a diagram without
         // them is not shown two empty groups.

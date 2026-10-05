@@ -146,6 +146,23 @@ and every table in such a file is listed as the conversion makes it, which is
 all it could say. See
 [The order of columns in a table](#the-order-of-columns-in-a-table).
 
+**Version 34** keeps when each attribute was created (2026-10-03), which is
+the order the attributes of one owner are listed in, in the schema worked out
+from the diagram and in the Explorer, whatever their identities and wherever
+they are drawn. Every attribute object gains a required `creation_order`, a
+whole number from 0 to 4,294,967,295 that is larger for an attribute made
+later; earlier versions must not carry it. An attribute placed on the canvas
+under the name `Attribute`, or with none, takes a new number the first time it
+is given a name of its own, so ellipses placed first and named afterwards are
+listed in the order they are named. Renaming it again or changing its owner
+never changes the number, and a copy or an import is numbered after every
+attribute already there, in the order of what it copies. Attributes with equal numbers are
+listed in the order of their identities. A file of an earlier version is
+numbered as it opens, from 1 upward in the order of its attributes'
+identities -- the order they were listed in until then -- so it lists exactly
+as it did; opening it writes nothing, and saved again it is written as version
+34.
+
 **Version 13** adds weak entities and identifying relationships. An entity
 object gains a required `weak` boolean and a relationship object a required
 `identifying` boolean; earlier versions must not carry them, and read as
