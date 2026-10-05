@@ -2617,6 +2617,137 @@ void attribute_owner_tests() {
     require(!view.attribute_owner(), "A new project starts with nothing locked");
 }
 
+// A composite attribute wears the same padlock an entity does and is locked
+// by pressing it on the diagram, as the entity is: selected, it is open;
+// pressed, it closes and every part placed goes on the composite; pressed
+// again, it lets go. Handing the lock from an entity to a composite leaves
+// nothing on the entity, and a rebuilt projection keeps the lock drawn. A
+// plain attribute has no padlock at all.
+void composite_owner_padlock_tests() {
+    SequentialIds ids;
+    application::Editor editor(ids);
+    const domain::ElementRef student = *editor.create_entity("Student", {-74, 140, 148, 86}).created;
+    const auto name_id = std::get<domain::AttributeId>(
+        *editor.create_attribute("Name", {-300, -40, 150, 60}, domain::AttributeOwner{student}).created);
+    const domain::ElementRef name{name_id};
+    const domain::ElementRef age = *editor.create_attribute("Age", {140, -40, 150, 60},
+                                                            domain::AttributeOwner{student}).created;
+
+    desktop::DiagramView view(editor);
+    view.resize(1100, 800);
+    view.show();
+    view.actual_size();
+    view.centerOn(0, 0);
+    QApplication::processEvents();
+    const auto& colors = desktop::theme(view.theme_id());
+    // The middle of the padlock, which is also the middle of its body: filled
+    // with the selection colour when closed, with the paper when open, and
+    // simply the element's own surface when there is no padlock.
+    const auto padlock = [&](const domain::ElementRef& on) {
+        constexpr auto middle = 7 + 6 * desktop::connector_scale;
+        const auto& box = editor.project().layout.at(on);
+        return QPointF(box.x + middle, box.y + middle);
+    };
+    const auto centre = [&](const domain::ElementRef& on) {
+        const auto& box = editor.project().layout.at(on);
+        return QPointF(box.x + box.width / 2, box.y + box.height / 2);
+    };
+    const auto drawn = [&](const domain::ElementRef& on) {
+        QApplication::processEvents();
+        const auto image = view.viewport()->grab().toImage();
+        return image.pixelColor(device_point(image, view.mapFromScene(padlock(on)))).rgb();
+    };
+    const auto open = colors.canvas.rgb();
+    const auto closed = colors.accent.rgb();
+    // Nothing here is put down near anything that could hold it, so nothing
+    // should be asked; a question that does come is dismissed and reported
+    // rather than left waiting for an answer.
+    QString asked;
+    const auto place = [&](const QPointF& at) {
+        asked.clear();
+        QTimer::singleShot(0, [&] {
+            if (auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget())) {
+                asked = box->text();
+                box->reject();
+            }
+        });
+        click(view, at);
+        require(asked.isEmpty(), "Nothing is asked when a part is put down beside nothing else");
+        const auto chosen = view.selected_elements();
+        require(chosen.size() == 1 && std::holds_alternative<domain::AttributeId>(chosen.front()),
+                "A click places an attribute");
+        return chosen.front();
+    };
+    view.set_tool(desktop::Tool::Select);
+
+    // The entity, as before: selected, its open padlock locks it.
+    click(view, centre(student));
+    require(view.selected_elements() == std::vector<domain::ElementRef>{student}, "Student selected");
+    require(drawn(student) == open, "Selected, Student wears an open padlock");
+    click(view, padlock(student));
+    require(view.attribute_owner() == student, "Pressing it locks Student");
+    require(drawn(student) == closed, "And the padlock is drawn closed");
+
+    // Name made composite, as Properties makes it, is something that can
+    // hold attributes. Not yet selected, it has no padlock showing.
+    require(editor.set_attribute_kind(name_id, domain::AttributeKind::Composite), "Name made composite");
+    view.synchronize();
+    require(view.can_own_attributes(name), "A composite attribute can hold attributes");
+    require(drawn(name) != open && drawn(name) != closed, "Not selected, Name shows no padlock");
+
+    // Selected, it wears the open padlock; the owner still wears its closed one.
+    click(view, centre(name));
+    require(view.selected_elements() == std::vector<domain::ElementRef>{name}, "Name selected");
+    require(drawn(name) == open, "Selected, the composite wears an open padlock");
+    require(drawn(student) == closed, "While Student, still the owner, keeps its closed one");
+
+    // Pressed, the lock moves to Name and nothing is left on Student.
+    click(view, padlock(name));
+    require(view.attribute_owner() == name, "Pressing the composite's padlock locks it as the owner");
+    require(drawn(name) == closed, "Its padlock is drawn closed");
+    require(drawn(student) != closed && drawn(student) != open, "And Student's padlock is gone");
+    click(view, padlock(student));
+    require(view.attribute_owner() == name && view.selected_elements() == std::vector<domain::ElementRef>{student},
+            "Where Student's padlock was, a press only selects Student");
+
+    // Every part placed while it holds goes on Name, the lock held throughout.
+    view.set_tool(desktop::Tool::Attribute, true);
+    for (const auto& at : {QPointF(-420, -200), QPointF(-225, -220), QPointF(-30, -200)}) {
+        const auto part = place(at);
+        require(editor.project().attributes.at(std::get<domain::AttributeId>(part)).owner
+                    == domain::AttributeOwner{name},
+                "Each part placed goes on the composite");
+        require(view.attribute_owner() == name, "And the composite stays locked");
+    }
+    require(view.tool() == desktop::Tool::Attribute && view.tool_locked(), "The locked tool keeps placing");
+    require(drawn(name) == closed, "The composite, no longer selected, keeps its closed padlock");
+
+    // Rebuilt after an edit elsewhere, the lock is still held and still drawn.
+    require(editor.rename(std::get<domain::EntityId>(student), "Pupil"), "An unrelated edit");
+    view.synchronize();
+    require(view.attribute_owner() == name && drawn(name) == closed,
+            "A rebuilt projection keeps the composite locked and its padlock drawn");
+
+    // Pressed again, with the Attribute tool still in hand, it lets go
+    // rather than placing a part.
+    const auto parts = editor.project().attributes.size();
+    click(view, padlock(name));
+    require(!view.attribute_owner() && editor.project().attributes.size() == parts,
+            "The closed padlock unlocks the composite rather than placing one");
+    require(drawn(name) != closed, "And it is no longer drawn closed");
+
+    // A plain attribute has no padlock and cannot be locked.
+    view.set_tool(desktop::Tool::Select);
+    click(view, centre(age));
+    require(view.selected_elements() == std::vector<domain::ElementRef>{age}, "Age selected");
+    require(!view.can_own_attributes(age), "A plain attribute cannot hold attributes");
+    require(drawn(age) != open && drawn(age) != closed, "Selected, a plain attribute shows no padlock");
+    click(view, padlock(age));
+    require(!view.attribute_owner(), "Pressing where a padlock would be locks nothing");
+    view.set_attribute_owner(age);
+    require(!view.attribute_owner(), "Nor can it be locked any other way");
+}
+
 // The triangle is placed like any other element and wired up by hand. The first
 // entity connected is what it generalises; every one after that is a subtype.
 void inheritance_connection_tests() {
@@ -3930,6 +4061,7 @@ int main(int argc, char** argv) {
         selection_highlight_tests();
         tool_locking_tests();
         attribute_owner_tests();
+        composite_owner_padlock_tests();
         inheritance_connection_tests();
         inheritance_deletion_tests();
         inheritance_orientation_tests();
