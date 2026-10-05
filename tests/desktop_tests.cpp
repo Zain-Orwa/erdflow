@@ -498,6 +498,67 @@ int main(int argc, char **argv)
                         == QStringList{"1", "2", "3", "4", "5", "Name", "First", "Mid", "Last"},
                     "The group of all attributes lists them in the order they were made");
         }
+        // Examples, the template and Import are offered in the workspace they
+        // belong to, not on Home (Zain, 2026-10-03). Every one of them is
+        // Conceptual, so they stand in the File menu -- the ribbon's File tab --
+        // the Home menu and the Import tab while the diagram is in front, and
+        // are put away from all of them while Relational Design is; its Import
+        // keeps only the entry for other tools' formats, which says why it
+        // cannot be used yet.
+        {
+            const char *conceptual_only[] = {"fileOpenExample", "fileExampleCompany", "fileExampleUniversityDatabase",
+                                             "fileTemplate", "importProject", "importPicture", "homeExamples",
+                                             "homeExampleCompany", "homeExampleUniversityDatabase", "homeTemplates"};
+            const auto offered = [&](desktop::MainWindow &shown, bool expected)
+            {
+                return std::all_of(std::begin(conceptual_only), std::end(conceptual_only), [&](const char *name)
+                                   { return child<QAction>(shown, name)->isVisible() == expected; });
+            };
+            application::Editor diagram(ids);
+            infrastructure::ErdxProjectStore placed_store;
+            desktop::MainWindow placed(diagram, placed_store, ids);
+            placed.resize(1440, 920);
+            placed.show();
+            placed.show_home(false);
+            settle();
+            auto *file_menu = child<QMenu>(placed, "fileMenu");
+            auto *import_menu = child<QMenu>(placed, "importMenu");
+            require(offered(placed, true), "On the diagram, the examples, the template and Import are offered");
+            for (const char *name : {"fileOpenExample", "fileExampleCompany", "fileExampleUniversityDatabase", "fileTemplate"})
+                require(file_menu->actions().contains(child<QAction>(placed, name)), "In the File menu");
+            require(file_menu->actions().contains(import_menu->menuAction()) &&
+                        import_menu->actions().contains(child<QAction>(placed, "importProject")) &&
+                        import_menu->actions().contains(child<QAction>(placed, "importPicture")),
+                    "With Import beside them, reading what ERDFlow writes");
+            require(child<QToolButton>(placed, "tabFile")->menu() == file_menu &&
+                        child<QToolBar>(placed, "importTools")->actions().contains(child<QAction>(placed, "importProject")),
+                    "The ribbon's File tab and Import tab carry them in the workspace");
+            auto *other_tools = child<QAction>(placed, "importFromOtherTools");
+            require(other_tools->isVisible() && !other_tools->isEnabled(), "Other tools' formats stay as they were");
+            // Relational Design in front: they go with the diagram.
+            placed.open_schema(true);
+            settle_for(450);
+            require(offered(placed, false), "With Relational Design in front, the Conceptual ones are put away");
+            require(other_tools->isVisible() && !other_tools->isEnabled() && !other_tools->toolTip().isEmpty(),
+                    "And its Import keeps the entry that says why other tools' formats cannot be read yet");
+            // And back with the diagram.
+            child<QPushButton>(placed, "schemaFull")->click();
+            settle();
+            require(offered(placed, true), "Back on the diagram, they are offered again");
+
+            // A project begun from its schema is Relational Design from the start.
+            application::Editor drawn(ids);
+            drawn.new_schema_project();
+            infrastructure::ErdxProjectStore drawn_store;
+            desktop::MainWindow schema_first(drawn, drawn_store, ids);
+            schema_first.resize(1440, 920);
+            schema_first.show();
+            schema_first.show_home(false);
+            settle_for(450);
+            require(offered(schema_first, false), "A schema drawn by hand is not offered the Conceptual ones");
+            require(child<QAction>(schema_first, "importFromOtherTools")->isVisible(),
+                    "Only the entry for other tools' formats");
+        }
         // Automatic ends follow column rows, including vertically stacked tables.
         {
             application::Editor model(ids);
@@ -2743,25 +2804,23 @@ int main(int argc, char **argv)
             require(home->isVisible(), "And is the page in front");
             require(home->top_bar()->return_button()->isHidden(),
                     "A fresh start has no workspace yet to return to");
-            // The eight places it can send somebody. Import sits directly under
-            // Examples and Templates, in their group, as Zain settled it. There
-            // is no New Project row: the cards are where a project is started
-            // (Zain, 2026-09-24).
-            const QStringList wanted{"Home", "Open Project", "Recent",
-                                     "Examples", "Templates", "Import", "Settings", "Help"};
+            // The five places it can send somebody. There is no New Project row:
+            // the cards are where a project is started (Zain, 2026-09-24). Nor
+            // are Examples, Templates and Import here: each belongs to the
+            // workspace it works on (Zain, 2026-10-03).
+            const QStringList wanted{"Home", "Open Project", "Recent", "Settings", "Help"};
             require(home->sidebar_labels() == wanted,
-                    "The sidebar offers exactly the eight named places, in order");
+                    "The sidebar offers exactly the five named places, in order");
             require(home->chosen_row() == 0, "And opens on Home");
             auto *rail = home->sidebar();
+            for (const char *gone : {"homeNavExamples", "homeNavTemplates", "homeNavImport"})
+                require(!rail->findChild<QWidget *>(gone), "Examples, Templates and Import are not on Home's rail");
             const auto row_of = [&](desktop::HomeSection section)
             { return rail->button(section)->geometry(); };
-            require(row_of(desktop::HomeSection::Templates).top() == row_of(desktop::HomeSection::Examples).bottom() + 1,
-                    "Templates stands directly under Examples");
-            require(row_of(desktop::HomeSection::Import).top() > row_of(desktop::HomeSection::Templates).bottom() + 1,
-                    "And a rule parts Import from them, under them");
-            require(row_of(desktop::HomeSection::Examples).top() > row_of(desktop::HomeSection::Recent).bottom() + 1,
-                    "While a rule parts them from the rows that start or open a project");
-            require(row_of(desktop::HomeSection::Help).bottom() > rail->height() - 60 && row_of(desktop::HomeSection::Settings).top() > row_of(desktop::HomeSection::Import).bottom() + 40,
+            require(row_of(desktop::HomeSection::OpenProject).top() == row_of(desktop::HomeSection::Home).bottom() + 1 &&
+                        row_of(desktop::HomeSection::Recent).top() == row_of(desktop::HomeSection::OpenProject).bottom() + 1,
+                    "Home, Open Project and Recent stand together at the top");
+            require(row_of(desktop::HomeSection::Help).bottom() > rail->height() - 60 && row_of(desktop::HomeSection::Settings).top() > row_of(desktop::HomeSection::Recent).bottom() + 40,
                     "Settings and Help stand at the foot of the rail");
             for (const auto &row : desktop::home_navigation())
                 require(!desktop::outline_pixmap(QString::fromLatin1(row.icon), Qt::black, 20).isNull(),
@@ -4237,7 +4296,9 @@ int main(int argc, char **argv)
             // Whatever the project, and however it was opened.
             window.show_home(true);
             settle();
-            home->sidebar()->button(desktop::HomeSection::Examples)->click();
+            // The example from the workspace's File menu, where it now stands
+            // (Zain, 2026-10-03).
+            child<QAction>(window, "fileOpenExample")->trigger();
             settle();
             require(!window.showing_home() && back->isVisible(), "An example offers it");
             child<QPushButton>(window, "openExample")->click();
@@ -4269,7 +4330,7 @@ int main(int argc, char **argv)
 
             // The template is not the example (Zain, 2026-09-26): it is the
             // general things a diagram is made of, named for what they are.
-            home->sidebar()->button(desktop::HomeSection::Templates)->click();
+            child<QAction>(window, "fileTemplate")->trigger();
             settle();
             require(!window.showing_home() && back->isVisible(), "The template offers the way back too");
             const auto &started = window.editor().project();

@@ -169,8 +169,7 @@ void audit_home(desktop::MainWindow& window) {
     // panel. Nothing is asked under the cards (ADR-022 9.19).
     const QStringList read_in_order{
         "appTopBarTheme",
-        "homeNavHome", "homeNavOpenProject", "homeNavRecent",
-        "homeNavExamples", "homeNavTemplates", "homeNavImport", "homeNavSettings", "homeNavHelp",
+        "homeNavHome", "homeNavOpenProject", "homeNavRecent", "homeNavSettings", "homeNavHelp",
         "startRouteConceptual", "startRouteConceptualCreate",
         "homeLinkTutorials"};
     QStringList reached;
