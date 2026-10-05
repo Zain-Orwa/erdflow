@@ -559,6 +559,69 @@ int main(int argc, char **argv)
             require(child<QAction>(schema_first, "importFromOtherTools")->isVisible(),
                     "Only the entry for other tools' formats");
         }
+        // A key belongs to an entity, or to a relationship with a table of its
+        // own (Zain, 2026-10-05; ADR-021 §5b). Properties offers a key
+        // attribute exactly those owners, says so, and makes a many-to-many
+        // relationship's attribute its key when Key is chosen.
+        {
+            application::Editor keyed(ids);
+            const auto made_entity = [&](const char *name, double x, double y)
+            { return std::get<domain::EntityId>(*keyed.create_entity(name, {x, y, 160, 80}).created); };
+            const auto student = made_entity("Student", 0, 0);
+            const auto course = made_entity("Course", 500, 0);
+            const auto professor = made_entity("Professor", 0, 400);
+            const auto takes = std::get<domain::RelationshipId>(*keyed.create_relationship("Takes", {250, 0, 190, 110}).created);
+            const auto advises = std::get<domain::RelationshipId>(*keyed.create_relationship("Advises", {0, 200, 190, 110}).created);
+            for (const auto entity : {student, course})
+            {
+                const auto side = keyed.connect(takes, entity);
+                require(side.ok && keyed.update_participant(takes, *side.participant, domain::Cardinality::Many,
+                                                           domain::Participation::Partial, "")
+                                       .ok,
+                        "Takes is many to many");
+            }
+            const auto lead = keyed.connect(advises, professor);
+            require(lead.ok && keyed.connect(advises, student).ok &&
+                        keyed.update_participant(advises, *lead.participant, domain::Cardinality::One,
+                                                 domain::Participation::Partial, "")
+                            .ok,
+                    "Advises is one to many");
+            const auto ticket = std::get<domain::AttributeId>(
+                *keyed.create_attribute("Ticket", {20, -140, 120, 50}, domain::ElementRef{student}).created);
+            require(keyed.set_attribute_kind(ticket, domain::AttributeKind::Key).ok, "A key on Student");
+            const auto number = std::get<domain::AttributeId>(
+                *keyed.create_attribute("EnrollmentNumber", {260, -140, 160, 50}, domain::ElementRef{takes}).created);
+            keyed.mark_saved(keyed.revision());
+            infrastructure::ErdxProjectStore keyed_store;
+            desktop::MainWindow properties(keyed, keyed_store, ids);
+            properties.resize(1440, 920);
+            properties.show();
+            properties.show_home(false);
+            settle();
+            properties.canvas()->select_elements({domain::ElementRef{ticket}});
+            settle();
+            auto *owners = child<QComboBox>(properties, "attributeOwner");
+            QStringList offered;
+            for (int i = 0; i < owners->count(); ++i)
+                offered << owners->itemText(i);
+            require(offered.filter(QRegularExpression(": Takes$")).size() == 1 &&
+                        offered.filter(QRegularExpression(": Advises$")).isEmpty(),
+                    "A key may be given to Takes, which has a table of its own, and not to Advises");
+            const auto labels = properties.findChildren<QLabel *>();
+            require(std::none_of(labels.begin(), labels.end(), [](const QLabel *label)
+                                 { return label->text().contains("Key attributes belong to entities"); }) &&
+                        std::any_of(labels.begin(), labels.end(), [](const QLabel *label)
+                                    { return label->text().contains("or to a many-to-many or associative relationship"); }),
+                    "The hint says where a key may belong");
+            properties.canvas()->select_elements({domain::ElementRef{number}});
+            settle();
+            emit child<QComboBox>(properties, "attributeKind")->activated(static_cast<int>(domain::AttributeKind::Key));
+            settle();
+            require(keyed.project().attributes.at(number).kind == domain::AttributeKind::Key &&
+                        keyed.project().attributes.at(number).owner == domain::AttributeOwner{domain::ElementRef{takes}},
+                    "Choosing Key in Properties makes the attribute Takes' key");
+            keyed.mark_saved(keyed.revision());
+        }
         // Automatic ends follow column rows, including vertically stacked tables.
         {
             application::Editor model(ids);

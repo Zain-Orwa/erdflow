@@ -230,8 +230,12 @@ An **attribute** object has these exact fields:
 
 Kinds are exclusive in this initial model. An attribute may belong to an entity,
 a relationship, or another attribute whose kind is `"composite"`. Composite
-ownership must be acyclic. A key attribute cannot be directly owned by a
-relationship. Unowned attributes are valid work in progress.
+ownership must be acyclic. A key attribute may be directly owned by a
+relationship only when the relationship is represented by its own table in
+the Relational Schema -- one that is associative, or whose participants
+include at least two with `maximum` `"many"`; a document with a key on any
+other relationship is refused (ADR-021 §5b, 2026-10-05). Unowned attributes
+are valid work in progress.
 
 A **relationship** object has `id`, `name`, `description`, `associative`,
 `identifying` (version 13 onwards), and `participants`. The first three fields

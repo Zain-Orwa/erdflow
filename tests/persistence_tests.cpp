@@ -1064,6 +1064,64 @@ void weak_entities_and_identifying_relationships_persist() {
     reject_because(bytes(both), "not both");
 }
 
+// A key drawn on a relationship with a table of its own is saved and opened as
+// it was drawn, and still keys that table (Zain, 2026-10-05; ADR-021 §5b). The
+// same key on a relationship with no table of its own is refused as a document
+// is read, as it is refused in the editor; there is no new field and no new
+// version, since a key and its owner were always written.
+void relationship_keys_persist_where_the_relationship_has_a_table() {
+    QtIdGenerator ids;
+    Editor editor(ids);
+    const auto student = std::get<EntityId>(*editor.create_entity("Student", {0, 0, 160, 80}).created);
+    const auto course = std::get<EntityId>(*editor.create_entity("Course", {400, 0, 160, 80}).created);
+    for (const auto& [owner, name] : {std::pair{student, "StudentID"}, std::pair{course, "CourseID"}}) {
+        const auto key = editor.create_attribute(name, {}, ElementRef{owner});
+        CHECK(key && editor.set_attribute_kind(std::get<AttributeId>(*key.created), AttributeKind::Key));
+    }
+    const auto takes = std::get<RelationshipId>(*editor.create_relationship("Takes", {200, 200, 190, 110}).created);
+    for (const auto entity : {student, course}) {
+        const auto side = editor.connect(takes, entity);
+        CHECK(side && editor.update_participant(takes, *side.participant, Cardinality::Many, Participation::Partial, ""));
+    }
+    const auto made = editor.create_attribute("EnrollmentNumber", {}, ElementRef{takes});
+    CHECK(made);
+    const auto number = std::get<AttributeId>(*made.created);
+    CHECK(editor.set_attribute_kind(number, AttributeKind::Key));
+
+    // Through a file on disk, with the production store.
+    QTemporaryDir folder;
+    CHECK(folder.isValid());
+    const auto path = folder.filePath("keyed relationship.erdx").toStdString();
+    ErdxProjectStore store;
+    CHECK(store.save(path, editor.project()).ok);
+    const auto loaded = store.load(path);
+    CHECK(loaded);
+    CHECK(*loaded.project == editor.project());
+    const auto& kept = loaded.project->attributes.at(number);
+    CHECK(kept.kind == AttributeKind::Key && kept.identifier && kept.required);
+    CHECK(kept.owner == AttributeOwner{ElementRef{takes}});
+    const auto preview = schema_preview(*loaded.project);
+    const auto bridge = std::find_if(preview.tables.begin(), preview.tables.end(),
+                                     [&](const PreviewTable& table) { return table.origin == ElementRef{takes}; });
+    CHECK(bridge != preview.tables.end());
+    CHECK(bridge->primary_key.size() == 1 && bridge->columns[bridge->primary_key.front()].name == "EnrollmentNumber");
+    CHECK(bridge->decisions.empty());
+
+    // Takes made one-to-many in the document itself: its key has no table to
+    // key, so the document is refused, saying why.
+    auto root = QJsonDocument::fromJson(ErdxProjectStore::encode(editor.project())).object();
+    change_first(root, "relationships", [](QJsonObject& item) {
+        auto sides = item["participants"].toArray();
+        auto first = sides.first().toObject();
+        first["maximum"] = "one";
+        sides[0] = first;
+        item["participants"] = sides;
+    });
+    reject_because(bytes(root), "allowed only when the relationship is represented by its own table");
+    write_file(QString::fromStdString(path), bytes(root));
+    CHECK(!store.load(path));
+}
+
 // Whether a relationship side was answered travels with it from version 19. A
 // side reads Many and Partial whether somebody chose that or never looked, so
 // without this a conversion cannot tell a decided M:M from two untouched
@@ -2760,6 +2818,7 @@ int main() {
         {"disconnected sides leave nothing pointing at them", disconnected_sides_leave_nothing_pointing_at_them},
         {"transparency persists", transparency_persists},
         {"weak entities and identifying relationships persist", weak_entities_and_identifying_relationships_persist},
+        {"relationship keys persist where the relationship has a table", relationship_keys_persist_where_the_relationship_has_a_table},
         {"answered sides persist", answered_sides_persist},
         {"conversion decisions persist", conversion_decisions_persist},
         {"the side chosen to keep a one-to-one key persists", chosen_one_to_one_side_persists},

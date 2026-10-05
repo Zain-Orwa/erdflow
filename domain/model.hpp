@@ -306,6 +306,13 @@ struct Relationship {
 // The three kinds a relationship can be, read off its two flags.
 enum class RelationshipKind { Regular, Identifying, Associative };
 [[nodiscard]] RelationshipKind relationship_kind(const Relationship& relationship);
+// Whether a relationship is represented by a table of its own in the
+// Relational Schema: an associative one, which carries its own identity, and
+// one with at least two sides that may hold many, which becomes a bridge.
+// Every other relationship becomes a foreign key in a participant's table and
+// has no table of its own. A key drawn on a relationship keys that table, so
+// it is allowed only where there is one (Zain, 2026-10-05; ADR-021 §5b).
+[[nodiscard]] bool has_own_table(const Relationship& relationship);
 struct Specialization {
     SpecializationId id;
     std::string name;

@@ -50,6 +50,9 @@ read as still to do.
 - Projects that start from their schema, drawn by hand and converted into
   their diagram; a foreign key renamed on any schema.
 - The **Company Database** and **University Database** examples.
+- **A key drawn on a relationship** keys the relationship's own table, and is
+  allowed exactly where there is one: a many-to-many or associative
+  relationship (Zain, 2026-10-05; ADR-021 §5b, its open conflict closed).
 - The two *Table detail* presentations: **Physical schema** (named so on
   2026-10-02; it was *Names, types and constraints*) and **Compact schema**.
 
@@ -1712,11 +1715,13 @@ faces, so no two cardinality marks share a point; nothing has a stored route,
 so every line still follows what it joins when it is moved. No two shapes
 overlap and no relationship line crosses another.
 
-Two things the model cannot say are drawn as near as it allows. A key
-attribute on a relationship is refused by validation
+Two things the model could not say when these were drawn are drawn as near as
+it allowed. A key attribute on a relationship was refused by validation
 (`attribute.key.relationship`), so Enrollment and Book Loan carry no
 EnrollmentID / LoanID of their own; conversion gives their tables a generated
-key instead (`EnrollmentID`, `Book LoanID`). There is no separate
+key instead (`EnrollmentID`, `Book LoanID`). Since 2026-10-05 such a key may
+be drawn on a many-to-many or associative relationship (ADR-021 §5b); the
+examples are unchanged. There is no separate
 partial-key kind; Dependent's *Name* is drawn as a key on a weak entity, which
 the canvas underlines in dashes as a partial key.
 
@@ -2041,6 +2046,25 @@ exists.)*
   user-defined key only through a column added on the schema and made its
   primary key. ADR-021 §5b records this conflict, which is open and waiting
   for Zain's decision.
+
+  **Reachable from the diagram since 2026-10-05** (Zain; ADR-021 §5b, the
+  conflict closed). A key attribute may belong to a relationship exactly
+  where the relationship is represented by a table of its own -- many to
+  many, or associative (`domain::has_own_table`, which the conversion uses
+  to decide which relationships become tables). There it is the bridge's
+  whole primary key, by any of the ways a key is made: the attribute's kind,
+  the Identifier tick, the schema's primary-key toggle, or a key attribute
+  moved onto the relationship. On a one-to-one or one-to-many relationship,
+  which becomes a foreign key and has no table to key, it is refused, saying
+  why and naming both. Whatever would take a keyed relationship's table away
+  -- a side made one, a side cut or its entity deleted, the associative shape
+  taken off a relationship whose sides no longer make a bridge -- is refused
+  the same way until the key is made an ordinary attribute; nothing is
+  dropped, demoted or ignored. `attribute.key.relationship` is the same
+  validation rule, now conditional, so opening and saving follow it too. The
+  file format and its version are unchanged. Properties offers a key
+  attribute a relationship as its owner only where the relationship has a
+  table of its own, and its hint says so.
 - **A primary key is marked twice**, with a golden key and the letters `PK`
   (the key redrawn 2026-09-26, to Zain's reference). The key is a polished
   golden key held bow up and pointing down, with the teeth at its foot: its
@@ -2749,9 +2773,11 @@ building:
 - How the uncommitted work reaches `main`: pull requests #23–#29 are open,
   and everything since 2026-09-27 is uncommitted; format-on-save restyled
   three source files whole along the way.
-- ADR-021 §5b: whether a key may be drawn on a relationship. The validation
-  rule `attribute.key.relationship` refuses it, which is the failing core
-  test.
+- ~~ADR-021 §5b: whether a key may be drawn on a relationship. The
+  validation rule `attribute.key.relationship` refuses it, which is the
+  failing core test.~~ **Decided 2026-10-05:** allowed exactly where the
+  relationship is represented by a table of its own (many to many, or
+  associative); refused elsewhere. Built; the core test passes.
 - What adding another workspace to a project looks like.
 
 Undo history has a conservative 32 MiB accounting budget; older entries are

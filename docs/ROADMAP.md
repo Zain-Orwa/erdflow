@@ -113,7 +113,10 @@ The Conceptual model should have a deliberate and stable composite-key order.
 
 ### 6. Conceptual relationship-owned key issue
 
-Status: PENDING / KNOWN ISSUE
+Status: DONE (2026-10-05) -- decided by Zain: a key may be owned by a
+relationship only when the relationship is represented by its own table
+(many to many, or associative); see ADR-021 §5b. `drawn_keys_are_the_primary_key`
+passes unchanged.
 
 Resolve the existing:
 
