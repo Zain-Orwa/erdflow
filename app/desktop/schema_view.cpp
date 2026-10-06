@@ -2968,7 +2968,9 @@ std::optional<Qt::CursorShape> SchemaView::run_cursor(QPointF point) const {
     return std::abs(a.x() - b.x()) < 0.01 ? Qt::SizeHorCursor : Qt::SizeVerCursor;
 }
 
-void SchemaView::paintEvent(QPaintEvent*) {
+void SchemaView::paintEvent(QPaintEvent* event) {
+    painted_.tables.clear();
+    painted_.lines.clear();
     if (!theme_) return;
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing, true);
@@ -2984,6 +2986,31 @@ void SchemaView::paintEvent(QPaintEvent*) {
                                          : "Draw an entity and its Relational Design appears here.");
         return;
     }
+    // Only what can reach the part of the schema being painted is drawn
+    // (2026-10-06). The view is as large as the whole schema and the window
+    // shows a part of it; Qt already keeps the paint inside that part, but
+    // every table and line was still drawn, word by word, only to be thrown
+    // away. Each is drawn exactly as before wherever anything it could put
+    // down -- measured generously, never tightly -- reaches what is painted.
+    const QRectF exposed = event->rect();
+    // A line puts down its route under the widest pen it is drawn with, 7 px,
+    // whose mitred corners reach up to twice that width past the corner; and
+    // the symbols at its ends, which stand as far from them as a Chen or
+    // min-max label does.
+    std::vector<char> line_on_view(routes_.size());
+    for (std::size_t i = 0; i < routes_.size(); ++i) {
+        constexpr double pen_reach = 16;
+        constexpr double symbol_reach = 56;
+        const auto& routed = routes_[i];
+        auto reach = routed.path.boundingRect().adjusted(-pen_reach, -pen_reach, pen_reach, pen_reach);
+        for (const auto at : {routed.from, routed.to})
+            reach = reach.united(QRectF(at.x() - symbol_reach, at.y() - symbol_reach, 2 * symbol_reach,
+                                        2 * symbol_reach));
+        line_on_view[i] = reach.intersects(exposed) ? 1 : 0;
+    }
+    const auto on_view = [&](const Routed& routed) {
+        return line_on_view[static_cast<std::size_t>(&routed - routes_.data())] != 0;
+    };
     const auto chosen_row = [this]() -> std::optional<std::pair<std::size_t, std::size_t>> {
         const auto now = selection_now();
         if (const auto* column = std::get_if<ChosenColumn>(&now)) return locate(column->column);
@@ -2995,6 +3022,7 @@ void SchemaView::paintEvent(QPaintEvent*) {
     // erase the line it crossed, which is how a line comes to vanish halfway
     // along while another appears to run straight through it.
     for (const auto& routed : routes_) {
+        if (!on_view(routed)) continue;
         painter.setPen(QPen(theme_->canvas, 6, Qt::SolidLine, Qt::FlatCap, Qt::MiterJoin));
         painter.drawPath(routed.path);
     }
@@ -3031,13 +3059,15 @@ void SchemaView::paintEvent(QPaintEvent*) {
         painter.setPen(QPen(theme_->text, 6.0, Qt::SolidLine, Qt::FlatCap, Qt::MiterJoin));
         for (const auto& routed : routes_) {
             if (routed.from_table != *asking && routed.to_table != *asking) continue;
-            if (!line_shown(routed)) continue;
+            if (!line_shown(routed) || !on_view(routed)) continue;
             painter.drawPath(routed.path);
         }
     }
     // Drawn bold, so a connection reads at a glance across a full schema
     // (Zain, 2026-09-25), and bolder still under the pointer.
     for (const auto& routed : routes_) {
+        if (!on_view(routed)) continue;
+        painted_.lines.push_back(static_cast<std::size_t>(&routed - routes_.data()));
         painter.setPen(QPen(dim(routed.colour, line_shown(routed)), lit(routed) ? 3.4 : 2.6,
                             Qt::SolidLine, Qt::FlatCap, Qt::MiterJoin));
         painter.drawPath(routed.path);
@@ -3115,9 +3145,24 @@ void SchemaView::paintEvent(QPaintEvent*) {
     small.setCapitalization(QFont::AllUppercase);
     auto small_question = font();
     small_question.setPointSizeF(std::max(7.0, font().pointSizeF() - 1.0));
+    // A table puts down its box, the ring round it when it is marked, the key
+    // that may stand a little past its left edge, any answer wider than the
+    // table, and the slot under it while it is pointed at -- with room to
+    // spare for the edges and the lettering of all of them. Every table sets
+    // its own pen, brush and font before drawing, so one left undrawn changes
+    // nothing about the next.
+    const auto table_on_view = [&](std::size_t t) {
+        constexpr double edge_reach = 12;
+        auto reach = placed_[t].box;
+        for (const auto& chip : placed_[t].chips) reach = reach.united(chip.box);
+        if (hovered_table_ && *hovered_table_ == t) reach = reach.united(add_slot(t));
+        return reach.adjusted(-edge_reach, -edge_reach, edge_reach, edge_reach).intersects(exposed);
+    };
     for (std::size_t t = 0; t < preview_.tables.size(); ++t) {
         const auto& table = preview_.tables[t];
         const auto& box = placed_[t].box;
+        if (!table_on_view(t)) continue;
+        painted_.tables.push_back(t);
         const auto here = !faded || shown[t];
         const auto surface = dim(surface_for(table), here);
         const auto edge = dim(edge_for(table), here);
@@ -3611,7 +3656,7 @@ void SchemaView::paintEvent(QPaintEvent*) {
     for (const auto& routed : routes_) {
         // A line that is being faded is not being shown, so it is not lifted
         // over the tables either, however near the pointer happens to be.
-        if (!lit(routed) || !line_shown(routed)) continue;
+        if (!lit(routed) || !line_shown(routed) || !on_view(routed)) continue;
         painter.setPen(QPen(theme_->canvas, 7, Qt::SolidLine, Qt::FlatCap, Qt::MiterJoin));
         painter.drawPath(routed.path);
         painter.setPen(QPen(routed.colour, 3.4, Qt::SolidLine, Qt::FlatCap, Qt::MiterJoin));
@@ -3622,7 +3667,8 @@ void SchemaView::paintEvent(QPaintEvent*) {
     // still fall under the table beside it, and a foot or a minimum half
     // covered by a neighbour is worse than one that is simply not there.
     painter.setFont(mono);
-    for (const auto& routed : routes_) draw_ends(routed);
+    for (const auto& routed : routes_)
+        if (on_view(routed)) draw_ends(routed);
 
     // The band goes over everything: it is the thing being done, not part of
     // what is being looked at. Before the hovered line's grips, which give up
