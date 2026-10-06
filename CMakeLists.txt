@@ -38,12 +38,20 @@ add_library(erdflow_canvas app/desktop/diagram_view.cpp app/desktop/theme.cpp ap
                           app/desktop/document_export.cpp)
 target_link_libraries(erdflow_canvas PUBLIC erdflow_application Qt6::Widgets Qt6::Svg PRIVATE erdflow_warnings)
 
-add_library(erdflow_desktop app/desktop/main_window.cpp app/desktop/schema_view.cpp app/desktop/schema_explorer.cpp app/desktop/schema_facts.cpp
+add_library(erdflow_desktop app/desktop/main_window.cpp app/desktop/schema_view.cpp app/desktop/schema_router.cpp app/desktop/schema_explorer.cpp app/desktop/schema_facts.cpp
                             app/desktop/notice.cpp
                             app/desktop/home_page.cpp app/desktop/home_live_demo.cpp app/desktop/home_demo_scenes.cpp app/desktop/home_demo_canvas.cpp app/desktop/conceptual_examples.cpp app/desktop/relational_examples.cpp app/desktop/app_top_bar.cpp app/desktop/home_sidebar.cpp app/desktop/home_learning_panel.cpp app/desktop/start_route_card.cpp app/desktop/project_details_form.cpp app/desktop/welcome_flow_illustration.cpp app/desktop/ribbon.cpp app/desktop/icons.cpp
                             app/desktop/symbols.cpp app/desktop/symbol_picker.cpp
                             app/desktop/export_dialog.cpp app/desktop/search_bar.cpp)
 target_link_libraries(erdflow_desktop PUBLIC erdflow_canvas Qt6::Svg PRIVATE erdflow_warnings)
+# The Relational Schema's router is compiled optimised even in a Debug build.
+# Routing every line is the costliest thing a schema drag does, and unoptimised
+# the same search, finding the same routes, is some fourteen times slower;
+# only the router is optimised, so the rest of the schema is still stepped
+# through as written (2026-10-06). Not under MSVC, whose Debug /RTC1 cannot be
+# combined with /O2; Release is untouched.
+set_source_files_properties(app/desktop/schema_router.cpp PROPERTIES
+    COMPILE_OPTIONS "$<$<AND:$<CONFIG:Debug>,$<NOT:$<CXX_COMPILER_ID:MSVC>>>:-O2>")
 # The icon set is compiled in rather than read from disk, so a built ERDFlow is
 # one file that cannot be started without its own artwork. Qt6::Svg brings the
 # renderer that turns those files into icons.

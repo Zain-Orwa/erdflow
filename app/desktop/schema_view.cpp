@@ -6,6 +6,7 @@
 // covered by this — fix it and say what was wrong. Full rule: CLAUDE.md.
 #include "schema_view.hpp"
 #include "schema_facts.hpp"
+#include "schema_router.hpp"
 
 #include "theme.hpp"
 #include "application/editor.hpp"
@@ -257,89 +258,17 @@ QString written_type(const domain::PreviewColumn& column) { return type_text(col
 QString written_type_name(const domain::PreviewColumn& column) { return type_name(column); }
 
 namespace {
-// The router works over a coarse grid: the tables are blocked out, and a line
-// finds its way between them. Turning costs more than going straight, so runs
-// stay long; a cell another line has already used costs more still, which is
-// what keeps two lines going the same way apart without a rule about lanes.
-constexpr int cell = 9;
-constexpr int clearance = 6;
-constexpr int turn_cost = 4;
-constexpr int share_cost = 7;
-
-struct Grid {
-    int columns = 0;
-    int rows = 0;
-    std::vector<std::uint8_t> blocked;
-    std::vector<std::uint16_t> used;
-    // The search's own working room, kept with the grid and cleared between
-    // lines rather than allocated afresh for each. Every line on the schema is
-    // routed again whenever a table is dragged, and two vectors the size of the
-    // whole grid per line per frame is a cost paid while the hand is moving.
-    std::vector<int> best;
-    std::vector<int> came;
-    [[nodiscard]] int at(int x, int y) const { return y * columns + x; }
-    [[nodiscard]] bool inside(int x, int y) const {
-        return x >= 0 && y >= 0 && x < columns && y < rows;
-    }
-};
-
-struct Step { int x; int y; int direction; int cost; };
-
-// A* over the grid. Returns the cells walked, or nothing where no way could be
-// found -- which the caller answers with a plain elbow rather than no line.
-std::vector<QPoint> find_way(Grid& grid, QPoint from, QPoint to) {
-    if (!grid.inside(from.x(), from.y()) || !grid.inside(to.x(), to.y())) return {};
-    // Both ends sit against their own tables, so their cells are let through.
-    grid.blocked[grid.at(from.x(), from.y())] = 0;
-    grid.blocked[grid.at(to.x(), to.y())] = 0;
-
-    const auto cells = static_cast<std::size_t>(grid.columns) * static_cast<std::size_t>(grid.rows);
-    auto& best = grid.best;
-    auto& came = grid.came;
-    best.assign(cells, std::numeric_limits<int>::max());
-    came.assign(cells, -1);
-    const auto compare = [](const Step& a, const Step& b) { return a.cost > b.cost; };
-    std::priority_queue<Step, std::vector<Step>, decltype(compare)> open(compare);
-
-    const auto start = grid.at(from.x(), from.y());
-    best[static_cast<std::size_t>(start)] = 0;
-    open.push({from.x(), from.y(), -1, 0});
-
-    static constexpr std::array<QPoint, 4> moves{QPoint{1, 0}, QPoint{-1, 0}, QPoint{0, 1}, QPoint{0, -1}};
-    std::size_t examined = 0;
-    while (!open.empty() && examined < 60000) {
-        const auto here = open.top();
-        open.pop();
-        ++examined;
-        if (here.x == to.x() && here.y == to.y()) {
-            std::vector<QPoint> path;
-            auto at = grid.at(here.x, here.y);
-            while (at >= 0) {
-                path.push_back(QPoint(at % grid.columns, at / grid.columns));
-                if (at == start) break;
-                at = came[static_cast<std::size_t>(at)];
-            }
-            std::reverse(path.begin(), path.end());
-            return path;
-        }
-        for (int m = 0; m < 4; ++m) {
-            const auto next_x = here.x + moves[static_cast<std::size_t>(m)].x();
-            const auto next_y = here.y + moves[static_cast<std::size_t>(m)].y();
-            if (!grid.inside(next_x, next_y)) continue;
-            const auto index = static_cast<std::size_t>(grid.at(next_x, next_y));
-            if (grid.blocked[index]) continue;
-            const auto step = 1 + (here.direction != -1 && here.direction != m ? turn_cost : 0)
-                            + grid.used[index] * share_cost;
-            const auto walked = here.cost + step;
-            if (walked >= best[index]) continue;
-            best[index] = walked;
-            came[index] = grid.at(here.x, here.y);
-            open.push({next_x, next_y, m,
-                       walked + std::abs(to.x() - next_x) + std::abs(to.y() - next_y)});
-        }
-    }
-    return {};
-}
+// The router -- its grid, its search, and how a route is marked and drawn --
+// is a file of its own, compiled optimised even in a Debug build.
+using schema_router::cell;
+using schema_router::clearance;
+using schema_router::turn_cost;
+using schema_router::share_cost;
+using schema_router::Grid;
+using schema_router::find_way;
+using schema_router::find_way_trial;
+using schema_router::mark;
+using schema_router::path_of;
 
 // Drop the points that repeat, which squaring a route off readily produces and
 // which would otherwise be corners the pointer could grab at no length.
@@ -389,13 +318,6 @@ std::vector<QPointF> corners_of(const std::vector<QPoint>& cells, QPointF from, 
     return corners;
 }
 
-QPainterPath path_of(const std::vector<QPointF>& corners) {
-    if (corners.empty()) return {};
-    QPainterPath path(corners.front());
-    for (std::size_t i = 1; i < corners.size(); ++i) path.lineTo(corners[i]);
-    return path;
-}
-
 // Walk to the next point in right angles, carrying on along whichever axis the
 // line is already travelling so that it turns once rather than doubling back on
 // itself. This is what routes a line through the corners somebody has put in by
@@ -413,30 +335,6 @@ void step_to(std::vector<QPointF>& corners, bool& horizontal, QPointF next) {
         horizontal = across;
     }
     corners.push_back(next);
-}
-
-// Say where a route has been, so the next one is nudged off it rather than laid
-// along it. The band is three cells wide because two lines a single cell apart
-// still read as one thick line.
-void mark(Grid& grid, const std::vector<QPointF>& corners) {
-    const auto touch = [&](int x, int y) {
-        for (int away = -1; away <= 1; ++away) {
-            if (!grid.inside(x, y + away)) continue;
-            auto& count = grid.used[static_cast<std::size_t>(grid.at(x, y + away))];
-            count = static_cast<std::uint16_t>(std::min(8, count + (away == 0 ? 3 : 1)));
-        }
-    };
-    for (std::size_t i = 1; i < corners.size(); ++i) {
-        const auto from = corners[i - 1];
-        const auto to = corners[i];
-        const auto steps = static_cast<int>(std::max(std::abs(to.x() - from.x()),
-                                                     std::abs(to.y() - from.y())) / cell) + 1;
-        for (int step = 0; step <= steps; ++step) {
-            const auto t = static_cast<double>(step) / steps;
-            touch(static_cast<int>((from.x() + (to.x() - from.x()) * t) / cell),
-                  static_cast<int>((from.y() + (to.y() - from.y()) * t) / cell));
-        }
-    }
 }
 
 // The nearest place on a table's outline to a point, which is where an end
@@ -2725,13 +2623,11 @@ void SchemaView::reroute() {
                     };
                     if (!clear_end(candidate_from, start_at, one.table)
                         || !clear_end(candidate_to, finish_at, target)) continue;
-                    // find_way opens its terminal cells; probes must not leave
-                    // holes in the obstacle map for subsequent alternatives.
-                    const auto blocked = grid.blocked;
-                    const auto path = find_way(grid,
+                    // Tried, the obstacles are left exactly as they were found
+                    // (find_way_trial), so one side tried opens no holes for the next.
+                    const auto path = find_way_trial(grid,
                         QPoint(static_cast<int>(start_at.x()) / cell, static_cast<int>(start_at.y()) / cell),
                         QPoint(static_cast<int>(finish_at.x()) / cell, static_cast<int>(finish_at.y()) / cell));
-                    grid.blocked = blocked;
                     if (path.empty()) continue;
                     double score = static_cast<double>(path.size()) + (fk_side > 0 ? 2.0 : 0.0);
                     for (std::size_t i = 0; i < path.size(); ++i) {
