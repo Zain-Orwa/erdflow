@@ -195,6 +195,11 @@ public:
     // companion to line_shapes: between them they are the whole of what the
     // schema looks like, which is otherwise knowable only by reading pixels.
     [[nodiscard]] std::vector<QRectF> table_boxes() const;
+    // How wide a table is drawn with every column shown, before a hand has
+    // said otherwise. The width is measured from the lettering, which each
+    // platform draws at its own size, so a layout made in advance asks here
+    // how much room to leave (the Relational examples, 2026-10-06).
+    [[nodiscard]] double full_width(const domain::PreviewTable& table) const;
     // Where each table's rows were drawn, table by table. A table pulled
     // taller shares that room out between its rows, so how deep a row is
     // drawn is part of what the schema looks like rather than a constant.

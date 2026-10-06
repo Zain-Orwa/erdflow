@@ -6,6 +6,7 @@
 // covered by this — fix it and say what was wrong. Full rule: CLAUDE.md.
 #include "main_window.hpp"
 #include "conceptual_examples.hpp"
+#include "relational_examples.hpp"
 #include "export_dialog.hpp"
 #include "ribbon.hpp"
 #include "schema_explorer.hpp"
@@ -2402,6 +2403,30 @@ namespace erdflow::desktop
         example->setObjectName("openExample");
         connect(example, &QPushButton::clicked, this, &MainWindow::load_example);
         header_layout->addWidget(example);
+        // Relational Design's Open example, in the same place (Zain, 2026-10-05):
+        // it drops its two examples and its template, and is shown only while
+        // Relational Design is in front -- when the diagram's own is put away.
+        // A mark with its arrow and no word, named on hover, since the header of
+        // a schema drawn by hand has no room for one at the reference width
+        // (Zain, 2026-10-05). Its menu is given to it with the File menu's
+        // entries, which do not exist yet; see set_workspace_in_front for when it
+        // shows.
+        auto *relational_example = new QToolButton(header);
+        relational_example->setObjectName("openRelationalExample");
+        relational_example->setToolTip("Open example");
+        relational_example->setPopupMode(QToolButton::InstantPopup);
+        relational_example->setToolButtonStyle(Qt::ToolButtonIconOnly);
+        relational_example->setIconSize(QSize(18, 18));
+        // The drawn action carries the mark, so it follows the icon set and the
+        // theme, as the header's Arrange and Appearance do.
+        auto *relational_example_mark = new QAction("Open example", relational_example);
+        relational_example_mark->setObjectName("openRelationalExampleAction");
+        action_glyphs_[relational_example_mark] = Glyph::Open;
+        connect(relational_example_mark, &QAction::changed, relational_example,
+                [relational_example, relational_example_mark]
+                { relational_example->setIcon(relational_example_mark->icon()); });
+        relational_example->hide();
+        header_layout->addWidget(relational_example);
         layout->addWidget(header);
         // The search sits directly above the thing it filters, and takes no room
         // at all until it is asked for.
@@ -3454,6 +3479,39 @@ namespace erdflow::desktop
         // (Zain, 2026-10-03).
         auto *file_template = file->addAction("New from template", this, &MainWindow::load_template);
         file_template->setObjectName("fileTemplate");
+        // Relational Design's own, in the same place (Zain, 2026-10-05): the
+        // Company and University domains drawn as schemas from the start, and its
+        // template. Offered only while Relational Design is in front, as the
+        // Conceptual ones only while the diagram is; see set_workspace_in_front.
+        auto *company_relational = file->addAction("Company Database — Relational", this,
+                                                   &MainWindow::load_company_database_relational);
+        company_relational->setObjectName("fileExampleCompanyRelational");
+        company_relational->setToolTip("A company database drawn as tables: primary keys, foreign keys and "
+                                       "junction tables.");
+        auto *university_relational = file->addAction("University Database — Relational", this,
+                                                      &MainWindow::load_university_database_relational);
+        university_relational->setObjectName("fileExampleUniversityRelational");
+        university_relational->setToolTip("A university database drawn as tables: primary keys, foreign keys and "
+                                          "junction tables.");
+        auto *template_relational = file->addAction("New from template: Basic Relational Schema", this,
+                                                    &MainWindow::load_relational_template);
+        template_relational->setObjectName("fileTemplateRelational");
+        template_relational->setToolTip("Two tables, Parent and Child, and the foreign key from Child to Parent, "
+                                        "ready to be renamed and extended.");
+        for (auto *entry : {company_relational, university_relational, template_relational})
+            entry->setVisible(false);
+        // The header's Open example drops the same three while Relational Design
+        // is in front, since the diagram's own button opens a diagram.
+        if (auto *button = findChild<QToolButton *>("openRelationalExample"))
+        {
+            auto *offered = new QMenu(button);
+            offered->setObjectName("openRelationalExampleMenu");
+            offered->addAction(company_relational);
+            offered->addAction(university_relational);
+            offered->addSeparator();
+            offered->addAction(template_relational);
+            button->setMenu(offered);
+        }
         file->addSeparator();
         file->addAction("&Quit", QKeySequence::Quit, this, &QWidget::close);
         auto *edit = new QMenu("&Edit", this);
@@ -3496,6 +3554,20 @@ namespace erdflow::desktop
         auto *templates = home_menu->addAction("New from template", this, [this]
                                                { load_template(); });
         templates->setObjectName("homeTemplates");
+        // Relational Design's own, on the same terms as in the File menu (Zain,
+        // 2026-10-05): only while it is in front.
+        auto *home_company_relational = home_menu->addAction("Company Database — Relational", this, [this]
+                                                             { load_company_database_relational(); });
+        home_company_relational->setObjectName("homeExampleCompanyRelational");
+        auto *home_university_relational = home_menu->addAction("University Database — Relational", this, [this]
+                                                                { load_university_database_relational(); });
+        home_university_relational->setObjectName("homeExampleUniversityRelational");
+        auto *home_template_relational = home_menu->addAction("New from template: Basic Relational Schema", this,
+                                                              [this]
+                                                              { load_relational_template(); });
+        home_template_relational->setObjectName("homeTemplateRelational");
+        for (auto *entry : {home_company_relational, home_university_relational, home_template_relational})
+            entry->setVisible(false);
 
         // Design: what is done to the model as a whole rather than to one thing in
         // it. Arrange and Appearance already exist on the schema's own header; the
@@ -7043,6 +7115,16 @@ namespace erdflow::desktop
                                  "homeExampleCompany", "homeExampleUniversityDatabase", "homeTemplates"})
             if (auto *entry = findChild<QAction *>(name))
                 entry->setVisible(!relational);
+        // And Relational Design's own the other way round (Zain, 2026-10-05): its
+        // two examples and its template, in the same menus and in the header's
+        // Open example, only while it is in front.
+        for (const char *name : {"fileExampleCompanyRelational", "fileExampleUniversityRelational",
+                                 "fileTemplateRelational", "homeExampleCompanyRelational",
+                                 "homeExampleUniversityRelational", "homeTemplateRelational"})
+            if (auto *entry = findChild<QAction *>(name))
+                entry->setVisible(relational);
+        if (auto *button = findChild<QToolButton *>("openRelationalExample"))
+            button->setVisible(relational);
     }
 
     void MainWindow::set_schema_full(bool full)
@@ -10609,6 +10691,49 @@ namespace erdflow::desktop
         show_result(editor_.replace_project(example.project()));
         path_.clear();
         canvas_->fit_diagram();
+    }
+
+    // Relational Design's examples and template are projects that start from
+    // their schema (Zain, 2026-10-05), drawn in an Editor of their own and put in
+    // front whole, as the Conceptual ones are: nothing is converted, and no
+    // diagram is made first. The schema opens at its top-left corner, where each
+    // of them begins.
+    void MainWindow::load_schema_project(void (*build)(application::Editor &, const TableWidth &))
+    {
+        if (!confirm_discard())
+            return;
+        show_home(false);
+        application::Editor example(ids_);
+        // Measured as the schema will draw each table, so the columns of tables
+        // stand clear of one another in whatever size this platform letters
+        // them (2026-10-06).
+        TableWidth width;
+        if (schema_)
+            width = [this](const domain::PreviewTable &table)
+            { return schema_->full_width(table); };
+        build(example, width);
+        show_result(editor_.replace_project(example.project()));
+        path_.clear();
+        if (schema_scroll_)
+        {
+            schema_scroll_->horizontalScrollBar()->setValue(0);
+            schema_scroll_->verticalScrollBar()->setValue(0);
+        }
+    }
+
+    void MainWindow::load_company_database_relational()
+    {
+        load_schema_project(&build_company_database_relational);
+    }
+
+    void MainWindow::load_university_database_relational()
+    {
+        load_schema_project(&build_university_database_relational);
+    }
+
+    void MainWindow::load_relational_template()
+    {
+        load_schema_project(&build_basic_relational_schema);
     }
 
     void MainWindow::closeEvent(QCloseEvent *event)

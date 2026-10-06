@@ -1090,6 +1090,9 @@ Home picture was retaken.
 
 ### 9.22 Examples, Templates and Import belong to their workspace, 2026-10-03
 
+> **Amended by §9.23:** Relational Design now has two examples and a
+> template of its own, offered while it is in front.
+
 Zain moved Examples, Templates and Import off Home's sidebar. They are not
 global: each works on one design level, so each is offered in the workspace
 it belongs to (2026-10-03), and in every menu that offers it (2026-10-04).
@@ -1113,3 +1116,50 @@ it belongs to (2026-10-03), and in every menu that offers it (2026-10-04).
   and no shared code was copied: the same entries are shown or put away as
   the workspace in front changes (`MainWindow::set_workspace_in_front`).
 - The Home and sidebar reference pictures still pass and were not retaken.
+
+### 9.23 Relational Design's own examples and template, 2026-10-05
+
+Zain asked for the examples and the template Relational Design did not have
+(§9.22), built as schemas from the start rather than converted from the
+Conceptual examples.
+
+- **Two examples**, *Company Database — Relational* and *University Database
+  — Relational*: the Company and University domains of the Conceptual
+  examples, designed again as tables. Each is a project that starts from its
+  schema, drawn in `app/desktop/relational_examples.cpp` with the Editor's
+  schema commands only -- `new_schema_project`, `create_relation` (placed
+  where it stands), `add_schema_column`, the column's type, size, rules and
+  IDENTITY, `rename_schema_column` and `connect_foreign_key`. No diagram is
+  made and nothing is converted; Convert to Conceptual Design works on them as
+  on any schema drawn by hand. Many-to-many relationships are junction tables
+  keyed by their two foreign keys, what may be held more than once has a table
+  of its own, and a weak entity is keyed through its owner.
+- **Their columns of tables stand apart by measured width** (2026-10-06).
+  Heights are fixed by the rows, but widths are measured from the lettering,
+  which Windows draws larger at the same point size, and Windows CI found
+  tables crowding one another. Each column of tables now stands 150 px clear
+  of the widest table in the column before it (94 px in the template), as the
+  schema measures them. On macOS every table is exactly where it was placed.
+- **One template**, *Basic Relational Schema*: Parent (ParentID, Name) and
+  Child (ChildID, Name, ParentID), with Child.ParentID referencing
+  Parent.ParentID. It opens untitled, as the Conceptual template does. Its
+  keys are named for their tables, as the Table tool names every key, so
+  renaming a table renames its key with it.
+- **Where they are offered**: the File menu and the Home menu of the menu
+  bar (*Company Database — Relational*, *University Database — Relational*,
+  *New from template: Basic Relational Schema*), and the header's Open
+  example. Only while Relational Design is in front -- a schema drawn by hand,
+  or a diagram's schema given the whole window -- by the same
+  `MainWindow::set_workspace_in_front` that puts the Conceptual ones away.
+- **The header's Open example in Relational Design is a mark**, a folder
+  with its menu arrow and no word, named *Open example* on hover, last in the
+  header. The header of a schema drawn by hand already took 1373 of the
+  1440 px reference width with a short title, and a worded button (134 px)
+  would have pushed it past the window's edge. With the mark it takes
+  1436 px. A long project name keeps up to 140 px of title, and then the
+  header takes 1520 px (1457 px without the mark): at 1440 px the mark is
+  what goes past the edge, and nothing already in the header is cut. The
+  File and Home menus always offer all three. Zain chose the mark, and kept
+  it last knowing this (2026-10-05).
+- The Conceptual examples, the Conceptual template and their entries are
+  unchanged, and the file format is unchanged.
