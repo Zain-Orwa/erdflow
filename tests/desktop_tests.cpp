@@ -6550,10 +6550,11 @@ int main(int argc, char **argv)
             settle();
         }
 
-        // Below the raft's zoom, after a rule, the side panels (Zain,
-        // 2026-10-03): the Explorer, Properties, and both. The first two press
-        // the panels' own View menu entries and follow them; the third puts
-        // both away where both are showing and otherwise brings both back.
+        // Below the raft's zoom, after a rule, one button for the side panels
+        // (Zain, 2026-10-06), where there were three. Each press takes the next
+        // step of Both -> Properties only -> Neither -> Both, read from the
+        // panels' own View menu entries, so a panel shown or put away there is
+        // where the next press starts; the Explorer alone goes on to both.
         // None of it reaches the project, the history or what is chosen.
         {
             auto *raft = child<QWidget>(window, "canvasControls");
@@ -6564,25 +6565,28 @@ int main(int argc, char **argv)
                 if (auto *widget = raft->layout()->itemAt(i)->widget())
                     order << widget->objectName();
             require(order == QStringList{"canvasControlsGrip", "canvasFullView", "canvasFit", "canvasPan", "canvasZoomIn",
-                                         "canvasZoomOut", "canvasControlsRule", "canvasExplorer", "canvasProperties",
-                                         "canvasSidePanels"},
-                    "The raft keeps its controls in their order, then a rule, then Explorer, Properties and both");
-            auto *explorer = child<QToolButton>(window, "canvasExplorer");
-            auto *properties = child<QToolButton>(window, "canvasProperties");
-            auto *both = child<QToolButton>(window, "canvasSidePanels");
+                                         "canvasZoomOut", "canvasControlsRule", "canvasSidePanels"},
+                    "The raft keeps its controls in their order, then a rule, then one button for the panels");
+            require(!raft->findChild<QToolButton *>("canvasExplorer") && !raft->findChild<QToolButton *>("canvasProperties"),
+                    "The Explorer's and Properties' own buttons are gone from the raft");
+            require(window.findChild<QAction *>("viewExplorerPanel") == nullptr &&
+                        window.findChild<QAction *>("viewPropertiesPanel") == nullptr,
+                    "And so are the actions only they had");
+            auto *panels = child<QToolButton>(window, "canvasSidePanels");
             auto *zoom_out = child<QToolButton>(window, "canvasZoomOut");
             const auto margins = raft->layout()->contentsMargins();
-            for (auto *button : {explorer, properties, both})
-                require(button->size() == zoom_out->size() && button->toolButtonStyle() == Qt::ToolButtonIconOnly && !button->icon().isNull() && !button->toolTip().isEmpty(),
-                        "Each is a picture the size of the raft's other buttons, named on hover");
-            require(explorer->toolTip() == "Show/Hide Explorer" && properties->toolTip() == "Show/Hide Properties" && both->toolTip() == "Show/Hide Side Panels",
-                    "Named as what they do");
+            require(panels->size() == zoom_out->size() && panels->toolButtonStyle() == Qt::ToolButtonIconOnly && !panels->icon().isNull() && !panels->toolTip().isEmpty(),
+                    "It is a picture the size of the raft's other buttons, named on hover");
+            require(!panels->isCheckable() && panels->defaultAction() == child<QAction>(window, "viewSidePanels"),
+                    "Its picture says which panels are out; it is not a switch with a lit state");
             require(raft->width() == zoom_out->width() + margins.left() + margins.right(),
                     "The raft is no wider than it was");
             const auto shown = [&](bool left, bool right)
             {
-                return explorer_dock->isVisible() == left && properties_dock->isVisible() == right && explorer->isChecked() == left && properties->isChecked() == right && both->isChecked() == (left && right) && explorer_dock->toggleViewAction()->isChecked() == left && properties_dock->toggleViewAction()->isChecked() == right;
+                return explorer_dock->isVisible() == left && properties_dock->isVisible() == right && explorer_dock->toggleViewAction()->isChecked() == left && properties_dock->toggleViewAction()->isChecked() == right;
             };
+            const auto picture = [&]
+            { return panels->icon().pixmap(18, 18).toImage(); };
             const auto corner = [&]
             {
                 const auto *canvas = raft->parentWidget();
@@ -6600,43 +6604,49 @@ int main(int argc, char **argv)
             const auto undo_before = model.undo_label();
             const auto dirty_before = model.dirty();
             const auto corner_before = corner();
-            const auto press = [&](QToolButton *button)
+            const auto press = [&]
             {
-                button->click();
+                panels->click();
                 settle();
             };
-            require(shown(true, true) && inside(), "Both panels show to begin with, and every button says so");
-            press(explorer);
-            require(shown(false, true) && inside() && corner() == corner_before, "Explorer puts the Explorer away; the raft keeps its corner");
-            press(explorer);
-            require(shown(true, true), "And brings it back");
-            press(properties);
-            require(shown(true, false) && window.canvas()->selected_elements() == chosen,
-                    "Properties puts Properties away, and what is chosen stays chosen");
-            press(properties);
-            require(shown(true, true) && properties_heading(*properties_dock->widget()) == said && window.canvas()->selected_elements() == chosen,
-                    "Brought back, it says what it said about the same choice");
-            press(both);
-            require(shown(false, false) && inside() && corner() == corner_before, "Both showing, both are put away");
-            press(both);
-            require(shown(true, true), "Both away, both come back");
-            press(explorer);
-            press(both);
-            require(shown(true, true), "Only the Explorer away: both come back");
-            press(properties);
-            press(both);
-            require(shown(true, true), "Only Properties away: both come back");
-            press(both);
-            press(explorer);
-            require(shown(true, false), "After both are put away, the Explorer alone comes back");
-            press(both);
-            require(shown(true, true), "And then both come back, since one was away");
+            require(shown(true, true) && inside(), "Both panels show to begin with");
+            const auto both_picture = picture();
+            const auto both_words = panels->toolTip();
+            press();
+            require(shown(false, true) && inside() && corner() == corner_before && window.canvas()->selected_elements() == chosen,
+                    "One press puts the Explorer away; the raft keeps its corner and what is chosen stays chosen");
+            const auto properties_picture = picture();
+            require(properties_picture != both_picture && panels->toolTip() != both_words, "And the button says Properties alone is out");
+            press();
+            require(shown(false, false) && inside() && corner() == corner_before, "The next puts Properties away too");
+            const auto neither_picture = picture();
+            require(neither_picture != properties_picture && neither_picture != both_picture, "With a picture of its own");
+            press();
+            require(shown(true, true) && picture() == both_picture && panels->toolTip() == both_words &&
+                        properties_heading(*properties_dock->widget()) == said && window.canvas()->selected_elements() == chosen,
+                    "The third brings both back, saying what Properties said about the same choice");
+            press();
+            press();
+            press();
+            require(shown(true, true), "And the cycle goes round again");
+
+            // The panels' own entries move the button with them, and the next
+            // press starts from what they left.
+            properties_dock->toggleViewAction()->trigger();
+            settle();
+            require(shown(true, false) && picture() != both_picture, "The View menu puts Properties away, and the button follows");
+            press();
+            require(shown(true, true), "The Explorer alone, which the cycle never leaves, goes on to both");
             explorer_dock->toggleViewAction()->trigger();
             settle();
-            require(shown(false, true), "The View menu's Explorer entry and the raft say the same");
+            require(shown(false, true) && picture() == properties_picture, "The View menu's Explorer entry and the button say the same");
+            press();
+            require(shown(false, false) && picture() == neither_picture, "And a press goes on from there");
             explorer_dock->toggleViewAction()->trigger();
+            properties_dock->toggleViewAction()->trigger();
             settle();
-            require(shown(true, true) && corner() == corner_before && inside(), "And back, the raft where it was");
+            require(shown(true, true) && picture() == both_picture && corner() == corner_before && inside(),
+                    "Both brought back from the menu, the button shows both, the raft where it was");
             require(model.project() == project_before && model.revision() == revision_before && model.undo_label() == undo_before && model.dirty() == dirty_before && window.canvas()->selected_elements() == chosen,
                     "None of it is an edit: the project, its history, its unsaved state and what is chosen are as they were");
         }

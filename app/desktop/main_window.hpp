@@ -612,6 +612,10 @@ namespace erdflow::desktop
         // Draws those icons again, for the theme and icon set in use: part of
         // refresh_icons, and all that dressing the ribbon needs drawn.
         void refresh_ribbon_icons();
+        // The canvas raft's one button for the side panels, and the picture
+        // and words it wears for the panels that are out.
+        QAction *side_panels_ = nullptr;
+        void refresh_side_panels_action();
         // A sample drawn for an ordinary row and again for a highlighted one, so it
         // is never drawn in the colour it is standing on. See the definition.
         [[nodiscard]] QIcon two_tone(const std::function<QPixmap(std::optional<QColor>)> &draw) const;

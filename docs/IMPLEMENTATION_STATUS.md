@@ -1004,20 +1004,22 @@ to build in Part 1* at the end. The state of the test suites is under
   it. Right-clicking it offers to put it away; right-clicking the diagram then
   offers it back, as does **View → View controls on the diagram**, and that
   offer appears only while it is away. It is shown to begin with.
-- **The raft shows and hides the side panels** (Zain, 2026-10-03). Below
-  its **−**, after a thin rule in the theme's border colour, three more
-  buttons of the same size: **Show/Hide Explorer** (a window with its left
-  section filled), **Show/Hide Properties** (its right section) and **Show/Hide
-  Side Panels** (both side sections; Full view's picture fills the middle
-  instead). The first two press the panels' own entries in the View menu
-  (`QDockWidget::toggleViewAction`) and are lit while their panel shows, so
-  the menu and the raft always agree. The third puts both away when both are
-  showing and otherwise brings both back, and is lit while both show. Panels
-  are hidden, not rebuilt, and come back at the width they had; what is
-  chosen, the project, its history and its unsaved state are untouched. The
-  raft keeps its width and its corner, growing upward. The pictures are in
-  all three sets (`panel-left`, `panel-right`, `side-panels`; the line art is
-  Lucide's panel-left, panel-right and columns-3).
+- **The raft shows and hides the side panels** with one button (Zain,
+  2026-10-03; one button in place of three, 2026-10-06). Below its **−**,
+  after a thin rule in the theme's border colour, a button of the same size,
+  **Show/Hide Side Panels** (`viewSidePanels`). Each press takes the next
+  step of *Both → Properties only → Neither → Both*, worked out from the
+  panels' own entries in the View menu (`QDockWidget::toggleViewAction`)
+  rather than counted, so a panel shown or put away from the menu, the View
+  row or a workspace coming back is where the next press starts; the
+  Explorer alone, which the cycle never leaves, goes on to both. Its picture
+  is the panels that are out -- both side sections (`side-panels`), the right
+  one (`panel-right`), the left one (`panel-left`), or the bare frame
+  (`no-panels`, line art only) -- and its hover text says which and what the
+  next press does. Panels are hidden, not rebuilt, and come back at the width
+  they had; what is chosen, the project, its history and its unsaved state
+  are untouched. The raft keeps its width and its corner. The line art is
+  Lucide's panel-left, panel-right, columns-3 and square.
 - Fitting the diagram into the view and searching it are drawn as different
   things. In the coloured set they were the same file: a magnifying glass for
   both, saying "look" for one and "look" for the other. Fitting is now a frame

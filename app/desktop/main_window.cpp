@@ -1819,6 +1819,11 @@ namespace erdflow::desktop
             explorer_->selectionModel()->disconnect(this);
         if (issues_)
             issues_->disconnect(this);
+        // The side panels' switches say so as their docks are hidden on the
+        // way out, which the raft's panel button listens to.
+        for (const char *named : {"explorerDock", "propertiesDock"})
+            if (auto *dock = findChild<QDockWidget *>(named))
+                dock->toggleViewAction()->disconnect(this);
         delete properties_->takeWidget();
         delete takeCentralWidget();
     }
@@ -4026,12 +4031,16 @@ namespace erdflow::desktop
                     { if (step > 0) canvas_->zoom_in(); else canvas_->zoom_out(); });
             stack->addWidget(button, 0, Qt::AlignHCenter);
         }
-        // Below the zoom, after a rule, the side panels (Zain, 2026-10-03): the
-        // Explorer, Properties, and both together. The first two press the
-        // panels' own entries in the View menu and show what those show, so the
-        // raft and the menu never disagree. The third puts both away where both
-        // are showing, and otherwise brings both back. Only the panels are put
-        // away; what they hold, and what is chosen, stay as they are.
+        // Below the zoom, after a rule, one button for the side panels (Zain,
+        // 2026-10-06), where there were three -- Explorer, Properties and both.
+        // Each press takes the next step of Both -> Properties only -> Neither
+        // -> Both, read from the panels' own entries in the View menu rather
+        // than counted, so wherever else a panel is shown or put away (the
+        // menu, the View row, a workspace coming back) the next press starts
+        // from what is really there. The Explorer alone, which the cycle never
+        // leaves, goes on to both. Its picture is the panels that are out.
+        // Only the panels are put away; what they hold, and what is chosen,
+        // stay as they are.
         {
             stack->addSpacing(2);
             auto *rule = new QFrame(canvas_controls_);
@@ -4041,41 +4050,28 @@ namespace erdflow::desktop
             stack->addSpacing(2);
             auto *explorer_shown = findChild<QDockWidget *>("explorerDock")->toggleViewAction();
             auto *properties_shown = findChild<QDockWidget *>("propertiesDock")->toggleViewAction();
-            const auto panel_action = [&](const QString &words, const char *named, const char *button_name, Glyph glyph)
-            {
-                auto *action = new QAction(words, this);
-                action->setObjectName(named);
-                action->setCheckable(true);
-                action->setToolTip(words);
-                action_glyphs_[action] = glyph;
-                raft_button(action, button_name);
-                return action;
-            };
-            auto *explorer_button = panel_action("Show/Hide Explorer", "viewExplorerPanel", "canvasExplorer",
-                                                 Glyph::ExplorerPanel);
-            auto *properties_button = panel_action("Show/Hide Properties", "viewPropertiesPanel", "canvasProperties",
-                                                   Glyph::PropertiesPanel);
-            auto *both_button = panel_action("Show/Hide Side Panels", "viewSidePanels", "canvasSidePanels",
-                                             Glyph::SidePanels);
-            const auto follow = [explorer_shown, properties_shown, explorer_button, properties_button, both_button]
-            {
-                explorer_button->setChecked(explorer_shown->isChecked());
-                properties_button->setChecked(properties_shown->isChecked());
-                both_button->setChecked(explorer_shown->isChecked() && properties_shown->isChecked());
-            };
-            connect(explorer_shown, &QAction::toggled, this, follow);
-            connect(properties_shown, &QAction::toggled, this, follow);
-            connect(explorer_button, &QAction::triggered, this, [explorer_shown, follow]
-                    { explorer_shown->trigger(); follow(); });
-            connect(properties_button, &QAction::triggered, this, [properties_shown, follow]
-                    { properties_shown->trigger(); follow(); });
-            connect(both_button, &QAction::triggered, this, [explorer_shown, properties_shown, follow]
+            side_panels_ = new QAction("Show/Hide Side Panels", this);
+            side_panels_->setObjectName("viewSidePanels");
+            side_panels_->setIconText("Panels");
+            raft_button(side_panels_, "canvasSidePanels");
+            connect(side_panels_, &QAction::triggered, this, [explorer_shown, properties_shown]
                     {
-                const bool both = explorer_shown->isChecked() && properties_shown->isChecked();
-                for (auto *shown : {explorer_shown, properties_shown})
-                    if (shown->isChecked() == both) shown->trigger();
-                follow(); });
-            follow();
+                const bool explorer = explorer_shown->isChecked();
+                const bool properties = properties_shown->isChecked();
+                if (explorer && properties)
+                    explorer_shown->trigger();
+                else if (properties)
+                    properties_shown->trigger();
+                else
+                {
+                    if (!explorer) explorer_shown->trigger();
+                    properties_shown->trigger();
+                } });
+            connect(explorer_shown, &QAction::toggled, this, [this]
+                    { refresh_side_panels_action(); });
+            connect(properties_shown, &QAction::toggled, this, [this]
+                    { refresh_side_panels_action(); });
+            refresh_side_panels_action();
         }
         canvas_->installEventFilter(this);
         place_canvas_controls();
@@ -5847,6 +5843,31 @@ namespace erdflow::desktop
             wearing.addPixmap(chosen, QIcon::Active, QIcon::On);
             tab->setIcon(wearing);
         }
+    }
+
+    // The side panels' one button wears the panels that are out, and says
+    // which those are and what a press will do next.
+    void MainWindow::refresh_side_panels_action()
+    {
+        auto *explorer_dock = findChild<QDockWidget *>("explorerDock");
+        auto *properties_dock = findChild<QDockWidget *>("propertiesDock");
+        if (!side_panels_ || !explorer_dock || !properties_dock)
+            return;
+        const bool explorer = explorer_dock->toggleViewAction()->isChecked();
+        const bool properties = properties_dock->toggleViewAction()->isChecked();
+        const auto glyph = explorer && properties ? Glyph::SidePanels
+                           : properties           ? Glyph::PropertiesPanel
+                           : explorer             ? Glyph::ExplorerPanel
+                                                  : Glyph::NoPanels;
+        const auto said = explorer && properties ? "Explorer and Properties are showing. Press to put the Explorer away."
+                          : properties           ? "Properties is showing. Press to put it away too."
+                          : explorer             ? "The Explorer is showing. Press to bring Properties back as well."
+                                                 : "Both panels are away. Press to bring the Explorer and Properties back.";
+        side_panels_->setToolTip(QString::fromUtf8(said));
+        if (const auto known = action_glyphs_.find(side_panels_); known != action_glyphs_.end() && known->second == glyph)
+            return;
+        action_glyphs_[side_panels_] = glyph;
+        side_panels_->setIcon(glyph_icon(glyph, theme(theme_), icon_pixels(), icon_mode_));
     }
 
     // The ribbon's Design, Export, Import, View and Help tabs wear an icon before
