@@ -28,6 +28,9 @@ Ribbon::Ribbon(QMainWindow& window) : QObject(&window), window_(window) {
     tabs_->setMovable(false);
     tabs_->setFloatable(false);
     tabs_->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    // A tab that is given an icon wears it small beside its name: no taller
+    // than the name itself, so the row of tabs keeps its height (add_tab).
+    tabs_->setIconSize(QSize(15, 15));
     // The tabs are the only way to the rows, so the window's context menu is
     // not allowed to close them: a row with no tab to reach it is a dead end.
     tabs_->toggleViewAction()->setVisible(false);
@@ -148,6 +151,13 @@ QAction* Ribbon::add_tab(const QString& label, const char* name) {
     tab->setCheckable(true);
     tab->setActionGroup(group);
     connect(tab, &QAction::triggered, this, [this, tab] { show_row(tab); });
+    // A tab with an icon shows it before its name; one without stays as it
+    // was, its name alone, and no wider for the icon it does not have.
+    connect(tab, &QAction::changed, this, [this, tab] {
+        if (auto* button = qobject_cast<QToolButton*>(tabs_->widgetForAction(tab)))
+            button->setToolButtonStyle(tab->icon().isNull() ? Qt::ToolButtonTextOnly
+                                                            : Qt::ToolButtonTextBesideIcon);
+    });
     return tab;
 }
 
@@ -208,6 +218,25 @@ QToolButton* Ribbon::add_menu_button(QToolBar* row, const QString& label, const 
     connect(row, &QToolBar::toolButtonStyleChanged, button, &QToolButton::setToolButtonStyle);
     row->addWidget(button);
     return button;
+}
+
+void Ribbon::set_row_icon(QAction* action, const QIcon& icon) {
+    if (!action) return;
+    const bool first = !row_icons_.contains(action);
+    row_icons_[action] = icon;
+    // A button restates its action's icon whenever the action changes -- its
+    // name, whether it is checked, whether it can be pressed -- and for these
+    // that icon is none. The action says it has changed only once its buttons
+    // have been told, so the ribbon's icon is put back then.
+    if (first) connect(action, &QAction::changed, this, [this, action] { wear_row_icon(action); });
+    wear_row_icon(action);
+}
+
+void Ribbon::wear_row_icon(QAction* action) const {
+    const auto found = row_icons_.find(action);
+    if (found == row_icons_.end()) return;
+    for (const auto& [tab, row] : rows_)
+        if (auto* button = qobject_cast<QToolButton*>(row->widgetForAction(action))) button->setIcon(found->second);
 }
 
 void Ribbon::show_row(QAction* tab) {

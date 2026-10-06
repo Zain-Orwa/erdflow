@@ -6,8 +6,10 @@
 // covered by this — fix it and say what was wrong. Full rule: CLAUDE.md.
 #pragma once
 
+#include <QIcon>
 #include <QObject>
 #include <QString>
+#include <map>
 #include <utility>
 #include <vector>
 
@@ -39,6 +41,12 @@ protected:
 
 public:
     [[nodiscard]] QToolBar* tabs() const { return tabs_; }
+    // Gives the button a row shows for a command an icon of the ribbon's own.
+    // The command's action is the menus' as well and keeps none: a menu
+    // leaves room for an icon beside every one of its entries as soon as one
+    // of their actions has an icon, shown or not, and the menus are to read
+    // exactly as they did.
+    void set_row_icon(QAction* action, const QIcon& icon);
 
 private:
     QMainWindow& window_;
@@ -46,6 +54,8 @@ private:
     QToolBar* home_ = nullptr;
     // Each row tab with the row it brings up, in the order the tabs are shown.
     std::vector<std::pair<QAction*, QToolBar*>> rows_;
+    std::map<QAction*, QIcon> row_icons_;
+    void wear_row_icon(QAction* action) const;
 
     QAction* add_tab(const QString& label, const char* name);
     void add_menu_tab(const QString& label, const char* name, QMenu* menu);

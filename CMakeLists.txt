@@ -141,6 +141,27 @@ qt_add_resources(erdflow_desktop "erdflow_icons_outline"
         assets/icons-outline/sparkles.svg
         # The schema's Arrange, in the header of a schema drawn by hand.
         assets/icons-outline/layers.svg
+        # The ribbon's tabs and the commands on the Design, Export, Import,
+        # View and Help rows, named for what they stand for so another icon set
+        # can draw its own under the same names.
+        assets/icons-outline/view.svg assets/icons-outline/background.svg
+        assets/icons-outline/icon-set.svg assets/icons-outline/notation.svg
+        assets/icons-outline/lines.svg assets/icons-outline/project-file.svg
+        assets/icons-outline/pdf-document.svg assets/icons-outline/data-dictionary.svg
+        assets/icons-outline/html-report.svg assets/icons-outline/csv-listing.svg
+        assets/icons-outline/svg-picture.svg assets/icons-outline/pdf-page.svg
+        assets/icons-outline/more-pictures.svg assets/icons-outline/copy-picture.svg
+        assets/icons-outline/project-picture.svg assets/icons-outline/other-tool.svg
+        assets/icons-outline/actual-size.svg assets/icons-outline/zoom-in.svg
+        assets/icons-outline/zoom-out.svg assets/icons-outline/grid.svg
+        assets/icons-outline/align-to-grid.svg assets/icons-outline/canvas-controls.svg
+        assets/icons-outline/comment.svg assets/icons-outline/history.svg
+        assets/icons-outline/guide.svg assets/icons-outline/about.svg
+        # The File, Home and Settings tabs (Settings is the Home screen's own
+        # settings.svg, House its house.svg), Home's Insert, and the raft's
+        # panel button when neither panel is showing.
+        assets/icons-outline/file.svg assets/icons-outline/insert.svg
+        assets/icons-outline/no-panels.svg
 )
 
 add_executable(erdflow app/desktop/main.cpp)

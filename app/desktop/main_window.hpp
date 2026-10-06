@@ -459,6 +459,14 @@ namespace erdflow::desktop
         std::map<Notation, QAction *> notation_actions_;
         std::map<ThemeId, QAction *> theme_actions_;
         std::map<QAction *, Glyph> action_glyphs_;
+        // The ribbon's tabs, whose icons are drawn small and follow the tab's own
+        // way of being chosen (dress_ribbon); the commands whose icons are worn
+        // by their buttons on the ribbon's rows rather than by their actions,
+        // which the menus share; and the ribbon's one menu button that has no
+        // action at all.
+        std::map<QAction *, Glyph> tab_glyphs_;
+        std::map<QAction *, Glyph> row_glyphs_;
+        std::map<QToolButton *, Glyph> button_glyphs_;
         // What the window is currently showing, and what the user actually chose.
         // They differ only while a theme is being previewed under the pointer.
         ThemeId theme_ = ThemeId::OfficeLight;
@@ -598,6 +606,12 @@ namespace erdflow::desktop
         void choose_line_style(LineStyle style);
         void refresh_tool_labels();
         void refresh_icons();
+        // Icons for the ribbon's tabs and for the commands on its Design, Export,
+        // Import, View and Help rows, and shorter names on those rows.
+        void dress_ribbon();
+        // Draws those icons again, for the theme and icon set in use: part of
+        // refresh_icons, and all that dressing the ribbon needs drawn.
+        void refresh_ribbon_icons();
         // A sample drawn for an ordinary row and again for a highlighted one, so it
         // is never drawn in the colour it is standing on. See the definition.
         [[nodiscard]] QIcon two_tone(const std::function<QPixmap(std::optional<QColor>)> &draw) const;

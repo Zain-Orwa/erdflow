@@ -320,6 +320,11 @@ QToolBar[ribbonRow="true"] QToolButton:checked, QToolBar[ribbonRow="true"] QTool
 QToolBar[ribbonRow="true"] QToolButton:disabled { color: @muted@; font-weight: 500; }
 QToolBar#designTools QToolButton { padding: 5px 22px 5px 9px; }
 QToolBar#designTools QToolButton::menu-indicator { subcontrol-origin: padding; subcontrol-position: center right; right: 4px; width: 12px; }
+/* The Export row's buttons that open a menu -- More Formats -- place their
+   arrow the same way, level with the name rather than in the button's
+   corner. Only those are widened for it: an InstantPopup is mode 2. */
+QToolBar#exportTools QToolButton[popupMode="2"] { padding: 5px 22px 5px 9px; }
+QToolBar#exportTools QToolButton[popupMode="2"]::menu-indicator { subcontrol-origin: padding; subcontrol-position: center right; right: 4px; width: 12px; }
 /* Specialization and Connect carry their choice on a split arrow rather than
    an InstantPopup button, so the arrow sits in its own menu-button section
    instead of the padding trick above. Left unstyled, that section is drawn

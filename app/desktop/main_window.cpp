@@ -1757,6 +1757,7 @@ namespace erdflow::desktop
         build_history();
         // The tabs go on once every action and menu they are built from exists.
         ribbon_ = new Ribbon(*this);
+        dress_ribbon();
         wire_home();
         // Which field a picked character goes into is decided by where the caret
         // was, so the last text field written in is remembered as focus moves.
@@ -2323,11 +2324,14 @@ namespace erdflow::desktop
         // What the model becomes, beside the badge that says what workspace this
         // is. It belongs here rather than among the drawing tools: it is about
         // what is being looked at, not something to draw with.
-        auto *preview = new QPushButton("Relational Design", header);
+        // Named for what pressing it does (Zain, 2026-10-06): from the diagram
+        // it converts to the schema; while the schema has the whole window it
+        // goes back the other way and says so (set_schema_full).
+        auto *preview = new QPushButton("Convert to Schema", header);
         preview->setObjectName("previewSchema");
         preview->setCheckable(true);
-        preview->setToolTip("The Relational Design this diagram becomes, raised over the lower half of "
-                            "the canvas. It is a preview: nothing is converted, and nothing is written.");
+        preview->setToolTip("The Relational Schema this diagram converts to, raised over the lower half of "
+                            "the canvas. Nothing is written.");
         connect(preview, &QPushButton::clicked, this, [this]
                 { show_schema(!schema_open_); });
         header_layout->addWidget(preview);
@@ -2474,7 +2478,7 @@ namespace erdflow::desktop
         // preview's bar, beside the diagram it would draw, and on the Design menu;
         // Table and the schema's other tools stand in the header. Shown only while
         // the project starts from its schema; see follow_schema_first.
-        schema_convert_ = new QPushButton("Convert to Conceptual Design", schema_bar);
+        schema_convert_ = new QPushButton("Convert to Conceptual", schema_bar);
         schema_convert_->setObjectName("schemaConvert");
         schema_convert_->setToolTip("Draw this schema as the Conceptual ERD it would have come from: every "
                                     "table an entity, every foreign key a relationship. Afterwards the "
@@ -2870,8 +2874,9 @@ namespace erdflow::desktop
         {
             choose_schema_tool(on ? SchemaTool::Table : SchemaTool::Select, false);
         };
-        // A table asked for where the schema was pressed with Table in hand, or
-        // double-clicked. Table is handed back first unless locked, as the
+        // A table asked for where the schema was pressed with Table in hand (a
+        // double click on the empty schema makes none: Zain, 2026-10-06).
+        // Table is handed back first unless locked, as the
         // diagram's placing tools hand back before what they place opens its name,
         // so handing back cannot close the name being typed.
         schema_->add_table = [this](QPointF at)
@@ -3587,14 +3592,14 @@ namespace erdflow::desktop
             menuBar()->insertMenu(at + 1 == order.end() ? nullptr : *(at + 1),
                                   design_menu);
         }
-        auto *to_schema = design_menu->addAction("Relational Design", QKeySequence("Ctrl+R"),
+        auto *to_schema = design_menu->addAction("Convert to Schema", QKeySequence("Ctrl+R"),
                                                  this, [this]
                                                  { show_schema(true); });
         to_schema->setObjectName("designRelational");
         // Converting a schema drawn by hand, reachable without opening the
         // Conceptual preview whose bar also offers it. Shown only while the
         // project starts from its schema; see follow_schema_first.
-        auto *to_diagram = design_menu->addAction("Convert to Conceptual Design", this,
+        auto *to_diagram = design_menu->addAction("Convert to Conceptual", this,
                                                   [this]
                                                   { convert_schema_to_diagram(); });
         to_diagram->setObjectName("designConvert");
@@ -4079,9 +4084,12 @@ namespace erdflow::desktop
         view->addAction(full_view_);
         view->addSeparator();
         view->addAction(fit);
-        view->addAction("Actual size", QKeySequence("Ctrl+1"), canvas_, &DiagramView::actual_size);
-        view->addAction("Zoom in", QKeySequence::ZoomIn, canvas_, &DiagramView::zoom_in);
-        view->addAction("Zoom out", QKeySequence::ZoomOut, canvas_, &DiagramView::zoom_out);
+        view->addAction("Actual size", QKeySequence("Ctrl+1"), canvas_, &DiagramView::actual_size)
+            ->setObjectName("viewActualSize");
+        view->addAction("Zoom in", QKeySequence::ZoomIn, canvas_, &DiagramView::zoom_in)
+            ->setObjectName("viewZoomIn");
+        view->addAction("Zoom out", QKeySequence::ZoomOut, canvas_, &DiagramView::zoom_out)
+            ->setObjectName("viewZoomOut");
         // Dragging follows the pointer continuously by default. Aligning to the
         // grid rounds movement to the grid step, which reads as stuttering rather
         // than as help, so it stays available but off until it is asked for.
@@ -4267,7 +4275,8 @@ namespace erdflow::desktop
             ->setObjectName("quickGuide");
         help->addAction("About ERDFlow", this, [this]
                         { QMessageBox::about(this, "ERDFlow", "ERDFlow 0.1 · Conceptual editor foundation\n\n"
-                                                              "Draw once, progressively refine.\nC++20 · Qt 6 · Local project files"); });
+                                                              "Draw once, progressively refine.\nC++20 · Qt 6 · Local project files"); })
+            ->setObjectName("aboutErdflow");
 
         // The header's undo and redo were built with the shell, before any of
         // these actions existed. They are the same two actions, so they are
@@ -5787,6 +5796,7 @@ namespace erdflow::desktop
             schema_->set_icon_mode(icon_mode_);
         for (const auto &[action, glyph] : action_glyphs_)
             action->setIcon(glyph_icon(glyph, colors, icon_pixels(), icon_mode_));
+        refresh_ribbon_icons();
         if (theme_button_)
             theme_button_->setIcon(glyph_icon(Glyph::Theme, colors, icon_pixels(), icon_mode_));
         if (notation_box_)
@@ -5801,6 +5811,144 @@ namespace erdflow::desktop
         refresh_tool_labels();
         // And Check model wears whichever of its two marks the panel calls for.
         refresh_check_action();
+    }
+
+    void MainWindow::refresh_ribbon_icons()
+    {
+        const auto &colors = theme(theme_);
+        for (const auto &[button, glyph] : button_glyphs_)
+            button->setIcon(glyph_icon(glyph, colors, icon_pixels(), icon_mode_));
+        if (ribbon_)
+            for (const auto &[action, glyph] : row_glyphs_)
+                ribbon_->set_row_icon(action, glyph_icon(glyph, colors, icon_pixels(), icon_mode_));
+        // A tab is chosen by turning its name the accent on the window's own
+        // ground, not by sitting on a chip of the accent as a tool does. So a
+        // chosen tab's line art is inked in the accent too, matching its name,
+        // rather than in the ink that reads on a chip. The coloured and painted
+        // sets keep their own colours either way.
+        // Drawn at the size the row of tabs shows them at, which is the ribbon's.
+        const int tab_icon_pixels = ribbon_ && ribbon_->tabs() ? ribbon_->tabs()->iconSize().width() : 16;
+        for (const auto &[tab, glyph] : tab_glyphs_)
+        {
+            const auto resting = glyph_icon(glyph, colors, tab_icon_pixels, icon_mode_)
+                                     .pixmap(QSize(tab_icon_pixels, tab_icon_pixels), 3.0);
+            auto chosen = resting;
+            if (icon_mode_ == IconMode::Outline && !chosen.isNull())
+            {
+                auto ink = colors.accent;
+                if (colourless(colors.id))
+                    ink = QColor(qGray(ink.rgb()), qGray(ink.rgb()), qGray(ink.rgb()));
+                QPainter tint(&chosen);
+                tint.setCompositionMode(QPainter::CompositionMode_SourceIn);
+                tint.fillRect(chosen.rect(), ink);
+            }
+            QIcon wearing(resting);
+            wearing.addPixmap(chosen, QIcon::Normal, QIcon::On);
+            wearing.addPixmap(chosen, QIcon::Active, QIcon::On);
+            tab->setIcon(wearing);
+        }
+    }
+
+    // The ribbon's Design, Export, Import, View and Help tabs wear an icon before
+    // their names, and the commands on their rows wear one beside theirs, with
+    // the rows' longer names shortened (Zain, 2026-10-06). The commands are the
+    // menus' own actions, so the menus must read exactly as before: an icon is
+    // worn by the command's button on its row rather than by its action (a menu
+    // makes room for an icon as soon as an action has one, shown or not), and a
+    // short name is the action's icon text, which a button on a row shows and a
+    // menu does not. Hovering still gives the full name, or the description
+    // where an action has one.
+    void MainWindow::dress_ribbon()
+    {
+        for (const auto &[name, glyph] : std::initializer_list<std::pair<const char *, Glyph>>{
+                 {"tabHome", Glyph::Home}, {"tabInsert", Glyph::Insert},
+                 {"tabDesign", Glyph::Appearance}, {"tabExport", Glyph::Export}, {"tabImport", Glyph::Import},
+                 {"tabView", Glyph::View}, {"tabHelp", Glyph::Help}})
+            if (auto *tab = findChild<QAction *>(name))
+                tab_glyphs_[tab] = glyph;
+
+        // A command is found by its own name; a submenu, by its menu's; a panel's
+        // switch, by its dock's.
+        const auto command = [this](const char *name) -> QAction *
+        {
+            if (auto *action = findChild<QAction *>(name))
+                return action;
+            if (auto *menu = findChild<QMenu *>(name))
+                return menu->menuAction();
+            if (auto *dock = findChild<QDockWidget *>(name))
+                return dock->toggleViewAction();
+            return nullptr;
+        };
+        struct Dress
+        {
+            const char *name;
+            Glyph glyph;
+            const char *label; // nullptr where the name is already short
+        };
+        static constexpr Dress dresses[] = {
+            // Design
+            {"backgroundMenu", Glyph::Background, nullptr},
+            {"themeMenu", Glyph::Theme, nullptr},
+            {"iconMenu", Glyph::IconSet, nullptr},
+            {"notationMenu", Glyph::Notation, nullptr},
+            // Export
+            {"exportProject", Glyph::ProjectFile, "Project"},
+            {"exportPdfDocument", Glyph::PdfDocument, "PDF"},
+            {"exportMarkdown", Glyph::DataDictionary, "Data Dictionary"},
+            {"exportHtml", Glyph::HtmlReport, "HTML"},
+            {"exportCsv", Glyph::CsvListing, "CSV"},
+            {"exportSvg", Glyph::SvgPicture, "SVG"},
+            {"exportPng", Glyph::Picture, "PNG"},
+            {"exportPdfPage", Glyph::PdfPage, "PDF Page"},
+            {"exportMorePictures", Glyph::MorePictures, "More Formats"},
+            {"exportWithOptions", Glyph::Export, "Options"},
+            {"copyAsPicture", Glyph::CopyPicture, "Copy Image"},
+            // Import
+            {"importProject", Glyph::ProjectFile, "Project"},
+            {"importPicture", Glyph::ProjectPicture, "Project Image"},
+            {"importFromOtherTools", Glyph::OtherTool, "Other Tool"},
+            // View
+            {"explorerDock", Glyph::ExplorerPanel, nullptr},
+            {"propertiesDock", Glyph::PropertiesPanel, nullptr},
+            {"validationDock", Glyph::Check, "Checks"},
+            {"viewFullView", Glyph::FullView, "Full"},
+            {"viewFit", Glyph::Fit, nullptr},
+            {"viewActualSize", Glyph::ActualSize, "100%"},
+            {"viewZoomIn", Glyph::ZoomIn, "Zoom In"},
+            {"viewZoomOut", Glyph::ZoomOut, "Zoom Out"},
+            // Shortened too, or the row would not fit the window and History
+            // would be put away behind the toolbar's arrow. Align Grid rather
+            // than Snap, which promises a different way of moving (Zain,
+            // 2026-10-06).
+            {"viewShowGrid", Glyph::Grid, "Grid"},
+            {"viewAlignToGrid", Glyph::AlignToGrid, "Align Grid"},
+            {"viewCanvasControls", Glyph::CanvasControls, "On-canvas Controls"},
+            {"viewShowComments", Glyph::Comments, "Comments"},
+            {"viewHistory", Glyph::History, nullptr},
+            // Help
+            {"quickGuide", Glyph::Guide, "Guide"},
+            {"aboutErdflow", Glyph::About, "About"},
+        };
+        for (const auto &dress : dresses)
+        {
+            auto *action = command(dress.name);
+            if (!action)
+                continue;
+            // A command that already wore an icon keeps it, wherever it was shown.
+            if (!action_glyphs_.contains(action))
+                row_glyphs_[action] = dress.glyph;
+            if (dress.label)
+                action->setIconText(QString::fromUtf8(dress.label));
+        }
+        if (auto *file = findChild<QToolButton *>("tabFile"))
+        {
+            file->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+            button_glyphs_[file] = Glyph::FileTab;
+        }
+        // Lines is a button of the ribbon's own, with a menu and no action.
+        if (auto *lines = findChild<QToolButton *>("designLinesButton"))
+            button_glyphs_[lines] = Glyph::Lines;
+        refresh_ribbon_icons();
     }
 
     // A small padlock in the corner of an icon, for a button that has no name to
@@ -7222,6 +7370,9 @@ namespace erdflow::desktop
             button->setChecked(full);
             button->setText(full ? "Exit full" : "Full");
         }
+        // With the schema in front, the header's way back to the diagram.
+        if (auto *button = findChild<QPushButton *>("previewSchema"))
+            button->setText(full ? "Convert to Conceptual" : "Convert to Schema");
         // A schema drawn by hand has no Full to press and nothing behind it to
         // bring back, so it says what can be done with it instead.
         statusBar()->showMessage(full ? (editor_.project().schema.standalone

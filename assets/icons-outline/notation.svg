@@ -1,0 +1,10 @@
+<!-- ERDFlow's own, drawn to the Lucide rule: 24x24, no fill, 2px currentColor.
+     A relationship line ending in a crow's foot, with the bar of "one" near its
+     other end: the notation a diagram is drawn in. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none"
+     stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M3 12h18"/>
+  <path d="M8 7v10"/>
+  <path d="m15 12 6-6"/>
+  <path d="m15 12 6 6"/>
+</svg>

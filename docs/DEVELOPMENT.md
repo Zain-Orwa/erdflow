@@ -185,6 +185,11 @@ of its own:
   all. It is also the fallback whenever an artwork file cannot be read, so a
   missing asset never leaves a button blank.
 
+The ribbon's tab and row icons have no painted drawing, and the coloured set has
+artwork for only a few of them, so wherever a set has none they are drawn from
+their line art in that set too, inked the same way (`line_art_only` in
+`icons.cpp`).
+
 The user chooses the mode under **View → Icons**, and the choice is remembered.
 CMake embeds all three sets with `qt_add_resources` and links Qt Svg.
 
@@ -196,11 +201,17 @@ which is ISC licensed; the licence text travels with them in
 `appearance` -- are Lucide's designs too (house, history, book-open,
 layout-template, file-input, circle-help, graduation-cap, network, table,
 file-code, zap, chevron-right, chevron-down and contrast), under the same
-licence. Each file names the Lucide icon it is. They are not glyphs: nothing
-in the ribbon uses them, and `outline_pixmap` draws them by name. Lucide has no icons for the Chen
+licence. Each file names the Lucide icon it is. `outline_pixmap` draws them by
+name; `appearance`, `import` and `help` are also the glyphs of the ribbon's
+Design, Import and Help tabs. Twenty-five more Lucide files give the View tab
+and most of the commands on the Design, Export, Import, View and Help rows their
+icons. Each is named for what it stands for rather than for its drawing
+(`project-file`, `zoom-in`, `about` and so on), so another icon set can draw its
+own under the same name, and each names the Lucide icon it is. Lucide has no icons for the Chen
 shapes, so `entity`, `attribute`, `relationship`, `isa` and `connect` are
 ERDFlow's own, drawn on the same 24-unit grid at the same 2-unit stroke weight
-so the set reads as one family.
+so the set reads as one family. So is `notation`, the crow's foot on the Design
+row.
 
 `symbols.cpp` holds the character table the Insert tab's gallery offers, as
 eight named groups of named characters; `symbol_picker.cpp` is the gallery
