@@ -229,6 +229,11 @@ public:
     // every movement of the pointer, so how often it happens is worth being
     // able to ask: one movement is one routing, never two (2026-10-06).
     [[nodiscard]] std::size_t routings() const { return routings_; }
+    // How many times a table's lettering has been measured since the view was
+    // made. A drag moves tables without changing a word of them, so it
+    // measures nothing; a table is measured again only once the schema, the
+    // font or the screen has changed (2026-10-06).
+    [[nodiscard]] std::size_t measurings() const { return measurings_; }
     // Called whenever a line's shape changes, so whatever reports the state of
     // the schema can say that an end has been left hanging. A shape is not an
     // edit -- nothing here reaches the model -- so this is not the Editor's
@@ -636,12 +641,33 @@ private:
     void draw_band(QPainter& painter) const;
     [[nodiscard]] Columns columns_of(const domain::PreviewTable& table) const;
     [[nodiscard]] double natural_width(const domain::PreviewTable& table) const;
+    // Everything a table's lettering measures, worked out once for each table
+    // the view draws and kept until the schema is read again or the font or
+    // the screen changes. Moving a table changes none of it, so a drag that
+    // measured every word of every table on every movement of the pointer was
+    // getting the same answers over and over (2026-10-06).
+    struct Measured {
+        Columns room;
+        double title = 0;                          // the table's name, bold, as names-only sizes it
+        std::vector<double> labels;                // each row's type as written: int, varchar(255)
+        std::vector<double> type_names;            // and the type's own name, where its size splits off
+        std::vector<std::vector<double>> answers;  // each question's answers, as their chips are sized
+    };
+    [[nodiscard]] Measured measure(const domain::PreviewTable& table) const;
+    // The measurements of one of the tables in the preview, measured the first
+    // time they are asked for. Nothing for a table from anywhere else, which
+    // is measured afresh where it is asked about.
+    [[nodiscard]] const Measured* measurements(const domain::PreviewTable& table) const;
     // What a column's type and size are called where they are drawn.
     [[nodiscard]] static QString size_text(const domain::PreviewColumn& column);
 
     application::Editor& editor_;
     domain::SchemaPreview preview_;
     std::vector<Placed> placed_;
+    // One for each table of the preview, in its order; emptied whenever the
+    // preview is read again or the font or the screen changes.
+    mutable std::vector<std::optional<Measured>> measured_;
+    mutable std::size_t measurings_ = 0;
     std::vector<Routed> routes_;
     std::size_t routings_ = 0;
     // Set while the arrangement grows the canvas to fit what it has placed.

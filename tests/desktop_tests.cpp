@@ -1097,6 +1097,106 @@ int main(int argc, char **argv)
                 opened.mark_saved(opened.revision());
             }
 
+            // A table's lettering is measured once, not on every movement of the
+            // pointer (2026-10-06): a drag moves tables and changes none of what
+            // they say. Whatever does change what a table measures -- a name, a
+            // column, a type, the font, the way it is shown, another schema --
+            // has it measured again, and what is drawn is exactly what a view
+            // made that moment, measuring everything afresh, draws.
+            {
+                child<QAction>(relational, "fileTemplateRelational")->trigger();
+                settle();
+                auto *view = relational.schema();
+                const auto mouse = [&](QEvent::Type type, QPointF where, Qt::MouseButtons held)
+                {
+                    QMouseEvent event(type, where, view->mapToGlobal(where.toPoint()),
+                                      type == QEvent::MouseMove ? Qt::NoButton : Qt::LeftButton, held, Qt::NoModifier);
+                    QApplication::sendEvent(view, &event);
+                };
+                const auto as_afresh = [&]
+                {
+                    desktop::SchemaView afresh(opened);
+                    afresh.setFont(view->font());
+                    afresh.set_names_only(view->names_only());
+                    afresh.refresh();
+                    const auto cells = afresh.cell_boxes();
+                    const auto drawn = view->cell_boxes();
+                    bool same = afresh.table_boxes() == view->table_boxes() &&
+                                afresh.row_boxes() == view->row_boxes() && cells.size() == drawn.size();
+                    for (std::size_t t = 0; same && t < cells.size(); ++t)
+                    {
+                        same = cells[t].size() == drawn[t].size();
+                        for (std::size_t r = 0; same && r < cells[t].size(); ++r)
+                            same = cells[t][r].type == drawn[t][r].type && cells[t][r].size == drawn[t][r].size &&
+                                   cells[t][r].rules == drawn[t][r].rules;
+                    }
+                    return same;
+                };
+                const auto edited = [&](const application::EditResult &result)
+                {
+                    const auto was = view->measurings();
+                    view->refresh();
+                    return result.ok && view->measurings() > was && as_afresh();
+                };
+                require(as_afresh(), "The template is drawn as measuring it afresh draws it");
+
+                // Dragged, nothing is measured again.
+                view->select_all();
+                settle();
+                const auto measured = view->measurings();
+                const auto box = view->table_boxes()[0];
+                const QPointF press(box.center().x(), box.top() + 13);
+                mouse(QEvent::MouseButtonPress, press, Qt::LeftButton);
+                for (int step = 1; step <= 3; ++step)
+                    mouse(QEvent::MouseMove, press + QPointF(10.0 * step, 0), Qt::LeftButton);
+                require(view->measurings() == measured, "A drag measures nothing again, however far it goes");
+                // Until the font changes, which measures every table again
+                // without waiting for the schema to be read.
+                const auto font_was = view->font();
+                auto larger = font_was;
+                larger.setPointSizeF(font_was.pointSizeF() * 96.0 / 72.0);
+                view->setFont(larger);
+                mouse(QEvent::MouseMove, press + QPointF(40, 0), Qt::LeftButton);
+                require(view->measurings() == measured + view->preview().tables.size(),
+                        "A new font measures every table again, even in the middle of a drag");
+                mouse(QEvent::MouseButtonRelease, press + QPointF(40, 0), Qt::NoButton);
+                settle();
+                require(as_afresh(), "And what is drawn in it is what measuring afresh draws");
+                view->setFont(font_was);
+                child<QAction>(relational, "undoCommand")->trigger();
+                settle();
+                require(as_afresh(), "Back in the old font, likewise");
+
+                // Each kind of change to what a table says.
+                const auto table_id = opened.project().schema.added.begin()->first;
+                const auto key_id = opened.project().schema.added.begin()->second.front().id;
+                const domain::ElementRef table_ref{table_id};
+                require(edited(opened.rename_schema_column(key_id, "AnIdentifierFarLongerThanAnyBefore")),
+                        "A column renamed is measured again");
+                require(edited(opened.rename_table(table_ref, "A Table Given A Far Longer Name")),
+                        "A table renamed is measured again");
+                require(edited(opened.add_schema_column(table_ref, "Note")), "A column added is measured again");
+                const auto note = opened.project().schema.added.at(table_id).back().id;
+                require(edited(opened.set_schema_column_type(note, domain::LogicalType::NVarchar)),
+                        "A column given a type is measured again");
+                view->set_names_only(true);
+                require(as_afresh(), "Shown by names only, it is what measuring afresh draws");
+                view->set_names_only(false);
+                require(as_afresh(), "And shown in full again, likewise");
+                require(edited(opened.erase_schema_column(note)), "A column removed is measured again");
+                require(edited(opened.undo()), "An undo is measured again");
+
+                // Another schema opened is measured as itself, never as the one
+                // before it.
+                opened.mark_saved(opened.revision());
+                const auto wide = view->table_boxes();
+                child<QAction>(relational, "fileTemplateRelational")->trigger();
+                settle();
+                require(view->table_boxes() != wide && as_afresh(),
+                        "The template opened again is measured as itself, not as the schema before it");
+                opened.mark_saved(opened.revision());
+            }
+
             // Worked on as any schema drawn by hand: a table made, a column given
             // to it and typed, and a foreign key connected to Employee's key, each
             // one step, undone back to the example exactly and redone.
