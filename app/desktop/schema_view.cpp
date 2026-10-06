@@ -21,6 +21,7 @@
 #include <QFontMetricsF>
 #include <QPainterPath>
 #include <QResizeEvent>
+#include <QScopedValueRollback>
 
 #include <algorithm>
 #include <set>
@@ -1159,7 +1160,10 @@ void SchemaView::align() {
 // round the tables has to be found again when that changes.
 void SchemaView::resizeEvent(QResizeEvent* event) {
     QWidget::resizeEvent(event);
-    reroute();
+    // The window, the panel or the scroll area changing the view's size is
+    // routed here. The arrangement growing the canvas is not: whatever asked
+    // for the arrangement routes every line straight after it.
+    if (!sizing_canvas_) reroute();
     place_naming_box();
 }
 
@@ -1361,6 +1365,9 @@ void SchemaView::arrange() {
         measure(as_shape(line));
     }
     if (shaping_shape_) measure(shaping_shape_->second);
+    // Every caller routes the lines as soon as this returns, so the resize
+    // this may cause does not route them as well (see sizing_canvas_).
+    const QScopedValueRollback<bool> sizing(sizing_canvas_, true);
     setMinimumSize(static_cast<int>(widest + 40), static_cast<int>(tallest + 30));
 }
 
@@ -2538,6 +2545,7 @@ bool SchemaView::eventFilter(QObject* watched, QEvent* happening) {
 void SchemaView::reroute() {
     routes_.clear();
     if (!theme_ || placed_.empty()) return;
+    ++routings_;
     const auto dark = theme_->canvas.lightnessF() < 0.5;
 
     Grid grid;

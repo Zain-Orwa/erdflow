@@ -224,6 +224,11 @@ public:
     // are not an error and nothing is refused for them; they are counted so
     // that the schema can say a connection has been left hanging.
     [[nodiscard]] std::size_t loose_ends() const;
+    // How many times every line has been routed since the view was made.
+    // Routing is the costliest work the schema does and a drag does it on
+    // every movement of the pointer, so how often it happens is worth being
+    // able to ask: one movement is one routing, never two (2026-10-06).
+    [[nodiscard]] std::size_t routings() const { return routings_; }
     // Called whenever a line's shape changes, so whatever reports the state of
     // the schema can say that an end has been left hanging. A shape is not an
     // edit -- nothing here reaches the model -- so this is not the Editor's
@@ -638,6 +643,13 @@ private:
     domain::SchemaPreview preview_;
     std::vector<Placed> placed_;
     std::vector<Routed> routes_;
+    std::size_t routings_ = 0;
+    // Set while the arrangement grows the canvas to fit what it has placed.
+    // That resizes the view there and then, and a resize routes every line;
+    // but whatever asked for the arrangement routes them as soon as it is
+    // done, so routing on that resize as well would do the whole of the
+    // costliest work twice for one movement of the pointer (2026-10-06).
+    bool sizing_canvas_ = false;
     // What the project says about the arrangement, in the painter's units.
     // Read from the model rather than kept here, so that an undo of a move or
     // of a shape is seen the same way as an undo of anything else.

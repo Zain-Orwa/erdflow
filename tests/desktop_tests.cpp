@@ -1000,6 +1000,103 @@ int main(int argc, char **argv)
                 view->setFont(was);
             }
 
+            // One movement of the pointer routes the lines once (2026-10-06). A
+            // drag that carries tables past the canvas's edge grows it, and the
+            // view used to route every line on that resize and again straight
+            // after -- the costliest work the schema does, twice over. A size
+            // given from outside, by the window or the panel, still routes. Asked
+            // of the template, whose two tables route in no time at all: how many
+            // routings a movement makes does not depend on how many lines there
+            // are.
+            {
+                child<QAction>(relational, "fileTemplateRelational")->trigger();
+                settle();
+                auto *view = relational.schema();
+                const auto mouse = [&](QEvent::Type type, QPointF where, Qt::MouseButtons held)
+                {
+                    QMouseEvent event(type, where, view->mapToGlobal(where.toPoint()),
+                                      type == QEvent::MouseMove ? Qt::NoButton : Qt::LeftButton, held, Qt::NoModifier);
+                    QApplication::sendEvent(view, &event);
+                };
+                const auto as_opened = opened.project();
+                const auto steps_before = opened.history().size();
+                view->select_all();
+                settle();
+                const auto marked = view->selection();
+                const auto before = view->table_boxes();
+                const QPointF press(before[0].center().x(), before[0].top() + 13);
+                mouse(QEvent::MouseButtonPress, press, Qt::LeftButton);
+                // Taken well past the edge, then a little further.
+                for (const double across : {1600.0, 1610.0})
+                {
+                    const auto wide = view->width();
+                    const auto routed = view->routings();
+                    mouse(QEvent::MouseMove, press + QPointF(across, 0), Qt::LeftButton);
+                    require(view->width() > wide, "Carried past its edge, the canvas grows");
+                    require(view->routings() == routed + 1, "And the lines are routed once for the movement, not twice");
+                }
+                mouse(QEvent::MouseButtonRelease, press + QPointF(1610, 0), Qt::NoButton);
+                settle();
+                const auto after = view->table_boxes();
+                bool exact = after.size() == before.size();
+                for (std::size_t t = 0; exact && t < before.size(); ++t)
+                    exact = after[t] == before[t].translated(1610, 0);
+                require(exact && view->selection() == marked && opened.history().size() == steps_before + 1,
+                        "Every table lands exactly where the drag took it, still marked, in one step");
+                const auto moved = opened.project();
+                const auto lines_moved = view->line_shapes();
+                const auto dragged_at = relational_files.filePath("Dragged.erdx");
+                require(opened_store.save(dragged_at.toStdString(), moved).ok, "The dragged schema saves");
+                const auto dragged = opened_store.load(dragged_at.toStdString());
+                require(dragged && *dragged.project == moved, "And loads back where it was dragged to");
+                child<QAction>(relational, "undoCommand")->trigger();
+                settle();
+                require(view->table_boxes() == before && opened.project() == as_opened, "Undo puts every table back");
+                child<QAction>(relational, "redoCommand")->trigger();
+                settle();
+                require(view->table_boxes() == after && view->line_shapes() == lines_moved,
+                        "Redo puts the move back, lines and all");
+                child<QAction>(relational, "undoCommand")->trigger();
+                settle();
+
+                // A movement that leaves the canvas as it was routes once as well.
+                view->select(view->preview().tables[0].origin);
+                settle();
+                const auto alone = view->table_boxes()[0];
+                const QPointF hold(alone.center().x(), alone.top() + 13);
+                mouse(QEvent::MouseButtonPress, hold, Qt::LeftButton);
+                const auto size_was = view->size();
+                const auto routed_was = view->routings();
+                mouse(QEvent::MouseMove, hold + QPointF(10, 0), Qt::LeftButton);
+                require(view->size() == size_was && view->routings() == routed_was + 1,
+                        "A movement inside the canvas routes the lines once");
+                mouse(QEvent::MouseButtonRelease, hold + QPointF(10, 0), Qt::NoButton);
+                settle();
+                child<QAction>(relational, "undoCommand")->trigger();
+                settle();
+
+                // A size given from outside: to the view itself, which the scroll
+                // area at once gives back -- a size from outside as well -- and
+                // by the window.
+                const auto routed_now = view->routings();
+                const auto size_held = view->size();
+                view->resize(view->width() + 40, view->height() + 40);
+                require(view->size() == size_held && view->routings() == routed_now + 2,
+                        "A size given to the view from outside routes the lines, and the scroll area giving its own "
+                        "back routes them again");
+                settle();
+                const auto size_now = view->size();
+                const auto routed_then = view->routings();
+                relational.resize(1440 + 200, 1080 + 100);
+                settle();
+                require(view->size() != size_now && view->routings() > routed_then,
+                        "The window making the schema larger routes the lines");
+                relational.resize(1440, 1080);
+                settle();
+                require(opened.project() == as_opened, "And the template is as it opened");
+                opened.mark_saved(opened.revision());
+            }
+
             // Worked on as any schema drawn by hand: a table made, a column given
             // to it and typed, and a foreign key connected to Employee's key, each
             // one step, undone back to the example exactly and redone.
