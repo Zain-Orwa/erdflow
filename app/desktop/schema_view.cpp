@@ -621,6 +621,9 @@ void SchemaView::refresh() {
     // than left standing over whatever has taken that place.
     cancel_rename();
     preview_ = domain::schema_preview(editor_.project());
+    // The tables just read are measured afresh: any of them may say something
+    // new, and the old measurements belong to tables that are no longer here.
+    measured_.clear();
     // Nothing of the arrangement is kept here to prune: it lives in the
     // project, where an element that goes takes its own entries with it.
     std::set<domain::LinkSource> present;
@@ -796,17 +799,57 @@ SchemaView::Columns SchemaView::columns_of(const domain::PreviewTable& table) co
     return room;
 }
 
+SchemaView::Measured SchemaView::measure(const domain::PreviewTable& table) const {
+    Measured measured;
+    measured.room = columns_of(table);
+    auto title_font = font();
+    title_font.setBold(true);
+    measured.title = QFontMetricsF(title_font).horizontalAdvance(QString::fromStdString(table.name));
+    const QFontMetricsF typed(row_font());
+    for (const auto& column : table.columns) {
+        measured.labels.push_back(typed.horizontalAdvance(typed_label(column)));
+        measured.type_names.push_back(typed.horizontalAdvance(type_name(column)));
+    }
+    auto asking_font = font();
+    asking_font.setPointSizeF(std::max(7.0, font().pointSizeF() - 1.0));
+    // Measured bold, because the answer in force is drawn bold and every chip
+    // has to be wide enough for it. Sized for the widest it could be, the row
+    // does not reshuffle itself as answers are given.
+    asking_font.setBold(true);
+    const QFontMetricsF asking(asking_font);
+    for (const auto& decision : table.decisions) {
+        std::vector<double> widths;
+        for (const auto& answer : answers_to(decision)) widths.push_back(asking.horizontalAdvance(answer));
+        measured.answers.push_back(std::move(widths));
+    }
+    return measured;
+}
+
+const SchemaView::Measured* SchemaView::measurements(const domain::PreviewTable& table) const {
+    const auto* first = preview_.tables.data();
+    const std::less<const domain::PreviewTable*> before;
+    if (preview_.tables.empty() || before(&table, first) || !before(&table, first + preview_.tables.size()))
+        return nullptr;
+    if (measured_.size() != preview_.tables.size()) measured_.assign(preview_.tables.size(), std::nullopt);
+    auto& slot = measured_[static_cast<std::size_t>(&table - first)];
+    if (!slot) {
+        slot = measure(table);
+        ++measurings_;
+    }
+    return &*slot;
+}
+
 // What a table is as wide as before a hand has said otherwise: everything it
 // holds, written out whole. A table that had to elide its own names to fit a
 // width nobody chose would be hiding work rather than showing it.
 double SchemaView::natural_width(const domain::PreviewTable& table) const {
-    const auto room = columns_of(table);
+    const auto* held = measurements(table);
+    const auto fresh = held ? Measured{} : measure(table);
+    const auto& measured = held ? *held : fresh;
+    const auto& room = measured.room;
     // With only the names shown, a table is as wide as its keys and names.
     if (names_only_) {
-        auto title_font = font();
-        title_font.setBold(true);
-        const auto title_width = QFontMetricsF(title_font).horizontalAdvance(
-            QString::fromStdString(table.name)) + 18;
+        const auto title_width = measured.title + 18;
         return std::clamp(std::max(gutter_width + room.name, title_width),
                           domain::min_table_width, domain::max_table_width);
     }
@@ -817,7 +860,8 @@ double SchemaView::natural_width(const domain::PreviewTable& table) const {
 // As natural_width measures a table with every column shown, whichever way
 // the schema is presented at the moment.
 double SchemaView::full_width(const domain::PreviewTable& table) const {
-    const auto room = columns_of(table);
+    const auto* held = measurements(table);
+    const auto room = held ? held->room : columns_of(table);
     return std::clamp(gutter_width + room.name + room.type + room.rules,
                       domain::min_table_width, domain::max_table_width);
 }
@@ -1173,20 +1217,15 @@ void SchemaView::resizeEvent(QResizeEvent* event) {
 // pulled has to know how short the table may be made.
 double SchemaView::footer_height(const domain::PreviewTable& table, double wide) const {
     if (names_only_ || table.decisions.empty()) return 0.0;
-    auto asking_font = font();
-    asking_font.setPointSizeF(std::max(7.0, font().pointSizeF() - 1.0));
-    // Measured bold, because the answer in force is drawn bold and every chip
-    // has to be wide enough for it. Sized for the widest it could be, the row
-    // does not reshuffle itself as answers are given.
-    asking_font.setBold(true);
-    const QFontMetricsF asking(asking_font);
+    const auto* held = measurements(table);
+    const auto fresh = held ? Measured{} : measure(table);
+    const auto& asked = (held ? *held : fresh).answers;
     auto tall = footer_pad;
-    for (const auto& decision : table.decisions) {
-        const auto answers = answers_to(decision);
+    for (const auto& answers : asked) {
         auto line = 1;
         auto used = 0.0;
-        for (const auto& answer : answers) {
-            const auto across = asking.horizontalAdvance(answer) + chip_padding * 2;
+        for (const auto answer : answers) {
+            const auto across = answer + chip_padding * 2;
             if (used > 0 && used + across > wide - 18) { ++line; used = 0; }
             used += across + chip_gap;
         }
@@ -1200,10 +1239,6 @@ double SchemaView::footer_height(const domain::PreviewTable& table, double wide)
 void SchemaView::arrange() {
     placed_.assign(preview_.tables.size(), {});
     std::array<double, 3> columns{16, 16, 16};
-    auto asking_font = font();
-    asking_font.setPointSizeF(std::max(7.0, font().pointSizeF() - 1.0));
-    asking_font.setBold(true);
-    const QFontMetricsF asking(asking_font);
     // How far apart the columns of the packing stand. Tables are no longer all
     // one width -- each takes what its own contents need -- so the step is the
     // widest of them, and the arrangement stays a regular grid rather than a
@@ -1219,6 +1254,9 @@ void SchemaView::arrange() {
     step += column_gap;
     for (std::size_t i = 0; i < preview_.tables.size(); ++i) {
         const auto& table = preview_.tables[i];
+        // What its lettering measures, measured once rather than on every
+        // arrangement: a table being moved says nothing new.
+        const auto& sizes = *measurements(table);
         const auto wide = width_of(table);
         const auto footer = footer_height(table, wide);
         const auto natural = header_height + heading_room()
@@ -1254,15 +1292,11 @@ void SchemaView::arrange() {
         placed_[i].cells.clear();
         placed_[i].asked.clear();
         placed_[i].chips.clear();
-        auto measuring = font();
-        measuring.setFamily("Menlo");
-        measuring.setPointSizeF(font().pointSizeF() - 0.5);
-        const QFontMetricsF typed(measuring);
         // How much room each column needs to write what it holds whole.
         // Worked out once for the table, because a column whose edge moved
         // from row to row could not be ruled off, and a rule that wandered
         // would be worse than no rule at all.
-        const auto room = columns_of(table);
+        const auto room = sizes.room;
         const auto type_room = room.type;
         // How much of the row a table pulled narrow can still hold.
         //
@@ -1306,13 +1340,12 @@ void SchemaView::arrange() {
                 if (column.origin || column.added) {
                     const auto type_right = shows_rules ? cell.rules.left() : where.right();
                     const QRectF whole(type_right - type_room, top, type_room, ask_height);
-                    const auto label = typed_label(column);
-                    const auto full = typed.horizontalAdvance(label);
+                    const auto full = sizes.labels[row];
                     const auto from = whole.left() + std::max(6.0, (type_room - full) / 2);
                     const auto measured = column.type != domain::LogicalType::Unset
                                        && domain::size_of(column.type) != domain::TypeSize::None;
                     const auto split = measured
-                        ? std::min(whole.right(), from + typed.horizontalAdvance(type_name(column)))
+                        ? std::min(whole.right(), from + sizes.type_names[row])
                         : whole.right();
                     cell.type = QRectF(whole.left(), top, split - whole.left(), ask_height);
                     if (measured)
@@ -1327,9 +1360,9 @@ void SchemaView::arrange() {
             placed_[i].asked.push_back(QRectF(at.x() + 9, below, wide - 18, question_height));
             below += question_height;
             auto left = at.x() + 9;
-            const auto answers = answers_to(table.decisions[d]);
-            for (std::size_t choice = 0; choice < static_cast<std::size_t>(answers.size()); ++choice) {
-                const auto across = asking.horizontalAdvance(answers[static_cast<int>(choice)]) + chip_padding * 2;
+            const auto& answers = sizes.answers[d];
+            for (std::size_t choice = 0; choice < answers.size(); ++choice) {
+                const auto across = answers[choice] + chip_padding * 2;
                 if (left > at.x() + 9 && left + across > at.x() + wide - 9) {
                     left = at.x() + 9;
                     below += chip_height + chip_gap;
@@ -2505,6 +2538,19 @@ QString SchemaView::hint_for(std::size_t table, std::optional<std::size_t> colum
 }
 
 bool SchemaView::event(QEvent* happening) {
+    // What a table's lettering measures depends on the font it is measured in
+    // and the screen it is measured for, so a change to either measures every
+    // table again when it is next asked about.
+    switch (happening->type()) {
+    case QEvent::FontChange:
+    case QEvent::ApplicationFontChange:
+    case QEvent::ScreenChangeInternal:
+    case QEvent::DevicePixelRatioChange:
+        measured_.clear();
+        break;
+    default:
+        break;
+    }
     if (happening->type() == QEvent::ToolTip) {
         const auto* asking = static_cast<QHelpEvent*>(happening);
         const auto where = QPointF(asking->pos());
