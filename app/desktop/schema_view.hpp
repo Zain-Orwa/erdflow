@@ -234,6 +234,16 @@ public:
     // measures nothing; a table is measured again only once the schema, the
     // font or the screen has changed (2026-10-06).
     [[nodiscard]] std::size_t measurings() const { return measurings_; }
+    // Which tables and which lines the last paint drew: tables by their place
+    // in the preview, lines by their place among line_shapes. Only what can
+    // reach the part of the schema being painted is drawn (2026-10-06), so this
+    // is how it can be seen that the rest of a large schema was left alone and
+    // that nothing on view was.
+    struct Painted {
+        std::vector<std::size_t> tables;
+        std::vector<std::size_t> lines;
+    };
+    [[nodiscard]] const Painted& last_painted() const { return painted_; }
     // Called whenever a line's shape changes, so whatever reports the state of
     // the schema can say that an end has been left hanging. A shape is not an
     // edit -- nothing here reaches the model -- so this is not the Editor's
@@ -670,6 +680,7 @@ private:
     mutable std::size_t measurings_ = 0;
     std::vector<Routed> routes_;
     std::size_t routings_ = 0;
+    Painted painted_;
     // Set while the arrangement grows the canvas to fit what it has placed.
     // That resizes the view there and then, and a resize routes every line;
     // but whatever asked for the arrangement routes them as soon as it is

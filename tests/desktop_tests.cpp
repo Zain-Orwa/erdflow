@@ -24,6 +24,7 @@
 #include <cmath>
 #include <QDebug>
 #include <QScrollArea>
+#include <QScrollBar>
 #include <QMenuBar>
 #include <QDir>
 #include <QApplication>
@@ -1194,6 +1195,110 @@ int main(int argc, char **argv)
                 settle();
                 require(view->table_boxes() != wide && as_afresh(),
                         "The template opened again is measured as itself, not as the schema before it");
+                opened.mark_saved(opened.revision());
+            }
+
+            // Only what can reach the part of the schema being painted is drawn
+            // (2026-10-06). The view is as large as the whole schema and the
+            // window shows a part of it; a table or a line nowhere near that part
+            // is left alone, and nothing that reaches it is -- not a line passing
+            // through it with both its ends elsewhere, and not the ring round a
+            // marked table, which stands just outside its box.
+            {
+                child<QAction>(relational, "fileExampleCompanyRelational")->trigger();
+                settle();
+                auto *view = relational.schema();
+                auto *scroll = child<QScrollArea>(relational, "schemaScroll");
+                const auto has = [](const std::vector<std::size_t> &drawn, std::size_t which)
+                { return std::find(drawn.begin(), drawn.end(), which) != drawn.end(); };
+                // A part painted on its own, and whether anything at all is
+                // drawn in it over the bare canvas.
+                const auto paint = [&](const QRect &part)
+                {
+                    const auto image = view->grab(part).toImage();
+                    bool marked = false;
+                    for (int y = 0; y < image.height() && !marked; ++y)
+                        for (int x = 0; x < image.width() && !marked; ++x)
+                            marked = image.pixel(x, y) != image.pixel(0, 0);
+                    return std::pair{view->last_painted(), marked};
+                };
+                const auto boxes = view->table_boxes();
+                const auto lines = view->line_shapes();
+                require(boxes.size() == 22 && lines.size() == 25, "The Company schema is drawn whole");
+
+                // A little of the first table: it is drawn, and the table
+                // farthest from it is not.
+                std::size_t far = 0;
+                for (std::size_t t = 1; t < boxes.size(); ++t)
+                    if (QLineF(boxes[t].center(), boxes[0].center()).length() >
+                        QLineF(boxes[far].center(), boxes[0].center()).length())
+                        far = t;
+                const auto [near_part, near_marked] = paint(QRect(boxes[0].center().toPoint(), QSize(20, 20)));
+                require(has(near_part.tables, 0) && !has(near_part.tables, far) && near_marked,
+                        "A table in the part painted is drawn, and one far from it is not");
+
+                // A line running through a part of the canvas with no table
+                // there and both its ends far away.
+                std::optional<std::pair<std::size_t, QRect>> crossing;
+                for (std::size_t l = 0; l < lines.size() && !crossing; ++l)
+                    for (std::size_t s = 0; s + 1 < lines[l].size() && !crossing; ++s)
+                    {
+                        const auto mid = (lines[l][s] + lines[l][s + 1]) / 2;
+                        const QRect part(mid.toPoint() - QPoint(4, 4), QSize(9, 9));
+                        const bool clear = std::none_of(boxes.begin(), boxes.end(), [&](const QRectF &box)
+                                                        { return box.adjusted(-20, -20, 20, 20).intersects(part); });
+                        if (clear && QLineF(mid, lines[l].front()).length() > 150 &&
+                            QLineF(mid, lines[l].back()).length() > 150)
+                            crossing = std::pair{l, part};
+                    }
+                require(crossing.has_value(), "A line runs well away from its ends and from every table");
+                const auto [through, line_marked] = paint(crossing->second);
+                require(has(through.lines, crossing->first) && line_marked && through.tables.empty(),
+                        "Painted where it passes, the line is drawn though both its ends are elsewhere");
+
+                // The ring round a marked table stands outside its box, and a
+                // part holding only that is painted with the ring in it.
+                const auto top = boxes[far].toAlignedRect();
+                const QRect above(top.center().x() - 10, top.top() - 4, 20, 3);
+                const auto [plain, plain_marked] = paint(above);
+                view->select(view->preview().tables[far].origin);
+                settle();
+                const auto [ringed, ring_marked] = paint(above);
+                require(!plain_marked && has(ringed.tables, far) && ring_marked,
+                        "The ring round a marked table is drawn where it stands outside the table");
+                view->select(std::nullopt);
+                settle();
+
+                // What the window shows: every table and every line crossing it
+                // is drawn, wherever it has been scrolled to, and what is far
+                // from it is not.
+                const auto shows = [&](int across, int down)
+                {
+                    scroll->horizontalScrollBar()->setValue(across);
+                    scroll->verticalScrollBar()->setValue(down);
+                    settle();
+                    view->repaint();
+                    const QRectF seen(scroll->horizontalScrollBar()->value(), scroll->verticalScrollBar()->value(),
+                                      scroll->viewport()->width(), scroll->viewport()->height());
+                    const auto drawn = view->last_painted();
+                    bool whole = true;
+                    for (std::size_t t = 0; t < boxes.size(); ++t)
+                        if (boxes[t].intersects(seen) && !has(drawn.tables, t))
+                            whole = false;
+                    for (std::size_t l = 0; l < lines.size(); ++l)
+                        for (std::size_t s = 0; s + 1 < lines[l].size(); ++s)
+                            if (QRectF(lines[l][s], lines[l][s + 1]).normalized().adjusted(-1, -1, 1, 1).intersects(seen) &&
+                                !has(drawn.lines, l))
+                                whole = false;
+                    return std::pair{drawn, whole};
+                };
+                const auto [corner, corner_whole] =
+                    shows(scroll->horizontalScrollBar()->maximum(), scroll->verticalScrollBar()->maximum());
+                const auto [home, home_whole] = shows(0, 0);
+                require(corner_whole && home_whole, "Everything crossing what the window shows is drawn, scrolled or not");
+                require(!has(corner.tables, 0) && has(home.tables, 0) && corner.tables.size() < boxes.size() &&
+                            home.tables.size() < boxes.size(),
+                        "Scrolled away, the first table is not drawn, and back again it is; neither draws them all");
                 opened.mark_saved(opened.revision());
             }
 
