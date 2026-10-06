@@ -165,9 +165,9 @@ to build in Part 1* at the end. The state of the test suites is under
     is put down again; a double click locks it (*Connect 🔒*); Escape or a
     second press puts it down. Its arrow carries how the lines run -- *Around
     the tables* or *Straight there*, the same entries as in Arrange.
-  - *Tables* are made by **Table** in the header, by a double
-    click on the empty schema, or by *Add table here* on its right-click
-    menu. A table is put where it was asked for and its name opened for
+  - *Tables* are made by **Table** in the header, or by *Add table here* on
+    the empty schema's right-click menu; a double click on the empty schema
+    makes none (Zain, 2026-10-06). A table is put where it was asked for and its name opened for
     typing; it starts with one column, an `int` primary key named for the
     table -- `TableID`, and `StudentID` once the table is named `Student`
     (`Editor::create_relation`). A key still called by the table's old name
@@ -431,8 +431,8 @@ to build in Part 1* at the end. The state of the test suites is under
   and checked look of the other tools). **Table** no longer makes a table when
   pressed: it is a placing tool, its pointer a cross as on the diagram, and a
   press on the schema makes the table there (header under the pointer)
-  through the same `add_schema_table` the empty schema's double click uses,
-  then hands back to Select -- before the new table opens its name, as the
+  through the same `add_schema_table` the empty schema's *Add table here*
+  uses, then hands back to Select -- before the new table opens its name, as the
   diagram's placing tools hand back. A double click locks Table (*Table 🔒*)
   for placing several; pressed again, as Connect is, it is put down.
   **Connect** keeps every Stage 5 rule and hands back to Select after one

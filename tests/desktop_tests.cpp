@@ -10165,12 +10165,27 @@ int main(int argc, char **argv)
             require(window.statusBar()->currentMessage().contains("only for looking at") && editor.revision() == held,
                     "A double click on the preview says it is only for looking at, and changes nothing");
 
-            // A table where the empty schema is double-clicked.
+            // A double click on the empty schema, with Select in hand, makes no
+            // table (Zain, 2026-10-06); a table is placed with Table.
             const QPointF empty(box.right() + 260, box.top() + 30);
+            const auto tables_before = schema->preview().tables.size();
+            const auto revision_before = editor.revision();
+            mouse(QEvent::MouseButtonPress, empty, Qt::LeftButton);
+            mouse(QEvent::MouseButtonRelease, empty, Qt::LeftButton);
             mouse(QEvent::MouseButtonDblClick, empty, Qt::LeftButton);
+            mouse(QEvent::MouseButtonRelease, empty, Qt::LeftButton);
             settle();
-            require(schema->preview().tables.size() == 2 && field->isVisible(),
-                    "A double click on the empty schema makes a table there, ready to be named");
+            require(schema->preview().tables.size() == tables_before && editor.revision() == revision_before &&
+                        !field->isVisible(),
+                    "A double click on the empty schema makes no table and opens nothing");
+            child<QToolButton>(window, "schemaAddTable")->defaultAction()->trigger();
+            settle();
+            require(schema->placing(), "Table is taken up");
+            mouse(QEvent::MouseButtonPress, empty, Qt::LeftButton);
+            mouse(QEvent::MouseButtonRelease, empty, Qt::LeftButton);
+            settle();
+            require(schema->preview().tables.size() == 2 && field->isVisible() && !schema->placing(),
+                    "One press with Table in hand makes one table there, ready to be named, and hands Table back");
             type_name("Department");
             require(conceptual_state->text().startsWith("2 entities · 1 relationship"),
                     "The preview follows the schema as it is drawn");

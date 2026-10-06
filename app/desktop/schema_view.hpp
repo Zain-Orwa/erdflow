@@ -365,10 +365,10 @@ public:
     void set_placing(bool on);
     [[nodiscard]] bool placing() const { return placing_; }
     std::function<void(bool)> placing_changed;
-    // Somewhere on the empty schema asked for a table, by a double click
-    // there, in the view's own coordinates. Only where the schema is drawn by
-    // hand: on a schema worked out from a diagram a table comes from the
-    // diagram.
+    // Somewhere on the empty schema asked for a table, by a press there with
+    // the Table tool in hand, in the view's own coordinates. Only where the
+    // schema is drawn by hand: on a schema worked out from a diagram a table
+    // comes from the diagram.
     std::function<void(QPointF at)> add_table;
     // The empty schema asked what can be done there, by the right button: the
     // place in the view's coordinates, and where a menu should open.

@@ -2264,12 +2264,9 @@ void SchemaView::mouseDoubleClickEvent(QMouseEvent* event) {
             event->accept();
             return;
         }
-        // The empty schema, where it is drawn by hand, makes a table there.
-        if (drawn_by_hand() && add_table) {
-            add_table(event->position());
-            event->accept();
-            return;
-        }
+        // The empty schema makes nothing on a double click: a table is placed
+        // with the Table tool only (Zain, 2026-10-06), so two quick presses
+        // with Select in hand cannot leave a table behind.
         QWidget::mouseDoubleClickEvent(event);
         return;
     }
