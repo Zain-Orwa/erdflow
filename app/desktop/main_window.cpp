@@ -3848,6 +3848,18 @@ namespace erdflow::desktop
         action_glyphs_[symbols] = Glyph::Symbols;
         connect(symbols, &QAction::triggered, this, [this]
                 { show_symbols(QStringLiteral("Relational algebra")); });
+        // Insert's own tab is gone (Zain, 2026-10-06): what it carried is on
+        // Home, after Note, as one button that drops the Insert menu -- the
+        // picture and the symbols, the visual aids beside the note.
+        auto *insert_button = new QToolButton(toolbar);
+        insert_button->setObjectName("insertButton");
+        insert_button->setText("Insert");
+        insert_button->setToolTip("Insert a picture from a file, or symbols for names and notes.");
+        insert_button->setMenu(insert_menu);
+        insert_button->setPopupMode(QToolButton::InstantPopup);
+        insert_button->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+        insert_button->setIconSize(toolbar->iconSize());
+        toolbar->addWidget(insert_button);
         canvas_->on_insert_picture = [this](QPointF at)
         { insert_picture_dialog(at); };
         canvas_->on_comment = [this](std::vector<domain::CommentTarget> targets)
@@ -4243,9 +4255,13 @@ namespace erdflow::desktop
         }
 
         // Outermost on the right: the corner is where a choice about the whole
-        // window is looked for.
-        toolbar->addSeparator();
-        toolbar->addWidget(theme_button_);
+        // window is looked for. It is no longer shown there (Zain, 2026-10-06):
+        // Home is the modelling row, and since its Insert joined it the row has
+        // no room at the reference width for a second way to the theme, which
+        // Settings' Design row offers. The button stays, put away, because the
+        // header of a schema given the whole window borrows its menu and icon.
+        toolbar->addSeparator()->setVisible(false);
+        toolbar->addWidget(theme_button_)->setVisible(false);
         auto *notations = view->addMenu("Notation");
         notations->setObjectName("notationMenu");
         auto *notation_group = new QActionGroup(this);
@@ -5610,7 +5626,7 @@ namespace erdflow::desktop
             const auto &step = steps[index];
             toolbar->setToolButtonStyle(step.style);
             toolbar->setIconSize(QSize(step.icon, step.icon));
-            for (const char *named : {"isaButton", "connectButton"})
+            for (const char *named : {"isaButton", "connectButton", "insertButton"})
                 if (auto *button = findChild<QToolButton *>(named))
                 {
                     button->setToolButtonStyle(step.style);
@@ -5824,7 +5840,7 @@ namespace erdflow::desktop
         // sets keep their own colours either way.
         // Drawn at the size the row of tabs shows them at, which is the ribbon's.
         const int tab_icon_pixels = ribbon_ && ribbon_->tabs() ? ribbon_->tabs()->iconSize().width() : 16;
-        for (const auto &[tab, glyph] : tab_glyphs_)
+        const auto tab_icon = [&](Glyph glyph)
         {
             const auto resting = glyph_icon(glyph, colors, tab_icon_pixels, icon_mode_)
                                      .pixmap(QSize(tab_icon_pixels, tab_icon_pixels), 3.0);
@@ -5841,8 +5857,13 @@ namespace erdflow::desktop
             QIcon wearing(resting);
             wearing.addPixmap(chosen, QIcon::Normal, QIcon::On);
             wearing.addPixmap(chosen, QIcon::Active, QIcon::On);
-            tab->setIcon(wearing);
-        }
+            return wearing;
+        };
+        for (const auto &[tab, glyph] : tab_glyphs_)
+            tab->setIcon(tab_icon(glyph));
+        // File's menu, beside its row tabs, at their size.
+        if (ribbon_ && ribbon_->file_menu_button())
+            ribbon_->file_menu_button()->setIcon(tab_icon(Glyph::Open));
     }
 
     // The side panels' one button wears the panels that are out, and says
@@ -5882,7 +5903,7 @@ namespace erdflow::desktop
     void MainWindow::dress_ribbon()
     {
         for (const auto &[name, glyph] : std::initializer_list<std::pair<const char *, Glyph>>{
-                 {"tabHome", Glyph::Home}, {"tabInsert", Glyph::Insert},
+                 {"tabFile", Glyph::FileTab}, {"tabHome", Glyph::Home}, {"tabSettings", Glyph::Settings},
                  {"tabDesign", Glyph::Appearance}, {"tabExport", Glyph::Export}, {"tabImport", Glyph::Import},
                  {"tabView", Glyph::View}, {"tabHelp", Glyph::Help}})
             if (auto *tab = findChild<QAction *>(name))
@@ -5961,14 +5982,34 @@ namespace erdflow::desktop
             if (dress.label)
                 action->setIconText(QString::fromUtf8(dress.label));
         }
-        if (auto *file = findChild<QToolButton *>("tabFile"))
-        {
-            file->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-            button_glyphs_[file] = Glyph::FileTab;
-        }
         // Lines is a button of the ribbon's own, with a menu and no action.
-        if (auto *lines = findChild<QToolButton *>("designLinesButton"))
+        auto *lines = findChild<QToolButton *>("designLinesButton");
+        if (lines)
             button_glyphs_[lines] = Glyph::Lines;
+        // Home's Insert, a button of the window's own with the Insert menu.
+        if (auto *insert = findChild<QToolButton *>("insertButton"))
+            button_glyphs_[insert] = Glyph::Insert;
+        if (ribbon_ && ribbon_->file_menu_button())
+            ribbon_->file_menu_button()->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+
+        // With the Relational Schema in front the tabs stay, and the rows keep
+        // to what can act on it (Zain, 2026-10-06): what draws on, frames or
+        // marks up the conceptual diagram is left off them there, as the
+        // drawing tools are, and the menus are left as they are. The side
+        // panels' one button, on the diagram's raft otherwise, stands on the
+        // View row instead, since the schema has no raft.
+        if (ribbon_)
+        {
+            for (const char *name : {"backgroundMenu", "validationDock", "viewFullView", "viewFit", "viewActualSize",
+                                     "viewZoomIn", "viewZoomOut", "viewShowGrid", "viewAlignToGrid",
+                                     "viewCanvasControls", "viewShowComments"})
+                ribbon_->keep_to_conceptual(command(name));
+            if (auto *design = findChild<QToolBar *>("designTools"); design && lines)
+                for (auto *action : design->actions())
+                    if (design->widgetForAction(action) == lines)
+                        ribbon_->keep_to_conceptual(action);
+            ribbon_->add_for_schema("tabView", side_panels_, command("propertiesDock"));
+        }
         refresh_ribbon_icons();
     }
 
@@ -6184,15 +6225,19 @@ namespace erdflow::desktop
                 // The ribbon is the workspace's tool system, and Home has nothing
                 // for it to act on, so its rows give way to Home's own slim bar.
                 // The native menu bar and the status line stay: Home is never
-                // left without its menus (ADR-022 section 9.14). Exactly the rows
-                // that were out are remembered, so the one that was in front
-                // comes back rather than an assumed Home row.
-                for (auto *bar : findChildren<QToolBar *>())
-                    if (!bar->isHidden())
-                    {
-                        hidden_chrome_for_home_.push_back(bar);
-                        bar->hide();
-                    }
+                // left without its menus (ADR-022 section 9.14). The ribbon keeps
+                // which row was in front, so that one comes back rather than an
+                // assumed Home row -- and comes back as the workspace then in
+                // front has it, whichever that is by then.
+                if (ribbon_)
+                    ribbon_->set_put_away(true);
+                else
+                    for (auto *bar : findChildren<QToolBar *>())
+                        if (!bar->isHidden())
+                        {
+                            hidden_chrome_for_home_.push_back(bar);
+                            bar->hide();
+                        }
             }
         }
         else
@@ -6205,6 +6250,8 @@ namespace erdflow::desktop
                 if (chrome)
                     chrome->show();
             hidden_chrome_for_home_.clear();
+            if (ribbon_)
+                ribbon_->set_put_away(false);
             home_chrome_hidden_ = false;
             workspace_seen_ = true;
         }
@@ -7328,16 +7375,21 @@ namespace erdflow::desktop
                 }
             // And the tools for drawing go with the canvas they draw on. A row of
             // shapes to place, above a diagram nobody can currently see, is a row
-            // of things that cannot be done -- so the ribbon and the tool rows are
-            // put away and the few things still worth reaching for come out in the
-            // header instead.
+            // of things that cannot be done -- so Home's row is put away, and the
+            // few things still worth reaching for come out in the header instead.
+            // The tabs stay, and File's and Settings' rows with them, keeping to
+            // what can act on the schema (Zain, 2026-10-06), so the window is
+            // found in the same place in both workspaces.
             hidden_chrome_.clear();
-            for (auto *furniture : chrome_for_drawing())
-                if (furniture && furniture->isVisible())
-                {
-                    hidden_chrome_.push_back(furniture);
-                    furniture->hide();
-                }
+            if (ribbon_)
+                ribbon_->set_schema_in_front(true);
+            else
+                for (auto *furniture : chrome_for_drawing())
+                    if (furniture && furniture->isVisible())
+                    {
+                        hidden_chrome_.push_back(furniture);
+                        furniture->hide();
+                    }
             if (schema_theme_ && theme_button_)
             {
                 schema_theme_->setMenu(theme_button_->menu());
@@ -7378,6 +7430,8 @@ namespace erdflow::desktop
                 if (furniture)
                     furniture->show();
             hidden_chrome_.clear();
+            if (ribbon_)
+                ribbon_->set_schema_in_front(false);
             place_schema_header_tools();
             set_workspace_in_front(false);
             schema_share_ = schema_share_before_full_;
@@ -8553,6 +8607,11 @@ namespace erdflow::desktop
                     std::min(document_label_->fontMetrics().horizontalAdvance(document_label_->text()) + 4, 140));
             }
             // Relational Design is the whole of it until the schema is converted.
+            // The ribbon is told at once, rather than when the schema has risen
+            // to the whole window, so the diagram's drawing tools never show
+            // over a project that has no diagram to draw on.
+            if (ribbon_)
+                ribbon_->set_schema_in_front(true);
             if (!schema_open_ || !schema_full_)
                 open_schema(true);
             // Another project that starts from its schema puts the preview away,

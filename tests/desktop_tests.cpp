@@ -532,9 +532,9 @@ int main(int argc, char **argv)
                         import_menu->actions().contains(child<QAction>(placed, "importProject")) &&
                         import_menu->actions().contains(child<QAction>(placed, "importPicture")),
                     "With Import beside them, reading what ERDFlow writes");
-            require(child<QToolButton>(placed, "tabFile")->menu() == file_menu &&
+            require(child<QToolButton>(placed, "fileMenuButton")->menu() == file_menu &&
                         child<QToolBar>(placed, "importTools")->actions().contains(child<QAction>(placed, "importProject")),
-                    "The ribbon's File tab and Import tab carry them in the workspace");
+                    "The ribbon's File menu and Import row carry them in the workspace");
             auto *other_tools = child<QAction>(placed, "importFromOtherTools");
             require(other_tools->isVisible() && !other_tools->isEnabled(), "Other tools' formats stay as they were");
             // Relational Design in front: they go with the diagram.
@@ -5993,8 +5993,8 @@ int main(int argc, char **argv)
         {
             require(child<QMenu>(window, "insertMenu")->actions().contains(child<QAction>(window, "insertSymbols")),
                     "Insert carries the symbol gallery");
-            require(child<QToolBar>(window, "insertTools")->actions().contains(child<QAction>(window, "insertSymbols")),
-                    "And the ribbon's Insert row carries it too");
+            require(child<QToolButton>(window, "insertButton")->menu() == child<QMenu>(window, "insertMenu"),
+                    "And Home's Insert carries it too");
 
             // A character no font can draw would show as an empty box, so the
             // table is measured against the interface font rather than trusted.
@@ -6376,7 +6376,10 @@ int main(int argc, char **argv)
             require(picker->isVisible(), "And the notation picker with them");
             auto *check_button = qobject_cast<QToolButton *>(bar->widgetForAction(child<QAction>(window, "checkModel")));
             require(check_button && check_button->toolButtonStyle() == Qt::ToolButtonTextBesideIcon,
-                    "And names the corner controls too");
+                    "And names the corner control too");
+            require(!child<QToolButton>(window, "themeButton")->isVisible() &&
+                        child<QToolBar>(window, "designTools")->actions().contains(child<QMenu>(window, "themeMenu")->menuAction()),
+                    "The theme is chosen from Settings' Design row, not from Home (Zain, 2026-10-06)");
             const auto wide = bar->iconSize().width();
 
             // The names stay as long as they can: a tool's lock mark hangs on
@@ -6386,8 +6389,8 @@ int main(int argc, char **argv)
             settle();
             require(bar->toolButtonStyle() == Qt::ToolButtonTextBesideIcon, "A tighter one keeps the names");
             require(bar->iconSize().width() < wide, "And gives up some of the icons' size instead");
-            require(check_button->toolButtonStyle() == Qt::ToolButtonIconOnly && child<QToolButton>(window, "themeButton")->toolButtonStyle() == Qt::ToolButtonIconOnly,
-                    "The corner controls have given up their words before any tool did");
+            require(check_button->toolButtonStyle() == Qt::ToolButtonIconOnly,
+                    "The corner control has given up its words before any tool did");
 
             window.resize(700, 620);
             settle();
@@ -6936,16 +6939,15 @@ int main(int argc, char **argv)
             settle();
         }
 
-        // Pictures and notes come from the Insert row: a picture from a file,
-        // a note by a click like the elements. Both then appear in the explorer
-        // and the properties panel like anything else placed on the canvas.
+        // Pictures and notes come from Home: a picture from a file, through
+        // its Insert, a note by a click like the elements. Both then appear in
+        // the explorer and the properties panel like anything else placed on
+        // the canvas.
         {
-            child<QAction>(window, "tabInsert")->trigger();
-            settle();
-            auto *insert = child<QToolBar>(window, "insertTools");
+            auto *insert = child<QToolButton>(window, "insertButton");
             auto *picture_action = child<QAction>(window, "insertPicture");
             auto *note_tool = child<QAction>(window, "toolNote");
-            require(insert->actions().contains(picture_action), "Insert offers a picture");
+            require(insert->menu() && insert->menu()->actions().contains(picture_action), "Home's Insert offers a picture");
             require(child<QToolBar>(window, "modelTools")->actions().contains(note_tool), "The note tool is on Home");
             require(!picture_action->icon().isNull() && !note_tool->icon().isNull(), "Each with a glyph of its own");
             require(child<QMenu>(window, "insertMenu")->actions().contains(picture_action),
@@ -7003,36 +7005,60 @@ int main(int argc, char **argv)
         }
 
         // A row of tabs sits above the tool row, the way an office application
-        // arranges its commands. Home is the tool row itself, untouched; the
-        // other tabs bring up rows built from the same actions, so nothing on
-        // them can disagree with it.
+        // arranges its commands. Three stand there for good (Zain, 2026-10-06):
+        // File, Home and Settings. Home is the tool row itself; File and
+        // Settings bring up rows built from the same actions as the menus, so
+        // nothing on them can disagree with them, and while one of them is
+        // chosen its rows' own tabs stand beside the three.
         {
             auto *tabs = child<QToolBar>(window, "ribbonTabs");
             auto *home = child<QToolBar>(window, "modelTools");
             require(window.toolBarArea(tabs) == Qt::TopToolBarArea && window.toolBarBreak(home),
                     "The tabs are at the top, and the tools start a line of their own beneath them");
             require(tabs->isVisible() && tabs->y() + tabs->height() <= home->y(), "The tabs are above the tools");
+            auto *file_tab = child<QAction>(window, "tabFile");
             auto *home_tab = child<QAction>(window, "tabHome");
-            auto *insert_tab = child<QAction>(window, "tabInsert");
-            auto *insert = child<QToolBar>(window, "insertTools");
-            require(home_tab->isChecked() && home->isVisible() && !insert->isVisible(), "The window opens on Home");
+            auto *settings_tab = child<QAction>(window, "tabSettings");
+            const auto showing_tabs = [&]
+            {
+                QStringList names;
+                for (auto *action : tabs->actions())
+                    if (action->isVisible() && !action->isSeparator())
+                        if (auto *widget = tabs->widgetForAction(action))
+                            names << widget->objectName() + (qobject_cast<QToolButton *>(widget)->defaultAction() ? action->objectName() : QString());
+                return names;
+            };
+            require(home_tab->isChecked() && !file_tab->isChecked() && !settings_tab->isChecked() && home->isVisible(),
+                    "The window opens on Home");
+            require(showing_tabs() == QStringList{"tabFile", "tabHome", "tabSettings"},
+                    "With File, Home and Settings, and no others, in the row of tabs");
+            require(window.findChild<QAction *>("tabInsert") == nullptr && window.findChild<QToolBar *>("insertTools") == nullptr,
+                    "Insert is no longer a tab of its own");
+            for (auto *tab : {file_tab, home_tab, settings_tab})
+                require(!tab->icon().isNull() && qobject_cast<QToolButton *>(tabs->widgetForAction(tab))->toolButtonStyle() == Qt::ToolButtonTextBesideIcon,
+                        "Each of the three wears an icon before its name");
+            require(tabs->height() <= 30, "And the row of tabs is no taller for it");
             const auto row_height = home->height();
 
-            insert_tab->trigger();
-            settle();
-            require(insert->isVisible() && !home->isVisible(), "Insert brings its row up in place of Home");
-            require(insert_tab->isChecked() && !home_tab->isChecked(), "And is marked as the current tab");
-            require(insert->height() == row_height, "The rows are one height, so nothing beneath them moves");
+            // What Insert carried is on Home, after Note: one button dropping
+            // the Insert menu.
+            auto *insert = child<QToolButton>(window, "insertButton");
             auto *note_tool = child<QAction>(window, "toolNote");
-            require(insert->actions().contains(child<QAction>(window, "insertPicture")), "Insert offers a picture");
-            require(!insert->actions().contains(child<QAction>(window, "toolEntity")) && !insert->actions().contains(note_tool),
-                    "And not the model's elements or the note, which stay on Home");
-            require(insert->iconSize() == home->iconSize() && insert->toolButtonStyle() == home->toolButtonStyle(),
-                    "The Insert row is drawn the way Home is");
+            const auto home_actions = home->actions();
+            int insert_at = -1;
+            for (int i = 0; i < home_actions.size(); ++i)
+                if (home->widgetForAction(home_actions[i]) == insert)
+                    insert_at = i;
+            require(insert_at == home_actions.indexOf(note_tool) + 1, "Insert stands on Home right after Note");
+            require(insert->menu() == child<QMenu>(window, "insertMenu") && insert->popupMode() == QToolButton::InstantPopup &&
+                        !insert->icon().isNull(),
+                    "It drops the Insert menu, picture and symbols, and wears an icon");
+            require(insert->menu()->actions().contains(child<QAction>(window, "insertPicture")) &&
+                        insert->menu()->actions().contains(child<QAction>(window, "insertSymbols")),
+                    "Both of what Insert's row offered");
 
             // The note is a tool among the elements, after Connect, and locks
             // by a double click exactly as they do.
-            const auto home_actions = home->actions();
             require(home_actions.indexOf(note_tool) > home_actions.indexOf(child<QAction>(window, "toolSelect")),
                     "Note sits on Home with the element tools");
             const auto count = window.editor().project().notes.size();
@@ -7056,21 +7082,16 @@ int main(int argc, char **argv)
             child<QAction>(window, "undoCommand")->trigger();
             require(window.editor().project().notes.size() == count, "Both placings undo");
 
-            // Fitting the window resizes Home's icons, and the rows follow,
-            // whichever of them is showing at the time.
-            window.resize(700, 620);
-            settle();
-            require(insert->iconSize() == home->iconSize() && insert->toolButtonStyle() == home->toolButtonStyle(),
-                    "The Insert row follows Home as the window narrows");
-            window.resize(1800, 820);
-            settle();
-            require(insert->height() == row_height, "And comes back to Home's height with it");
-
+            // Settings gathers Design, View and Help, and opens on Design.
             auto *design = child<QToolBar>(window, "designTools");
-            child<QAction>(window, "tabDesign")->trigger();
+            settings_tab->trigger();
             settle();
-            require(design->isVisible() && !insert->isVisible(), "Design takes over from Insert");
-            require(design->height() == row_height, "At the same height");
+            require(design->isVisible() && !home->isVisible(), "Settings brings up Design in place of Home");
+            require(settings_tab->isChecked() && !home_tab->isChecked() && child<QAction>(window, "tabDesign")->isChecked(),
+                    "Settings is marked chosen, and Design with it");
+            require(showing_tabs() == QStringList{"tabFile", "tabHome", "tabSettings", "tabDesign", "tabView", "tabHelp"},
+                    "Its rows' own tabs stand beside the three while it is chosen");
+            require(design->height() == row_height, "The rows are one height, so nothing beneath them moves");
             auto *theme_menu = child<QMenu>(window, "themeMenu");
             require(design->actions().contains(theme_menu->menuAction()), "Design offers the theme menu the View menu has");
             auto *theme_on_design = qobject_cast<QToolButton *>(design->widgetForAction(theme_menu->menuAction()));
@@ -7079,25 +7100,55 @@ int main(int argc, char **argv)
             require(child<QToolButton>(window, "designLinesButton")->menu() == child<QToolButton>(window, "connectButton")->menu(),
                     "Lines is Connect's own line-style menu");
 
+            // Fitting the window resizes Home's icons, and the rows follow,
+            // whichever of them is showing at the time.
+            window.resize(700, 620);
+            settle();
+            require(design->iconSize() == home->iconSize(), "The Design row follows Home as the window narrows");
+            window.resize(1800, 820);
+            settle();
+            require(design->height() == row_height, "And comes back to Home's height with it");
+
             auto *view = child<QToolBar>(window, "viewTools");
             child<QAction>(window, "tabView")->trigger();
             settle();
-            require(view->isVisible() && view->height() == row_height, "View has a row of the same height");
+            require(view->isVisible() && !design->isVisible() && view->height() == row_height, "View has a row of the same height");
+            require(settings_tab->isChecked() && child<QAction>(window, "tabView")->isChecked() && !child<QAction>(window, "tabDesign")->isChecked(),
+                    "Under Settings still");
             require(view->actions().contains(child<QAction>(window, "viewFit")), "With the View menu's commands on it");
             require(!view->actions().contains(theme_menu->menuAction()), "The View menu's submenus are on Design, not here");
+            require(!view->actions().contains(child<QAction>(window, "viewSidePanels")),
+                    "The side panels' one button stays on the diagram's raft here");
 
-            auto *file_tab = child<QToolButton>(window, "tabFile");
-            require(file_tab->menu() == child<QMenu>(window, "fileMenu") && file_tab->popupMode() == QToolButton::InstantPopup,
-                    "File drops the File menu from its tab");
-            require(file_tab->menu()->actions().contains(child<QAction>(window, "saveProject")), "With Save in it");
+            // File gathers Export and Import, with the File menu beside them.
+            file_tab->trigger();
+            settle();
+            auto *exporting = child<QToolBar>(window, "exportTools");
+            require(exporting->isVisible() && !view->isVisible() && file_tab->isChecked() && !settings_tab->isChecked(),
+                    "File brings up Export");
+            require(showing_tabs() == QStringList{"tabFile", "tabHome", "tabSettings", "fileMenuButton", "tabExport", "tabImport"},
+                    "With the File menu, Export and Import beside the three");
+            auto *file_menu = child<QToolButton>(window, "fileMenuButton");
+            require(file_menu->menu() == child<QMenu>(window, "fileMenu") && file_menu->popupMode() == QToolButton::InstantPopup,
+                    "The File menu drops from beside them");
+            require(file_menu->menu()->actions().contains(child<QAction>(window, "saveProject")), "With Save in it");
+            settings_tab->trigger();
+            settle();
+            require(view->isVisible() && child<QAction>(window, "tabView")->isChecked(),
+                    "Settings comes back on the row last chosen under it");
             child<QAction>(window, "tabHelp")->trigger();
             settle();
             require(child<QToolBar>(window, "helpTools")->isVisible(), "Help has a row of its own");
+            settings_tab->trigger();
+            settle();
+            require(child<QToolBar>(window, "helpTools")->isVisible() && settings_tab->isChecked(),
+                    "A second press on a chosen tab leaves it chosen, on the same row");
 
             home_tab->trigger();
             settle();
             require(home->isVisible() && !view->isVisible() && !child<QToolBar>(window, "helpTools")->isVisible(),
                     "Home brings the tool row back");
+            require(showing_tabs() == QStringList{"tabFile", "tabHome", "tabSettings"}, "And the three stand alone again");
             require(home->height() == row_height, "At the height it had");
         }
 
@@ -7609,8 +7660,56 @@ int main(int argc, char **argv)
                     "Nor Insert's picture, which is placed on the hidden diagram");
             require(child<QWidget>(window, "schemaArrange")->isVisible() && child<QWidget>(window, "schemaAppearance")->isVisible(),
                     "Its own Arrange and Appearance are there instead");
+            // The tabs stay, so the window is found in the same place in both
+            // workspaces (Zain, 2026-10-06); Home brings up no row here, and
+            // the other rows keep to what can act on the schema.
+            {
+                auto *tabs = child<QToolBar>(window, "ribbonTabs");
+                auto *view_row = child<QToolBar>(window, "viewTools");
+                require(tabs->isVisible() && child<QAction>(window, "tabHome")->isChecked(),
+                        "File, Home and Settings stand above the schema too");
+                child<QAction>(window, "tabHome")->trigger();
+                settle();
+                require(!child<QToolBar>(window, "modelTools")->isVisible(), "Home brings up no drawing tools here");
+                child<QAction>(window, "tabView")->trigger();
+                settle();
+                require(view_row->isVisible() && child<QAction>(window, "tabSettings")->isChecked(),
+                        "Settings brings up View");
+                require(view_row->actions().contains(child<QDockWidget>(window, "explorerDock")->toggleViewAction()) &&
+                            view_row->actions().contains(child<QDockWidget>(window, "propertiesDock")->toggleViewAction()) &&
+                            view_row->actions().contains(child<QAction>(window, "viewSidePanels")),
+                        "With the panels' switches, and the panels' one button the diagram's raft carries");
+                for (const char *conceptual : {"viewFit", "viewZoomIn", "viewShowGrid", "viewAlignToGrid", "viewFullView",
+                                               "viewCanvasControls", "viewShowComments"})
+                    require(!view_row->actions().contains(child<QAction>(window, conceptual)),
+                            "And without what frames or marks up the hidden diagram");
+                require(child<QMenu>(window, "viewMenu")->actions().contains(child<QAction>(window, "viewFit")),
+                        "The View menu is left as it was");
+                require(!child<QToolBar>(window, "designTools")->actions().contains(child<QMenu>(window, "backgroundMenu")->menuAction()),
+                        "Design keeps to the theme, the icons and the notation");
+                const auto both = [&]
+                { return child<QDockWidget>(window, "explorerDock")->isVisible() && child<QDockWidget>(window, "propertiesDock")->isVisible(); };
+                require(both(), "Both of the schema's panels are out");
+                qobject_cast<QToolButton *>(view_row->widgetForAction(child<QAction>(window, "viewSidePanels")))->click();
+                settle();
+                require(!child<QDockWidget>(window, "explorerDock")->isVisible() && child<QDockWidget>(window, "propertiesDock")->isVisible(),
+                        "Panels puts the Explorer away beside the schema");
+                child<QAction>(window, "viewSidePanels")->trigger();
+                child<QAction>(window, "viewSidePanels")->trigger();
+                settle();
+                require(both(), "And after Neither brings both back");
+                require(child<QPushButton>(window, "previewSchema")->text() == "Convert to Conceptual",
+                        "The header's way back to the diagram says where it goes");
+                child<QAction>(window, "tabHome")->trigger();
+                settle();
+            }
             full->click();
             settle();
+            require(child<QPushButton>(window, "previewSchema")->text() == "Convert to Schema",
+                    "And from the diagram it converts to the schema");
+            require(child<QToolBar>(window, "viewTools")->actions().contains(child<QAction>(window, "viewFit")) &&
+                        !child<QToolBar>(window, "viewTools")->actions().contains(child<QAction>(window, "viewSidePanels")),
+                    "The View row has the diagram's commands back, each where it stood");
             require(child<QLabel>(window, "workspaceBadge")->text() == "CONCEPTUAL",
                     "Leaving it names the conceptual workspace again");
             require(child<QAction>(window, "insertPicture")->isVisible(), "And gives Insert its picture back");
@@ -9737,6 +9836,9 @@ int main(int argc, char **argv)
             child<QAction>(window, "tabExport")->trigger();
             settle();
             require(export_row->isVisible() && !import_row->isVisible(), "The two tabs swap rows like the rest");
+            require(child<QAction>(window, "tabFile")->isChecked() && child<QAction>(window, "tabExport")->isChecked() &&
+                        !child<QAction>(window, "tabImport")->isChecked(),
+                    "Both stand under File, which is marked chosen with the one in front");
 
             // A tab colours itself when it is chosen; the row it brings up is
             // set heavier than the interface around it, so the row in front of
@@ -9746,8 +9848,9 @@ int main(int argc, char **argv)
                     "The rows that belong to a tab are marked as such");
             require(!child<QToolBar>(window, "modelTools")->property("ribbonRow").toBool(),
                     "Home is not, being the drawing tools, which their icons already tell apart");
-            for (const char *row : {"insertTools", "designTools", "exportTools", "importTools",
-                                    "viewTools", "helpTools"})
+            require(window.findChild<QToolBar *>("insertTools") == nullptr,
+                    "Insert has no row of its own any more: what it carried is on Home");
+            for (const char *row : {"designTools", "exportTools", "importTools", "viewTools", "helpTools"})
                 require(child<QToolBar>(window, row)->property("ribbonRow").toBool(), row);
             // The menu's group headings are entries that cannot be chosen,
             // which reads well in a menu and would be a button nobody can

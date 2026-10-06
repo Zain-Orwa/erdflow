@@ -7,7 +7,7 @@
 > look like afterwards, and whether it is a gain or a loss. He decides.
 > Full rule: [CLAUDE.md](../CLAUDE.md).
 
-**Updated:** 2026-10-05
+**Updated:** 2026-10-06
 
 **Scope:** Part 1 — the Conceptual ERD editor, one page per project, and
 Relational Design: a schema worked out from the diagram, or drawn by hand in a
@@ -258,7 +258,7 @@ to build in Part 1* at the end. The state of the test suites is under
   schema; in a diagram's, once **Relational Design** is raised, once the
   schema is pressed, and in **Full** -- and the diagram's come back once the
   diagram is pressed or the schema is put away (`MainWindow::wear_schema_panels`,
-  `follow_pressed_half`). In Full the other panels and the ribbon still go,
+  `follow_pressed_half`). In Full the other panels and Home's drawing row still go (the ribbon's tabs stay, 2026-10-06),
   and the header runs the whole width over the two panels, as it does over a
   schema drawn by hand (`lay_header_over_panels`). Both panels began as
   shells; the Explorer's frame was *Schema ▸ Tables, Relationships* with
@@ -1054,12 +1054,30 @@ to build in Part 1* at the end. The state of the test suites is under
   what belongs to what. Pressing a mark folds that group and does nothing else,
   so reaching for one never throws away the selection being worked with.
 - A row of tabs above the toolbar, the way an office application arranges its
-  commands: **File** drops the File menu from its tab; **Home** is the modeling
-  toolbar, with Note after Connect; **Insert** carries Picture and Symbols; **Design** carries Theme,
-  Icons, Notation and Lines; **Export** carries everything that leaves and
-  **Import** everything that comes back, side by side;
-  **View** carries the panels, framing, grid and
-  align-to-grid; **Help** carries the guide and About. The rows are built from the same
+  commands. Three stand there for good (Zain, 2026-10-06), each with an icon
+  before its name: **File**, **Home** and **Settings**. **Home** is the
+  modeling toolbar, with Note after Connect and then **Insert ▾**, which drops
+  the Insert menu (Picture and Symbols; Insert has no tab of its own any
+  more). Home's Theme button is put away there -- Settings' Design row offers
+  the theme -- so the modeling row keeps its words and the notation picker at
+  the 1440 px reference width. **File** gathers **Export**, everything that
+  leaves, and **Import**, everything that comes back, with **Open & Save**
+  beside them dropping the File menu (New, Open, Save, Save as, the examples
+  and templates) that the File tab used to drop. **Settings** gathers
+  **Design** (Background, Theme, Icons, Notation and Lines), **View** (the
+  panels, Checks, framing, zoom, Grid, Align Grid, the raft, comments and
+  History) and **Help** (Guide and About). While File or Settings is chosen,
+  its rows' own tabs stand beside the three after a thin line, each bringing
+  up its row, and the chosen one is marked as well; each opens on the row
+  last chosen under it, Export and Design to begin with. With the Relational
+  Schema in front the tabs stay, so the window is found in the same place in
+  both workspaces: Home brings up no row there (the schema's tools are in its
+  header), and the rows leave out what acts on the conceptual diagram alone
+  -- Background and Lines; Checks, Full, Fit, 100%, Zoom, Grid, Align Grid,
+  the raft and comments -- while View gains **Panels**, the raft's side-panel
+  button, since the schema has no raft. The menus are untouched either way
+  (`Ribbon::set_schema_in_front`, `keep_to_conceptual`, `add_for_schema`).
+  The rows are built from the same
   actions as the menus and the Home toolbar, so a tool chosen or locked on one
   row is chosen or locked on the other. A chosen tab wears the theme's accent,
   and the row it brings up is set in the theme's own ink at a heavier weight
@@ -1596,9 +1614,9 @@ to build in Part 1* at the end. The state of the test suites is under
   rule the grid and the comment switch follow. Closing it puts the whole diagram
   back, so a filter is never left on behind a bar nobody can see.
 - Work leaves ERDFlow through **Export** and comes back through **Import**, the
-  pair the database tools it sits beside use. Each has a tab of its own on the
-  ribbon and a menu under File, side by side, because a reader looking for one
-  expects the other in the same place.
+  pair the database tools it sits beside use. Each has a row of its own on the
+  ribbon, side by side under its File tab (2026-10-06), and a menu under File,
+  because a reader looking for one expects the other in the same place.
 - **Export → ERDFlow project** writes a copy of the project itself, losing
   nothing. It is not Save As: the project being worked on keeps its own file and
   its own unsaved state, so this is a copy put somewhere rather than a change of
@@ -2555,7 +2573,7 @@ outside the repository at `erdflow-notes/UI-AZURE-TASKS.md`. What is built:
   Project and Recent, then Settings and Help at its foot; this replaces what
   the entries above and ADR-022 §9.14 and §9.20 say about its Examples,
   Templates and Import rows. Every example and the template are Conceptual
-  diagrams, so they stand in the File menu -- the ribbon's File tab --
+  diagrams, so they stand in the File menu -- *Open & Save* under the ribbon's File tab --
   beside Import: *Open example*, *Company Database*, *University Database*
   and, new there, *New from template*; Import's own tab and the header's
   *Open example* are as they were. While Relational Design is in front, a
@@ -2594,8 +2612,9 @@ outside the repository at `erdflow-notes/UI-AZURE-TASKS.md`. What is built:
   Relational Design only*, and its empty state. Internal names are unchanged.
 - **Relational Design offers only its own tools.** While it has the whole
   window, the header's badge reads RELATIONAL DESIGN rather than CONCEPTUAL.
-  The ribbon and its drawing tools (Entity, Attribute, Relationship,
-  Specialization, Connect, Note) are put away with the diagram, and so is
+  Home's drawing tools (Entity, Attribute, Relationship, Specialization,
+  Connect, Note) are put away with the diagram -- the ribbon's tabs stay,
+  their rows keeping to what can act on the schema (2026-10-06) -- and so is
   Insert › Picture, which places a picture on the diagram nobody can see.
   What stays is its own: Arrange, Appearance, undo and redo, its search and
   the theme. The Conceptual workspace keeps Select, Entity, Attribute,
@@ -2659,13 +2678,11 @@ Not built yet, though some of it is on screen:
   it is in front; a schema worked out from a diagram still gains tables only
   from the diagram. In a project begun from its schema, Relational Design is
   the whole workspace, and tables are made by hand with the header's
-  *Select | Table | Connect* tools. The Conceptual workspace has a ribbon --
-  File, Home, Insert, Design, Export, Import, View and Help. Relational Design
-  puts the ribbon and the drawing rows away by design and carries its own
-  tools in the header instead, so the ribbon has no Table tool and Insert no
-  relational entries. Whether Relational Design should have the ribbon is a
-  decision waiting on Zain, not a missing piece. *(Corrected 2026-10-02: this
-  said Relational Design was still only a panel over the diagram.)*
+  *Select | Table | Connect* tools. Both workspaces have the ribbon's File,
+  Home and Settings tabs (Zain, 2026-10-06); Relational Design puts Home's
+  drawing row away and carries its own tools in the header instead, so the
+  ribbon has no Table tool. *(Corrected 2026-10-02: this said Relational
+  Design was still only a panel over the diagram.)*
   SQL and Data are not built, so there is nothing of theirs to dress.
 - Reference pictures exist for one system and release. The audit is
   offscreen and does not prove what a real screen reader announces.
@@ -2829,9 +2846,9 @@ building:
   *Physical schema* and *Compact schema* (see *Optional compact schema
   view*). What Physical schema adds next -- defaults, checks, indexes and
   the rest of a physical design -- is building work, not a naming decision.
-- Whether Relational Design gets the ribbon (File, Home, Insert, Design,
-  Export, Import, View, Help, as the Conceptual workspace has), or keeps its
-  header tools.
+- ~~Whether Relational Design gets the ribbon~~ -- **decided 2026-10-06**:
+  it has the same File, Home and Settings tabs, keeps its tools in its
+  header, and its rows leave out what acts on the diagram alone.
 - The gesture for reordering columns.
 - *Strong* or *Regular* for an entity that is not weak. Today an entity is
   *Regular* or *Weak*, and a relationship *Regular* or *Identifying*.

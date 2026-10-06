@@ -308,6 +308,8 @@ QToolBar#ribbonTabs QToolButton { background: transparent; color: @text@; border
 QToolBar#ribbonTabs QToolButton:hover { background: @hover@; color: @text@; border-bottom-color: @hoveredge@; }
 QToolBar#ribbonTabs QToolButton:checked, QToolBar#ribbonTabs QToolButton:pressed { background: @window@; color: @accent@; border-bottom-color: @accent@; }
 QToolBar#ribbonTabs QToolButton::menu-indicator { image: none; width: 0px; }
+/* The line between File, Home and Settings and the chosen one's own row tabs. */
+QToolBar#ribbonTabs::separator { background: @border@; width: 1px; margin: 7px 6px; }
 /* A tab colours itself when it is chosen, but the row it brings up looked the
    same whichever tab was showing: a strip of quiet text that never changed. The
    rows beneath the tabs are words rather than pictures, so they are set in the
@@ -356,6 +358,10 @@ QToolBar#exportTools QToolButton[popupMode="2"]::menu-indicator { subcontrol-ori
    black there. Split up, the worst a rule its Qt dislikes can cost is its own
    effect -- a section that does not light up, never one that turns black.
    Anything added here later belongs in its own rule for the same reason. */
+/* Home's Insert drops the Insert menu, so its arrow is placed level with its
+   name, in rules of its own. */
+QToolBar#modelTools QToolButton#insertButton { padding-right: 22px; }
+QToolBar#modelTools QToolButton#insertButton::menu-indicator { subcontrol-origin: padding; subcontrol-position: center right; right: 4px; width: 12px; }
 QToolBar#modelTools QToolButton::menu-button { background: transparent; border: none; }
 QToolBar#modelTools QToolButton::menu-button:hover { background: rgba(0, 0, 0, 13%); }
 QToolBar#modelTools QToolButton::menu-button:pressed { background: rgba(0, 0, 0, 25%); }
