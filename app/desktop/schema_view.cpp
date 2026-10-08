@@ -202,13 +202,17 @@ QString typed_label(const domain::PreviewColumn& column) {
                 : QString("(%1)").arg(column.length));
 }
 
-// Everything a column enforces, in the order SQL would state it. A key is
-// not said to be unique as well: it is unique by being the key, and saying so
-// twice would be a constraint the database already keeps.
+// Everything a column enforces, in one order whatever order it was chosen in:
+// PK, FK, NULL or NOT NULL, UNIQUE, IDENTITY. A foreign key is written here as
+// well as marked in the gutter (Zain, 2026-10-08): the mark is seen at a
+// glance, the cell states the whole of what the column is. A key is not said
+// to be unique as well: it is unique by being the key, and saying so twice
+// would be a constraint the database already keeps.
 QString rules_text(const domain::PreviewColumn& column) {
     if (column.ignored) return {};
     QStringList said;
     if (column.primary_key) said << "PK";
+    if (column.foreign_key) said << "FK";
     said << (column.required ? longest_null : "NULL");
     if (column.unique && !column.primary_key) said << longest_unique;
     if (column.auto_increment) said << longest_identity;
@@ -1382,6 +1386,11 @@ std::vector<std::vector<QRectF>> SchemaView::row_boxes() const {
     rows.reserve(placed_.size());
     for (const auto& one : placed_) rows.push_back(one.rows);
     return rows;
+}
+
+QString SchemaView::constraints_said(std::size_t table, std::size_t row) const {
+    if (table >= preview_.tables.size() || row >= preview_.tables[table].columns.size()) return {};
+    return rules_text(preview_.tables[table].columns[row]);
 }
 
 std::vector<std::vector<SchemaView::Cell>> SchemaView::cell_boxes() const {
@@ -3433,7 +3442,8 @@ void SchemaView::paintEvent(QPaintEvent* event) {
             }
             // What the column enforces, in one Constraints cell at the right
             // of every real column, written the way the generated SQL will
-            // write it (rules_text): PK where the column is in the key; then
+            // write it (rules_text): PK where the column is in the key, FK
+            // where it refers to one; then
             // NULL or NOT NULL, always written out either way, because a
             // column that may be empty must never look like one nobody has
             // decided about; then UNIQUE and IDENTITY, each only where it is
@@ -3457,7 +3467,10 @@ void SchemaView::paintEvent(QPaintEvent* event) {
                     painter.setBrush(QBrush(Qt::NoBrush));
                 }
                 const auto said = rules_text(column);
-                painter.setPen(dim(theme_->text, here));
+                // In the type's ink rather than the name's (Zain, 2026-10-08):
+                // the name is what a row is, and what it holds and enforces is
+                // read after it.
+                painter.setPen(dim(theme_->muted, here));
                 painter.drawText(cell.rules.adjusted(6, 0, -6, 0),
                                  Qt::AlignLeft | Qt::AlignVCenter,
                                  QFontMetricsF(mono).elidedText(said, Qt::ElideRight,

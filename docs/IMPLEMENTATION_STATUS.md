@@ -754,7 +754,8 @@ to build in Part 1* at the end. The state of the test suites is under
   ticked one changes nothing), a rule, **UNIQUE — no duplicate values** and
   **IDENTITY — auto-generated number**. Foreign Key appears where it did
   before, on tables drawn by hand. The canvas's own constraints list keeps
-  its words. Independent states
+  its words (**SUPERSEDED 2026-10-08**: the canvas's list is now the whole
+  set as well -- see "The card's Constraints cell" below). Independent states
   appear together, with elision and complete tooltips for narrow docks.
   **+ Add Column** uses the same add command and canvas naming as before.
   Non-stored derived values are listed separately with
@@ -2166,6 +2167,26 @@ exists.)*
   Constraints cell, `PK, NOT NULL`. The orange `PK` letters are kept for key
   columns that are not foreign keys, so orange means primary key and green
   means foreign key.
+- **The card's Constraints cell** (Zain, 2026-10-08). It writes, in one
+  order whatever order things were chosen in, `PK`, `FK`, `NULL` or `NOT
+  NULL`, `UNIQUE`, `IDENTITY` (e.g. `FK, NULL`, `PK, FK, NOT NULL`, `NOT
+  NULL, UNIQUE`). `FK` is written as well as marked in the gutter; the
+  column's width is measured from what it writes, so a table whose longest
+  list gains `FK, ` is that much wider. The words are drawn in the theme's
+  muted ink, the Data Type's own, not the name's. A new ordinary column is
+  `NULL`, because the model says so (`required = false`); there is no unset
+  state and no warning. Pressing the cell lists **Primary Key**, **Foreign
+  Key**, a rule, **NULL — may be empty** / **NOT NULL — required** (one
+  ticked, never both), a rule, **UNIQUE — no duplicate values**, **IDENTITY
+  — auto-generated number**. Primary Key and Foreign Key run exactly what
+  their Properties switches run (`MainWindow::press_schema_primary_key`,
+  `press_schema_foreign_key`, shared by both): the Foreign Key goes through
+  the Stage 5 Connect path and its question; nothing is greyed out, and a
+  key that cannot be put on or taken off says why in the status bar. The
+  rules are the Properties list's own (`populate_schema_rules`). Desktop
+  tests cover a schema drawn by hand and one converted from a diagram,
+  Properties agreeing both ways, Undo/Redo, save and load, conversion to a
+  diagram, and the ink in a light and a dark theme.
 - **A column that is both keys wears both marks** (Zain, 2026-10-01). Its
   gutter shows the golden key, the orange `PK`, then the green `FK`, side by
   side, each in its own colour -- separate marks, not a merged badge -- so

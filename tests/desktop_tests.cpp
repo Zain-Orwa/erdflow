@@ -8945,8 +8945,9 @@ int main(int argc, char **argv)
                 require(ordinary.has_value(), "Every real column has somewhere to carry its rules");
                 require(!window.editor().project().attributes.at(*behind).unique,
                         "The column starts without a unique constraint");
-                // The canvas's own list is not the Properties one, classified
-                // on 2026-10-01: it keeps its words and order.
+                // The canvas's list offers the whole of what a column can be
+                // said to enforce (Zain, 2026-10-08): its two keys, then the
+                // rules as the Properties panel words and orders them.
                 {
                     QStringList canvas_rules;
                     QTimer::singleShot(0, &window, [&]
@@ -8958,8 +8959,10 @@ int main(int argc, char **argv)
                         menu->close(); });
                     press_at(*ordinary);
                     settle();
-                    require(canvas_rules == QStringList{"NULL — may be empty", "UNIQUE", "IDENTITY"} || canvas_rules == QStringList{"NOT NULL", "UNIQUE", "IDENTITY"},
-                            "The canvas's constraints list keeps its own words and order");
+                    require(canvas_rules == QStringList{"Primary Key", "Foreign Key", "—", "NULL — may be empty",
+                                                        "NOT NULL — required", "—", "UNIQUE — no duplicate values",
+                                                        "IDENTITY — auto-generated number"},
+                            "The canvas's constraints list offers the keys, then the rules, in the Properties' words");
                 }
                 choose(*ordinary, "schemaRuleUnique");
                 require(window.editor().project().attributes.at(*behind).unique,
@@ -9005,7 +9008,7 @@ int main(int argc, char **argv)
                     }
                     return domain::Participation::Partial;
                 };
-                choose(*keyed, "schemaRuleNotNull");
+                choose(*keyed, was_required ? "schemaRuleNull" : "schemaRuleNotNull");
                 require((participation_of() == domain::Participation::Total) != was_required,
                         "Choosing a foreign key's nullability turns the side it points at over");
                 child<QAction>(window, "undoCommand")->trigger();
@@ -11682,6 +11685,293 @@ int main(int argc, char **argv)
                 undo_once();
                 require(has_table("Department") && !has_table("Gone"), "Undone, Department is back under its own name");
 
+                // The card's Constraints cell (Zain, 2026-10-08): it writes PK,
+                // FK, NULL or NOT NULL, UNIQUE and IDENTITY in that order, in the
+                // type's muted ink, and pressing it lists all of them -- the keys
+                // doing exactly what their Properties switches do, the rules what
+                // the Properties list does -- so the card and Properties are one
+                // set of facts.
+                {
+                    const auto steps_at_start = editor.history_position();
+                    const auto revision_at_start = editor.revision();
+                    const auto cell_of = [&](const char *table, std::size_t row)
+                    { return schema->cell_boxes()[table_called(table)][row].rules.center(); };
+                    const auto card = [&](const char *table, std::size_t row)
+                    { return schema->constraints_said(table_called(table), row); };
+                    // Pressed, the cell opens its list; whatever it leads to -- the
+                    // list of keys to reference, the question about using a column
+                    // that is there already -- is answered as soon as it opens.
+                    struct Listed
+                    {
+                        QStringList words;
+                        QStringList ticked;
+                    };
+                    const auto from_card = [&](const char *table, std::size_t row, const char *which,
+                                               const QString &referencing = {}) -> Listed
+                    {
+                        Listed listed;
+                        bool listed_once = false;
+                        int tries = 0;
+                        QTimer poll;
+                        poll.setInterval(0);
+                        QObject::connect(&poll, &QTimer::timeout, &window, [&]
+                                         {
+                            if (++tries > 4000) {
+                                poll.stop();
+                                auto *stuck = QApplication::activePopupWidget() ? QApplication::activePopupWidget()
+                                                                                : QApplication::activeModalWidget();
+                                std::cerr << "STUCK " << (stuck ? stuck->objectName().toStdString() + " " + stuck->metaObject()->className() : std::string("nothing")) << "\n";
+                                if (stuck) stuck->close();
+                                return;
+                            }
+                            auto *rules = window.findChild<QMenu *>("schemaRulesMenu");
+                            if (!listed_once && rules && rules->isVisible()) {
+                                for (auto *action : rules->actions()) {
+                                    listed.words << (action->isSeparator() ? QString("—") : action->text());
+                                    if (action->isChecked()) listed.ticked << action->objectName();
+                                }
+                                if (which)
+                                    if (auto *action = rules->findChild<QAction *>(which)) action->trigger();
+                                rules->close();
+                                listed_once = true;
+                                return;
+                            }
+                            auto *targets = window.findChild<QMenu *>("schemaColumnReferenceMenu");
+                            if (targets && targets->isVisible()) {
+                                for (auto *action : targets->actions())
+                                    if (action->text() == referencing) action->trigger();
+                                targets->close();
+                                return;
+                            }
+                        });
+                        // Asked from inside the list's own answer, so answered by a
+                        // timer of its own: a timer is not called again while it is
+                        // still in its last call.
+                        QTimer answer;
+                        answer.setInterval(0);
+                        QObject::connect(&answer, &QTimer::timeout, &window, [&]
+                                         {
+                            auto *asked = window.findChild<QMessageBox *>("schemaConnectAsk");
+                            if (asked && asked->isVisible()) {
+                                if (auto *agree = asked->findChild<QAbstractButton *>("schemaConnectAgree")) agree->click();
+                                else asked->reject();
+                            } });
+                        poll.start();
+                        answer.start();
+                        press_at(cell_of(table, row));
+                        settle();
+                        poll.stop();
+                        answer.stop();
+                        return listed;
+                    };
+                    const QStringList all_of_them{"Primary Key", "Foreign Key", "—", "NULL — may be empty",
+                                                  "NOT NULL — required", "—", "UNIQUE — no duplicate values",
+                                                  "IDENTITY — auto-generated number"};
+
+                    // What each kind of row writes, as the model has it: an
+                    // ordinary column is NULL to begin with, because it is.
+                    require(column_of("Department", 1).name == "Title" && !column_of("Department", 1).required,
+                            "Title is an ordinary column that may be empty");
+                    require(card("Department", 1) == "NULL" && card("Employee", 0) == "PK, NOT NULL" &&
+                                card("Employee", 1) ==
+                                    QString("FK, ") + (column_of("Employee", 1).required ? "NOT NULL" : "NULL"),
+                            "The card writes NULL for an ordinary column, PK, NOT NULL for the key, FK and its "
+                            "nullability for the foreign key");
+
+                    // Written in the type's ink, in a light theme and a dark one:
+                    // the strongest ink in the cell is the muted one, not the
+                    // name's.
+                    {
+                        const auto wearing_now = window.canvas()->theme_id();
+                        for (const auto look : {desktop::ThemeId::OfficeLight, desktop::ThemeId::Midnight})
+                        {
+                            window.set_theme(look);
+                            schema->choose(desktop::NothingChosen{});
+                            settle();
+                            const auto &colours = desktop::theme(look);
+                            const auto strongest = [&](const QRectF &part)
+                            {
+                                const auto image = schema->grab(part.toAlignedRect()).toImage();
+                                // The cell's own ground is the colour most of it is.
+                                std::map<QRgb, int> counted;
+                                for (int y = 0; y < image.height(); ++y)
+                                    for (int x = 0; x < image.width(); ++x)
+                                        ++counted[image.pixel(x, y)];
+                                const QColor ground = QColor::fromRgb(
+                                    std::max_element(counted.begin(), counted.end(), [](const auto &a, const auto &b)
+                                                     { return a.second < b.second; })->first);
+                                QColor best = ground;
+                                int far = -1;
+                                for (int y = 0; y < image.height(); ++y)
+                                    for (int x = 0; x < image.width(); ++x)
+                                    {
+                                        const auto here = image.pixelColor(x, y);
+                                        const auto apart = std::abs(here.red() - ground.red()) +
+                                                           std::abs(here.green() - ground.green()) +
+                                                           std::abs(here.blue() - ground.blue());
+                                        if (apart > far) { far = apart; best = here; }
+                                    }
+                                return best;
+                            };
+                            const auto nearness = [](const QColor &a, const QColor &b)
+                            {
+                                return std::abs(a.red() - b.red()) + std::abs(a.green() - b.green()) +
+                                       std::abs(a.blue() - b.blue());
+                            };
+                            const auto cell = schema->cell_boxes()[table_called("Employee")][0];
+                            const auto rules_ink = strongest(cell.rules.adjusted(7, 3, -7, -3));
+                            const auto type_ink = strongest(cell.type.adjusted(2, 3, -2, -3));
+                            require(nearness(rules_ink, colours.muted) < nearness(rules_ink, colours.text) &&
+                                        nearness(type_ink, colours.muted) < nearness(type_ink, colours.text) &&
+                                        nearness(rules_ink, type_ink) < 60,
+                                    "The constraints are written in the data type's muted ink, in light and dark");
+                        }
+                        window.set_theme(wearing_now);
+                        settle();
+                    }
+
+                    // The list: both keys, then the rules, the ones the column has
+                    // ticked.
+                    auto listed = from_card("Department", 1, nullptr);
+                    require(listed.words == all_of_them && listed.ticked == QStringList{"schemaRuleNull"} &&
+                                editor.revision() == revision_at_start,
+                            "Pressed, the cell lists every constraint, NULL ticked, and changes nothing by opening");
+
+                    // NOT NULL, then UNIQUE, from the card; Properties says the same.
+                    from_card("Department", 1, "schemaRuleNotNull");
+                    require(column_of("Department", 1).required && card("Department", 1) == "NOT NULL" &&
+                                said("Constraints/Not Null") == QStringList{"Yes"} &&
+                                said("Constraints/Nullable") == QStringList{"No"},
+                            "NOT NULL chosen on the card: required, written so, and Properties agrees");
+                    from_card("Department", 1, "schemaRuleUnique");
+                    require(column_of("Department", 1).unique && card("Department", 1) == "NOT NULL, UNIQUE" &&
+                                said("Constraints/Unique") == QStringList{"Yes"},
+                            "UNIQUE chosen on the card is written after NOT NULL, and Properties agrees");
+                    listed = from_card("Department", 1, nullptr);
+                    require(listed.ticked == QStringList({"schemaRuleNotNull", "schemaRuleUnique"}),
+                            "Opened again, NOT NULL and UNIQUE are ticked and NULL is not");
+                    // And the other way: a Properties switch is on the card at once.
+                    rule("Constraints/Nullable")->click();
+                    settle();
+                    require(!column_of("Department", 1).required && card("Department", 1) == "NULL, UNIQUE",
+                            "NULL switched on in Properties is written on the card, NOT NULL gone");
+                    undo_once();
+                    require(card("Department", 1) == "NOT NULL, UNIQUE" && said("Constraints/Not Null") == QStringList{"Yes"},
+                            "Undone, card and Properties both say NOT NULL again");
+                    undo_once();
+                    undo_once();
+                    require(card("Department", 1) == "NULL" && said("Constraints/Unique") == QStringList{"No"} &&
+                                said("Constraints/Nullable") == QStringList{"Yes"},
+                            "Undone to the start, card and Properties both say NULL and nothing else");
+                    redo_once();
+                    redo_once();
+                    require(card("Department", 1) == "NOT NULL, UNIQUE" && said("Constraints/Unique") == QStringList{"Yes"},
+                            "Redone, both rules are back on the card and in Properties");
+                    undo_once();
+                    undo_once();
+
+                    // IDENTITY where the column cannot count, and where it can.
+                    auto revision = editor.revision();
+                    from_card("Department", 1, "schemaRuleIdentity");
+                    require(editor.revision() == revision && !column_of("Department", 1).auto_increment &&
+                                window.statusBar()->currentMessage().contains("whole-number"),
+                            "IDENTITY on a column of text is refused, with why, and nothing changes");
+                    from_card("Employee", 0, "schemaRuleIdentity");
+                    require(column_of("Employee", 0).auto_increment && card("Employee", 0) == "PK, NOT NULL, IDENTITY",
+                            "IDENTITY on a whole-number key is written last");
+                    undo_once();
+                    require(card("Employee", 0) == "PK, NOT NULL", "And undone");
+
+                    // The primary key, from the card: the same command as its
+                    // Properties switch, required with it, never written NULL.
+                    from_card("Department", 1, "schemaRulePrimaryKey");
+                    require(column_of("Department", 1).primary_key && column_of("Department", 1).required &&
+                                card("Department", 1) == "PK, NOT NULL" &&
+                                said("Constraints/Primary Key") == QStringList{"Yes"},
+                            "Made the key on the card, the column is PK and NOT NULL without a second step");
+                    revision = editor.revision();
+                    from_card("Department", 1, "schemaRuleNull");
+                    require(editor.revision() == revision && card("Department", 1) == "PK, NOT NULL" &&
+                                window.statusBar()->currentMessage().contains("can never be empty"),
+                            "A key cannot be made NULL: refused with why, and nothing changes");
+                    undo_once();
+                    require(!column_of("Department", 1).primary_key && card("Department", 1) == "NULL",
+                            "Undone, Title is an ordinary column that may be empty again");
+                    redo_once();
+                    require(column_of("Department", 1).primary_key && card("Department", 1) == "PK, NOT NULL",
+                            "Redone, the key and NOT NULL come back together");
+                    undo_once();
+
+                    // A foreign key the column cannot be: Title is text, and a
+                    // key is never retyped to fit.
+                    revision = editor.revision();
+                    from_card("Department", 1, "schemaRuleForeignKey", "Employee.EmployeeID");
+                    require(editor.revision() == revision && !column_of("Department", 1).foreign_key &&
+                                !window.statusBar()->currentMessage().isEmpty(),
+                            "A foreign key that cannot be made is refused, with why, and nothing changes");
+
+                    // And one it can be, once it holds whole numbers: chosen on
+                    // the card, it is put on as a line drawn onto the row puts one
+                    // on -- asked first, then made.
+                    require(editor.set_schema_column_type(*column_of("Department", 1).added, domain::LogicalType::Int).ok,
+                            "Title is given whole numbers");
+                    schema->refresh();
+                    settle();
+                    from_card("Department", 1, "schemaRuleForeignKey", "Employee.EmployeeID");
+                    require(column_of("Department", 1).foreign_key && card("Department", 1) == "FK, NULL",
+                            "Chosen on the card, the column is a foreign key, written FK, NULL");
+                    choose_column("Department", 1);
+                    require(said("Constraints/Foreign Key") == QStringList{"Yes"} &&
+                                said("References/References") == QStringList{"Employee.EmployeeID"},
+                            "And Properties says what it references");
+                    from_card("Department", 1, "schemaRuleNotNull");
+                    require(card("Department", 1) == "FK, NOT NULL", "A foreign key made NOT NULL is written FK, NOT NULL");
+                    from_card("Department", 1, "schemaRulePrimaryKey");
+                    require(column_of("Department", 1).primary_key && column_of("Department", 1).foreign_key &&
+                                card("Department", 1) == "PK, FK, NOT NULL" &&
+                                said("Keys/Key Role") == QStringList{"Primary Key + Foreign Key"},
+                            "Made the key as well, it is both, written PK, FK, NOT NULL");
+
+                    // Saved and opened again, it is what it was.
+                    {
+                        QTemporaryDir files;
+                        infrastructure::ErdxProjectStore keeper;
+                        const auto at = files.filePath("Card constraints.erdx").toStdString();
+                        require(files.isValid() && keeper.save(at, editor.project()).ok, "The schema saves");
+                        const auto back = keeper.load(at);
+                        require(back && *back.project == editor.project(),
+                                "And opens again with the keys and rules chosen on the card");
+                    }
+
+                    // Converted to a diagram, the foreign key chosen on the card
+                    // is a relationship like any other, and undone it is the
+                    // schema again.
+                    {
+                        const auto relationships_before = editor.project().relationships.size();
+                        child<QAction>(window, "designConvert")->trigger();
+                        settle_for(700);
+                        require(!editor.project().schema.standalone &&
+                                    editor.project().relationships.size() == relationships_before + 2,
+                                "Converted, both foreign keys are relationships on the diagram");
+                        undo_once();
+                        settle_for(700);
+                        require(editor.project().schema.standalone && card("Department", 1) == "PK, FK, NOT NULL",
+                                "Undone, the schema drawn by hand is back as it was");
+                    }
+
+                    // Taken off on the card, as its Properties switch takes it off.
+                    from_card("Department", 1, "schemaRuleForeignKey");
+                    require(!column_of("Department", 1).foreign_key && card("Department", 1) == "PK, NOT NULL",
+                            "The foreign key taken off on the card leaves the key");
+                    for (int guard = 0; guard < 20 && editor.history_position() > steps_at_start; ++guard)
+                        undo_once();
+                    require(editor.history_position() == steps_at_start && card("Department", 1) == "NULL" &&
+                                column_of("Department", 1).type != domain::LogicalType::Int,
+                            "Everything done from the card undoes");
+                    schema->choose(desktop::NothingChosen{});
+                    settle();
+                }
+
                 // Back to where this began.
                 for (int guard = 0; guard < 12 && editor.undo_label() != start_label; ++guard)
                     undo_once();
@@ -11745,6 +12035,63 @@ int main(int argc, char **argv)
             std::tie(table_at, column_at) = foreign_key_at();
             require(schema->preview().tables[table_at].columns[column_at].name == "BossID",
                     "And keeps the name typed over it");
+
+            // The card's constraints list on a schema worked out from a diagram
+            // (2026-10-08): a key chosen there is the diagram's key, and a key
+            // the schema cannot change there is refused with why.
+            {
+                const auto find = [&](const char *name) -> std::pair<std::size_t, std::size_t>
+                {
+                    for (std::size_t t = 0; t < schema->preview().tables.size(); ++t)
+                        for (std::size_t c = 0; c < schema->preview().tables[t].columns.size(); ++c)
+                            if (schema->preview().tables[t].columns[c].name == name)
+                                return {t, c};
+                    throw std::runtime_error("no such column");
+                };
+                const auto choose_on_card = [&](const char *name, const char *which)
+                {
+                    const auto [t, c] = find(name);
+                    const auto at = schema->cell_boxes()[t][c].rules.center();
+                    QTimer::singleShot(0, &window, [&window, which]
+                                       {
+                        auto *menu = window.findChild<QMenu *>("schemaRulesMenu");
+                        if (!menu) return;
+                        if (auto *action = menu->findChild<QAction *>(which)) action->trigger();
+                        menu->close(); });
+                    mouse(QEvent::MouseButtonPress, at, Qt::LeftButton);
+                    mouse(QEvent::MouseButtonRelease, at, Qt::NoButton);
+                    settle();
+                };
+                const auto said_for = [&](const char *name)
+                {
+                    const auto [t, c] = find(name);
+                    return schema->constraints_said(t, c);
+                };
+                const auto [key_t, key_c] = find("EmployeeID");
+                const auto behind = *schema->preview().tables[key_t].columns[key_c].origin;
+                require(editor.project().attributes.at(behind).identifier && said_for("EmployeeID") == "PK, NOT NULL" &&
+                            said_for("BossID").startsWith("FK, "),
+                        "Converted, the key is written PK, NOT NULL and the foreign key FK");
+                choose_on_card("EmployeeID", "schemaRulePrimaryKey");
+                // The table is left with no key of its own, so the conversion
+                // gives it one, as it does for any entity drawn without a key.
+                require(!editor.project().attributes.at(behind).identifier &&
+                            window.statusBar()->currentMessage().contains("has no key attribute"),
+                        "The key taken off on the card is taken off the attribute on the diagram");
+                child<QAction>(window, "undoCommand")->trigger();
+                settle();
+                require(editor.project().attributes.at(behind).identifier && said_for("EmployeeID") == "PK, NOT NULL",
+                        "And undone, it is the key on both again");
+                auto revision = editor.revision();
+                choose_on_card("EmployeeID", "schemaRuleForeignKey");
+                require(editor.revision() == revision &&
+                            window.statusBar()->currentMessage().contains("comes from a relationship"),
+                        "A foreign key is not put on a converted column from the card: it says to draw a relationship");
+                choose_on_card("BossID", "schemaRulePrimaryKey");
+                require(editor.revision() == revision &&
+                            window.statusBar()->currentMessage().contains("nothing behind it to change"),
+                        "A column the relationship made cannot be made the key: refused with why");
+            }
 
             editor.mark_saved(editor.revision());
             window.load_example();

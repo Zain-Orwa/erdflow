@@ -240,8 +240,16 @@ namespace erdflow::desktop
         void populate_schema_key_actions(QMenu &menu, const SchemaView::Spot &spot);
         // Classified, as the table's Properties list offers them: NULL and NOT
         // NULL as two opposite choices, then UNIQUE and IDENTITY, each saying
-        // what it means. The canvas's own constraints menu is not classified.
-        void populate_schema_rules(QMenu &menu, const SchemaView::Constrained &hit, bool classified = false);
+        // what it means. The canvas's constraints list offers them the same way,
+        // under the column's keys.
+        void populate_schema_rules(QMenu &menu, const SchemaView::Constrained &hit);
+        // A column's primary key and its foreign key, put on or taken off. What
+        // the Properties switches do and what the canvas's constraints list
+        // does, so that the two are one command each and say the same thing
+        // where it cannot be done.
+        bool trigger_schema_key_action(const SchemaColumnRef &handle, const char *name);
+        void press_schema_primary_key(const SchemaColumnRef &handle);
+        void press_schema_foreign_key(const SchemaColumnRef &handle, QPoint at);
         void pick_schema_column_type(const SchemaColumnRef &handle, QPoint at, bool size, bool compact = false);
         // One of a row's constraint marks was pressed. Which command that is
         // depends on what the column is made of, and this is the only place that
@@ -251,8 +259,9 @@ namespace erdflow::desktop
         void toggle_schema_constraint(const SchemaView::Constrained &hit,
                                       SchemaView::Constraint which);
         // The list of what can be said about one column's constraints, opened
-        // where the cell is. Several of them apply at once, so it is a list of
-        // things to tick rather than a choice between them.
+        // where the cell is: its keys, then its rules. Several of them apply at
+        // once, so it is a list of things to tick rather than a choice between
+        // them.
         void offer_schema_rules(const SchemaView::Constrained &hit, QPoint at);
         // Which side of a relationship carries a foreign key, given the side it
         // points at. The preview remembers the target, because that is what

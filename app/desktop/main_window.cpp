@@ -7500,13 +7500,57 @@ namespace erdflow::desktop
     // entry does not.
     void MainWindow::offer_schema_rules(const SchemaView::Constrained &hit, QPoint at)
     {
+        if (!schema_ || hit.table >= schema_->preview().tables.size())
+            return;
+        const auto &table = schema_->preview().tables[hit.table];
+        if (hit.row >= table.columns.size())
+            return;
+        const auto &column = table.columns[hit.row];
+        const auto handle = schema_->column_ref(hit.table, hit.row);
         QMenu menu(this);
         menu.setObjectName("schemaRulesMenu");
+        // The whole of what the column can be said to enforce (Zain,
+        // 2026-10-08): its keys, in the order the cell writes them, then the
+        // rules the Properties panel offers. Each key does exactly what its
+        // Properties switch does, so the two can never disagree, and one that
+        // cannot apply is still offered and says why. A key is done once the
+        // list has closed, because putting a foreign key on asks which key it is
+        // to reference, in a list of its own.
+        std::function<void()> keyed;
+        if (handle)
+        {
+            const auto key = [&](const QString &label, const char *name, bool on, const QString &tip,
+                                 std::function<void()> pressed)
+            {
+                auto *action = menu.addAction(label);
+                action->setObjectName(name);
+                action->setCheckable(true);
+                action->setChecked(on);
+                if (!tip.isEmpty())
+                    action->setToolTip(tip);
+                connect(action, &QAction::triggered, this, [&keyed, pressed]
+                        { keyed = pressed; });
+            };
+            key("Primary Key", "schemaRulePrimaryKey", column.primary_key,
+                column.origin  ? QString(column.primary_key ? "It stops being a key on the diagram too."
+                                                            : "It becomes a key on the diagram too, and is made required.")
+                : column.added ? QString()
+                               : QString("The conversion made this column, so there is nothing behind it to change."),
+                [this, handle = *handle]
+                { press_schema_primary_key(handle); });
+            key("Foreign Key", "schemaRuleForeignKey", column.foreign_key,
+                column.foreign_key ? QString("Take the foreign key off.") : QString("Choose the key it is to reference."),
+                [this, handle = *handle, at]
+                { press_schema_foreign_key(handle, at); });
+            menu.addSeparator();
+        }
         populate_schema_rules(menu, hit);
         menu.exec(at);
+        if (keyed)
+            keyed();
     }
 
-    void MainWindow::populate_schema_rules(QMenu &menu, const SchemaView::Constrained &hit, bool classified)
+    void MainWindow::populate_schema_rules(QMenu &menu, const SchemaView::Constrained &hit)
     {
         if (!schema_ || hit.table >= schema_->preview().tables.size())
             return;
@@ -7535,42 +7579,31 @@ namespace erdflow::desktop
                                 : column.foreign_key ? QString("This says whether the side carrying it sees one row.")
                                                      : QString();
         const auto identity_why = QStringLiteral("The database fills this in, counting up. Whole numbers only.");
-        if (classified)
+        // Nullability as the two answers to one question (Zain, 2026-10-01),
+        // side by side, the one the column has ticked. The other is the same
+        // toggle as ever, refused where it always was; the one it has already
+        // changes nothing.
+        auto *answers = new QActionGroup(&menu);
+        answers->setExclusive(true);
+        const auto answer = [&](const QString &label, const char *name, bool required)
         {
-            // Nullability as the two answers to one question (Zain, 2026-10-01),
-            // side by side, the one the column has ticked. The other is the same
-            // toggle as ever, refused where it always was; the one it has already
-            // changes nothing.
-            auto *answers = new QActionGroup(&menu);
-            answers->setExclusive(true);
-            const auto answer = [&](const QString &label, const char *name, bool required)
-            {
-                auto *action = menu.addAction(label);
-                action->setObjectName(name);
-                action->setCheckable(true);
-                action->setChecked(column.required == required);
-                action->setActionGroup(answers);
-                if (!nullable_why.isEmpty())
-                    action->setToolTip(nullable_why);
-                connect(action, &QAction::triggered, this, [this, hit, now = column.required, required]
-                        {
+            auto *action = menu.addAction(label);
+            action->setObjectName(name);
+            action->setCheckable(true);
+            action->setChecked(column.required == required);
+            action->setActionGroup(answers);
+            if (!nullable_why.isEmpty())
+                action->setToolTip(nullable_why);
+            connect(action, &QAction::triggered, this, [this, hit, now = column.required, required]
+                    {
                 if (now != required) toggle_schema_constraint(hit, SchemaView::Constraint::Nullability); });
-            };
-            answer("NULL — may be empty", "schemaRuleNull", false);
-            answer("NOT NULL — required", "schemaRuleNotNull", true);
-            menu.addSeparator();
-            entry("UNIQUE — no duplicate values", "schemaRuleUnique", column.unique, SchemaView::Constraint::Unique,
-                  unique_why);
-            entry("IDENTITY — auto-generated number", "schemaRuleIdentity", column.auto_increment,
-                  SchemaView::Constraint::AutoIncrement, identity_why);
-            return;
-        }
-        // Nullability is the one that always says which way it went, so it reads
-        // as the state it is in rather than as a box that happens to be empty.
-        entry(column.required ? "NOT NULL" : "NULL — may be empty", "schemaRuleNotNull",
-              column.required, SchemaView::Constraint::Nullability, nullable_why);
-        entry("UNIQUE", "schemaRuleUnique", column.unique, SchemaView::Constraint::Unique, unique_why);
-        entry("IDENTITY", "schemaRuleIdentity", column.auto_increment,
+        };
+        answer("NULL — may be empty", "schemaRuleNull", false);
+        answer("NOT NULL — required", "schemaRuleNotNull", true);
+        menu.addSeparator();
+        entry("UNIQUE — no duplicate values", "schemaRuleUnique", column.unique, SchemaView::Constraint::Unique,
+              unique_why);
+        entry("IDENTITY — auto-generated number", "schemaRuleIdentity", column.auto_increment,
               SchemaView::Constraint::AutoIncrement, identity_why);
     }
 
@@ -7807,6 +7840,94 @@ namespace erdflow::desktop
             return;
         }
         }
+    }
+
+    // One of the canvas's own key actions for this row, taken from the menu the
+    // row offers and done exactly as choosing it there does; false where the
+    // row offers no such action.
+    bool MainWindow::trigger_schema_key_action(const SchemaColumnRef &handle, const char *name)
+    {
+        const auto where = schema_->locate(handle);
+        if (!where)
+            return false;
+        QMenu offered;
+        populate_schema_key_actions(offered, {where->first, where->second, QCursor::pos()});
+        auto *action = offered.findChild<QAction *>(name);
+        if (!action)
+            return false;
+        action->trigger();
+        return true;
+    }
+
+    void MainWindow::press_schema_primary_key(const SchemaColumnRef &handle)
+    {
+        if (!trigger_schema_key_action(handle, "schemaPrimaryKey"))
+            statusBar()->showMessage("The conversion made this column, so there is nothing behind it "
+                                     "to change.",
+                                     12000);
+    }
+
+    void MainWindow::press_schema_foreign_key(const SchemaColumnRef &handle, QPoint at)
+    {
+        const auto where = schema_->locate(handle);
+        if (!where)
+            return;
+        const auto &tables = schema_->preview().tables;
+        const auto &now = tables[where->first].columns[where->second];
+        if (now.foreign_key)
+        {
+            // Taken off as the row's own menu takes it off.
+            if (!trigger_schema_key_action(handle, "schemaRemoveForeignKey"))
+                statusBar()->showMessage("This column is the relationship's key. It goes when "
+                                         "the relationship does.",
+                                         12000);
+            return;
+        }
+        const auto &holder = tables[where->first];
+        if (!holder.origin || !std::holds_alternative<domain::RelationId>(*holder.origin) || !now.added)
+        {
+            statusBar()->showMessage("In a schema worked out from a diagram, a foreign key comes "
+                                     "from a relationship: draw one on the diagram.",
+                                     12000);
+            return;
+        }
+        // Put on as a line drawn from the chosen key onto
+        // this row puts one on (Stage 5): checked first,
+        // asked about, never retyping anything.
+        QMenu targets(this);
+        targets.setObjectName("schemaColumnReferenceMenu");
+        for (std::size_t other_at = 0; other_at < tables.size(); ++other_at)
+        {
+            const auto &other = tables[other_at];
+            if (!other.origin || !std::holds_alternative<domain::RelationId>(*other.origin))
+                continue;
+            const auto rows = primary_key_rows(other);
+            if (rows.size() != 1 || !other.columns[rows.front()].added)
+                continue;
+            if (other_at == where->first && rows.front() == where->second)
+                continue;
+            auto *choice = targets.addAction(
+                QString("%1.%2").arg(text(other.name), text(other.columns[rows.front()].name)));
+            connect(choice, &QAction::triggered, this,
+                    [this, handle, other_at, row = rows.front(), at]
+                    {
+                        const auto here = schema_->locate(handle);
+                        if (!here)
+                            return;
+                        const auto before = editor_.revision();
+                        link_schema_rows(SchemaView::Linked{other_at, row, here->first, here->second, at});
+                        if (editor_.revision() != before)
+                            schema_->choose(ChosenColumn{handle});
+                    });
+        }
+        if (targets.isEmpty())
+        {
+            statusBar()->showMessage("A foreign key points at a table's primary key, and no other "
+                                     "table has one of a single column yet.",
+                                     12000);
+            return;
+        }
+        targets.exec(at);
     }
 
     void MainWindow::populate_schema_key_actions(QMenu &menu, const SchemaView::Spot &spot)
@@ -9741,7 +9862,7 @@ namespace erdflow::desktop
                         }
                     }
                     if (!menu.actions().isEmpty()) menu.addSeparator();
-                    populate_schema_rules(menu, {where->first, where->second}, true);
+                    populate_schema_rules(menu, {where->first, where->second});
                     menu.exec(at); });
                     across->addWidget(rules);
                     rows->addWidget(card);
@@ -10147,22 +10268,6 @@ namespace erdflow::desktop
                                 toggle_schema_constraint(SchemaView::Constrained{where->first, where->second}, which);
                         };
                     };
-                    // One of the canvas's own key actions for this row, taken from
-                    // the menu the row offers and done exactly as choosing it there
-                    // does; false where the row offers no such action.
-                    const auto key_action = [this, handle](const char *name)
-                    {
-                        const auto where = schema_->locate(handle);
-                        if (!where)
-                            return false;
-                        QMenu offered;
-                        populate_schema_key_actions(offered, {where->first, where->second, QCursor::pos()});
-                        auto *action = offered.findChild<QAction *>(name);
-                        if (!action)
-                            return false;
-                        action->trigger();
-                        return true;
-                    };
                     const auto primary_rows = primary_key_rows(table);
                     const bool linked = column.foreign_key && !column.origin && !column.added;
                     rule_row("Primary Key", QIcon(primary_key_mark(18, devicePixelRatioF(), colourless(theme_))),
@@ -10171,80 +10276,14 @@ namespace erdflow::desktop
                                                                          : "It becomes a key on the diagram too, and is made required.")
                              : column.added ? QString()
                                             : QString("The conversion made this column, so there is nothing behind it to change."),
-                             [this, key_action]
-                             {
-                                 if (!key_action("schemaPrimaryKey"))
-                                     statusBar()->showMessage("The conversion made this column, so there is nothing behind it "
-                                                              "to change.",
-                                                              12000);
-                             });
+                             [this, handle]
+                             { press_schema_primary_key(handle); });
                     rule_row("Foreign Key", inked("link", colors.accent, 18), "Foreign Key",
                              "References a column in another table", column.foreign_key,
                              column.foreign_key ? QString("Take the foreign key off.")
                                                 : QString("Choose the key it is to reference."),
-                             [this, key_action, handle]
-                             {
-                                 const auto where = schema_->locate(handle);
-                                 if (!where)
-                                     return;
-                                 const auto &tables = schema_->preview().tables;
-                                 const auto &now = tables[where->first].columns[where->second];
-                                 if (now.foreign_key)
-                                 {
-                                     // Taken off as the row's own menu takes it off.
-                                     if (!key_action("schemaRemoveForeignKey"))
-                                         statusBar()->showMessage("This column is the relationship's key. It goes when "
-                                                                  "the relationship does.",
-                                                                  12000);
-                                     return;
-                                 }
-                                 const auto &holder = tables[where->first];
-                                 if (!holder.origin || !std::holds_alternative<domain::RelationId>(*holder.origin) || !now.added)
-                                 {
-                                     statusBar()->showMessage("In a schema worked out from a diagram, a foreign key comes "
-                                                              "from a relationship: draw one on the diagram.",
-                                                              12000);
-                                     return;
-                                 }
-                                 // Put on as a line drawn from the chosen key onto
-                                 // this row puts one on (Stage 5): checked first,
-                                 // asked about, never retyping anything.
-                                 const auto at = QCursor::pos();
-                                 QMenu targets(this);
-                                 targets.setObjectName("schemaColumnReferenceMenu");
-                                 for (std::size_t other_at = 0; other_at < tables.size(); ++other_at)
-                                 {
-                                     const auto &other = tables[other_at];
-                                     if (!other.origin || !std::holds_alternative<domain::RelationId>(*other.origin))
-                                         continue;
-                                     const auto rows = primary_key_rows(other);
-                                     if (rows.size() != 1 || !other.columns[rows.front()].added)
-                                         continue;
-                                     if (other_at == where->first && rows.front() == where->second)
-                                         continue;
-                                     auto *choice = targets.addAction(
-                                         QString("%1.%2").arg(text(other.name), text(other.columns[rows.front()].name)));
-                                     connect(choice, &QAction::triggered, this,
-                                             [this, handle, other_at, row = rows.front(), at]
-                                             {
-                                                 const auto here = schema_->locate(handle);
-                                                 if (!here)
-                                                     return;
-                                                 const auto before = editor_.revision();
-                                                 link_schema_rows(SchemaView::Linked{other_at, row, here->first, here->second, at});
-                                                 if (editor_.revision() != before)
-                                                     schema_->choose(ChosenColumn{handle});
-                                             });
-                                 }
-                                 if (targets.isEmpty())
-                                 {
-                                     statusBar()->showMessage("A foreign key points at a table's primary key, and no other "
-                                                              "table has one of a single column yet.",
-                                                              12000);
-                                     return;
-                                 }
-                                 targets.exec(at);
-                             });
+                             [this, handle]
+                             { press_schema_foreign_key(handle, QCursor::pos()); });
                     const auto nullable_tip = column.primary_key ? QString("A primary key can never be empty.")
                                               : linked           ? QString("This says whether the side it points at is total, on the diagram too.")
                                                                  : QString();
