@@ -260,6 +260,14 @@ QWidget#schemaBar QToolButton:hover, QWidget#schemaBar QToolButton:pressed { bor
 QToolButton#schemaTheme { border-color: @border@; background: @panel@; padding: 5px 22px 5px 9px; }
 QToolButton#schemaTheme::menu-indicator { subcontrol-origin: padding; subcontrol-position: center right; right: 4px; width: 12px; }
 QToolButton#schemaTheme:hover, QToolButton#schemaTheme:pressed { border-color: @accent@; background: @base@; color: @text@; }
+/* The header's corner menus, Model and Theme (Zain, 2026-10-07): dressed as
+   the schema's Theme was, alike, each with its arrow level with its word. */
+QToolButton#headerModel { border-color: @border@; background: @panel@; padding: 5px 22px 5px 9px; }
+QToolButton#headerModel::menu-indicator { subcontrol-origin: padding; subcontrol-position: center right; right: 4px; width: 12px; }
+QToolButton#headerModel:hover, QToolButton#headerModel:pressed { border-color: @accent@; background: @base@; color: @text@; }
+QToolButton#headerTheme { border-color: @border@; background: @panel@; padding: 5px 22px 5px 9px; }
+QToolButton#headerTheme::menu-indicator { subcontrol-origin: padding; subcontrol-position: center right; right: 4px; width: 12px; }
+QToolButton#headerTheme:hover, QToolButton#headerTheme:pressed { border-color: @accent@; background: @base@; color: @text@; }
 /* The header of a schema drawn by hand (Zain, 2026-09-27): quiet controls of
    one height, with rounded corners and a hairline edge on the panel, in
    groups, and only the chosen design lit in the accent. Keyed on the header's
@@ -271,16 +279,19 @@ QToolButton#schemaTheme:hover, QToolButton#schemaTheme:pressed { border-color: @
    with the word without anybody remembering. Connect's split arrow is drawn
    by the theme, as the diagram's tool row draws it, in rules kept apart for
    the reason given with those. */
-QWidget#workspaceHeader[schemaFirst="true"] QPushButton#backToHome { background: @base@; color: @text@; border: 1px solid @border@; border-radius: 7px; padding: 5px 12px; min-height: 20px; }
-QWidget#workspaceHeader[schemaFirst="true"] QPushButton#backToHome:hover { background: @hover@; border-color: @hoveredge@; }
+QWidget#workspaceHeader[schemaFirst="true"] QPushButton#backToHome, QWidget#conceptualIdentity QPushButton#backToHome { background: @base@; color: @text@; border: 1px solid @border@; border-radius: 7px; padding: 5px 12px; min-height: 20px; }
+QWidget#workspaceHeader[schemaFirst="true"] QPushButton#backToHome:hover, QWidget#conceptualIdentity QPushButton#backToHome:hover { background: @hover@; border-color: @hoveredge@; }
 QWidget#schemaModeSwitch { background: @base@; border: 1px solid @border@; border-radius: 8px; }
 QWidget#schemaModeSwitch QPushButton { background: transparent; color: @text@; border: none; border-radius: 6px; padding: 4px 16px; min-height: 20px; }
 QWidget#schemaModeSwitch QPushButton:hover { background: @hover@; }
 QWidget#schemaModeSwitch QPushButton#schemaModeSchema:checked { background: @accent@; color: @selected@; font-weight: 600; }
 QWidget#schemaModeSwitch QPushButton#previewConceptual:checked { background: @hover@; color: @accent@; }
+QWidget#conceptualIdentity QWidget#schemaModeSwitch QPushButton { padding: 4px 10px; }
+QWidget#conceptualIdentity QWidget#schemaModeSwitch QPushButton#previewConceptual:checked { background: @accent@; color: @selected@; font-weight: 600; }
+QWidget#conceptualIdentity QWidget#schemaModeSwitch QPushButton#schemaModeSchema:checked { background: @hover@; color: @accent@; font-weight: 400; }
 QFrame#headerRule { background: @border@; border: none; }
-QToolButton#renameDocument { background: transparent; border: 1px solid transparent; border-radius: 6px; padding: 4px; }
-QToolButton#renameDocument:hover { background: @hover@; border-color: @hoveredge@; }
+QToolButton#renameDocument, QWidget#conceptualIdentity QToolButton#renameDocument { background: transparent; border: 1px solid transparent; border-radius: 6px; padding: 4px; }
+QToolButton#renameDocument:hover, QWidget#conceptualIdentity QToolButton#renameDocument:hover { background: @hover@; border-color: @hoveredge@; }
 QWidget#schemaTopTools QToolButton { background: @base@; color: @text@; border: 1px solid @border@; border-radius: 7px; padding: 5px 10px; min-height: 20px; }
 QWidget#schemaTopTools QToolButton:hover { background: @hover@; border-color: @hoveredge@; }
 QWidget#schemaTopTools QToolButton:checked { background: @accent@; color: @selected@; border-color: @accent@; }
@@ -294,8 +305,10 @@ QWidget#workspaceHeader[schemaFirst="true"] QToolButton#schemaUndo { background:
 QWidget#workspaceHeader[schemaFirst="true"] QToolButton#schemaRedo { background: transparent; border: 1px solid transparent; border-radius: 7px; padding: 5px 8px; min-height: 20px; }
 QWidget#workspaceHeader[schemaFirst="true"] QToolButton#schemaUndo:hover { background: @hover@; border-color: @hoveredge@; }
 QWidget#workspaceHeader[schemaFirst="true"] QToolButton#schemaRedo:hover { background: @hover@; border-color: @hoveredge@; }
-QWidget#workspaceHeader[schemaFirst="true"] QLineEdit#schemaSearch { background: @base@; border: 1px solid @border@; border-radius: 7px; padding: 5px 8px; min-height: 20px; }
+QWidget#workspaceHeader[schemaFirst="true"] QLineEdit#schemaSearch, QWidget#conceptualCorner QLineEdit#conceptualSearch { background: @base@; border: 1px solid @border@; border-radius: 7px; padding: 5px 8px; min-height: 20px; }
 QWidget#workspaceHeader[schemaFirst="true"] QToolButton#schemaTheme { background: @base@; border-radius: 7px; padding: 5px 24px 5px 10px; min-height: 20px; }
+QWidget#workspaceHeader[schemaFirst="true"] QToolButton#headerModel { background: @base@; border-radius: 7px; padding: 5px 24px 5px 10px; min-height: 20px; }
+QWidget#workspaceHeader[schemaFirst="true"] QToolButton#headerTheme { background: @base@; border-radius: 7px; padding: 5px 24px 5px 10px; min-height: 20px; }
 /* Relational Design's Open example drops a menu, so its arrow is placed level
    with its mark, in rules of its own; dressed as the Theme button beside it,
    in either header. */
@@ -377,11 +390,11 @@ QTreeView::item:selected { background: @accent@; color: @selected@; }
 QTreeView::item:focus { border-color: @accent@; }
 QHeaderView::section { background: @window@; color: @text@; border: none; border-bottom: 1px solid @border@; border-right: 1px solid @border@; padding: 5px 7px; }
 QScrollArea { background: @panel@; border: none; }
-QWidget#canvasControls { background: @panel@; border: 1px solid @border@; border-radius: 8px; }
-QWidget#canvasControls QToolButton { background: transparent; color: @text@; border: 1px solid transparent; border-radius: 5px; padding: 0px; font-size: 16px; font-weight: 700; }
-QWidget#canvasControls QToolButton:hover { background: @hover@; border-color: @hoveredge@; }
-QWidget#canvasControls QToolButton:checked { background: @accent@; color: @selected@; border-color: @accent@; }
-QWidget#canvasControls QFrame#canvasControlsRule { background: @border@; border: none; }
+QWidget#canvasControls, QWidget#schemaControls { background: @panel@; border: 1px solid @border@; border-radius: 8px; }
+QWidget#canvasControls QToolButton, QWidget#schemaControls QToolButton { background: transparent; color: @text@; border: 1px solid transparent; border-radius: 5px; padding: 0px; font-size: 16px; font-weight: 700; }
+QWidget#canvasControls QToolButton:hover, QWidget#schemaControls QToolButton:hover { background: @hover@; border-color: @hoveredge@; }
+QWidget#canvasControls QToolButton:checked, QWidget#schemaControls QToolButton:checked { background: @accent@; color: @selected@; border-color: @accent@; }
+QWidget#canvasControls QFrame#canvasControlsRule, QWidget#schemaControls QFrame#schemaControlsRule { background: @border@; border: none; }
 QGraphicsView#diagramCanvas { background: @canvas@; border: 1px solid @border@; }
 QGraphicsView#conceptualPreview { background: @canvas@; border: 1px solid @border@; }
 QLineEdit, QComboBox, QDoubleSpinBox, QSpinBox, QPlainTextEdit { background: @base@; color: @text@; border: 1px solid @border@; border-radius: 2px; padding: 4px 6px; }

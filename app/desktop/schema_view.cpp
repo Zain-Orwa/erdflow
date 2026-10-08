@@ -5,6 +5,8 @@
 // and whether it is a gain or a loss. He decides. Fixing a real defect is not
 // covered by this — fix it and say what was wrong. Full rule: CLAUDE.md.
 #include "schema_view.hpp"
+#include <QScrollBar>
+#include <QAbstractScrollArea>
 #include "schema_facts.hpp"
 #include "schema_router.hpp"
 
@@ -954,6 +956,13 @@ void SchemaView::select_all() {
 }
 
 void SchemaView::keyPressEvent(QKeyEvent* event) {
+    // Escape puts Pan down, as it puts Table and Connect down.
+    if (event->key() == Qt::Key_Escape && panning_) {
+        set_panning(false);
+        if (panning_changed) panning_changed(false);
+        event->accept();
+        return;
+    }
     // Escape puts Table down, as it puts a placing tool down on the diagram.
     if (event->key() == Qt::Key_Escape && placing_) {
         set_placing(false);
@@ -1587,6 +1596,16 @@ void SchemaView::mousePressEvent(QMouseEvent* event) {
     // Taken here as well as by the focus policy, so a press always hands the
     // schema the keyboard, whatever the press came from.
     setFocus(Qt::MouseFocusReason);
+    // With Pan in hand a press takes hold of the view, before anything drawn
+    // there answers, as the diagram's Pan does.
+    if (panning_) {
+        if (auto* area = scroller())
+            pan_hold_ = PanHold{event->globalPosition(), area->horizontalScrollBar()->value(),
+                                area->verticalScrollBar()->value()};
+        setCursor(Qt::ClosedHandCursor);
+        event->accept();
+        return;
+    }
     // With Table in hand, a press places a table where it lands, before
     // anything there answers, as the diagram's placing tools place wherever
     // they are pressed.
@@ -1750,6 +1769,18 @@ void SchemaView::mousePressEvent(QMouseEvent* event) {
 }
 
 void SchemaView::mouseMoveEvent(QMouseEvent* event) {
+    // With Pan in hand the pointer only moves the view, and only while it is
+    // held; nothing under it is pointed at.
+    if (panning_) {
+        if (pan_hold_ && (event->buttons() & Qt::LeftButton))
+            if (auto* area = scroller()) {
+                const auto by = event->globalPosition() - pan_hold_->from;
+                area->horizontalScrollBar()->setValue(pan_hold_->across - qRound(by.x()));
+                area->verticalScrollBar()->setValue(pan_hold_->down - qRound(by.y()));
+            }
+        event->accept();
+        return;
+    }
     // Which table is being looked at, so it can wear its plus. Not while
     // something is being dragged: a table under the pointer in the middle of a
     // gesture is not a table being considered.
@@ -1881,6 +1912,16 @@ void SchemaView::mouseMoveEvent(QMouseEvent* event) {
 }
 
 void SchemaView::mouseReleaseEvent(QMouseEvent* event) {
+    // A drag with Pan in hand let go: the view stays where it was taken, and
+    // the hand opens again.
+    if (panning_ && event->button() == Qt::LeftButton) {
+        const bool held = pan_hold_.has_value();
+        pan_hold_.reset();
+        setCursor(Qt::OpenHandCursor);
+        event->accept();
+        if (held && panned) panned();
+        return;
+    }
     // Table still in hand after placing one: the press did all there was to
     // do, and the pointer goes on saying where the next one goes.
     if (placing_) {
@@ -2252,6 +2293,12 @@ void SchemaView::hideEvent(QHideEvent* event) {
 void SchemaView::mouseDoubleClickEvent(QMouseEvent* event) {
     if (event->button() != Qt::LeftButton) {
         QWidget::mouseDoubleClickEvent(event);
+        return;
+    }
+    // Pan opens nothing: a double click with it in hand is two presses on the
+    // view.
+    if (panning_) {
+        event->accept();
         return;
     }
     // The second half of a press that placed a table places nothing more and
@@ -3625,6 +3672,21 @@ void SchemaView::set_connecting(bool on) {
     if (!on) linking_.reset();
     setCursor(Qt::ArrowCursor);
     update();
+}
+
+void SchemaView::set_panning(bool on) {
+    if (panning_ == on) return;
+    panning_ = on;
+    pan_hold_.reset();
+    setCursor(on ? Qt::OpenHandCursor : Qt::ArrowCursor);
+    update();
+}
+
+// The scroll area the schema is shown in, which is what Pan moves.
+QAbstractScrollArea* SchemaView::scroller() const {
+    for (auto* up = parentWidget(); up; up = up->parentWidget())
+        if (auto* area = qobject_cast<QAbstractScrollArea*>(up)) return area;
+    return nullptr;
 }
 
 void SchemaView::set_placing(bool on) {

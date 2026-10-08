@@ -310,7 +310,9 @@ private:
     void draw_line(QPainter& p, const Tokens& t) const {
         if (wave_.isEmpty()) return;
         const auto blue = t.primary;
-        const QColor white(Qt::white);
+        // Lit as the database it runs into is: white on a light page, the
+        // accent's own pale tint on a dark one.
+        const auto light = WelcomeFlowIllustration::hero_light(theme_);
         const auto pen = [](const QColor& colour, double width) {
             return QPen(colour, width, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
         };
@@ -319,10 +321,10 @@ private:
         p.drawPath(wave_);
         const std::array<std::pair<double, double>, 4> across{{{9.0, 0.60}, {7.2, 0.42}, {5.2, 0.26}, {3.2, 0.12}}};
         for (const auto& [wide, share] : across) {
-            p.setPen(pen(blend(white, blue, share), wide));
+            p.setPen(pen(blend(light, blue, share), wide));
             p.drawPath(wave_);
         }
-        p.setPen(pen(tint(white, 235), 1.4));
+        p.setPen(pen(tint(light, 235), 1.4));
         p.drawPath(wave_);
     }
 

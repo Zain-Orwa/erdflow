@@ -880,6 +880,73 @@ to build in Part 1* at the end. The state of the test suites is under
   Home as the Home command does, leaving the project open behind it. (It
   first came only with an example or the template opened from Home; Zain
   asked for it everywhere the same day.)
+- **The diagram has one row, as the schema does** (Zain, 2026-10-08). While
+  the diagram is in front and the ribbon's Home row is showing, the header's
+  own Home, **Schema | Conceptual** switch and project title lead that row,
+  before Save, and the header strip under it (Back to Home | CONCEPTUAL |
+  title) is put away, so the canvas starts under the row. They are the same
+  widgets, carried there and back (`MainWindow::place_workspace_identity`,
+  container `conceptualIdentity`), never copies. Compact in this row, as
+  Zain chose: Home is its arrow alone (named on hover and to a screen
+  reader), the switch's halves have 10 px padding, the rule and the rename
+  pencil stay in the header (the project is renamed from the Explorer, as it
+  was), and the title gives way before the tools do: the row is fitted with
+  it at no more than 48 px and it then takes what room is left, up to 140 px,
+  elided with the whole name on hover (`TitleLabel`, `fit_toolbar`). In a
+  diagram the switch reads the other way round: Conceptual lit, Schema
+  raising the schema it converts to (as Convert to Schema does) and lit while
+  it is up, Conceptual putting it away (`wear_workspace_switch`). Under
+  another ribbon tab, or with the row put away for full view, the header has
+  them back and shows exactly as before. Relational Design -- a schema drawn
+  by hand, or a diagram's schema with the whole window -- has its header
+  exactly as before. Width cost at the reference sizes (Azure, offscreen):
+  1440, the tools as before; 1280, 24 px icons, Notation without its label,
+  Search / Model / Theme as icons; 1920, 24 px icons with their words and
+  Notation without its label.
+- **The diagram's Search is a field, as the schema's is** (Zain,
+  2026-10-08). The Search button in the diagram's row is replaced by the
+  schema's own `SearchField`, dressed by the same rule, with the glass, a
+  clear button and "Search conceptual design…", just left of Model, Theme
+  outermost. It is the search bar's text box (`SearchBar::use_text`): typing
+  in it opens the bar and narrows the diagram exactly as before; the bar keeps
+  the kind, Options, the count and ✕, without a box of its own; Find (Ctrl+F)
+  puts the caret in it; Escape and ✕ close the search, put the whole diagram
+  back and clear it. Its least width in this row is 120 px (the schema's is
+  150), as Zain chose so 1280 keeps the Notation picker; the row is fitted
+  with it at its least and it takes spare room up to 240 px. Width cost, also
+  Zain's choice: at 1440 the row steps down (24 px icons, Notation unlabelled,
+  Model and Theme as icons), and the tools' names come back from about
+  1850 px. Leaving a schema drawn by hand no longer squeezes the side panels:
+  the header is put back between them hidden, and shown only if it has to be.
+- **The schema's working tools follow the ribbon's tab** (Zain, 2026-10-08).
+  While Relational Design is in front its header is Home's row, and the
+  ribbon did not know it: under File and Settings the header's tools stood
+  under the chosen row. Now the ribbon says when its row changes
+  (`Ribbon::on_row_changed`, `home_in_front`, `schema_in_front`) and the
+  window shows the header's drawing tools, its undo and redo with the search,
+  Model and Theme only while Home is the tab in front
+  (`MainWindow::wear_schema_header_for_tab`, also applied wherever those
+  groups are shown). Home, Schema | Conceptual and the title stay under every
+  tab, as Zain chose, as the diagram's do. Nothing is rebuilt: the same
+  widgets are hidden and shown, so the tool in hand, the search's text and the
+  project are as they were. The diagram's own rows are unchanged.
+- **The schema has the diagram's raft of view controls** (Zain, 2026-10-08).
+  The raft is made by one builder for both (`MainWindow::make_view_raft`,
+  placed by `place_raft`): over the bottom-right of the schema's scroll area,
+  the same parts in the same order and size -- grip, Full view, Fit, Pan, +,
+  −, a rule, the side panels -- named `schemaControls`, `schemaRaft…`.
+  Full view puts the panels beside the schema away and back with its own
+  account of them (`put_schema_panels_away`), so the schema's whole-window
+  view, which borrows the diagram's, is undisturbed. The schema is drawn at
+  its actual size, so Fit, + and − stay pressable and say in the status bar
+  that it cannot be fitted or zoomed yet, as Zain chose. Pan is a schema tool
+  (`SchemaTool::Pan`, `SchemaView::set_panning`): a drag scrolls the schema
+  and touches nothing on it; one drag hands it back, a double click locks it
+  (the lock mark on the button), Escape puts it down. The side panels'
+  button is the diagram's own action. The raft is put away and brought back
+  with the diagram's (View ▸ View controls on the diagram, or the empty
+  schema's own menu while it is away). The diagram's raft is built by the
+  same builder and is pixel-identical to before.
 - **Return from Home to the workspace** (2026-09-27). Once a workspace has
   been in front, Home's top bar offers the way back into it beside Theme:
   **Return to Conceptual Design →**, or **Return to Relational Design →** when

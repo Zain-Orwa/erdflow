@@ -9,6 +9,7 @@
 #include <QIcon>
 #include <QObject>
 #include <QString>
+#include <functional>
 #include <map>
 #include <set>
 #include <utility>
@@ -55,6 +56,14 @@ public:
     // Put away with the workspace while the Home screen is showing, and back
     // as it was when the workspace returns.
     void set_put_away(bool away);
+    // Whether Home is the tab in front, and whether the schema stands in for
+    // Home's row, as it does while Relational Design is in front (the header
+    // of the schema is its Home row then). Asked by the window, which is told
+    // whenever the row in front changes, so the schema's own working tools go
+    // with Home's row under File and Settings (Zain, 2026-10-08).
+    [[nodiscard]] bool home_in_front() const { return !rows_.empty() && current_ == rows_.front().first; }
+    [[nodiscard]] bool schema_in_front() const { return schema_; }
+    std::function<void()> on_row_changed;
 
 protected:
     // Watches Home, so every other row follows its height as the window is

@@ -294,6 +294,9 @@ namespace erdflow::desktop
         void follow_schema_first();
         bool schema_first_ = false;
         domain::ProjectId schema_first_project_;
+        // The project the Conceptual Explorer's folds belong to: another
+        // project starts with its groups folded rather than wearing these.
+        domain::ProjectId explorer_project_;
         QToolButton *schema_add_table_ = nullptr;
         QPushButton *schema_convert_ = nullptr;
         QWidget *schema_narrowing_ = nullptr;
@@ -315,7 +318,9 @@ namespace erdflow::desktop
         {
             Select,
             Table,
-            Connect
+            Connect,
+            // The floating controls' Pan (Zain, 2026-10-08), as the diagram's.
+            Pan
         };
         SchemaTool schema_tool_ = SchemaTool::Select;
         bool schema_tool_locked_ = false;
@@ -375,6 +380,10 @@ namespace erdflow::desktop
         // written anywhere.
         bool schema_properties_rebuilding_ = false;
         QAction *schema_search_mark_ = nullptr;
+        // The diagram's search field, in its row as the schema's is in its header
+        // (Zain, 2026-10-08): the search bar's own text box, moved up.
+        QLineEdit *conceptual_search_ = nullptr;
+        QAction *conceptual_search_mark_ = nullptr;
         // What a schema drawn by hand is converted from: where each table is on
         // the schema now, and how big each kind of element is made. Asked by
         // Convert and by the Conceptual preview alike, so the preview shows
@@ -498,6 +507,34 @@ namespace erdflow::desktop
         [[nodiscard]] int icon_pixels() const;
         // Keeps the canvas's own controls in the corner of the view as it resizes.
         void place_canvas_controls();
+        // The raft of view controls, made the same way on the diagram and on
+        // the schema (Zain, 2026-10-08): what each of its buttons does there,
+        // what its zoom signs say, and where its grip takes it.
+        struct RaftParts
+        {
+            QAction *full_view = nullptr;
+            QAction *fit = nullptr;
+            QAction *pan = nullptr;
+            QAction *panels = nullptr;
+            std::function<void(int)> zoom;
+            std::function<QString(int)> zoom_tip;
+            std::function<void(QPoint)> dragged;
+            QString hide_tip;
+        };
+        QWidget *make_view_raft(QWidget *host, const QString &raft_name, const QString &prefix, const RaftParts &parts);
+        void place_raft(QWidget *raft, QWidget *host, const std::optional<QPointF> &place);
+        // The schema's raft, over its scroll area: placed, dragged, its Full
+        // view, and its Pan's lock mark.
+        void place_schema_controls();
+        void move_schema_controls(QPoint by);
+        void put_schema_panels_away(bool away);
+        void refresh_schema_pan_button();
+        QWidget *schema_controls_ = nullptr;
+        std::optional<QPointF> schema_controls_place_;
+        QAction *schema_full_view_ = nullptr;
+        QAction *schema_fit_ = nullptr;
+        QAction *schema_pan_ = nullptr;
+        std::vector<QPointer<QDockWidget>> schema_away_panels_;
 
     public:
         // Moves the raft by the given amount and remembers where it was put, as a
@@ -625,6 +662,32 @@ namespace erdflow::desktop
         // and words it wears for the panels that are out.
         QAction *side_panels_ = nullptr;
         void refresh_side_panels_action();
+        // The header's top right corner: Model, then Theme outermost.
+        QToolButton *header_model_ = nullptr;
+        QToolButton *header_theme_ = nullptr;
+        QAction *model_to_conceptual_ = nullptr;
+        void fill_model_menu();
+        QWidget *conceptual_corner_ = nullptr;
+        // The start of the diagram's tool row (Zain, 2026-10-08): the header's
+        // own Home, Schema | Conceptual and title, carried there while the
+        // diagram is in front so the diagram has one row as the schema does,
+        // and given back to the header while Relational Design is in front.
+        QWidget *conceptual_identity_ = nullptr;
+        QAction *conceptual_identity_action_ = nullptr;
+        QAction *conceptual_identity_rule_ = nullptr;
+        bool identity_relational_ = false;
+        bool placing_identity_ = false;
+        void place_workspace_controls(bool relational);
+        void place_workspace_identity(bool relational);
+        // The schema's working tools in its header -- its drawing tools, undo
+        // and redo with its search, Model and Theme -- shown only while Home is
+        // the ribbon's tab in front (Zain, 2026-10-08): the header is Home's row
+        // while the schema is in front, and goes with it under File and
+        // Settings, all but Home, Schema | Conceptual and the title.
+        void wear_schema_header_for_tab();
+        // Which half of Schema | Conceptual is lit, and what each half says it
+        // does, for the project in front.
+        void wear_workspace_switch();
         // A sample drawn for an ordinary row and again for a highlighted one, so it
         // is never drawn in the colour it is standing on. See the definition.
         [[nodiscard]] QIcon two_tone(const std::function<QPixmap(std::optional<QColor>)> &draw) const;

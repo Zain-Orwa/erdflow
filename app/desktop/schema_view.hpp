@@ -17,6 +17,7 @@
 #include <QWidget>
 
 class QLineEdit;
+class QAbstractScrollArea;
 #include <functional>
 #include <map>
 #include <optional>
@@ -368,6 +369,15 @@ public:
     void set_placing(bool on);
     [[nodiscard]] bool placing() const { return placing_; }
     std::function<void(bool)> placing_changed;
+    // Pan in hand (Zain, 2026-10-08): the floating controls' Pan, as the
+    // diagram's. While it is on, a press takes hold of the view rather than
+    // of anything drawn on it, and dragging scrolls the schema; nothing is
+    // chosen, moved, opened or routed. Escape puts it down, and says so
+    // through panning_changed; panned says one drag has been let go.
+    void set_panning(bool on);
+    [[nodiscard]] bool panning() const { return panning_; }
+    std::function<void(bool)> panning_changed;
+    std::function<void()> panned;
     // Somewhere on the empty schema asked for a table, by a press there with
     // the Table tool in hand, in the view's own coordinates. Only where the
     // schema is drawn by hand: on a schema worked out from a diagram a table
@@ -737,6 +747,16 @@ private:
     [[nodiscard]] std::optional<domain::LinkSource> link_of(domain::ForeignKeyId key) const;
     bool connecting_ = false;
     bool placing_ = false;
+    bool panning_ = false;
+    // Where a drag with Pan in hand was taken hold of, and where the schema
+    // was scrolled to then.
+    struct PanHold {
+        QPointF from;
+        int across = 0;
+        int down = 0;
+    };
+    std::optional<PanHold> pan_hold_;
+    [[nodiscard]] QAbstractScrollArea* scroller() const;
     // The press that placed a table, so the double click it may turn out to
     // be the first half of does not do a double click's work as well.
     bool placed_on_press_ = false;

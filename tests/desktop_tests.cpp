@@ -855,11 +855,16 @@ int main(int argc, char **argv)
                                              "fileTemplateRelational", "homeExampleCompanyRelational",
                                              "homeExampleUniversityRelational", "homeTemplateRelational"};
             auto *header_button = child<QToolButton>(relational, "openRelationalExample");
+            // In the header they are offered from its Model menu (Zain,
+            // 2026-10-07); the mark that used to drop them is put away.
+            auto *model_menu = child<QMenu>(relational, "headerModelMenu");
             const auto offered = [&](bool expected)
             {
+                emit model_menu->aboutToShow();
                 return std::all_of(std::begin(relational_only), std::end(relational_only), [&](const char *name)
                                    { return child<QAction>(relational, name)->isVisible() == expected; }) &&
-                       header_button->isVisible() == expected;
+                       model_menu->actions().contains(header_button->menu()->menuAction()) == expected &&
+                       !header_button->isVisible();
             };
             const auto conceptual_offered = [&](bool expected)
             {
@@ -895,6 +900,149 @@ int main(int argc, char **argv)
                         header_button->popupMode() == QToolButton::InstantPopup &&
                         header_button->toolButtonStyle() == Qt::ToolButtonIconOnly,
                     "The header's Open example is a mark that drops them, named on hover");
+            // The header's top right corner holds Model and Theme, Theme
+            // outermost, and nothing else of the kind (Zain, 2026-10-07).
+            auto *corner_model = child<QToolButton>(relational, "headerModel");
+            auto *corner_theme = child<QToolButton>(relational, "headerTheme");
+            const auto check_corner_placement = [&](bool conceptual)
+            {
+                const auto original_size = relational.size();
+                auto *bar = child<QToolBar>(relational, "modelTools");
+                auto *header = child<QWidget>(relational, "workspaceHeader");
+                auto *corner = child<QWidget>(relational, "conceptualCorner");
+                // A search field since 2026-10-08, as the schema's is.
+                auto *search = child<QLineEdit>(relational, "conceptualSearch");
+                for (const int width : {1280, 1440, 1920})
+                {
+                    relational.resize(width, 1080);
+                    settle();
+                    auto *row = conceptual ? static_cast<QWidget *>(bar) : header;
+                    require(corner_model->parentWidget() == (conceptual ? corner : header) &&
+                                corner_theme->parentWidget() == corner_model->parentWidget(),
+                            "The existing Model and Theme controls belong to the active tool row");
+                    const auto bounds = [&](QWidget *widget)
+                    { return QRect(widget->mapTo(row, QPoint()), widget->size()); };
+                    const auto model_rect = bounds(corner_model);
+                    const auto theme_rect = bounds(corner_theme);
+                    require(corner_model->isVisible() && corner_theme->isVisible() &&
+                                row->rect().contains(model_rect) && row->rect().contains(theme_rect) &&
+                                model_rect.right() < theme_rect.left() &&
+                                row->width() - theme_rect.right() < 40,
+                            "Model then Theme stay visible at the far right at every desktop width");
+                    if (conceptual)
+                    {
+                        require(search->parentWidget() == corner && search->isVisible() &&
+                                    row->rect().contains(bounds(search)) && bounds(search).right() < model_rect.left() &&
+                                    search->width() >= search->minimumWidth(),
+                                "Conceptual Search is a field that precedes Model and Theme in the upper row");
+                        auto *notation = child<QComboBox>(relational, "notationPicker");
+                        require(notation->isVisible() && bounds(notation).right() < bounds(search).left(),
+                                "Notation remains visible before the right-side group without overlap");
+                        // One row, as the schema has (Zain, 2026-10-08): Home,
+                        // Schema | Conceptual and the title lead it, before Save,
+                        // and the header under it is put away.
+                        auto *identity = child<QWidget>(relational, "conceptualIdentity");
+                        auto *home = child<QPushButton>(relational, "backToHome");
+                        auto *modes = child<QWidget>(relational, "schemaModeSwitch");
+                        auto *title = child<QLabel>(relational, "documentTitle");
+                        auto *save = bar->widgetForAction(child<QAction>(relational, "saveProject"));
+                        require(header->isHidden() && identity->isVisible() && identity->isAncestorOf(home) &&
+                                    identity->isAncestorOf(modes) && identity->isAncestorOf(title) &&
+                                    home->isVisible() && modes->isVisible() && title->isVisible() &&
+                                    row->rect().contains(bounds(identity)) && save &&
+                                    bounds(home).right() < bounds(modes).left() &&
+                                    bounds(modes).right() < bounds(title).left() &&
+                                    bounds(identity).right() < bounds(save).left() &&
+                                    !child<QLabel>(relational, "workspaceBadge")->isVisible() &&
+                                    child<QPushButton>(relational, "previewConceptual")->isChecked() &&
+                                    !header->isAncestorOf(search) && !header->isAncestorOf(corner_model) &&
+                                    !header->isAncestorOf(corner_theme),
+                                "Home, Schema | Conceptual and the title lead the one row, before Save, with "
+                                "Conceptual lit and no header beneath");
+                    }
+                }
+                relational.resize(original_size);
+                settle();
+            };
+            check_corner_placement(true);
+            answer_in_turn({"type:Placement check"});
+            child<QAction>(relational, "renameDocumentAction")->trigger();
+            settle();
+            require(opened.project().name == "Placement check" &&
+                        child<QLabel>(relational, "documentTitle")->text().contains("Placement check"),
+                    "Renaming still updates the project and the title in the row");
+            // Schema | Conceptual in the diagram's row (2026-10-08): Conceptual is
+            // lit, being the design in front; Schema raises the schema the
+            // diagram converts to and lights while it is up; Conceptual puts it
+            // away again. Neither converts or writes anything.
+            {
+                auto *schema_half = child<QPushButton>(relational, "schemaModeSchema");
+                auto *conceptual_half = child<QPushButton>(relational, "previewConceptual");
+                auto *raised = child<QPushButton>(relational, "previewSchema");
+                auto *panel = child<QWidget>(relational, "schemaPanel");
+                const auto revision = opened.revision();
+                require(conceptual_half->isChecked() && !schema_half->isChecked() && !raised->isChecked(),
+                        "Conceptual is lit in the diagram's row, and Schema is not");
+                schema_half->click();
+                settle_for(450);
+                require(raised->isChecked() && panel->isVisible() && schema_half->isChecked() &&
+                            conceptual_half->isChecked() && opened.revision() == revision,
+                        "Schema raises the schema, as Convert to Schema does, and lights while it is up");
+                conceptual_half->click();
+                settle_for(450);
+                require(!raised->isChecked() && !panel->isVisible() && !schema_half->isChecked() &&
+                            conceptual_half->isChecked() && opened.revision() == revision,
+                        "Conceptual puts it away again, and stays lit");
+            }
+            opened.mark_saved(opened.revision());
+            const auto entries = [&]
+            {
+                emit model_menu->aboutToShow();
+                QStringList names;
+                for (auto *action : model_menu->actions())
+                    if (action->isVisible() && !action->isSeparator())
+                        names << (action->menu() ? action->menu()->objectName() : action->objectName());
+                return names;
+            };
+            {
+                require(corner_model->isVisible() && corner_theme->isVisible() &&
+                            corner_model->geometry().right() < corner_theme->x(),
+                        "Model, then Theme, in the header's corner");
+                QWidget *last = nullptr;
+                for (auto *each : corner_theme->parentWidget()->findChildren<QWidget *>(QString(), Qt::FindDirectChildrenOnly))
+                    if (each->isVisible() && (!last || each->x() > last->x()))
+                        last = each;
+                require(last == corner_theme, "Theme is the outermost");
+                require(corner_model->text() == "Model" && corner_theme->text() == "Theme" &&
+                            !corner_model->icon().isNull() && !corner_theme->icon().isNull() &&
+                            corner_model->popupMode() == QToolButton::InstantPopup &&
+                            corner_theme->popupMode() == QToolButton::InstantPopup &&
+                            corner_model->iconSize() == corner_theme->iconSize() &&
+                            corner_model->height() == corner_theme->height(),
+                        "Each a mark, a word and a menu, alike");
+                require(entries() == QStringList({"designRelational", "checkModel", "fileOpenExample"}),
+                        "On the diagram Model offers Convert to Schema, Check model and Open example, in that order");
+                require(child<QAction>(relational, "designRelational")->text() == "Convert to Schema",
+                        "Converting is named for where it goes");
+                require(!child<QPushButton>(relational, "previewSchema")->isVisible() &&
+                            !child<QPushButton>(relational, "openExample")->isVisible() &&
+                            !header_button->isVisible() &&
+                            !child<QToolBar>(relational, "modelTools")->actions().contains(child<QAction>(relational, "checkModel")),
+                        "And the separate Convert, Open example and Check model buttons are gone");
+                // One theme, wherever it is chosen.
+                auto *themes = child<QMenu>(relational, "themeMenu");
+                require(corner_theme->menu() == themes &&
+                            child<QToolBar>(relational, "designTools")->actions().contains(themes->menuAction()),
+                        "The corner's Theme and Settings' Design row drop the same theme menu");
+                const auto worn = relational.canvas()->theme_id();
+                child<QAction>(relational, "thememidnight")->trigger();
+                settle();
+                require(relational.canvas()->theme_id() == desktop::ThemeId::Midnight &&
+                            child<QAction>(relational, "thememidnight")->isChecked(),
+                        "A theme chosen in either is the theme, ticked in both");
+                relational.set_theme(worn);
+                settle();
+            }
             // A diagram's schema given the whole window is Relational Design in
             // front, and back again.
             relational.open_schema(true);
@@ -902,9 +1050,23 @@ int main(int argc, char **argv)
             require(offered(true) && conceptual_offered(false) &&
                         !child<QPushButton>(relational, "openExample")->isVisible(),
                     "With Relational Design in front, its own are offered and the Conceptual ones are put away");
+            check_corner_placement(false);
+            require(entries() == QStringList({"modelToConceptual", "openRelationalExampleMenu"}) &&
+                        child<QAction>(relational, "modelToConceptual")->text() == "Convert to Conceptual",
+                    "With the schema in front Model offers Convert to Conceptual and its own examples, not the "
+                    "diagram's checks");
+            require(corner_model->isVisible() && corner_theme->isVisible() &&
+                        !child<QToolButton>(relational, "schemaTheme")->isVisible(),
+                    "Model and Theme stay in the corner, and the schema has no second Theme");
             child<QPushButton>(relational, "schemaFull")->click();
             settle();
             require(offered(false) && conceptual_offered(true), "Back on the diagram, they are put away again");
+            check_corner_placement(true);
+            child<QAction>(relational, "modelToConceptual")->trigger();
+            settle_for(450);
+            require(child<QLabel>(relational, "workspaceBadge")->text() == "CONCEPTUAL" &&
+                        entries().front() == "designRelational",
+                    "Model's Convert to Conceptual puts the schema away and the diagram is in front again");
             relational.open_schema(true);
             settle_for(450);
 
@@ -3761,6 +3923,39 @@ int main(int argc, char **argv)
                         "The cards are in the order the specification fixes");
             require(window.findChild<QWidget *>("startRouteTemplate") == nullptr && window.findChild<QWidget *>("startRouteImport") == nullptr,
                     "Neither Templates nor Import is a card");
+            // A card that is clicked is chosen and takes the keyboard, and says
+            // so in the theme's own accent (Zain, 2026-10-06). The three dots'
+            // pale blue brush, left on, once filled the whole card with it as
+            // soon as it had the keyboard, whatever the theme.
+            {
+                const auto worn = window.canvas()->theme_id();
+                window.set_theme(desktop::ThemeId::Dracula);
+                settle();
+                auto *card = cards[1];
+                card->click();
+                card->setFocus(Qt::MouseFocusReason);
+                settle();
+                require(card->isChecked() && card->hasFocus(), "A clicked card is chosen and has the keyboard");
+                const auto face = card->grab().toImage();
+                const auto cyan = QColor("#9DD9FF");
+                const auto accent = desktop::tokens(desktop::ThemeId::Dracula).primary;
+                bool poured = false;
+                bool tinted = true;
+                for (int y = face.height() / 3; y < face.height() * 2 / 3; y += 8)
+                {
+                    const auto at = face.pixelColor(9, y);
+                    const auto off = std::abs(at.red() - cyan.red()) + std::abs(at.green() - cyan.green()) + std::abs(at.blue() - cyan.blue());
+                    poured = poured || off < 40;
+                    if (at.hsvSaturation() > 25 && std::abs(at.hsvHue() - accent.hsvHue()) > 40)
+                        tinted = false;
+                }
+                require(!poured, "Its face is not poured full of the dots' pale blue");
+                require(tinted, "What colour it takes is the theme's own accent");
+                cards.front()->click();
+                card->clearFocus();
+                window.set_theme(worn);
+                settle();
+            }
             // Each card's two actions light up under the pointer, each on its
             // own (Zain, 2026-09-26), and are exactly as they were once it
             // leaves. Create with AI lights up too, though it cannot be
@@ -5142,16 +5337,22 @@ int main(int argc, char **argv)
             settle();
         }
 
-        // Back to Home is always in the workspace's header (Zain,
+        // Back to Home is always first in the workspace's own row (Zain,
         // 2026-09-26): Home is the door every project is come in by, and a
         // change of mind can always go back to choose another card.
         {
             auto *home = static_cast<desktop::HomePage *>(window.findChild<QWidget *>("homePage"));
             auto *back = child<QPushButton>(window, "backToHome");
             require(!window.showing_home() && back->isVisible(), "The workspace offers the way back to Home");
-            require(back->text().contains("Back to Home"), "Saying where it goes");
-            auto *header_layout = child<QWidget>(window, "workspaceHeader")->layout();
-            require(header_layout->indexOf(back) == 0, "First in the header, where a way back is looked for");
+            // In the diagram's one row (Zain, 2026-10-08) it is the arrow alone,
+            // first in the row, and says where it goes on hover and to a screen
+            // reader.
+            require(back->text() == "←" && back->accessibleName() == "Home" && back->toolTip().contains("Home screen"),
+                    "Saying where it goes");
+            auto *bar = child<QToolBar>(window, "modelTools");
+            auto *identity = child<QWidget>(window, "conceptualIdentity");
+            require(bar->widgetForAction(bar->actions().front()) == identity && identity->layout()->indexOf(back) == 0,
+                    "First in the row, where a way back is looked for");
             // Whatever the project, and however it was opened.
             window.show_home(true);
             settle();
@@ -6370,27 +6571,28 @@ int main(int argc, char **argv)
             auto *picker = child<QComboBox>(window, "notationPicker");
             const auto tools = bar->actions().size();
 
-            window.resize(1800, 820);
+            // Wide is 1920 since the row holds the search field (Zain, 2026-10-08):
+            // the names come back from about 1850.
+            window.resize(1920, 820);
             settle();
             require(bar->toolButtonStyle() == Qt::ToolButtonTextBesideIcon, "A wide window shows the names");
             require(picker->isVisible(), "And the notation picker with them");
-            auto *check_button = qobject_cast<QToolButton *>(bar->widgetForAction(child<QAction>(window, "checkModel")));
-            require(check_button && check_button->toolButtonStyle() == Qt::ToolButtonTextBesideIcon,
-                    "And names the corner control too");
+            require(bar->widgetForAction(child<QAction>(window, "checkModel")) == nullptr &&
+                        !bar->actions().contains(child<QAction>(window, "checkModel")),
+                    "Check model is not on Home: it is offered from the header's Model menu (Zain, 2026-10-07)");
             require(!child<QToolButton>(window, "themeButton")->isVisible() &&
                         child<QToolBar>(window, "designTools")->actions().contains(child<QMenu>(window, "themeMenu")->menuAction()),
                     "The theme is chosen from Settings' Design row, not from Home (Zain, 2026-10-06)");
             const auto wide = bar->iconSize().width();
 
-            // The names stay as long as they can: a tool's lock mark hangs on
-            // its name. The icons shrink first, the corner controls give up
-            // their words, and the picker goes, all before the names do.
-            window.resize(1300, 820);
+            // Compact labels before dropping Notation to accommodate the
+            // shared Search / Model / Theme controls in the same row.
+            // Tighter is 1280 since the row holds the search field (Zain,
+            // 2026-10-08), whose least width was chosen so 1280 keeps Notation.
+            window.resize(1280, 820);
             settle();
-            require(bar->toolButtonStyle() == Qt::ToolButtonTextBesideIcon, "A tighter one keeps the names");
-            require(bar->iconSize().width() < wide, "And gives up some of the icons' size instead");
-            require(check_button->toolButtonStyle() == Qt::ToolButtonIconOnly,
-                    "The corner control has given up its words before any tool did");
+            require(picker->isVisible(), "A tighter one keeps Notation beside the corner controls");
+            require(bar->iconSize().width() <= wide, "Compact tools use no larger icons than the wide row");
 
             window.resize(700, 620);
             settle();
@@ -6398,7 +6600,7 @@ int main(int argc, char **argv)
             require(bar->actions().size() == tools, "But loses no tool on the way down");
             require(!picker->isVisible(), "The picker has gone by then, and is in the View menu");
 
-            window.resize(1800, 820);
+            window.resize(1920, 820);
             settle();
             require(bar->toolButtonStyle() == Qt::ToolButtonTextBesideIcon, "Widening brings the names back");
             require(bar->iconSize().width() == wide, "And the size with them");
@@ -6814,7 +7016,8 @@ int main(int argc, char **argv)
             }
             // Entities start folded, so the tree is not the diagram spilt twice.
             require(!tree->isExpanded(model->indexFromItem(entities->child(0))), "An entity starts folded");
-            require(tree->isExpanded(model->indexFromItem(entities)), "But its group starts open");
+            require(!tree->isExpanded(model->indexFromItem(entities)),
+                    "And so does its group, saying how many it holds (Zain, 2026-10-07)");
             // What the user opens stays open through the rebuild an edit causes.
             tree->expand(model->indexFromItem(entities->child(0)));
             const auto opened_name = entities->child(0)->text();
@@ -6831,6 +7034,81 @@ int main(int argc, char **argv)
             require(still_open, "An opened entity stays open after the tree is rebuilt");
             require(bool(editor.undo()), "Undo the scratch entity");
             settle();
+        }
+
+        // The Conceptual Explorer's three groups start folded in a new project,
+        // keep whatever fold the user gives each through every edit, count
+        // what they hold while folded, and are not opened by choosing an
+        // element on the canvas (Zain, 2026-10-07).
+        {
+            application::Editor fresh(ids);
+            infrastructure::ErdxProjectStore fresh_store;
+            desktop::MainWindow folding(fresh, fresh_store, ids);
+            folding.resize(1440, 1080);
+            folding.show();
+            folding.show_home(false);
+            settle();
+            auto *tree = child<QTreeView>(folding, "explorer");
+            const auto group = [&](const char *name)
+            {
+                auto *model = qobject_cast<QStandardItemModel *>(tree->model());
+                for (int row = 0; row < model->item(0)->rowCount(); ++row)
+                    if (model->item(0)->child(row)->data(Qt::UserRole).toString() == QString("group:") + name)
+                        return model->indexFromItem(model->item(0)->child(row));
+                return QModelIndex();
+            };
+            const auto count = [&](const char *name) { return group(name).data(Qt::UserRole + 1).toInt(); };
+            const auto open = [&](const char *name) { return tree->isExpanded(group(name)); };
+            const auto listed = [&](const char *name) { return tree->model()->rowCount(group(name)); };
+            require(tree->isExpanded(tree->model()->index(0, 0)), "The project's row is open");
+            require(!open("Entities") && !open("Attributes") && !open("Relationships"),
+                    "A new project's Entities, Attributes and Relationships start folded");
+            // Placed as a person places them: a tool, a click on the canvas, a
+            // name accepted.
+            double across = 80;
+            const auto place = [&](const char *tool)
+            {
+                child<QAction>(folding, tool)->trigger();
+                click_canvas(*folding.canvas(), QPointF(across, 420));
+                across += 170;
+                folding.canvas()->commit_rename();
+                settle();
+            };
+            place("toolEntity");
+            require(count("Entities") == 1 && !open("Entities"), "A new entity is counted and its group stays folded");
+            for (int i = 0; i < 3; ++i)
+                place("toolAttribute");
+            require(count("Attributes") == 3 && !open("Attributes"),
+                    "New attributes are counted and their group stays folded");
+            place("toolRelationship");
+            require(count("Relationships") == 1 && !open("Relationships"),
+                    "A new relationship is counted and its group stays folded");
+            const std::array<std::pair<const char *, const char *>, 3> fold_kinds{{{"Entities", "toolEntity"},
+                                                                              {"Attributes", "toolAttribute"},
+                                                                              {"Relationships", "toolRelationship"}}};
+            for (const auto &[fold_group, fold_tool] : fold_kinds)
+            {
+                tree->expand(group(fold_group));
+                settle();
+                const auto before = count(fold_group);
+                place(fold_tool);
+                require(open(fold_group) && count(fold_group) == before + 1 && listed(fold_group) == before + 1,
+                        "An opened group stays open through an edit, counts the new element and lists it");
+                tree->collapse(group(fold_group));
+                settle();
+                place(fold_tool);
+                require(!open(fold_group) && count(fold_group) == before + 2,
+                        "Folded again, it stays folded through the next edit and still counts");
+            }
+            require(!open("Entities") && !open("Attributes") && !open("Relationships"), "Each fold was its own");
+            child<QAction>(folding, "toolSelect")->trigger();
+            folding.canvas()->select_elements({domain::ElementRef{fresh.project().entities.begin()->first}}, true);
+            settle();
+            folding.canvas()->select_elements({domain::ElementRef{fresh.project().relationships.begin()->first}}, true);
+            settle();
+            require(!open("Entities") && !open("Relationships"),
+                    "Choosing an element on the canvas does not open its group");
+            fresh.mark_saved(fresh.revision());
         }
 
         // The two menu buttons are added to the toolbar as widgets, so nothing
@@ -7105,7 +7383,7 @@ int main(int argc, char **argv)
             window.resize(700, 620);
             settle();
             require(design->iconSize() == home->iconSize(), "The Design row follows Home as the window narrows");
-            window.resize(1800, 820);
+            window.resize(1920, 820);
             settle();
             require(design->height() == row_height, "And comes back to Home's height with it");
 
@@ -7272,7 +7550,11 @@ int main(int argc, char **argv)
             // Asked of the window rather than of the widget, because a window
             // that is not the active one has no widget holding focus, and a
             // test run offscreen never activates.
-            require(window.focusWidget() == child<QLineEdit>(window, "searchText"),
+            // The box is the row's search field (Zain, 2026-10-08), as the
+            // schema's is in its header; the bar keeps the rest and puts its own
+            // box away.
+            require(window.focusWidget() == child<QLineEdit>(window, "conceptualSearch") &&
+                        child<QLineEdit>(window, "searchText")->isHidden(),
                     "With the caret already in the box");
             for (const char *part : {"searchKind", "searchSettings", "searchCount", "searchClose"})
                 require(window.findChild<QWidget *>(part) != nullptr, part);
@@ -7304,7 +7586,7 @@ int main(int argc, char **argv)
             // Typing a word must be possible. Filtering the diagram used to
             // end the edit in progress, which took the caret out of the box
             // after the first letter and left the second with nowhere to go.
-            auto *box = child<QLineEdit>(window, "searchText");
+            auto *box = child<QLineEdit>(window, "conceptualSearch");
             window.activateWindow();
             box->setFocus();
             settle();
@@ -7368,16 +7650,38 @@ int main(int argc, char **argv)
             require(window.canvas()->found_elements().empty(), "With nothing left found");
 
             // And it can be opened again in the same sitting, which needs
-            // something on screen to open it with: the bar itself is gone, so
-            // a button on the tool row is the only thing left to reach for.
-            require(child<QToolButton>(window, "searchButton")->defaultAction() == find,
-                    "Search has a button of its own, not only an entry in a menu");
+            // something on screen to open it with: the bar itself is gone, and
+            // the row keeps its search field, as the schema's header does
+            // (Zain, 2026-10-08) -- cleared, since nothing is being looked for.
+            auto *field = child<QLineEdit>(window, "conceptualSearch");
+            auto *row = child<QToolBar>(window, "modelTools");
+            require(field->isVisible() && row->isAncestorOf(field) && field->text().isEmpty() &&
+                        field->placeholderText() == "Search conceptual design…" && field->isClearButtonEnabled(),
+                    "Search has a field of its own on the tool row, empty once the search is closed");
             require(child<QMenu>(window, "editMenu")->actions().contains(find),
-                    "And the very same action in the Edit menu, so the two cannot disagree");
-            require(!find->icon().isNull(), "With a glyph, so it reads as a button rather than a word");
+                    "And the same action in the Edit menu, so the two cannot disagree");
+            require(!find->icon().isNull(), "With a glyph, so it reads as a command rather than a word");
             find->trigger();
             settle();
-            require(bar->isVisible(), "Closing the search is not the end of it: it opens again");
+            require(bar->isVisible() && window.focusWidget() == field,
+                    "Closing the search is not the end of it: it opens again, into the field");
+            child<QToolButton>(window, "searchClose")->click();
+            settle();
+
+            // Typing in the field is searching, exactly as typing in the bar was:
+            // the bar comes with it, the diagram is narrowed once the typing
+            // settles, and Escape puts everything back and clears the field.
+            field->setFocus();
+            field->setText("Course");
+            settle_for(400);
+            require(bar->isVisible() && window.canvas()->search().text == "Course" &&
+                        window.canvas()->found_elements().size() == 1 && !window.editor().dirty(),
+                    "Typing in the field opens the bar and narrows the diagram to what carries the name");
+            QKeyEvent escape(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+            QApplication::sendEvent(field, &escape);
+            settle();
+            require(!bar->isVisible() && field->text().isEmpty() && !window.canvas()->search().looking(),
+                    "Escape in the field closes the search, clears it, and puts the whole diagram back");
         }
 
         // Comments: remarks left on the work, which are not the Note element
@@ -7595,9 +7899,18 @@ int main(int argc, char **argv)
             require(grip->isVisible(), "The panel wears a grip to resize it by");
             // Sharing the stage with the diagram, the schema's work can be
             // undone and redone from beside it, not only when it has the whole
-            // window (Zain, 2026-09-25).
-            require(child<QToolButton>(window, "schemaUndo")->isVisible() && child<QToolButton>(window, "schemaRedo")->isVisible() && child<QToolButton>(window, "schemaUndo")->defaultAction() == window.findChild<QAction *>("undoCommand"),
-                    "The open schema offers undo and redo, the same actions the menu has");
+            // window (Zain, 2026-09-25). With the diagram in front that is the
+            // diagram's one row (2026-10-08), whose Undo and Redo are the same
+            // two actions the header's were.
+            {
+                auto *row = child<QToolBar>(window, "modelTools");
+                auto *undo = row->widgetForAction(window.findChild<QAction *>("undoCommand"));
+                auto *redo = row->widgetForAction(window.findChild<QAction *>("redoCommand"));
+                require(undo && redo && undo->isVisible() && redo->isVisible() &&
+                            child<QToolButton>(window, "schemaUndo")->defaultAction() ==
+                                window.findChild<QAction *>("undoCommand"),
+                        "The open schema offers undo and redo, the same actions the menu has");
+            }
             // Pulled all the way up, the panel covers the diagram; pushed down,
             // it becomes a sliver and the diagram comes back.
             const auto *panel = child<QWidget>(window, "schemaPanel");
@@ -7723,10 +8036,17 @@ int main(int argc, char **argv)
             require(explorer_dock->isVisible(), "Leaving it brings them back");
             require(child<QToolBar>(window, "modelTools")->isVisible(), "The drawing tools with them");
             // Undo and redo stay beside the schema while it is open, sharing
-            // the stage or not (Zain, 2026-09-25); its search and the theme go
-            // back, since the diagram's own are showing again.
-            require(kept->isVisible() && child<QToolButton>(window, "schemaUndo")->isVisible() && child<QToolButton>(window, "schemaRedo")->isVisible(),
-                    "Sharing the stage, the schema keeps its undo and redo");
+            // the stage or not (Zain, 2026-09-25) -- sharing it, as the diagram's
+            // one row's own two (2026-10-08); its search and the theme go back,
+            // since the diagram's own are showing again.
+            {
+                auto *row = child<QToolBar>(window, "modelTools");
+                auto *undo = row->widgetForAction(window.findChild<QAction *>("undoCommand"));
+                auto *redo = row->widgetForAction(window.findChild<QAction *>("redoCommand"));
+                require(!kept->isVisible() && !child<QWidget>(window, "workspaceHeader")->isVisible() && undo && redo &&
+                            undo->isVisible() && redo->isVisible(),
+                        "Sharing the stage, the schema keeps its undo and redo, in the row, with no header beneath");
+            }
             require(!child<QLineEdit>(window, "schemaSearch")->isVisible() && !child<QToolButton>(window, "schemaTheme")->isVisible(),
                     "And the header gives back the search and theme it had lent");
             require(child<QLabel>(window, "canvasInstructions")->isVisible(),
@@ -8325,7 +8645,10 @@ int main(int argc, char **argv)
             full->click();
             settle();
             require(schema_panels(), "Leaving Full, the schema is still the half being worked on");
-            require(!header_dock->isVisible() && header_dock->widget() != header && header->isVisible(),
+            // Back between the panels, and put away there while the diagram is
+            // in front, whose one row says what the header said (2026-10-08).
+            require(!header_dock->isVisible() && header_dock->widget() != header && !header->isVisible() &&
+                        child<QWidget>(window, "conceptualIdentity")->isAncestorOf(child<QWidget>(window, "documentTitle")),
                     "And the header goes back between the panels");
 
             // Put away, the diagram's come back; raised again, the schema's.
@@ -10072,6 +10395,25 @@ int main(int argc, char **argv)
                     "For an empty project that starts from its schema");
             auto *schema = static_cast<desktop::SchemaView *>(child<QWidget>(window, "schemaView"));
             require(schema->isVisible(), "Relational Design is in front");
+            // On Home's tab, where the header shows its working tools: under
+            // File and Settings they are put away (2026-10-08), and the ribbon
+            // keeps whichever tab was chosen last.
+            child<QAction>(window, "tabHome")->trigger();
+            settle();
+            {
+                auto *menu = child<QMenu>(window, "headerModelMenu");
+                emit menu->aboutToShow();
+                QStringList names;
+                for (auto *action : menu->actions())
+                    if (action->isVisible() && !action->isSeparator())
+                        names << (action->menu() ? action->menu()->objectName() : action->objectName());
+                require(names == QStringList({"designConvert", "openRelationalExampleMenu"}) &&
+                            child<QAction>(window, "designConvert")->text() == "Convert to Conceptual",
+                        "A schema drawn by hand: Model offers Convert to Conceptual and its own examples");
+                require(child<QToolButton>(window, "headerModel")->isVisible() &&
+                            child<QToolButton>(window, "headerTheme")->isVisible(),
+                        "With Model and Theme in its header's corner");
+            }
             require(child<QPushButton>(window, "schemaFull")->isHidden() && child<QPushButton>(window, "schemaClose")->isHidden() && child<QPushButton>(window, "previewSchema")->isHidden(),
                     "And nothing offers to put it away onto a diagram that is not there");
             // Its tools are up in the header, where it already says Relational
@@ -10129,6 +10471,228 @@ int main(int argc, char **argv)
                     "Schema | Conceptual, Schema first and chosen");
             require(child<QLabel>(window, "workspaceBadge")->isHidden() && child<QPushButton>(window, "backToHome")->text() == "← Home" && child<QToolButton>(window, "renameDocument")->isVisible(),
                     "The switch stands in place of the badge, after Home, and the title has its pencil");
+            // The header is Home's row while the schema is in front (Zain,
+            // 2026-10-08): under File and Settings its working tools go with
+            // Home's row -- the drawing tools, undo and redo with the search,
+            // Model and Theme -- and only the chosen row stands under the tabs.
+            // Home, the switch and the title stay. Back on Home everything is
+            // as it was: the tool in hand, what was typed in the search, and
+            // nothing in the project touched.
+            {
+                auto *table_tool = child<QAction>(window, "schemaTableAction");
+                auto *search = child<QLineEdit>(window, "schemaSearch");
+                const auto revision = window.editor().revision();
+                table_tool->trigger();
+                search->setText("Dept");
+                settle();
+                require(window.schema()->placing() && table_tool->isChecked(), "Table is in hand");
+                const auto ribbon_rows = [&]
+                {
+                    QStringList showing;
+                    for (auto *row : window.findChildren<QToolBar *>())
+                        if (row->isVisible() && row->objectName() != "ribbonTabs")
+                            showing << row->objectName();
+                    return showing;
+                };
+                const auto working = [&](bool shown)
+                {
+                    bool all = true;
+                    for (const char *name : {"schemaTopTools", "schemaHeaderTools", "headerModel", "headerTheme"})
+                        all = all && window.findChild<QWidget *>(name)->isVisible() == shown;
+                    return all;
+                };
+                const auto identity = [&]
+                {
+                    return child<QPushButton>(window, "backToHome")->isVisible() &&
+                           child<QWidget>(window, "schemaModeSwitch")->isVisible() &&
+                           child<QLabel>(window, "documentTitle")->isVisible();
+                };
+                child<QAction>(window, "tabHome")->trigger();
+                settle();
+                require(working(true) && identity() && ribbon_rows().isEmpty(),
+                        "Under Home the header's working tools show, and no other row");
+                for (const auto &[tab, row] : std::vector<std::pair<const char *, const char *>>{
+                         {"tabFile", "exportTools"}, {"tabImport", "importTools"}, {"tabExport", "exportTools"},
+                         {"tabSettings", nullptr}, {"tabView", "viewTools"}, {"tabHelp", "helpTools"},
+                         {"tabDesign", "designTools"}})
+                {
+                    child<QAction>(window, tab)->trigger();
+                    settle();
+                    // Settings opens on whichever of its rows was chosen last.
+                    require(working(false) && identity() &&
+                                (row ? ribbon_rows() == QStringList{QString::fromLatin1(row)} : ribbon_rows().size() == 1),
+                            "Under File and Settings only the chosen row shows; the schema's working tools go, "
+                            "and Home, the switch and the title stay");
+                }
+                child<QAction>(window, "tabHome")->trigger();
+                settle();
+                require(working(true) && identity() && ribbon_rows().isEmpty() && window.schema()->placing() &&
+                            table_tool->isChecked() && search->text() == "Dept" &&
+                            window.editor().revision() == revision,
+                        "Back on Home the tools return as they were: Table in hand, the search as typed, the "
+                        "project untouched");
+                search->clear();
+                table_tool->trigger();
+                settle();
+                require(!window.schema()->placing(), "And Table is put down again");
+            }
+
+            // The schema has the diagram's raft of view controls (Zain,
+            // 2026-10-08), made by the same hands: over the bottom-right of the
+            // schema, the same parts in the same order, the same size. Fit and
+            // the zoom signs cannot change a schema drawn at its actual size, so
+            // they say so and change nothing; Pan moves the view as the
+            // diagram's Pan does; Full view puts the panels away and back; the
+            // side panels' button is the diagram's own action; and the raft is
+            // put away and brought back with the diagram's.
+            {
+                auto *schema = window.schema();
+                auto *scroll = child<QScrollArea>(window, "schemaScroll");
+                auto *raft = child<QWidget>(window, "schemaControls");
+                auto *diagram_raft = child<QWidget>(window, "canvasControls");
+                QStringList order;
+                for (auto *part : raft->findChildren<QWidget *>(Qt::FindDirectChildrenOnly))
+                    order << part->objectName();
+                require(raft->isVisible() && raft->parentWidget() == scroll &&
+                            order == QStringList{"schemaControlsGrip", "schemaRaftFullView", "schemaRaftFit",
+                                                 "schemaRaftPan", "schemaRaftZoomIn", "schemaRaftZoomOut",
+                                                 "schemaControlsRule", "schemaRaftSidePanels"},
+                        "The schema has the raft: grip, Full view, Fit, Pan, + and -, a rule, the side panels");
+                require(raft->sizeHint() == diagram_raft->sizeHint() &&
+                            child<QToolButton>(window, "schemaRaftPan")->size() ==
+                                child<QToolButton>(window, "canvasPan")->size(),
+                        "Made the same size as the diagram's");
+                require(raft->geometry().right() > scroll->width() * 3 / 4 &&
+                            raft->geometry().bottom() > scroll->height() * 3 / 4,
+                        "Over the bottom-right of the schema");
+                require(child<QToolButton>(window, "schemaRaftSidePanels")->defaultAction() ==
+                            child<QAction>(window, "viewSidePanels"),
+                        "Its side panels' button is the diagram's own action");
+
+                // Fit and zoom: pressable, saying why, changing nothing.
+                const auto revision = window.editor().revision();
+                const auto size_before = schema->size();
+                for (const char *name : {"schemaRaftFit", "schemaRaftZoomIn", "schemaRaftZoomOut"})
+                {
+                    auto *button = child<QToolButton>(window, name);
+                    window.statusBar()->clearMessage();
+                    require(button->isEnabled(), "Never greyed out");
+                    button->click();
+                    settle();
+                    require(window.statusBar()->currentMessage().contains("cannot be fitted or zoomed yet") &&
+                                window.editor().revision() == revision && schema->size() == size_before,
+                            "Fit and zoom say the schema is shown at its actual size, and change nothing");
+                }
+
+                // Pan: a table far off gives the schema room to move in.
+                require(editor.create_relation("Far", domain::Point{2200, 1600}).ok, "A table far off");
+                window.canvas()->on_edit({});
+                settle();
+                auto *pan = child<QToolButton>(window, "schemaRaftPan");
+                const auto drag = [&](QPointF from, QPointF to)
+                {
+                    const auto global = [&](QPointF at) { return QPointF(schema->mapToGlobal(at.toPoint())); };
+                    QMouseEvent press(QEvent::MouseButtonPress, from, global(from), Qt::LeftButton, Qt::LeftButton,
+                                      Qt::NoModifier);
+                    QApplication::sendEvent(schema, &press);
+                    QMouseEvent move(QEvent::MouseMove, from, global(to), Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+                    QApplication::sendEvent(schema, &move);
+                    QMouseEvent release(QEvent::MouseButtonRelease, from, global(to), Qt::LeftButton, Qt::NoButton,
+                                        Qt::NoModifier);
+                    QApplication::sendEvent(schema, &release);
+                    settle();
+                };
+                const auto revision_with_far = window.editor().revision();
+                const auto selection_with_far = schema->selection_now();
+                const auto boxes_with_far = schema->table_boxes();
+                const auto routed = schema->routings();
+                scroll->horizontalScrollBar()->setValue(200);
+                scroll->verticalScrollBar()->setValue(200);
+                settle();
+                pan->click();
+                settle();
+                require(schema->panning() && pan->isChecked() && schema->cursor().shape() == Qt::OpenHandCursor,
+                        "Pan is taken up, with an open hand");
+                const QPointF from(scroll->horizontalScrollBar()->value() + 300.0, scroll->verticalScrollBar()->value() + 300.0);
+                drag(from, from + QPointF(-120, -90));
+                require(scroll->horizontalScrollBar()->value() == 320 && scroll->verticalScrollBar()->value() == 290,
+                        "Dragging moves the view with the hand");
+                require(window.editor().revision() == revision_with_far && schema->selection_now() == selection_with_far &&
+                            schema->table_boxes() == boxes_with_far && schema->routings() == routed,
+                        "And nothing in the schema: no edit, no selection, nothing moved, nothing routed");
+                require(!schema->panning() && !pan->isChecked(), "One drag and Pan is handed back, as the diagram's is");
+                // Locked by a double click, it stays for as many drags as wanted.
+                QMouseEvent twice(QEvent::MouseButtonDblClick, QPointF(5, 5), pan->mapToGlobal(QPoint(5, 5)),
+                                  Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+                QApplication::sendEvent(pan, &twice);
+                settle();
+                require(schema->panning() && pan->toolTip().contains("locked"), "A double click locks Pan, and says so");
+                drag(from, from + QPointF(40, 40));
+                drag(from, from + QPointF(40, 40));
+                require(schema->panning() && scroll->horizontalScrollBar()->value() == 240,
+                        "Locked, Pan stays in hand for drag after drag");
+                schema->setFocus();
+                QKeyEvent escape(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+                QApplication::sendEvent(schema, &escape);
+                settle();
+                require(!schema->panning() && !pan->isChecked() && !pan->toolTip().contains("locked"),
+                        "Escape puts Pan down");
+                child<QAction>(window, "undoCommand")->trigger();
+                settle();
+
+                // Full view puts the panels beside the schema away and brings
+                // them back.
+                auto *explorer_dock = child<QDockWidget>(window, "explorerDock");
+                auto *properties_dock = child<QDockWidget>(window, "propertiesDock");
+                require(explorer_dock->isVisible() && properties_dock->isVisible(), "Both panels are out");
+                child<QToolButton>(window, "schemaRaftFullView")->click();
+                settle();
+                require(!explorer_dock->isVisible() && !properties_dock->isVisible() &&
+                            child<QWidget>(window, "workspaceHeader")->isVisible(),
+                        "Full view puts the panels away, and leaves the header");
+                child<QToolButton>(window, "schemaRaftFullView")->click();
+                settle();
+                require(explorer_dock->isVisible() && properties_dock->isVisible(), "And brings them back");
+
+                // The grip takes it anywhere over the schema.
+                const auto was = raft->pos();
+                auto *grip = child<QWidget>(window, "schemaControlsGrip");
+                const QPoint on_grip(4, 2);
+                QMouseEvent hold(QEvent::MouseButtonPress, on_grip, grip->mapToGlobal(on_grip), Qt::LeftButton,
+                                 Qt::LeftButton, Qt::NoModifier);
+                QApplication::sendEvent(grip, &hold);
+                QMouseEvent carry(QEvent::MouseMove, on_grip, grip->mapToGlobal(on_grip) + QPoint(-200, -150),
+                                  Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+                QApplication::sendEvent(grip, &carry);
+                QMouseEvent leave(QEvent::MouseButtonRelease, on_grip, grip->mapToGlobal(on_grip) + QPoint(-200, -150),
+                                  Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+                QApplication::sendEvent(grip, &leave);
+                settle();
+                require(raft->pos() == was + QPoint(-200, -150), "Dragged by its grip, the raft goes where it is taken");
+
+                // Put away with the diagram's, and brought back from the empty
+                // schema's own menu.
+                auto *entry = child<QAction>(window, "viewCanvasControls");
+                entry->setChecked(false);
+                settle();
+                require(raft->isHidden() && diagram_raft->isHidden() &&
+                            window.statusBar()->currentMessage().contains("View menu"),
+                        "Put away, both rafts go, and the schema says where to bring them back from");
+                bool offered = false;
+                QTimer::singleShot(0, &window, [&]
+                                   {
+                    auto *menu = window.findChild<QMenu *>("schemaEmptyMenu");
+                    auto *back = menu ? menu->findChild<QAction *>("showSchemaControls") : nullptr;
+                    offered = back != nullptr;
+                    if (back) back->trigger();
+                    if (menu) menu->close(); });
+                const QPoint empty(30, 30);
+                QContextMenuEvent asked(QContextMenuEvent::Mouse, empty, schema->mapToGlobal(empty));
+                QApplication::sendEvent(schema, &asked);
+                settle();
+                require(offered && !raft->isHidden() && !diagram_raft->isHidden() && entry->isChecked(),
+                        "The empty schema's menu brings both back, and the View menu says so");
+            }
             {
                 auto *header = child<QWidget>(window, "workspaceHeader");
                 QStringList said;
@@ -10147,6 +10711,24 @@ int main(int argc, char **argv)
                         "Nothing in the header says Relational");
                 require(child<QLineEdit>(window, "schemaSearch")->placeholderText().contains("schema"),
                         "The search is named for the schema");
+                const auto size_was = window.size();
+                for (const int width : {1280, 1440, 1920})
+                {
+                    window.resize(width, 1080);
+                    settle();
+                    QWidget *previous = child<QLineEdit>(window, "schemaSearch");
+                    for (auto *control : {previous, static_cast<QWidget *>(child<QToolButton>(window, "headerModel")),
+                                          static_cast<QWidget *>(child<QToolButton>(window, "headerTheme"))})
+                    {
+                        const QRect rect(control->mapTo(header, QPoint()), control->size());
+                        require(control->isVisible() && header->rect().contains(rect) &&
+                                    (control == previous || previous->mapTo(header, QPoint(previous->width(), 0)).x() < rect.left()),
+                                "Schema keeps Search, Model, Theme in order without clipping at all desktop widths");
+                        previous = control;
+                    }
+                }
+                window.resize(size_was);
+                settle();
             }
             // Stage 1: the Schema workspace has an Explorer and Properties either
             // side of it, in the same docks the diagram's are held in, with the
@@ -11990,14 +12572,35 @@ int main(int argc, char **argv)
             require(!convert->isVisible() && !add_table->isVisible() && child<QPushButton>(window, "schemaFull")->isVisible(),
                     "The schema is worked out from the diagram again, and can be put away again");
             require(schema->isVisible(), "And stays open beneath the diagram");
-            require(to_conceptual->isHidden() && !child<QWidget>(window, "schemaGrip")->isHidden(),
+            // Conceptual is now the design in front, lit in the switch at the
+            // start of the diagram's row (2026-10-08), and nothing previews it.
+            // Asked of the Home tab, whose row that is; under another tab the
+            // header holds them, as it always did, and gives them back.
+            child<QAction>(window, "tabFile")->trigger();
+            settle();
+            require(child<QWidget>(window, "workspaceHeader")->isVisible() &&
+                        child<QPushButton>(window, "backToHome")->isVisible() &&
+                        child<QPushButton>(window, "backToHome")->text() == "← Back to Home" &&
+                        child<QLabel>(window, "workspaceBadge")->isVisible() &&
+                        child<QLabel>(window, "documentTitle")->isVisible() && !modes->isVisible(),
+                    "Under another tab the header shows Back to Home, the workspace and the title, as it did");
+            child<QAction>(window, "tabHome")->trigger();
+            settle();
+            require(to_conceptual->isVisible() && to_conceptual->isChecked() &&
+                        child<QWidget>(window, "conceptualIdentity")->isAncestorOf(to_conceptual) &&
+                        !child<QWidget>(window, "conceptualPanel")->isVisible() &&
+                        !child<QWidget>(window, "schemaGrip")->isHidden(),
                     "The diagram is the surface again: no Conceptual preview, and the schema has its grip back");
             require(explorer_dock->widget() == child<QTreeView>(window, "explorer") && properties_dock->widget() != child<QWidget>(window, "schemaProperties"),
                     "Converted, the docks hold the diagram's own Explorer and Properties again");
             require(header_tools->isHidden() && child<QWidget>(window, "schemaBar")->isVisible() && !child<QAction>(window, "designConvert")->isVisible(),
                     "Its tools go back to the schema's own bar, and Convert off the Design menu");
-            require(modes->isHidden() && child<QLabel>(window, "workspaceBadge")->isVisible() && child<QPushButton>(window, "backToHome")->text() == "← Back to Home" && child<QLineEdit>(window, "schemaSearch")->placeholderText() == "Search Relational Design",
-                    "And the header is a diagram's header again, exactly as it was");
+            require(modes->isVisible() && child<QWidget>(window, "conceptualIdentity")->isAncestorOf(modes) &&
+                        !child<QLabel>(window, "workspaceBadge")->isVisible() &&
+                        !child<QWidget>(window, "workspaceHeader")->isVisible() &&
+                        child<QPushButton>(window, "backToHome")->text() == "←" &&
+                        child<QLineEdit>(window, "schemaSearch")->placeholderText() == "Search Relational Design",
+                    "And Home, the switch and the title lead the diagram's one row, with no header beneath");
             const auto foreign_key_at = [&]() -> std::pair<std::size_t, std::size_t>
             {
                 for (std::size_t t = 0; t < schema->preview().tables.size(); ++t)

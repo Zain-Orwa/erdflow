@@ -46,7 +46,10 @@ enum class Glyph {
     Guide, About,
     // The remaining tabs, Home's Insert, and the canvas raft's one panel
     // button when neither panel is showing (Zain, 2026-10-06).
-    FileTab, Home, Insert, Settings, NoPanels
+    FileTab, Home, Insert, Settings, NoPanels,
+    // The header's Model menu: connected entities, the Home screen's own mark
+    // for the conceptual model (Zain, 2026-10-07).
+    Model
 };
 
 // Which set a glyph is taken from. Painted follows the theme's colours and

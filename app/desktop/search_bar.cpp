@@ -44,6 +44,7 @@ SearchBar::SearchBar(QWidget* parent) : QWidget(parent) {
     layout->setSpacing(8);
 
     text_ = new QLineEdit(this);
+    own_text_ = text_;
     text_->setObjectName("searchText");
     text_->setPlaceholderText("Search the diagram by name");
     text_->setClearButtonEnabled(true);
@@ -171,6 +172,30 @@ void SearchBar::look_for(const QString& text) {
     // Typed all at once rather than letter by letter, so there is nothing to
     // settle and the diagram is filtered straight away.
     changed(true);
+}
+
+void SearchBar::use_text(QLineEdit* field) {
+    if (!field || field == text_) return;
+    field->setText(text_->text());
+    own_text_->hide();
+    text_ = field;
+    connect(field, &QLineEdit::textChanged, this, [this] {
+        // Typing is asking, so the bar comes with it; clearing what was typed
+        // leaves it where it is, as clearing its own box does.
+        if (!isVisible() && !text_->text().isEmpty()) show();
+        changed(false);
+    });
+    connect(field, &QLineEdit::returnPressed, this, [this] { changed(true); });
+    field->installEventFilter(this);
+}
+
+bool SearchBar::eventFilter(QObject* watched, QEvent* event) {
+    if (watched == text_ && text_ != own_text_ && event->type() == QEvent::KeyPress
+        && static_cast<QKeyEvent*>(event)->key() == Qt::Key_Escape) {
+        if (on_closed) on_closed();
+        return true;
+    }
+    return QWidget::eventFilter(watched, event);
 }
 
 void SearchBar::report(int found) {

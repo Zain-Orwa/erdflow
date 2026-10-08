@@ -40,6 +40,12 @@ public:
     // Says how the search went, in the bar itself, so nobody has to count the
     // shapes that are left to know whether anything was found.
     void report(int found);
+    // Looks for what is typed in a box outside the bar instead of its own,
+    // which it then puts away (Zain, 2026-10-08): the diagram's row holds the
+    // search field, as the schema's does, and the bar keeps the rest of the
+    // search -- the kind, the options, the count and the way to close it.
+    // Typing there opens the bar, and Escape there closes it, as in its own.
+    void use_text(QLineEdit* field);
 
     // Called when what is being looked for changes. Typing settles first: a
     // name is filtered on once the typing pauses rather than on every letter,
@@ -50,9 +56,11 @@ public:
 
 protected:
     void keyPressEvent(QKeyEvent* event) override;
+    bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
     QLineEdit* text_ = nullptr;
+    QLineEdit* own_text_ = nullptr;
     QComboBox* kind_ = nullptr;
     QToolButton* settings_ = nullptr;
     QLabel* count_ = nullptr;

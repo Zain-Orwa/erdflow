@@ -263,6 +263,7 @@ void Ribbon::settle() {
     if (!tabs_) return;
     tabs_->setVisible(!away_);
     for (const auto& [tab, row] : rows_) row->setVisible(!away_ && tab == current_ && !(schema_ && row == home_));
+    if (on_row_changed) on_row_changed();
 }
 
 void Ribbon::set_put_away(bool away) {
