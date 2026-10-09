@@ -77,9 +77,25 @@ read as still to do.
   no timer or automatic edge-autoscroll.
 - **Desktop timeout risk reduced without weakening coverage** (committed in
   `7b12b70`): the old single `desktop` CTest entry is split into
-  `desktop_export`, `desktop_relational` and `desktop_window`; no timeout was
-  raised, no assertion was removed, and production code was not changed.
-  The six-item batch from 2026-10-08/09 is complete.
+  `desktop_export`, `desktop_relational` and `desktop_window` (the last since
+  split in two; see the next item); no timeout was raised, no assertion was
+  removed, and production code was not changed. The six-item batch from
+  2026-10-08/09 is complete.
+- **The main window's desktop tests split once more, for CI headroom**
+  (2026-10-09): `desktop_window` had grown to about 32 s locally and timed
+  out at 60 s on the macOS Intel CI runner, where its Qt work slows and its
+  fixed waits do not. Its last three blocks -- the project started from its
+  schema, the two large Conceptual examples, and the generated foreign key
+  made UNIQUE -- now run as `desktop_new_projects`
+  (`desktop_tests --new-projects-part`), on a window of their own dressed in
+  the default theme as the application dresses one at launch;
+  `desktop_window` (`--window-part`) keeps everything from Home through
+  Export. The four desktop entries are `desktop_export`,
+  `desktop_relational`, `desktop_window` and `desktop_new_projects`, each
+  with a 60 s TIMEOUT. Every assertion remains, nothing is skipped, no wait
+  was removed and no timeout was raised; `desktop_tests` with no flag still
+  runs the complete historical sequence in one window. The split is for CI
+  runtime reliability only; the application's behaviour is unchanged.
 
 **Column reordering is not built.** Task 4A is complete. Task 4B is
 complete as a foundation: a derived table can be listed in a stored order,
@@ -2869,12 +2885,33 @@ Not built yet, though some of it is on screen:
 
 ## Verification
 
+**2026-10-09**, after `656599a` (*Make Plain rendering checks
+platform-neutral*): `desktop_window` is split in two over the same
+`desktop_tests` binary for CI runtime reliability, so the desktop entries are
+now four -- `desktop_export --export-state`,
+`desktop_relational --relational-part`, `desktop_window --window-part` and
+`desktop_new_projects --new-projects-part` -- each with a 60 s TIMEOUT. No
+timeout was raised and no assertion was removed: `require(` 2,039, `must(` 31
+and `require_table_properties(` 15 before and after, and every block of the
+old entry runs in exactly one of the two. Profiling put 23.2 s of the old
+entry's 33.5 s in waiting, 11.6 s of it fixed waits that are timing checks
+themselves or cover timed follow-ups a test cannot observe, so the entry was
+split rather than its waits cut. In Release `desktop_window` took
+19.72–20.26 s (mean 19.85 s over five runs) and `desktop_new_projects`
+13.00–13.09 s (mean 13.04 s), where the single entry took 32.4 s; in Debug
+20.45–21.20 s and 14.18–14.20 s. The two pass side by side (`ctest -j2`), and
+the whole suite passes sequentially and with `ctest -j3` in both builds.
+`desktop_tests` with no flag still runs the complete historical sequence
+(51.4 s Debug, 47.1 s Release). `visual` differs on the same three reference
+pictures as below; none was retaken.
+
 **2026-10-09**, at `7b12b70` (*Split desktop tests to reduce timeout risk*),
 after `86fd989` (*Add temporary drag room for schema moves*): all functional
 coverage passes in Debug and in Release, nothing skipped. The old single
 `desktop` CTest entry is replaced by three entries over the same
 `desktop_tests` binary: `desktop_export --export-state`,
-`desktop_relational --relational-part`, and `desktop_window --window-part`.
+`desktop_relational --relational-part`, and `desktop_window --window-part`
+(since split in two; see the entry above).
 Running `desktop_tests` with no flag still runs the complete suite in its
 original order, and the existing focused modes including
 `--schema-connections-only` remain. Twenty-two fixed waits used only for

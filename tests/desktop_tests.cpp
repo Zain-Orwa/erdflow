@@ -4542,23 +4542,27 @@ namespace
 int main(int argc, char **argv)
 {
     QApplication app(argc, argv);
-    // CTest runs the suite in three parts, each a process of its own with a
+    // CTest runs the suite in four parts, each a process of its own with a
     // timeout of its own (2026-10-09): Export's commands; Relational Design's
-    // checks, which each make their own window; and the main window's, which
-    // carry one window through both workspaces. Run with none of them asked
-    // for, it runs whole, in the order it always has.
+    // checks, which each make their own window; the main window's, which carry
+    // one window through both workspaces; and the new projects', each started
+    // afresh -- from the schema, from the Editor, or in a window of its own.
+    // Run with none of them asked for, it runs whole, in the order it always
+    // has, the new projects in the same window as the rest.
     const auto arguments = QCoreApplication::arguments();
     const bool export_part = arguments.contains("--export-state");
     const bool relational_part = arguments.contains("--relational-part");
     const bool window_part = arguments.contains("--window-part");
-    const bool whole = !export_part && !relational_part && !window_part;
+    const bool new_projects_part = arguments.contains("--new-projects-part");
+    const bool whole = !export_part && !relational_part && !window_part && !new_projects_part;
     // The window remembers the chosen theme. Point that at a throwaway domain so
     // running the tests cannot disturb the real preferences -- a domain for
     // each part, so that parts run side by side cannot disturb each other's.
     QCoreApplication::setOrganizationName("ERDFlowTests");
-    QCoreApplication::setApplicationName(relational_part ? "ERDFlowTests-Relational"
-                                         : window_part   ? "ERDFlowTests-Window"
-                                                         : "ERDFlowTests");
+    QCoreApplication::setApplicationName(relational_part     ? "ERDFlowTests-Relational"
+                                         : window_part       ? "ERDFlowTests-Window"
+                                         : new_projects_part ? "ERDFlowTests-NewProjects"
+                                                             : "ERDFlowTests");
     // Start from nothing, so a remembered value has to be written by this run
     // rather than left behind by the last one.
     QSettings().clear();
@@ -4592,6 +4596,12 @@ int main(int argc, char **argv)
         window.show();
         window.activateWindow();
         settle();
+        // The main window's own checks, carrying the window from Home through
+        // both workspaces. Their names stay within this scope, so the new
+        // projects that follow can be run on a window of their own. (Left at
+        // the depth it was written at.)
+        if (!new_projects_part)
+        {
         require(window.editor().project().entities.empty(), "New window is an empty project");
 
         // The application opens on the home screen, with the work's own
@@ -11220,6 +11230,20 @@ int main(int argc, char **argv)
             window.load_example();
             settle();
             require(child<QAction>(window, "exportPng")->isEnabled(), "And a drawn one has something again");
+        }
+        }
+        if (window_part)
+        {
+            std::cout << "Main window desktop tests passed\n";
+            return 0;
+        }
+        // Run on a window of its own, the window is dressed as the application
+        // dresses one at launch (main.cpp): in the default theme, its style
+        // sheet and all. Run whole, it wears what the checks before left it in.
+        if (new_projects_part)
+        {
+            window.set_theme(desktop::theme_from_key(desktop::default_theme_key()));
+            settle();
         }
 
         // A project that starts from its schema (Zain, 2026-09-27): Home's
