@@ -18,9 +18,9 @@ This is the record of implemented behavior. The numbered Product, Architecture,
 Domain Model, Scale, and Roadmap documents also describe capabilities that have
 not been built yet. Their presence in those documents is not a completion claim.
 
-## Current state at a glance (2026-10-02)
+## Current state at a glance (2026-10-09)
 
-Checked against the code on 2026-10-02. Each item has its own entry under
+Checked against the code at `0085e62` on 2026-10-09. Each item has its own entry under
 *What works*; this list only says what is finished, so that nothing below is
 read as still to do.
 
@@ -58,6 +58,15 @@ read as still to do.
   relationship (Zain, 2026-10-05; ADR-021 §5b, its open conflict closed).
 - The two *Table detail* presentations: **Physical schema** (named so on
   2026-10-02; it was *Names, types and constraints*) and **Compact schema**.
+- The schema card's **Constraints** cell writes every constraint a column
+  has, and pressing it offers the whole set, the keys handled exactly as in
+  Properties (committed in `009a4d6`).
+- The workspace shell (committed in `0085e62`): the clean-up that followed
+  the ribbon -- Model and Theme menus, Conceptual Explorer folding, Home's
+  theming; one workspace row on the diagram as on the schema, led by Home,
+  *Schema | Conceptual* and the title; the diagram's Search a real field;
+  the schema's working tools shown only under Home's tab; and the diagram's
+  raft of view controls on the schema.
 
 **Column reordering is not built.** Task 4A is complete. Task 4B is
 complete as a foundation: a derived table can be listed in a stored order,
@@ -67,6 +76,11 @@ on the schema chooses that column and takes hold of its table, so a drag
 moves the whole table; no menu, key or panel reorders columns; and a column
 added to a schema drawn by hand always goes at the end. The interaction is
 pending, and its gesture is not decided.
+
+**Also not finished.** Room to keep dragging schema tables downward is
+pending. The Export work -- exports that follow the workspace in front -- is
+separate and uncommitted, in neither commit above, and its test does not yet
+pass.
 
 What is not built, and what is waiting on a decision, is listed under *Still
 to build in Part 1* at the end. The state of the test suites is under
@@ -1143,7 +1157,9 @@ to build in Part 1* at the end. The state of the test suites is under
   header), and the rows leave out what acts on the conceptual diagram alone
   -- Background and Lines; Checks, Full, Fit, 100%, Zoom, Grid, Align Grid,
   the raft and comments -- while View gains **Panels**, the raft's side-panel
-  button, since the schema has no raft. The menus are untouched either way
+  button (the schema has had a raft of its own since 2026-10-08, carrying the
+  same button; see *The schema has the diagram's raft of view controls*). The
+  menus are untouched either way
   (`Ribbon::set_schema_in_front`, `keep_to_conceptual`, `add_for_schema`).
   The rows are built from the same
   actions as the menus and the Home toolbar, so a tool chosen or locked on one
@@ -1155,6 +1171,35 @@ to build in Part 1* at the end. The state of the test suites is under
   their icons already tell apart. The Export entries go quiet while
   there is nothing drawn to hand on, rather than the row coming and going as
   work starts. A Convert tab still waits, because there is nothing to convert to.
+- **The clean-up that followed the ribbon** (Zain, 2026-10-06 and
+  2026-10-07; accepted 2026-10-08). Built on the File | Home | Settings
+  ribbon above:
+  - **Model** and **Theme**, two menus at the top right of both workspaces,
+    Theme outermost. Model holds what is done to the model as a whole: on the
+    diagram *Convert to Schema*, *Check model* and *Open example*; on a schema
+    drawn by hand *Convert to Conceptual* and Relational Design's own
+    examples and template; on a diagram's schema with the whole window the
+    way back to the diagram and those examples (`fill_model_menu`). The
+    separate conversion, example and *Check model* buttons are put away.
+    Theme drops the window's one theme menu, which Settings ▸ Design and the
+    View menu keep as well. On the diagram, Search stands before the two
+    (a field since 2026-10-08).
+  - A narrow window gives way in a fixed order. On the diagram's row the
+    icons shrink and the names go before the Notation picker does. In the
+    schema's header its own tools give up their words first and Model and
+    Theme last, the header held to the window's width
+    (`fit_schema_header_words`).
+  - The Conceptual Explorer's Entities, Attributes and Relationships start
+    folded in a new project, keep whatever fold is given them through every
+    edit, count what they hold while folded, and are not opened by choosing
+    an element on the canvas; another project starts folded again.
+  - Home: a start card that is clicked is chosen and takes the keyboard, in
+    the theme's own accent (it used to fill pale blue, the three dots' brush
+    left on). The hero's panels, database, platform and lines follow dark
+    themes, the database drawn in three readable tiers of the accent's hue;
+    light themes are unchanged.
+  - No visual baseline was retaken: `card-selected` differs from its
+    baseline (3.58016%) until Zain has looked at it.
 - **Insert → Symbols…** opens a gallery of the characters a conceptual diagram
   wants and a keyboard has not got: relational algebra (select, project,
   rename, the six joins, union, intersection, difference, product, division),
