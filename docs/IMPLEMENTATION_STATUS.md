@@ -7,7 +7,7 @@
 > look like afterwards, and whether it is a gain or a loss. He decides.
 > Full rule: [CLAUDE.md](../CLAUDE.md).
 
-**Updated:** 2026-10-06
+**Updated:** 2026-10-09
 
 **Scope:** Part 1 — the Conceptual ERD editor, one page per project, and
 Relational Design: a schema worked out from the diagram, or drawn by hand in a
@@ -20,7 +20,7 @@ not been built yet. Their presence in those documents is not a completion claim.
 
 ## Current state at a glance (2026-10-09)
 
-Checked against the code at `3e29264` on 2026-10-09. Each item has its own entry under
+Checked against the code at `7b12b70` on 2026-10-09. Each item has its own entry under
 *What works*; this list only says what is finished, so that nothing below is
 read as still to do.
 
@@ -69,6 +69,17 @@ read as still to do.
   raft of view controls on the schema.
 - Export from whichever workspace is in front, the schema included, through
   the same document and picture exports (committed in `3e29264`).
+- **Temporary downward drag room in Relational Design** (committed in
+  `86fd989`): while one table, a gathered group or Select All is dragged
+  downward, the canvas gives the lowest dragged table about one viewport of
+  temporary room below it, then returns to normal sizing on release. The same
+  drag can continue while the user scrolls with the wheel or trackpad; there is
+  no timer or automatic edge-autoscroll.
+- **Desktop timeout risk reduced without weakening coverage** (committed in
+  `7b12b70`): the old single `desktop` CTest entry is split into
+  `desktop_export`, `desktop_relational` and `desktop_window`; no timeout was
+  raised, no assertion was removed, and production code was not changed.
+  The six-item batch from 2026-10-08/09 is complete.
 
 **Column reordering is not built.** Task 4A is complete. Task 4B is
 complete as a foundation: a derived table can be listed in a stored order,
@@ -78,9 +89,6 @@ on the schema chooses that column and takes hold of its table, so a drag
 moves the whole table; no menu, key or panel reorders columns; and a column
 added to a schema drawn by hand always goes at the end. The interaction is
 pending, and its gesture is not decided.
-
-**Also not finished.** Room to keep dragging schema tables downward is
-pending.
 
 What is not built, and what is waiting on a decision, is listed under *Still
 to build in Part 1* at the end. The state of the test suites is under
@@ -2059,6 +2067,17 @@ diagram is still worked out as described here.
   it and writes the place in the same edit as the size. Room given to a
   table's height is shared out between its rows, and a table is never pulled
   shorter than the rows and questions it holds.
+- **A downward table drag has temporary room to keep going** (2026-10-09,
+  `86fd989`). While the hand is holding one table, several gathered tables or
+  Select All and the drag has moved below where it started, `SchemaView`
+  extends the canvas to the greater of its ordinary content height (lowest
+  table plus 30 px) and the bottom of the lowest dragged table plus the
+  current visible view height. Width is unchanged. The user can scroll that
+  room with the wheel or trackpad without releasing the drag; the room is
+  given back on release or when the schema leaves the screen. Upward and
+  sideways drags add none. The move is still one undo step, only the real
+  positions are saved, and a canvas-growing move keeps the existing
+  one-reroute path. No timer or automatic edge-autoscroll was added.
 
 - **A row is ruled into columns, and they are named.** Under the table's own
   header a second row says what each column holds -- Column, Type,
@@ -2850,6 +2869,28 @@ Not built yet, though some of it is on screen:
 
 ## Verification
 
+**2026-10-09**, at `7b12b70` (*Split desktop tests to reduce timeout risk*),
+after `86fd989` (*Add temporary drag room for schema moves*): all functional
+coverage passes in Debug and in Release, nothing skipped. The old single
+`desktop` CTest entry is replaced by three entries over the same
+`desktop_tests` binary: `desktop_export --export-state`,
+`desktop_relational --relational-part`, and `desktop_window --window-part`.
+Running `desktop_tests` with no flag still runs the complete suite in its
+original order, and the existing focused modes including
+`--schema-connections-only` remain. Twenty-two fixed waits used only for
+panel/workspace motion now use `settle_motion(window)`, which waits for the
+actual animation to finish; timing-sensitive waits were kept. No timeout was
+raised and no assertion was removed. In Debug the three entries took about
+1.5–2.0 s, 15.92 s and 34.36–34.45 s (51.8–52.4 s sequential, about 34.6 s
+with `ctest -j3`); in Release they took 2.01 s, 13.47 s and 32.63 s
+(about 48.1 s sequential). The slowest Debug desktop entry is therefore
+about 34.4 s against its unchanged 60 s limit, replacing the former
+approximately 57 s single-entry risk. The complete no-flag desktop binary
+also passed (51.2 s in the validation run). `visual` still differs on the
+same three reference pictures: `card-selected` (3.58016 %), `conceptual`
+(5.7545 %) and `relational-design` (8.39088 %); no reference picture was
+retaken.
+
 **2026-10-09**, at `3e29264` (*Add workspace-aware export support*): all
 six functional suites pass in Debug and in Release -- `core`,
 `persistence`, `canvas`, `theme`, `desktop` and `desktop_smoke` -- with the
@@ -2990,8 +3031,9 @@ built is kept below.*
   recorded with the two large examples (naive plurals, missing spaces).
 - **Interface wording:** the disabled *Import ▸ From another tool…* still
   says there is nowhere to put SQL, CSV and JSON.
-- **Technical debt:** `SchemaView` has no `Q_OBJECT`, so tests find it by its
-  object name; the Debug desktop suite can run past ctest's time limit.
+- **Technical debt**: `SchemaView` has no `Q_OBJECT`, so tests find it by its
+  object name. The former desktop CTest timeout risk was resolved in
+  `7b12b70`; see Verification.
 - **Longer term:** the Data workspace; multiple pages; autosave and recovery;
   a cross-project clipboard; spacing shapes out evenly (alignment guides and
   group alignment are built); freely draggable connector endpoint handles.
