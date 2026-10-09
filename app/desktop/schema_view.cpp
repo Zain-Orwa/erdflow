@@ -468,6 +468,13 @@ std::pair<std::size_t, double> run_nearest(const std::vector<QPointF>& line, QPo
     }
     return {nearest, closest};
 }
+
+// The ink a key's letters are written in: a reference always in green, even
+// where the column is also part of the key, and a key that refers to nothing in
+// orange.
+const QColor& key_ink(const Theme& theme, const domain::PreviewColumn& column) {
+    return column.foreign_key ? theme.valid : theme.warning;
+}
 } // namespace
 
 SchemaView::SchemaView(application::Editor& editor, QWidget* parent)
@@ -1425,6 +1432,13 @@ std::vector<std::vector<QRectF>> SchemaView::row_boxes() const {
 QString SchemaView::constraints_said(std::size_t table, std::size_t row) const {
     if (table >= preview_.tables.size() || row >= preview_.tables[table].columns.size()) return {};
     return rules_text(preview_.tables[table].columns[row]);
+}
+
+std::optional<QColor> SchemaView::key_letters_ink(std::size_t table, std::size_t row) const {
+    if (!theme_ || table >= preview_.tables.size() || row >= preview_.tables[table].columns.size()) return std::nullopt;
+    const auto& column = preview_.tables[table].columns[row];
+    if (!column.foreign_key && !column.primary_key) return std::nullopt;
+    return key_ink(*theme_, column);
 }
 
 std::vector<std::vector<SchemaView::Cell>> SchemaView::cell_boxes() const {
@@ -3402,7 +3416,7 @@ void SchemaView::paint_schema(QPainter& painter, const QRectF& exposed, bool exp
                                      Qt::AlignRight | Qt::AlignVCenter, QStringLiteral("PK"));
                     letters = after + fitted.horizontalAdvance(QStringLiteral("PK"));
                 }
-                painter.setPen(dim(column.foreign_key ? theme_->valid : theme_->warning, here));
+                painter.setPen(dim(key_ink(*theme_, column), here));
                 painter.drawText(QRectF(where.left(), where.top(), gutter_width - 4, where.height()),
                                  Qt::AlignRight | Qt::AlignVCenter, marks);
                 if (both) painter.restore();

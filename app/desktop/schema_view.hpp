@@ -224,6 +224,11 @@ public:
     // What a row's Constraints cell writes, in the order it writes it: PK, FK,
     // NULL or NOT NULL, UNIQUE, IDENTITY. Empty for a row with no such cell.
     [[nodiscard]] QString constraints_said(std::size_t table, std::size_t row) const;
+    // The ink a row's key letters are written in, or none for a row with no
+    // key: a reference always in the theme's green, a key that refers to
+    // nothing in its orange. It is the ink they are painted in, softened only
+    // where a search fades the table.
+    [[nodiscard]] std::optional<QColor> key_letters_ink(std::size_t table, std::size_t row) const;
     // How many lines have been bent by hand rather than left to the router.
     [[nodiscard]] std::size_t shaped_lines() const;
     // How many line ends have been pulled off the table they belong to. They
