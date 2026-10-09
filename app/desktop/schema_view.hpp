@@ -28,6 +28,7 @@ class QAbstractScrollArea;
 namespace erdflow::application { class Editor; struct EditResult; }
 
 namespace erdflow::desktop {
+struct ExportView;
 
 struct Theme;
 
@@ -196,6 +197,7 @@ public:
     // companion to line_shapes: between them they are the whole of what the
     // schema looks like, which is otherwise knowable only by reading pixels.
     [[nodiscard]] std::vector<QRectF> table_boxes() const;
+    [[nodiscard]] ExportView export_view();
     // How wide a table is drawn with every column shown, before a hand has
     // said otherwise. The width is measured from the lettering, which each
     // platform draws at its own size, so a layout made in advance asks here
@@ -392,6 +394,7 @@ public:
 
 protected:
     void paintEvent(QPaintEvent* event) override;
+    void paint_schema(QPainter& painter, const QRectF& exposed, bool exporting = false);
     void resizeEvent(QResizeEvent* event) override;
     void mousePressEvent(QMouseEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;

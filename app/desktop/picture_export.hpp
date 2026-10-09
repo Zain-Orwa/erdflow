@@ -7,6 +7,8 @@
 #pragma once
 
 #include "diagram_view.hpp"
+#include "domain/schema_preview.hpp"
+#include <functional>
 
 #include <QByteArray>
 #include <QSize>
@@ -25,6 +27,18 @@ enum class PictureFormat { Svg, Png, Jpeg, WebP, Tiff, Pdf };
 
 // How much of the diagram the picture holds.
 enum class PictureExtent { WholeDiagram, Selection, CurrentView };
+
+// The active workspace supplies drawing and bounds; file encoding is shared.
+// Callbacks are used synchronously while that workspace remains alive.
+struct ExportView {
+    ExportView() = default;
+    ExportView(DiagramView& view);
+    std::function<QRectF(PictureExtent)> bounds;
+    std::function<void(QPainter&, const QRectF&, const QRectF&)> paint;
+    QColor background;
+    const domain::SchemaPreview* schema = nullptr;
+    std::function<QString(const domain::PreviewColumn&)> column_type;
+};
 
 // What the diagram stands on. The theme colour is the canvas as the editor is
 // showing it; white is for a destination that assumes paper; and nothing at
@@ -86,6 +100,7 @@ struct PictureFormatInfo {
 // The rectangle, in scene units, that an extent covers before its margin is
 // added. Empty when there is nothing there to draw.
 [[nodiscard]] QRectF picture_extent(const DiagramView& view, PictureExtent extent);
+[[nodiscard]] QRectF picture_extent(const ExportView& view, PictureExtent extent);
 
 // A picture beyond these is refused rather than attempted, because the
 // allocation would be the failure rather than the picture. They are generous:
@@ -96,12 +111,12 @@ inline constexpr long long max_picture_pixels = 80'000'000;
 // Draws the diagram into bytes. The payload is opaque here: this half of
 // export knows how to put bytes inside an SVG and a PNG, and nothing at all
 // about what those bytes mean. Empty payload means the picture carries none.
-PictureResult draw_picture(DiagramView& view, const PictureOptions& options,
+PictureResult draw_picture(ExportView view, const PictureOptions& options,
                            const QByteArray& payload, QByteArray& out);
 
 // The same, written to a file, replaced atomically the way a project is, so a
 // failed export never leaves a half-written picture where a good one was.
-PictureResult write_picture(DiagramView& view, const PictureOptions& options,
+PictureResult write_picture(ExportView view, const PictureOptions& options,
                             const QByteArray& payload, const QString& path);
 
 // The project bytes a picture is carrying, or nothing when it carries none.

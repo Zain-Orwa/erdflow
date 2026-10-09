@@ -7,6 +7,8 @@
 #include "schema_view.hpp"
 #include <QScrollBar>
 #include <QAbstractScrollArea>
+#include "picture_export.hpp"
+#include <QScopedValueRollback>
 #include "schema_facts.hpp"
 #include "schema_router.hpp"
 
@@ -2917,13 +2919,62 @@ std::optional<Qt::CursorShape> SchemaView::run_cursor(QPointF point) const {
     return std::abs(a.x() - b.x()) < 0.01 ? Qt::SizeHorCursor : Qt::SizeVerCursor;
 }
 
+ExportView SchemaView::export_view() {
+    ExportView result;
+    result.schema = &preview_;
+    result.column_type = [](const domain::PreviewColumn& column) { return typed_label(column); };
+    result.background = theme_ ? theme_->canvas : QColor(Qt::white);
+    result.bounds = [this](PictureExtent extent) {
+        if (preview_.tables.empty()) return QRectF{};
+        if (extent == PictureExtent::CurrentView) return QRectF(visibleRegion().boundingRect());
+        QRectF bounds;
+        for (std::size_t t = 0; t < placed_.size(); ++t) {
+            if (extent == PictureExtent::Selection && !is_marked(preview_.tables[t])) continue;
+            bounds = bounds.united(placed_[t].box.adjusted(-12, -12, 12, 12));
+            for (const auto& chip : placed_[t].chips) bounds = bounds.united(chip.box);
+        }
+        for (const auto& route : routes_) {
+            const bool chosen = route.link && picked_ &&
+                std::holds_alternative<domain::ForeignKeyId>(*picked_) &&
+                link_of(std::get<domain::ForeignKeyId>(*picked_)) == route.link;
+            if (extent == PictureExtent::Selection && !chosen) continue;
+            bounds = bounds.united(route.path.boundingRect().adjusted(-56, -56, 56, 56));
+        }
+        return bounds;
+    };
+    result.paint = [this](QPainter& painter, const QRectF& target, const QRectF& source) {
+        // Remove only transient interaction decoration for the export. Restore
+        // every value before returning, without an edit, signal or on-screen repaint.
+        QScopedValueRollback<decltype(selected_)> selected(selected_, {});
+        QScopedValueRollback<decltype(picked_)> picked(picked_, {});
+        QScopedValueRollback<decltype(hovered_)> hovered(hovered_, {});
+        QScopedValueRollback<decltype(hovered_table_)> table(hovered_table_, {});
+        QScopedValueRollback<decltype(hovered_constraint_)> constraint(hovered_constraint_, {});
+        QScopedValueRollback<decltype(hovered_type_)> type(hovered_type_, {});
+        QScopedValueRollback<decltype(linking_)> linking(linking_, {});
+        QScopedValueRollback<decltype(painted_)> painted(painted_);
+        painter.save();
+        painter.setClipRect(target);
+        painter.translate(target.topLeft());
+        painter.scale(target.width() / source.width(), target.height() / source.height());
+        painter.translate(-source.topLeft());
+        paint_schema(painter, source, true);
+        painter.restore();
+    };
+    return result;
+}
+
 void SchemaView::paintEvent(QPaintEvent* event) {
+    QPainter painter(this);
+    paint_schema(painter, event->rect());
+}
+
+void SchemaView::paint_schema(QPainter& painter, const QRectF& exposed, bool exporting) {
     painted_.tables.clear();
     painted_.lines.clear();
     if (!theme_) return;
-    QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing, true);
-    painter.fillRect(rect(), theme_->canvas);
+    if (!exporting) painter.fillRect(rect(), theme_->canvas);
     painter.setBrush(Qt::NoBrush);
 
     if (preview_.tables.empty()) {
@@ -2941,7 +2992,6 @@ void SchemaView::paintEvent(QPaintEvent* event) {
     // every table and line was still drawn, word by word, only to be thrown
     // away. Each is drawn exactly as before wherever anything it could put
     // down -- measured generously, never tightly -- reaches what is painted.
-    const QRectF exposed = event->rect();
     // A line puts down its route under the widest pen it is drawn with, 7 px,
     // whose mitred corners reach up to twice that width past the corner; and
     // the symbols at its ends, which stand as far from them as a Chen or
@@ -3626,6 +3676,7 @@ void SchemaView::paintEvent(QPaintEvent* event) {
     // The band goes over everything: it is the thing being done, not part of
     // what is being looked at. Before the hovered line's grips, which give up
     // early, so a band is drawn whether or not a line happens to be hovered.
+    if (exporting) return;
     draw_band(painter);
     draw_linking(painter);
 

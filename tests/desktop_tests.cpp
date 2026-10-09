@@ -457,6 +457,274 @@ namespace
     }
 }
 
+namespace
+{
+    void export_state_tests()
+    {
+        infrastructure::QtIdGenerator ids;
+        application::Editor model(ids);
+        infrastructure::ErdxProjectStore store;
+        desktop::MainWindow window(model, store, ids);
+        QTemporaryDir files;
+        require(files.isValid(), "Export-state test directory");
+        window.resize(1440, 1080);
+        window.show();
+        settle();
+        // Direct Editor commands need the same notification the canvas supplies
+        // after a UI edit; the Editor itself has no window-change signal.
+        const auto changed = [&] { window.canvas()->on_edit({}); };
+        const auto new_conceptual = [&]
+        {
+            model.mark_saved(model.revision());
+            child<QAction>(window, "newProject")->trigger();
+        };
+        const auto enabled = [&](const char *name) { return child<QAction>(window, name)->isEnabled(); };
+        const auto state = [&](bool project, bool documents, bool pictures)
+        {
+            require(enabled("exportProject") == project, "Project export follows model content in either workspace");
+            for (const char *name : {"exportPdfDocument", "exportMarkdown", "exportHtml", "exportCsv"})
+                require(enabled(name) == documents, "Document export follows its active model target");
+            for (const char *name : {"exportSvg", "exportPng", "exportPdfPage", "copyAsPicture",
+                                     "exportJpeg", "exportWebp", "exportTiff"})
+                if (auto *action = window.findChild<QAction *>(name))
+                    require(action->isEnabled() == pictures, "Picture export follows its active diagram target");
+            if (auto *menu = window.findChild<QMenu *>("exportMorePictures"))
+                require(menu->menuAction()->isEnabled() == pictures, "More Formats follows its picture writers");
+            require(enabled("exportWithOptions") == (documents || pictures), "Options needs a supported target");
+            auto *row = child<QToolBar>(window, "exportTools");
+            for (auto *action : row->actions())
+                if (!action->isSeparator())
+                    if (auto *button = qobject_cast<QToolButton *>(row->widgetForAction(action)))
+                        require(button->isEnabled() == action->isEnabled(), "Ribbon buttons reflect QAction enablement");
+        };
+        // A dialog the window opens is answered once it is shown: the answer is
+        // queued from the dialog's own Show event, so it runs inside that dialog's
+        // loop. A timer started before the action can fire while nothing is up yet
+        // and then never again -- which is what used to hang this test, the save
+        // dialog opening after the timer had already fired.
+        struct WhenShown final : QObject
+        {
+            std::function<void(QDialog *)> answer;
+            bool shown = false;
+            bool eventFilter(QObject *watched, QEvent *event) override
+            {
+                if (event->type() == QEvent::Show)
+                    if (auto *dialog = qobject_cast<QDialog *>(watched); dialog && !shown)
+                    {
+                        shown = true;
+                        QMetaObject::invokeMethod(dialog, [this, dialog] { answer(dialog); }, Qt::QueuedConnection);
+                    }
+                return false;
+            }
+        };
+        // Exercise the QAction whole. Where the window would ask for a file it is
+        // given one instead (MainWindow::choose_export_location) -- the dialog is
+        // the one thing nobody is here to answer -- and everything after the choice
+        // is the export itself. That it asks at all, and for an export rather than
+        // for a save first, is checked: any dialog that shows is an unexpected
+        // prerequisite, recorded and dismissed rather than left to hang the test.
+        const auto file_action = [&](const char *action_name, const QString &destination)
+        {
+            bool asked = false;
+            window.choose_export_location = [&](const QString &, const QString &)
+            {
+                asked = true;
+                return destination;
+            };
+            WhenShown unexpected;
+            unexpected.answer = [](QDialog *dialog) { dialog->reject(); };
+            qApp->installEventFilter(&unexpected);
+            child<QAction>(window, action_name)->trigger();
+            qApp->removeEventFilter(&unexpected);
+            window.choose_export_location = nullptr;
+            require(asked && !unexpected.shown,
+                    "The action goes directly to its destination, without a save prerequisite");
+        };
+        // A dialog the action is meant to open, answered as it is shown.
+        const auto answer_dialog = [&](const char *action_name, std::function<void(QDialog *)> answer)
+        {
+            WhenShown expected;
+            expected.answer = std::move(answer);
+            qApp->installEventFilter(&expected);
+            child<QAction>(window, action_name)->trigger();
+            qApp->removeEventFilter(&expected);
+            return expected.shown;
+        };
+        // A project with a file of its own, as a saved project has: written there
+        // and opened from it, so Save writes to that file without asking.
+        const auto give_file = [&](const QString &path)
+        {
+            require(store.save(path.toStdString(), model.project()).ok, "The working project is given a file");
+            model.mark_saved(model.revision());
+            require(window.open_path(path), "And is opened from it");
+            settle_for(400);
+        };
+        const auto copy_matches = [&](const QString &path)
+        {
+            const auto loaded = store.load(path.toStdString());
+            require(loaded.project && *loaded.project == model.project(), "Export copies the current in-memory project");
+        };
+        state(false, false, false); // Home, no project opened.
+        window.show_home(false);
+        state(false, false, false); // An empty Conceptual project.
+        model.new_schema_project();
+        changed();
+        state(false, false, false);
+        const auto first = model.create_relation("Parent", domain::Point{0, 0});
+        require(first.ok && model.create_relation("Child", domain::Point{400, 0}).ok, "Two unsaved Schema tables");
+        changed();
+        require(model.dirty(), "Schema edits are unsaved");
+        child<QAction>(window, "tabExport")->trigger();
+        state(true, true, true);
+        const auto schema_copy = files.filePath("unsaved-schema.erdx");
+        file_action("exportProject", schema_copy);
+        copy_matches(schema_copy);
+        require(model.dirty(), "Exporting a copy does not save the working project");
+        const auto before_cancel = model.project();
+        const auto count_before = QDir(files.path()).entryList(QDir::Files).size();
+        file_action("exportProject", {});
+        require(model.project() == before_cancel && model.dirty() &&
+                    QDir(files.path()).entryList(QDir::Files).size() == count_before,
+                "Cancelling export writes nothing and leaves the project usable and dirty");
+        const auto schema_before = model.project();
+        const auto selection_before = window.schema()->selection_now();
+        const auto boxes_before = window.schema()->table_boxes();
+        for (const auto &[action, filename] : std::vector<std::pair<const char *, const char *>>{
+                 {"exportPdfDocument", "schema-report.pdf"}, {"exportMarkdown", "schema.md"},
+                 {"exportHtml", "schema.html"}, {"exportCsv", "schema.csv"},
+                 {"exportSvg", "schema.svg"}, {"exportPng", "schema.png"}, {"exportPdfPage", "schema-page.pdf"},
+                 {"exportJpeg", "schema.jpg"}, {"exportWebp", "schema.webp"}, {"exportTiff", "schema.tiff"}})
+        {
+            if (!window.findChild<QAction *>(action)) continue;
+            file_action(action, files.filePath(filename));
+            require(QFileInfo(files.filePath(filename)).size() > 0, "Unsaved Schema exports every available format");
+        }
+        for (const char *filename : {"schema.md", "schema.html", "schema.csv", "schema.svg"})
+        {
+            QFile exported(files.filePath(filename));
+            require(exported.open(QIODevice::ReadOnly), "Read exported Schema content");
+            const auto bytes = exported.readAll();
+            require(bytes.contains("Parent") && bytes.contains("Child"), "Schema exports contain the actual table names");
+        }
+        QImage schema_image(files.filePath("schema.png"));
+        require(!schema_image.isNull() && schema_image.pixelColor(0, 0).alpha() == 0,
+                "Schema PNG supports transparent export margins");
+        require(!desktop::payload_of_picture_file(files.filePath("schema.png")).isEmpty() &&
+                    !desktop::payload_of_picture_file(files.filePath("schema.svg")).isEmpty(),
+                "Schema PNG and SVG carry the project using the existing encoding");
+        child<QAction>(window, "copyAsPicture")->trigger();
+        require(QApplication::clipboard()->mimeData()->data("image/svg+xml").contains("Parent"),
+                "Copy Image renders the Schema rather than the empty Conceptual canvas");
+        bool schema_options = false;
+        answer_dialog("exportWithOptions", [&](QDialog *shown)
+        {
+            if (auto *dialog = dynamic_cast<desktop::ExportDialog *>(shown))
+            {
+                desktop::ExportChoice choice;
+                choice.document = true;
+                dialog->set_choice(choice);
+                schema_options = dialog->findChild<QLabel *>("exportSize")->text().contains("2 tables");
+            }
+            shown->reject();
+        });
+        require(schema_options, "Options describes the active Schema listing");
+        file_action("exportPng", {});
+        require(model.project() == schema_before && window.schema()->selection_now() == selection_before &&
+                    window.schema()->table_boxes() == boxes_before && model.dirty(),
+                "Schema export preserves model, selection, placement and unsaved state");
+
+        const auto original = files.filePath("working.erdx");
+        give_file(original);
+        child<QAction>(window, "saveProject")->trigger();
+        const auto saved_back = store.load(original.toStdString());
+        require(!model.dirty() && saved_back.project && *saved_back.project == model.project(),
+                "Normal Save still saves the working project, to its own file");
+        const auto saved = model.project();
+        require(model.create_relation("UnsavedThird", domain::Point{800, 0}).ok, "Edit an already saved Schema");
+        changed();
+        state(true, true, true);
+        const auto dirty_copy = files.filePath("dirty-schema.erdx");
+        file_action("exportProject", dirty_copy);
+        copy_matches(dirty_copy);
+        file_action("exportCsv", files.filePath("dirty-schema.csv"));
+        QFile dirty_listing(files.filePath("dirty-schema.csv"));
+        require(dirty_listing.open(QIODevice::ReadOnly) && dirty_listing.readAll().contains("UnsavedThird"),
+                "Schema data dictionary includes unsaved edits to an already-saved project");
+        const auto still_saved = store.load(original.toStdString());
+        require(still_saved.project && *still_saved.project == saved && model.dirty(),
+                "Dirty export uses current data without saving over the original");
+        // A failed destination still reports failure through the existing flow.
+        dismiss(QMessageBox::Ok);
+        require(!window.export_project_file(files.filePath("missing/failure.erdx")) && model.dirty(),
+                "A write failure is reported without saving the project");
+        const auto relations = model.project().schema.relations;
+        for (const auto &[id, relation] : relations)
+        {
+            (void)relation;
+            require(model.erase_relation(id).ok, "Remove a Schema table");
+            changed();
+        }
+        state(false, false, false);
+        model.undo();
+        changed();
+        state(true, true, true);
+        new_conceptual();
+        state(false, false, false);
+        require(model.create_entity("UnsavedEntity", {0, 0, 148, 86}).ok, "An unsaved Conceptual entity");
+        changed();
+        state(true, true, true);
+        for (const auto &[action, filename] : std::vector<std::pair<const char *, const char *>>{
+                 {"exportProject", "conceptual.erdx"}, {"exportPdfDocument", "report.pdf"},
+                 {"exportMarkdown", "dictionary.md"}, {"exportHtml", "report.html"}, {"exportCsv", "dictionary.csv"},
+                 {"exportSvg", "diagram.svg"}, {"exportPng", "diagram.png"}, {"exportPdfPage", "page.pdf"}})
+        {
+            file_action(action, files.filePath(filename));
+            require(QFileInfo(files.filePath(filename)).size() > 0 && model.dirty(), "An unsaved model exports directly");
+        }
+        copy_matches(files.filePath("conceptual.erdx"));
+        child<QAction>(window, "copyAsPicture")->trigger();
+        require(QApplication::clipboard()->mimeData()->hasFormat("image/png") &&
+                    QApplication::clipboard()->mimeData()->hasFormat("image/svg+xml"), "Copy Image works before saving");
+        bool saw_options = false;
+        answer_dialog("exportWithOptions", [&](QDialog *shown)
+        {
+            saw_options = dynamic_cast<desktop::ExportDialog *>(shown) != nullptr;
+            shown->reject();
+        });
+        require(saw_options, "Options opens directly for unsaved Conceptual content");
+        file_action("exportPng", {});
+        const auto conceptual_original = files.filePath("conceptual-working.erdx");
+        give_file(conceptual_original);
+        require(model.create_entity("LatestUnsavedEntity", {250, 0, 148, 86}).ok, "A dirty saved Conceptual model");
+        changed();
+        state(true, true, true);
+        file_action("exportCsv", files.filePath("latest.csv"));
+        QFile csv(files.filePath("latest.csv"));
+        require(csv.open(QIODevice::ReadOnly) && csv.readAll().contains("LatestUnsavedEntity") && model.dirty(),
+                "The listing includes unsaved edits without changing Save state");
+        child<QAction>(window, "designRelational")->trigger();
+        child<QPushButton>(window, "schemaFull")->click();
+        state(true, true, true);
+        child<QAction>(window, "modelToConceptual")->trigger();
+        state(true, true, true);
+        window.show_home(true);
+        state(false, false, false);
+        window.show_home(false);
+        state(true, true, true);
+        new_conceptual();
+        state(false, false, false);
+        require(model.create_note("Note", {0, 0, 200, 100}, "Only a note").ok, "Picture-only content");
+        changed();
+        state(true, false, true);
+        new_conceptual();
+        child<QAction>(window, "tabExport")->trigger();
+        window.close();
+        require(!window.isVisible(), "Closing an empty project with Export selected is safe");
+        state(false, false, false);
+        std::cout << "Export state tests passed\n";
+    }
+}
+
 int main(int argc, char **argv)
 {
     QApplication app(argc, argv);
@@ -469,6 +737,9 @@ int main(int argc, char **argv)
     QSettings().clear();
     try
     {
+        export_state_tests();
+        if (QCoreApplication::arguments().contains("--export-state"))
+            return 0;
         infrastructure::QtIdGenerator ids;
         // The Explorer lists attributes in the order they were made (Zain,
         // 2026-10-03), under their owner and in the group of them all, as the

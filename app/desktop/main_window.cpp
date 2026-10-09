@@ -3471,6 +3471,7 @@ namespace erdflow::desktop
         auto *export_project = export_menu->addAction("ERDFlow project…", this, [this]
                                                       { export_project_file(); });
         export_project->setObjectName("exportProject");
+        export_actions_.emplace_back(export_project, ExportTarget::Project);
         export_project->setToolTip("Write a copy of the project, losing nothing. Saving keeps working on this one; "
                                    "this leaves it where it is.");
         menu_heading(export_menu, "Documents", "exportDocumentsHeading");
@@ -3490,6 +3491,7 @@ namespace erdflow::desktop
                                                 { export_document(format); });
             item->setObjectName(QString::fromLatin1(entry.name));
             item->setToolTip(QString::fromUtf8(info.caution));
+            export_actions_.emplace_back(item, ExportTarget::Document);
         }
 
         // Then the pictures a person reaches for without thinking about options.
@@ -3521,6 +3523,7 @@ namespace erdflow::desktop
             {
                 more_pictures = export_menu->addMenu("Other picture formats");
                 more_pictures->setObjectName("exportMorePictures");
+                export_actions_.emplace_back(more_pictures->menuAction(), ExportTarget::Picture);
             }
             auto *into = entry.common ? export_menu : more_pictures;
             auto *item = into->addAction(QString::fromUtf8(info.label) + "…", this, [this, format = entry.format]
@@ -3529,6 +3532,7 @@ namespace erdflow::desktop
             options.format = format;
             export_picture(options); });
             item->setObjectName(QString::fromLatin1(entry.name));
+            export_actions_.emplace_back(item, ExportTarget::Picture);
             if (*info.caution)
                 item->setToolTip(QString::fromUtf8(info.caution));
         }
@@ -3537,34 +3541,15 @@ namespace erdflow::desktop
         auto *export_options = export_menu->addAction("Export with options…", QKeySequence("Ctrl+Shift+E"),
                                                       this, &MainWindow::export_dialog);
         export_options->setObjectName("exportWithOptions");
+        export_actions_.emplace_back(export_options, ExportTarget::Options);
         export_options->setToolTip("Choose the format, and for a picture its size, extent and background.");
         action_glyphs_[export_options] = Glyph::Export;
         auto *copy_action = export_menu->addAction("Copy as picture", QKeySequence("Ctrl+Shift+C"),
                                                    this, [this]
                                                    { copy_picture(); });
         copy_action->setObjectName("copyAsPicture");
+        export_actions_.emplace_back(copy_action, ExportTarget::Picture);
         copy_action->setToolTip("Put a picture of the selection, or of the whole diagram, on the clipboard.");
-        // Gathered so they can be turned off together while there is nothing drawn.
-        // A submenu's own entries are collected too, since the submenu itself only
-        // names them.
-        for (auto *action : export_menu->actions())
-        {
-            if (action->isSeparator())
-                continue;
-            // A heading is not a command, so it is not one of the things turned on
-            // when there is something to export: turning it on would make it look
-            // like something that could be pressed.
-            if (action->objectName().endsWith(QLatin1String("Heading")))
-                continue;
-            if (auto *submenu = action->menu())
-            {
-                for (auto *nested : submenu->actions())
-                    export_actions_.push_back(nested);
-                export_actions_.push_back(action);
-                continue;
-            }
-            export_actions_.push_back(action);
-        }
         file->addMenu(export_menu);
 
         // Import sits next to Export, because that is its pair. It reads what
@@ -4530,8 +4515,8 @@ namespace erdflow::desktop
         undo_->setToolTip(undo_->text() + "\t" + undo_->shortcut().toString(QKeySequence::NativeText));
         redo_->setToolTip(redo_->text() + "\t" + redo_->shortcut().toString(QKeySequence::NativeText));
         refresh_selection_commands();
-        refresh_export_actions();
         refresh_schema();
+        refresh_export_actions();
         auto title = text(editor_.project().name);
         const auto title_room = [this]
         { return std::min(document_label_->sizeHint().width(), document_label_->maximumWidth()); };
@@ -6736,6 +6721,7 @@ namespace erdflow::desktop
                                             : schema_full_   ? QStringLiteral("Relational Design")
                                                              : QStringLiteral("Conceptual Design"));
         pages_->setCurrentIndex(on ? 0 : 1);
+        refresh_export_actions();
     }
 
     bool MainWindow::showing_home() const
@@ -7275,8 +7261,10 @@ namespace erdflow::desktop
     void MainWindow::export_dialog()
     {
         finish_field_edit();
+        if (!export_available(ExportTarget::Options))
+            return;
         canvas_->cancel_interaction();
-        ExportDialog dialog(*canvas_, editor_.project(), this);
+        ExportDialog dialog(export_view(), editor_.project(), this);
         dialog.set_choice(export_choice_);
         if (dialog.exec() != QDialog::Accepted)
             return;
@@ -7294,8 +7282,9 @@ namespace erdflow::desktop
         const auto stem = path_.isEmpty() ? QString("Untitled") : QFileInfo(path_).completeBaseName();
         const auto suggested = path_.isEmpty() ? stem + "." + suffix
                                                : QFileInfo(path_).dir().filePath(stem + "." + suffix);
-        auto location = QFileDialog::getSaveFileName(this, "Export", suggested,
-                                                     QString("%1 (*.%2)").arg(label, suffix));
+        const auto filter = QString("%1 (*.%2)").arg(label, suffix);
+        auto location = choose_export_location ? choose_export_location(suggested, filter)
+                                               : QFileDialog::getSaveFileName(this, "Export", suggested, filter);
         if (location.isEmpty())
             return {};
         if (!location.endsWith("." + suffix, Qt::CaseInsensitive))
@@ -7312,6 +7301,8 @@ namespace erdflow::desktop
     bool MainWindow::export_document(DocumentFormat format, const QString &location_given)
     {
         finish_field_edit();
+        if (!export_available(ExportTarget::Document))
+            return false;
         canvas_->cancel_interaction();
         const auto &info = document_format(format);
         auto location = location_given;
@@ -7319,7 +7310,7 @@ namespace erdflow::desktop
             location = export_location(QString::fromLatin1(info.suffix), QString::fromUtf8(info.label));
         if (location.isEmpty())
             return false;
-        const auto result = write_document(*canvas_, editor_.project(), format, location);
+        const auto result = write_document(export_view(), editor_.project(), format, location);
         if (!result)
         {
             QMessageBox::warning(this, "Document could not be written", result.error);
@@ -7334,6 +7325,8 @@ namespace erdflow::desktop
     bool MainWindow::export_picture(const PictureOptions &options, const QString &location_given)
     {
         finish_field_edit();
+        if (!export_available(ExportTarget::Picture))
+            return false;
         canvas_->cancel_interaction();
         const auto &info = picture_format(options.format);
         const auto suffix = QString::fromLatin1(info.suffix);
@@ -7344,7 +7337,7 @@ namespace erdflow::desktop
             return false;
         QString note;
         const auto payload = options.carry_project && info.carries_project ? project_payload(note) : QByteArray();
-        const auto result = write_picture(*canvas_, options, payload, location);
+        const auto result = write_picture(export_view(), options, payload, location);
         if (!result)
         {
             QMessageBox::warning(this, "Picture could not be written", result.error);
@@ -7367,17 +7360,19 @@ namespace erdflow::desktop
     bool MainWindow::copy_picture()
     {
         finish_field_edit();
+        if (!export_available(ExportTarget::Picture))
+            return false;
         canvas_->cancel_interaction();
         // A copy is of what is selected, and of the whole diagram when nothing is,
         // which is what every drawing application does with the same command.
         auto options = export_choice_.as_picture;
-        options.extent = canvas_->selection_bounds().isEmpty() ? PictureExtent::WholeDiagram : PictureExtent::Selection;
+        options.extent = picture_extent(export_view(), PictureExtent::Selection).isEmpty() ? PictureExtent::WholeDiagram : PictureExtent::Selection;
         QString note;
         const auto payload = options.carry_project ? project_payload(note) : QByteArray();
 
         options.format = PictureFormat::Png;
         QByteArray png;
-        const auto raster = draw_picture(*canvas_, options, payload, png);
+        const auto raster = draw_picture(export_view(), options, payload, png);
         if (!raster)
         {
             statusBar()->showMessage(raster.error, 9000);
@@ -7385,7 +7380,7 @@ namespace erdflow::desktop
         }
         options.format = PictureFormat::Svg;
         QByteArray svg;
-        const auto vector = draw_picture(*canvas_, options, payload, svg);
+        const auto vector = draw_picture(export_view(), options, payload, svg);
 
         // Both pictures go on at once and the destination takes whichever it
         // prefers: a word processor usually takes the vector, a chat window the
@@ -7608,6 +7603,8 @@ namespace erdflow::desktop
     bool MainWindow::export_project_file(const QString &location_given)
     {
         finish_field_edit();
+        if (!export_available(ExportTarget::Project))
+            return false;
         canvas_->cancel_interaction();
         auto location = location_given;
         if (location.isEmpty())
@@ -7990,6 +7987,7 @@ namespace erdflow::desktop
         // Its examples are offered from the header's Model menu instead
         // (Zain, 2026-10-07), so the mark is no longer shown.
         (void)findChild<QToolButton *>("openRelationalExample");
+        refresh_export_actions();
     }
 
     void MainWindow::set_schema_full(bool full)
@@ -11502,13 +11500,40 @@ namespace erdflow::desktop
             apply(button, worded(room >= corner));
     }
 
+    ExportView MainWindow::export_view() const
+    {
+        return editor_.project().schema.standalone || schema_full_ ? schema_->export_view() : ExportView(*canvas_);
+    }
+
+    bool MainWindow::export_available(ExportTarget target) const
+    {
+        if (showing_home())
+            return false;
+        const auto &project = editor_.project();
+        const bool drawing = !canvas_->diagram_bounds().isEmpty();
+        const bool listing = !project.entities.empty() || !project.attributes.empty() ||
+                             !project.relationships.empty();
+        if (target == ExportTarget::Project)
+            return listing || !project.specializations.empty() || !project.notes.empty() ||
+                   !project.pictures.empty() || !project.comments.empty() || !project.schema.relations.empty();
+        // Both the listing and drawing come from the active workspace.
+        // Neither the project path nor dirty state is an export prerequisite.
+        if (project.schema.standalone || schema_full_)
+            return schema_ && !schema_->preview().tables.empty();
+        switch (target)
+        {
+        case ExportTarget::Document: return listing;
+        case ExportTarget::Picture: return drawing;
+        case ExportTarget::Options: return drawing || listing;
+        case ExportTarget::Project: break;
+        }
+        return false;
+    }
+
     void MainWindow::refresh_export_actions()
     {
-        // Nothing drawn is nothing to hand on. The entries stay where they are and
-        // go quiet, rather than the row appearing and disappearing as work starts.
-        const auto anything = !canvas_->diagram_bounds().isEmpty();
-        for (auto *action : export_actions_)
-            action->setEnabled(anything);
+        for (const auto &[action, target] : export_actions_)
+            action->setEnabled(export_available(target));
     }
 
     // The template is a starting frame, not a worked example (Zain, 2026-09-26):

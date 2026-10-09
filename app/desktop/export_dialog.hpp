@@ -43,14 +43,14 @@ struct ExportChoice {
 // formats with somewhere to put it.
 class ExportDialog final : public QDialog {
 public:
-    ExportDialog(DiagramView& view, const domain::Project& project, QWidget* parent = nullptr);
+    ExportDialog(ExportView view, const domain::Project& project, QWidget* parent = nullptr);
     [[nodiscard]] ExportChoice choice() const { return choice_; }
     // Opens on what was last settled on, so a second export of the same work
     // takes one press rather than four.
     void set_choice(const ExportChoice& choice);
 
 private:
-    DiagramView& view_;
+    ExportView view_;
     const domain::Project& project_;
     ExportChoice choice_;
     QComboBox* format_ = nullptr;

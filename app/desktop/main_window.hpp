@@ -108,6 +108,13 @@ namespace erdflow::desktop
         // Writes a copy of the project itself, losing nothing. Saving keeps working
         // on the file it wrote; this leaves the open project where it is.
         bool export_project_file(const QString &location = {});
+        // Where an export goes, when nothing has said already. Unset, the person is
+        // asked in a save dialog; set, it is asked instead, given the suggested
+        // file and the dialog's filter, and its answer is taken exactly as a file
+        // chosen in the dialog would be -- empty for a cancel. Everything after the
+        // choice is the export itself, the same either way. It is how the tests,
+        // which have nobody to answer a dialog, drive the Export commands whole.
+        std::function<QString(const QString &suggested, const QString &filter)> choose_export_location;
         // Brings another project's contents into this one, from a project file or
         // from a picture carrying one. Everything arrives with fresh identities and
         // clear of what is already drawn, and the whole import undoes in one step.
@@ -573,9 +580,12 @@ namespace erdflow::desktop
         // What the export dialog last settled on, kept for the session so a
         // second export of the same work takes one press rather than four.
         ExportChoice export_choice_;
-        // Everything under Export, kept so they can be turned off together while
-        // there is nothing drawn to make anything of.
-        std::vector<QAction *> export_actions_;
+        // Each exporter follows its target in the active workspace, independent
+        // of whether the working project has a saved path or unsaved edits.
+        enum class ExportTarget { Project, Document, Picture, Options };
+        std::vector<std::pair<QAction *, ExportTarget>> export_actions_;
+        [[nodiscard]] bool export_available(ExportTarget target) const;
+        [[nodiscard]] ExportView export_view() const;
         void export_dialog();
         // Asks which file to import, looking among projects or among pictures.
         void import_dialog(bool pictures);

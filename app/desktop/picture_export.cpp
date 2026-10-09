@@ -130,9 +130,9 @@ bool put_payload_in_svg(QByteArray& svg, const QByteArray& payload) {
     return decoded ? *decoded : QByteArray();
 }
 
-[[nodiscard]] QColor background_colour(DiagramView& view, const PictureOptions& options, bool keeps_transparency) {
+[[nodiscard]] QColor background_colour(const ExportView& view, const PictureOptions& options, bool keeps_transparency) {
     switch (options.background) {
-        case PictureBackground::ThemeColour: return view.canvas_colour();
+        case PictureBackground::ThemeColour: return view.background;
         case PictureBackground::White: return Qt::white;
         case PictureBackground::Transparent: break;
     }
@@ -187,7 +187,15 @@ QRectF picture_extent(const DiagramView& view, PictureExtent extent) {
     return view.diagram_bounds();
 }
 
-PictureResult draw_picture(DiagramView& view, const PictureOptions& options,
+ExportView::ExportView(DiagramView& view)
+    : bounds([&view](PictureExtent extent) { return picture_extent(view, extent); }),
+      paint([&view](QPainter& painter, const QRectF& target, const QRectF& source) {
+          view.render_diagram(painter, target, source);
+      }), background(view.canvas_colour()) {}
+
+QRectF picture_extent(const ExportView& view, PictureExtent extent) { return view.bounds(extent); }
+
+PictureResult draw_picture(ExportView view, const PictureOptions& options,
                            const QByteArray& payload, QByteArray& out) {
     const auto& info = picture_format(options.format);
     PictureResult result;
@@ -228,7 +236,7 @@ PictureResult draw_picture(DiagramView& view, const PictureOptions& options,
             QPainter painter(&generator);
             const auto colour = background_colour(view, options, info.keeps_transparency);
             if (colour.alpha() != 0) painter.fillRect(target, colour);
-            view.render_diagram(painter, target, source);
+            view.paint(painter, target, source);
         }
         buffer.close();
     } else if (options.format == PictureFormat::Pdf) {
@@ -245,7 +253,7 @@ PictureResult draw_picture(DiagramView& view, const PictureOptions& options,
             const QRectF target(0, 0, writer.width(), writer.height());
             const auto colour = background_colour(view, options, info.keeps_transparency);
             if (colour.alpha() != 0) painter.fillRect(target, colour);
-            view.render_diagram(painter, target, source);
+            view.paint(painter, target, source);
         }
         buffer.close();
     } else {
@@ -254,7 +262,7 @@ PictureResult draw_picture(DiagramView& view, const PictureOptions& options,
         image.fill(background_colour(view, options, info.keeps_transparency));
         {
             QPainter painter(&image);
-            view.render_diagram(painter, QRectF(QPointF(0, 0), QSizeF(pixels)), source);
+            view.paint(painter, QRectF(QPointF(0, 0), QSizeF(pixels)), source);
         }
         // The project goes in before the file is encoded rather than being cut
         // back into it afterwards, so a PNG is written once.
@@ -283,7 +291,7 @@ PictureResult draw_picture(DiagramView& view, const PictureOptions& options,
     return result;
 }
 
-PictureResult write_picture(DiagramView& view, const PictureOptions& options,
+PictureResult write_picture(ExportView view, const PictureOptions& options,
                             const QByteArray& payload, const QString& path) {
     QByteArray bytes;
     auto result = draw_picture(view, options, payload, bytes);
