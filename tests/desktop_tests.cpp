@@ -3621,7 +3621,10 @@ namespace
             {
                 view->choose(desktop::NothingChosen{});
                 settle();
-                const auto picture = view->grab().toImage().convertToFormat(QImage::Format_ARGB32);
+                // Photographed with the lettering smoothed in greys: the green
+                // FK smoothed with coloured subpixels has yellow edges, which
+                // would count as gold.
+                const auto picture = grab_without_subpixel_text(*view).convertToFormat(QImage::Format_ARGB32);
                 const auto ratio = picture.devicePixelRatio();
                 const auto box = view->row_boxes()[at(name)][row];
                 Marks found;
@@ -3723,7 +3726,7 @@ namespace
                 QStringList plain_roles;
                 for (auto *role : panel().findChildren<QLabel *>("schemaRelationshipRole"))
                     plain_roles << role->text();
-                require(coloured_pixels(properties_dock->widget()->grab().toImage()) == 0 && plain_roles == QStringList{"PK", "PK", "FK"} && properties_value(panel(), "Referencing/Cardinality") == QStringList{"One (1)"},
+                require(coloured_pixels(grab_without_subpixel_text(*properties_dock->widget())) == 0 && plain_roles == QStringList{"PK", "PK", "FK"} && properties_value(panel(), "Referencing/Cardinality") == QStringList{"One (1)"},
                         "Under Plain, the relationship's Properties has no colour, and every role is still said in words");
                 pk_window.set_theme(wearing);
                 settle();
@@ -12273,7 +12276,7 @@ int main(int argc, char **argv)
                     settle();
                     require_table_properties(panel(), *schema, table_called("Department"));
                     if (appearance == desktop::ThemeId::Plain)
-                        require(coloured_pixels(properties_dock->widget()->grab().toImage()) == 0,
+                        require(coloured_pixels(grab_without_subpixel_text(*properties_dock->widget())) == 0,
                                 "The table list and both key roles follow the monochrome theme");
                 }
                 window.set_theme(wearing);
@@ -12952,7 +12955,7 @@ int main(int argc, char **argv)
                         const auto wearing_now = window.canvas()->theme_id();
                         window.set_theme(desktop::ThemeId::Plain);
                         settle();
-                        require(coloured_pixels(properties_dock->widget()->grab().toImage()) == 0,
+                        require(coloured_pixels(grab_without_subpixel_text(*properties_dock->widget())) == 0,
                                 "Under Plain the column's Properties have no colour: card, marks, switches, NOT NULL");
                         window.set_theme(wearing_now);
                         settle();
