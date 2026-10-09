@@ -1,0 +1,149 @@
+
+name: "🐛 Bug Report"
+description: "Report a bug, crash, regression, or incorrect behavior in ERDFlow."
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for helping improve ERDFlow!
+
+        Before submitting:
+        - Search existing issues for duplicates.
+        - Use the latest available version when possible.
+        - Do not include passwords, tokens, or private data.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected Area
+      description: Which part of ERDFlow has the problem?
+      options:
+        - Conceptual Design
+        - Relational Schema
+        - Physical / Table Design
+        - SQL Generation
+        - Data Grid
+        - Import / Export
+        - Project Save / Load
+        - Application UI
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: operating-system
+    attributes:
+      label: Operating System
+      options:
+        - macOS (Apple Silicon)
+        - macOS (Intel)
+        - Windows
+        - Linux
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: ERDFlow Version
+      description: Enter the version or commit hash, if known.
+      placeholder: "Example: commit abc1234"
+    validations:
+      required: false
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Bug Description
+      description: Describe the problem clearly.
+      placeholder: "What is going wrong?"
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to Reproduce
+      description: Provide exact steps to reproduce the problem.
+      placeholder: |
+        1. Open ERDFlow.
+        2. Create or open a project.
+        3. Select...
+        4. Observe...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: What should happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual Behavior
+      description: What happens instead?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: regression
+    attributes:
+      label: Regression Status
+      description: Did this feature work correctly before?
+      options:
+        - "Yes, it worked before"
+        - "No, it has always behaved this way"
+        - "Not sure"
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: affected-features
+    attributes:
+      label: Additional Affected Functionality
+      description: Select everything affected by this bug.
+      options:
+        - label: Undo / Redo
+        - label: Save / Load
+        - label: Conceptual to Schema conversion
+        - label: Schema editing
+        - label: Relationships / Connectors
+        - label: Rendering / Layout
+        - label: None of the above
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Screenshots, Logs, or Example Files
+      description: |
+        Attach screenshots, relevant logs, or a minimal
+        example project if available. Remove sensitive data.
+    validations:
+      required: false
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional Context
+      description: Add any other relevant details.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: confirmation
+    attributes:
+      label: Submission Checklist
+      options:
+        - label: I searched for existing reports of this issue.
+          required: true
+        - label: I provided enough information to reproduce the bug.
+          required: true
+        - label: I removed sensitive information from attachments.
+          required: true
