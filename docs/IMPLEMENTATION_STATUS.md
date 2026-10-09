@@ -20,7 +20,7 @@ not been built yet. Their presence in those documents is not a completion claim.
 
 ## Current state at a glance (2026-10-09)
 
-Checked against the code at `0085e62` on 2026-10-09. Each item has its own entry under
+Checked against the code at `3e29264` on 2026-10-09. Each item has its own entry under
 *What works*; this list only says what is finished, so that nothing below is
 read as still to do.
 
@@ -67,6 +67,8 @@ read as still to do.
   *Schema | Conceptual* and the title; the diagram's Search a real field;
   the schema's working tools shown only under Home's tab; and the diagram's
   raft of view controls on the schema.
+- Export from whichever workspace is in front, the schema included, through
+  the same document and picture exports (committed in `3e29264`).
 
 **Column reordering is not built.** Task 4A is complete. Task 4B is
 complete as a foundation: a derived table can be listed in a stored order,
@@ -78,9 +80,7 @@ added to a schema drawn by hand always goes at the end. The interaction is
 pending, and its gesture is not decided.
 
 **Also not finished.** Room to keep dragging schema tables downward is
-pending. The Export work -- exports that follow the workspace in front -- is
-separate and uncommitted, in neither commit above, and its test does not yet
-pass.
+pending.
 
 What is not built, and what is waiting on a decision, is listed under *Still
 to build in Part 1* at the end. The state of the test suites is under
@@ -1169,8 +1169,10 @@ to build in Part 1* at the end. The state of the test suites is under
   you just chose rather than as a strip of quiet text that looks the same
   whichever tab is showing. Home is left alone, being the drawing tools, which
   their icons already tell apart. The Export entries go quiet while
-  there is nothing drawn to hand on, rather than the row coming and going as
-  work starts. A Convert tab still waits, because there is nothing to convert to.
+  there is nothing to hand on, rather than the row coming and going as
+  work starts -- each by what it exports, in the workspace in front, since
+  2026-10-09 (see *Export follows the workspace in front*). A Convert tab
+  still waits, because there is nothing to convert to.
 - **The clean-up that followed the ribbon** (Zain, 2026-10-06 and
   2026-10-07; accepted 2026-10-08). Built on the File | Home | Settings
   ribbon above:
@@ -1790,6 +1792,22 @@ to build in Part 1* at the end. The state of the test suites is under
 - A picture is of the diagram and not of the editor looking at it: no grid, no
   paper, no selection rings and no handles, and exporting gives the selection
   back exactly as it found it.
+- **Export follows the workspace in front** (committed in `3e29264`,
+  2026-10-09). With Relational Design in front -- a schema drawn by hand, or a
+  diagram's schema with the whole window -- the documents and pictures are of
+  the schema, through the same exports as the diagram's; otherwise of the
+  diagram. **Copy as picture** copies whichever is in front. Each Export entry
+  is on only while what it exports exists there: the project copy while the
+  project holds anything; the documents while there is something to list;
+  the pictures while there is something drawn; with the schema in front,
+  while it has a table. Saved or not, the project can be exported, and
+  exporting leaves its unsaved state as it was. Where the file goes is still
+  asked in the save dialog. The tests drive every Export command whole by
+  giving the destination where the dialog would ask
+  (`MainWindow::choose_export_location`, which the application never sets),
+  so no test depends on answering a modal dialog: they write each document
+  and picture to real temporary files, check what they hold, and check that
+  a cancelled destination writes nothing.
 - An exported file carries nothing tying it to the machine that wrote it. Fonts
   are the one thing SVG cannot carry cheaply, so its text names a chain ending
   in a CSS generic family — `'Helvetica Neue', Helvetica, Arial, 'Liberation
@@ -2831,6 +2849,17 @@ Not built yet, though some of it is on screen:
 | Usable | Focused property editing, named undo actions, usable example, warnings that permit unfinished drafts, protected open/save. | Screen-reader support, broader keyboard/high-DPI/device checks, and production polish remain unverified. |
 
 ## Verification
+
+**2026-10-09**, at `3e29264` (*Add workspace-aware export support*): all
+six functional suites pass in Debug and in Release -- `core`,
+`persistence`, `canvas`, `theme`, `desktop` and `desktop_smoke` -- with the
+whole desktop suite run, nothing skipped, including the export-state tests
+(`export_state_tests()`, about 2 s; they used to hang on a save dialog in
+the working tree, and now give the destination where the dialog would ask).
+`desktop` took 54.2 s in Debug and 50.9 s in Release, close to ctest's 60 s
+limit in Debug -- a risk, not a failure. `visual` fails on three reference
+pictures, `card-selected` (3.58016 %), `conceptual` (5.7545 %) and
+`relational-design` (8.39088 %); no reference picture was retaken.
 
 **2026-10-05**, after Relational Design's examples and template were added,
 the keyless-entity edit of 2026-10-03 was reverted, and ADR-021 §5b was
