@@ -1531,6 +1531,275 @@ int main(int argc, char **argv)
                 opened.mark_saved(opened.revision());
             }
 
+            // Tables carried downward are given room below them for as long as
+            // the drag lasts (2026-10-09). The canvas used to reach only 30 px
+            // past the lowest table, so near the bottom of the view there was
+            // nothing to scroll into: a hand had to let go, scroll, and take hold
+            // again. Now it reaches a whole view below the lowest table carried,
+            // so the view scrolls on under the held drag and the same drag goes
+            // on; let go, and the canvas reaches just past what is on it again.
+            {
+                // The messages here are put together from what is being carried.
+                const auto must = [](bool ok, const std::string &message) { require(ok, message.c_str()); };
+                child<QAction>(relational, "fileExampleCompanyRelational")->trigger();
+                settle();
+                auto *view = relational.schema();
+                auto *scroll = child<QScrollArea>(relational, "schemaScroll");
+                auto *bar = scroll->verticalScrollBar();
+                const auto mouse = [&](QEvent::Type type, QPointF where, Qt::MouseButtons held)
+                {
+                    QMouseEvent event(type, where, view->mapToGlobal(where.toPoint()),
+                                      type == QEvent::MouseMove ? Qt::NoButton : Qt::LeftButton, held, Qt::NoModifier);
+                    QApplication::sendEvent(view, &event);
+                };
+                // Four notches of the wheel turned with the button still held, as a
+                // hand scrolls on while it carries. The schema takes no wheel of
+                // its own, so a real one goes on to the scroll area's view; one
+                // made here would not be passed on, so it is given there.
+                const auto wheel = [&](QPointF where)
+                {
+                    auto *port = scroll->viewport();
+                    const auto there = view->mapTo(port, where);
+                    QWheelEvent event(there, port->mapToGlobal(there), QPoint(), QPoint(0, -480), Qt::LeftButton,
+                                      Qt::NoModifier, Qt::NoScrollPhase, false);
+                    QApplication::sendEvent(port, &event);
+                };
+                const auto as_opened = opened.project();
+                const auto boxes_opened = view->table_boxes();
+                must(boxes_opened.size() >= 3, "The Company schema has tables enough to carry several");
+                // Just past what is on the canvas, as it always was when nothing is
+                // being carried: no room is left lying below the schema.
+                const auto settled = [&]
+                {
+                    double lowest = 0;
+                    for (const auto &box : view->table_boxes())
+                        lowest = std::max(lowest, box.bottom());
+                    return view->minimumHeight() == static_cast<int>(lowest + 30) &&
+                           view->height() == std::max(view->minimumHeight(), scroll->viewport()->height());
+                };
+                must(settled(), "Before any drag, the canvas reaches just past the lowest table");
+                const auto index_of = [&](const domain::ElementRef &ref)
+                {
+                    for (std::size_t t = 0; t < view->preview().tables.size(); ++t)
+                        if (view->preview().tables[t].origin && *view->preview().tables[t].origin == ref)
+                            return t;
+                    return view->preview().tables.size();
+                };
+                // One drag from the table pressed, downward, with the view scrolled
+                // on under it four times. Every table carried keeps exactly the
+                // distance the hand took it; one step of history; nothing let go.
+                const auto carry = [&](std::size_t pressed, const char *what)
+                {
+                    bar->setValue(0);
+                    settle();
+                    const auto steps_before = opened.history_position();
+                    const auto before = view->table_boxes();
+                    QPointF at(before[pressed].center().x(), before[pressed].top() + 13);
+                    mouse(QEvent::MouseButtonPress, at, Qt::LeftButton);
+                    const auto marked = view->selection();
+                    std::vector<std::size_t> carried;
+                    for (const auto &ref : marked)
+                        carried.push_back(index_of(ref));
+                    const auto deepest = [&]
+                    {
+                        const auto boxes = view->table_boxes();
+                        double lowest = 0;
+                        for (const auto t : carried)
+                            lowest = std::max(lowest, boxes[t].bottom());
+                        return lowest;
+                    };
+                    double travelled = 0;
+                    for (int step = 0; step < 4; ++step)
+                    {
+                        const auto routed = view->routings();
+                        at += QPointF(0, 40);
+                        travelled += 40;
+                        mouse(QEvent::MouseMove, at, Qt::LeftButton);
+                        must(view->routings() == routed + 1,
+                                std::string(what) + ": the canvas grows for the drag and the lines are still routed once "
+                                                    "for the movement");
+                        must(view->height() >= deepest() + scroll->viewport()->height() - 1,
+                                std::string(what) + ": while it goes down, there is a view's room below the lowest "
+                                                    "table carried");
+                        must(view->table_boxes()[pressed] == before[pressed].translated(0, travelled),
+                                std::string(what) + ": the table pressed stays under the hand");
+                        const auto from = bar->value();
+                        wheel(at);
+                        const auto scrolled = bar->value() - from;
+                        must(scrolled > 0, std::string(what) + ": the view scrolls on into that room with the drag "
+                                                                  "still held");
+                        // The hand stays where it was on the screen; the schema has
+                        // moved up under it, and it goes on from there.
+                        at += QPointF(0, scrolled);
+                        travelled += scrolled;
+                    }
+                    mouse(QEvent::MouseMove, at, Qt::LeftButton);
+                    must(travelled > scroll->viewport()->height(),
+                            std::string(what) + ": one drag carries the tables well past where the view first ended");
+                    const auto routed_at_release = view->routings();
+                    mouse(QEvent::MouseButtonRelease, at, Qt::NoButton);
+                    settle();
+                    must(view->routings() == routed_at_release + 1,
+                            std::string(what) + ": letting go routes the lines once, for the canvas it settles to");
+                    const auto after = view->table_boxes();
+                    bool exact = after.size() == before.size();
+                    for (std::size_t t = 0; exact && t < before.size(); ++t)
+                    {
+                        const bool was_carried = std::find(carried.begin(), carried.end(), t) != carried.end();
+                        exact = after[t] == (was_carried ? before[t].translated(0, travelled) : before[t]);
+                    }
+                    must(exact, std::string(what) + ": every table carried lands exactly where the drag took it, "
+                                                       "and the rest stay where they were");
+                    must(view->selection() == marked && opened.history_position() == steps_before + 1,
+                            std::string(what) + ": still marked, in one step of history");
+                    must(settled(), std::string(what) + ": let go, the room is given back and the canvas reaches "
+                                                           "just past the lowest table again");
+                    bar->setValue(bar->maximum());
+                    settle();
+                    const auto lowest_carried = deepest();
+                    must(lowest_carried <= bar->value() + scroll->viewport()->height(),
+                            std::string(what) + ": the tables carried can still be scrolled to");
+                    return std::pair{before, after};
+                };
+
+                // One table: the highest of them, pressed alone.
+                std::size_t highest = 0, lowest = 0;
+                for (std::size_t t = 0; t < boxes_opened.size(); ++t)
+                {
+                    if (boxes_opened[t].top() < boxes_opened[highest].top())
+                        highest = t;
+                    if (boxes_opened[t].bottom() > boxes_opened[lowest].bottom())
+                        lowest = t;
+                }
+                must(highest != lowest, "The Company schema has a highest table and a different lowest one");
+                view->select(std::nullopt);
+                settle();
+                const auto [one_before, one_after] = carry(highest, "One table");
+                must(view->selection() == std::vector{*view->preview().tables[highest].origin},
+                        "One table: it is the one marked");
+                {
+                    const auto moved = opened.project();
+                    const auto saved_at = relational_files.filePath("CarriedDown.erdx");
+                    must(opened_store.save(saved_at.toStdString(), moved).ok, "One table: the schema saves");
+                    const auto loaded = opened_store.load(saved_at.toStdString());
+                    must(loaded && *loaded.project == moved,
+                            "One table: and loads back with the table where it was let go, and nothing else");
+                }
+                child<QAction>(relational, "undoCommand")->trigger();
+                settle();
+                must(view->table_boxes() == one_before && opened.project() == as_opened && settled(),
+                        "One table: Undo puts it back");
+                child<QAction>(relational, "redoCommand")->trigger();
+                settle();
+                must(view->table_boxes() == one_after && settled(), "One table: Redo carries it down again");
+                child<QAction>(relational, "undoCommand")->trigger();
+                settle();
+
+                // Several marked: pressed on the highest, the room follows the
+                // lowest of them.
+                view->select(view->preview().tables[highest].origin);
+                view->toggle_mark(*view->preview().tables[lowest].origin);
+                settle();
+                must(view->selection().size() == 2, "Two tables are marked");
+                carry(highest, "Two marked");
+                child<QAction>(relational, "undoCommand")->trigger();
+                settle();
+                must(view->table_boxes() == boxes_opened && opened.project() == as_opened,
+                        "Two marked: Undo puts both back");
+
+                // Everything, by Select All.
+                view->select_all();
+                settle();
+                must(view->selection().size() == boxes_opened.size(), "Select All marks every table");
+                carry(highest, "Select All");
+                child<QAction>(relational, "undoCommand")->trigger();
+                settle();
+                must(view->table_boxes() == boxes_opened && opened.project() == as_opened,
+                        "Select All: Undo puts every table back");
+
+                // Upward or across, no room is given: the canvas is as it was.
+                view->select(view->preview().tables[lowest].origin);
+                settle();
+                bar->setValue(0);
+                settle();
+                {
+                    const auto size_was = view->size();
+                    const auto box = view->table_boxes()[lowest];
+                    const QPointF hold(box.center().x(), box.top() + 13);
+                    mouse(QEvent::MouseButtonPress, hold, Qt::LeftButton);
+                    mouse(QEvent::MouseMove, hold + QPointF(0, -10), Qt::LeftButton);
+                    must(view->size() == size_was, "Carried upward, the canvas is given no room");
+                    mouse(QEvent::MouseMove, hold + QPointF(10, 0), Qt::LeftButton);
+                    must(view->size() == size_was, "Carried across, the canvas is given no room");
+                    mouse(QEvent::MouseButtonRelease, hold + QPointF(10, 0), Qt::NoButton);
+                    settle();
+                    child<QAction>(relational, "undoCommand")->trigger();
+                    settle();
+                }
+
+                // The room is the view's own height, whatever size the window is.
+                std::vector<int> views;
+                for (const QSize window : {QSize(1280, 800), QSize(1440, 1080), QSize(1920, 1080)})
+                {
+                    relational.resize(window);
+                    settle();
+                    bar->setValue(0);
+                    settle();
+                    const auto box = view->table_boxes()[lowest];
+                    const QPointF hold(box.center().x(), box.top() + 13);
+                    view->select(std::nullopt);
+                    mouse(QEvent::MouseButtonPress, hold, Qt::LeftButton);
+                    mouse(QEvent::MouseMove, hold + QPointF(0, 40), Qt::LeftButton);
+                    const auto room = scroll->viewport()->height();
+                    views.push_back(room);
+                    must(view->minimumHeight() == static_cast<int>(view->table_boxes()[lowest].bottom() + room) &&
+                             view->height() == view->minimumHeight(),
+                         "At " + std::to_string(window.width()) + " px the canvas reaches the view's own height below "
+                                                                  "the table carried");
+                    mouse(QEvent::MouseButtonRelease, hold + QPointF(0, 40), Qt::NoButton);
+                    settle();
+                    must(settled(), "At " + std::to_string(window.width()) + " px, let go, the room is given back");
+                    child<QAction>(relational, "undoCommand")->trigger();
+                    settle();
+                }
+                must(views[0] < views[1], "A shorter window gives a shorter view, and so less room");
+                relational.resize(1440, 1080);
+                settle();
+
+                // Put away in the middle of a drag, the schema gives the room back.
+                {
+                    bar->setValue(0);
+                    settle();
+                    view->select(std::nullopt);
+                    const auto box = view->table_boxes()[highest];
+                    const QPointF hold(box.center().x(), box.top() + 13);
+                    mouse(QEvent::MouseButtonPress, hold, Qt::LeftButton);
+                    mouse(QEvent::MouseMove, hold + QPointF(0, 40), Qt::LeftButton);
+                    must(view->minimumHeight() > static_cast<int>(view->table_boxes()[highest].bottom() + 30),
+                            "Carried down, the canvas has room below");
+                    relational.show_home(true);
+                    settle();
+                    double lowest_now = 0;
+                    for (const auto &one : view->table_boxes())
+                        lowest_now = std::max(lowest_now, one.bottom());
+                    must(view->minimumHeight() == static_cast<int>(lowest_now + 30),
+                            "Put away mid-drag, the schema gives the room back");
+                    relational.show_home(false);
+                    settle();
+                    mouse(QEvent::MouseButtonRelease, hold + QPointF(0, 40), Qt::NoButton);
+                    settle();
+                    must(settled(), "And the drag let go, the canvas is just past what is on it");
+                    while (opened.project() != as_opened && opened.can_undo())
+                    {
+                        child<QAction>(relational, "undoCommand")->trigger();
+                        settle();
+                    }
+                }
+                must(opened.project() == as_opened && view->table_boxes() == boxes_opened,
+                        "And the Company schema is as it opened");
+                opened.mark_saved(opened.revision());
+            }
+
             // A table's lettering is measured once, not on every movement of the
             // pointer (2026-10-06): a drag moves tables and changes none of what
             // they say. Whatever does change what a table measures -- a name, a

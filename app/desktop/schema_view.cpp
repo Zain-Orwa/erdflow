@@ -1311,10 +1311,33 @@ void SchemaView::arrange() {
         measure(as_shape(line));
     }
     if (shaping_shape_) measure(shaping_shape_->second);
+    // While tables are carried downward the canvas reaches a view further than
+    // the lowest of them (see drag_room); otherwise it reaches just past what
+    // is on it, as it always has.
+    const auto room = drag_room();
+    const auto high = static_cast<int>(std::max(tallest + 30, room));
+    const bool was_roomy = drag_roomy_;
+    drag_roomy_ = room > tallest + 30;
     // Every caller routes the lines as soon as this returns, so the resize
     // this may cause does not route them as well (see sizing_canvas_).
     const QScopedValueRollback<bool> sizing(sizing_canvas_, true);
-    setMinimumSize(static_cast<int>(widest + 40), static_cast<int>(tallest + 30));
+    setMinimumSize(static_cast<int>(widest + 40), high);
+    // The room a drag was given is taken back here and now, under the same
+    // guard, rather than left for the scroll area to take back later: that
+    // resize would route every line again, straight after the caller has.
+    if (was_roomy && !drag_roomy_ && height() > high)
+        if (auto* area = scroller()) resize(width(), std::max(high, area->viewport()->height()));
+}
+
+double SchemaView::drag_room() const {
+    if (!dragging_ || carried_by_.y() <= 0 || !isVisible()) return 0;
+    auto* area = scroller();
+    if (!area) return 0;
+    double lowest = 0;
+    for (std::size_t t = 0; t < placed_.size() && t < preview_.tables.size(); ++t)
+        if (preview_.tables[t].origin && dragging_at_.contains(*preview_.tables[t].origin))
+            lowest = std::max(lowest, placed_[t].box.bottom());
+    return lowest + area->viewport()->height();
 }
 
 SchemaView::Shape SchemaView::as_shape(const domain::SchemaLine& line) {
@@ -2007,6 +2030,14 @@ void SchemaView::mouseReleaseEvent(QMouseEvent* event) {
     // One edit for the whole drag, written when the hand lets go. Editing on
     // every frame would put a pixel of movement into the history each time.
     commit_arrangement();
+    // Writing the edit has the schema arranged again, which gives back the
+    // room a drag downward was given. A view nobody refreshes gives it back
+    // itself.
+    if (drag_roomy_) {
+        arrange();
+        reroute();
+        update();
+    }
     // And, once it is written, whatever is wrong with where the end was put.
     // Said on release rather than during the drag: a warning that flickered as
     // the pointer crossed each row would be noise rather than news.
@@ -2286,6 +2317,11 @@ void SchemaView::hideEvent(QHideEvent* event) {
     if (linking_) {
         linking_.reset();
         update();
+    }
+    // Nor is the room a drag downward was given left below the schema.
+    if (drag_roomy_) {
+        arrange();
+        reroute();
     }
 }
 

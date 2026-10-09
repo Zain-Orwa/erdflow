@@ -703,6 +703,15 @@ private:
     // done, so routing on that resize as well would do the whole of the
     // costliest work twice for one movement of the pointer (2026-10-06).
     bool sizing_canvas_ = false;
+    // How far down the canvas has to reach while tables are being carried
+    // downward: a whole view below the lowest of them, so the hand can scroll
+    // on and go on carrying them in the same drag rather than letting go to
+    // make room. Nothing while no drag is going down, or while the schema is
+    // put away (2026-10-09).
+    [[nodiscard]] double drag_room() const;
+    // Whether the canvas last arranged was made taller than its contents for
+    // that room, so the room is given back as soon as it is no longer wanted.
+    bool drag_roomy_ = false;
     // What the project says about the arrangement, in the painter's units.
     // Read from the model rather than kept here, so that an undo of a move or
     // of a shape is seen the same way as an undo of anything else.
