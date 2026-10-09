@@ -206,8 +206,14 @@ if(BUILD_TESTING)
         ERDFLOW_VISUAL_BASELINES="${CMAKE_SOURCE_DIR}/tests/visual"
         ERDFLOW_VISUAL_OUTPUT="${CMAKE_BINARY_DIR}/visual-output")
     add_test(NAME visual COMMAND visual_tests)
+    set(erdflow_offscreen_test_environment "QT_QPA_PLATFORM=offscreen")
+    # On Windows the offscreen platform reads fonts only from QT_QPA_FONTDIR or
+    # Qt's own lib/fonts, which Qt no longer ships, so it would draw no letters.
+    if(WIN32)
+        list(APPEND erdflow_offscreen_test_environment "QT_QPA_FONTDIR=C:/Windows/Fonts")
+    endif()
     set_tests_properties(canvas theme desktop_export desktop_relational desktop_window desktop_smoke visual
-                         PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
+                         PROPERTIES ENVIRONMENT "${erdflow_offscreen_test_environment}" TIMEOUT 30)
     # The desktop suite drives the whole window through both workspaces and
     # outgrew 30 s in Debug with the Schema Explorer's tests (Zain, 2026-09-29).
     # Each of its parts keeps the limit the whole suite had.

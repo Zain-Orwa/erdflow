@@ -41,6 +41,7 @@
 #include <QEnterEvent>
 #include <QPointer>
 #include <QFontMetrics>
+#include <QFontInfo>
 #include <QFrame>
 #include <QGraphicsItem>
 #include <QGraphicsScene>
@@ -79,6 +80,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <set>
 #include <stdexcept>
@@ -265,6 +267,131 @@ namespace
                     ++found;
             }
         return found;
+    }
+
+    // Temporary diagnostics, printed only when a colour check fails, to learn
+    // what Linux CI actually draws where macOS passes.
+    QString rgba_said(QRgb pixel)
+    {
+        return QString("(%1,%2,%3,%4)").arg(qRed(pixel)).arg(qGreen(pixel)).arg(qBlue(pixel)).arg(qAlpha(pixel));
+    }
+
+    QString commonest_said(const std::map<QRgb, int> &counts, std::size_t how_many)
+    {
+        std::vector<std::pair<QRgb, int>> sorted(counts.begin(), counts.end());
+        std::sort(sorted.begin(), sorted.end(), [](const auto &a, const auto &b)
+                  { return a.second > b.second; });
+        QStringList said;
+        for (std::size_t i = 0; i < sorted.size() && i < how_many; ++i)
+            said << rgba_said(sorted[i].first) + " x" + QString::number(sorted[i].second);
+        return said.join(", ");
+    }
+
+    std::string fk_gutter_report(const QImage &painted, const QRectF &row, const QColor &valid,
+                                 const QColor &warning, const QFont &requested)
+    {
+        const QFontInfo resolved(requested);
+        std::map<QRgb, int> counts;
+        int scanned = 0;
+        bool exact_valid = false;
+        bool exact_warning = false;
+        QRgb closest = 0;
+        double nearest = std::numeric_limits<double>::max();
+        for (int y = static_cast<int>(row.top()) + 1; y < row.bottom(); ++y)
+            for (int x = static_cast<int>(row.left()) + 1; x < row.left() + 42; ++x)
+            {
+                const auto colour = painted.pixelColor(x, y);
+                ++scanned;
+                ++counts[colour.rgba()];
+                exact_valid = exact_valid || colour == valid;
+                exact_warning = exact_warning || colour == warning;
+                const auto distance = std::hypot(colour.red() - valid.red(), colour.green() - valid.green(),
+                                                 colour.blue() - valid.blue());
+                if (distance < nearest)
+                {
+                    nearest = distance;
+                    closest = colour.rgba();
+                }
+            }
+        QString said;
+        said += QString("[FK diagnostic] row (%1,%2 %3x%4) in a %5x%6 picture at device pixel ratio %7\n")
+                    .arg(row.left()).arg(row.top()).arg(row.width()).arg(row.height())
+                    .arg(painted.width()).arg(painted.height()).arg(painted.devicePixelRatio());
+        said += QString("[FK diagnostic] font requested '%1' %2pt; resolved '%3' style '%4' %5pt %6px, exact match %7\n")
+                    .arg(requested.family()).arg(requested.pointSizeF()).arg(resolved.family())
+                    .arg(resolved.styleName()).arg(resolved.pointSizeF()).arg(resolved.pixelSize())
+                    .arg(resolved.exactMatch() ? "yes" : "no");
+        said += QString("[FK diagnostic] scanned %1 pixels; exact theme.valid %2 present: %3; exact theme.warning %4 present: %5\n")
+                    .arg(scanned).arg(valid.name()).arg(exact_valid ? "yes" : "no")
+                    .arg(warning.name()).arg(exact_warning ? "yes" : "no");
+        said += QString("[FK diagnostic] closest to theme.valid: %1 at RGB distance %2\n")
+                    .arg(rgba_said(closest)).arg(nearest, 0, 'f', 1);
+        said += "[FK diagnostic] commonest colours: " + commonest_said(counts, 12) + "\n";
+        return said.toStdString();
+    }
+
+    std::string colour_report(const QWidget &window, const QImage &picture)
+    {
+        const auto image = picture.convertToFormat(QImage::Format_ARGB32);
+        const auto ratio = image.devicePixelRatio();
+        constexpr int attributed_at_most = 50000;
+        int total = 0;
+        QRect bounds;
+        QStringList first;
+        std::map<QRgb, int> chromatic;
+        std::map<const QWidget *, std::pair<int, QRect>> by_widget;
+        for (int y = 0; y < image.height(); ++y)
+            for (int x = 0; x < image.width(); ++x)
+            {
+                const auto pixel = image.pixel(x, y);
+                if (qAlpha(pixel) < 8)
+                    continue;
+                const auto high = std::max({qRed(pixel), qGreen(pixel), qBlue(pixel)});
+                const auto low = std::min({qRed(pixel), qGreen(pixel), qBlue(pixel)});
+                if (high - low <= 12)
+                    continue;
+                ++total;
+                bounds |= QRect(x, y, 1, 1);
+                if (first.size() < 12)
+                    first << QString("(%1,%2)=%3").arg(x).arg(y).arg(rgba_said(pixel));
+                ++chromatic[pixel];
+                if (total > attributed_at_most)
+                    continue;
+                const QPoint at(static_cast<int>(x / ratio), static_cast<int>(y / ratio));
+                const QWidget *under = window.childAt(at);
+                auto &entry = by_widget[under ? under : &window];
+                ++entry.first;
+                entry.second |= QRect(at, QSize(1, 1));
+            }
+        QString said;
+        said += QString("[Plain diagnostic] %1 coloured pixels within (%2,%3 %4x%5) of a %6x%7 picture at device pixel ratio %8\n")
+                    .arg(total).arg(bounds.x()).arg(bounds.y()).arg(bounds.width()).arg(bounds.height())
+                    .arg(image.width()).arg(image.height()).arg(ratio);
+        said += "[Plain diagnostic] first: " + first.join(", ") + "\n";
+        said += "[Plain diagnostic] commonest coloured values: " + commonest_said(chromatic, 10) + "\n";
+        std::vector<std::pair<const QWidget *, std::pair<int, QRect>>> widgets(by_widget.begin(), by_widget.end());
+        std::sort(widgets.begin(), widgets.end(), [](const auto &a, const auto &b)
+                  { return a.second.first > b.second.first; });
+        for (std::size_t i = 0; i < widgets.size() && i < 8; ++i)
+        {
+            const auto *widget = widgets[i].first;
+            const auto &[count, area] = widgets[i].second;
+            QStringList chain;
+            for (const auto *up = widget->parentWidget(); up && chain.size() < 6; up = up->parentWidget())
+                chain << QString("%1#%2").arg(up->metaObject()->className(), up->objectName());
+            said += QString("[Plain diagnostic] %1 px in %2 '%3' over (%4,%5 %6x%7) in window coordinates; text '%8'; font '%9' %10px; inside %11\n")
+                        .arg(count).arg(widget->metaObject()->className(), widget->objectName())
+                        .arg(area.x()).arg(area.y()).arg(area.width()).arg(area.height())
+                        .arg((widget->property("text").isValid() ? widget->property("text")
+                                                                 : widget->property("currentText"))
+                                 .toString()
+                                 .left(60))
+                        .arg(QFontInfo(widget->font()).family()).arg(QFontInfo(widget->font()).pixelSize())
+                        .arg(chain.join(" < "));
+        }
+        if (total > attributed_at_most)
+            said += QString("[Plain diagnostic] only the first %1 coloured pixels were attributed to widgets\n").arg(attributed_at_most);
+        return said.toStdString();
     }
 
     void QTest_activate(QListWidget *list, QListWidgetItem *item)
@@ -2184,6 +2311,14 @@ namespace
                                 green = green || painted.pixelColor(x, y) == ink.valid;
                                 orange = orange || painted.pixelColor(x, y) == ink.warning;
                             }
+                        if (!(green && !orange))
+                        {
+                            // The font the schema paints its rows in, built as it builds it.
+                            auto requested = view.font();
+                            requested.setFamily("Menlo");
+                            requested.setPointSizeF(view.font().pointSizeF() - 0.5);
+                            std::cerr << fk_gutter_report(painted, rows[t][c], ink.valid, ink.warning, requested);
+                        }
                         require(green && !orange, "FK badges use green ink and never PK orange");
 
                         const auto match = std::find_if(lines.begin(), lines.end(), [&](const auto &line)
@@ -5927,7 +6062,10 @@ int main(int argc, char **argv)
                 const auto wearing = window.canvas()->theme_id();
                 window.set_theme(desktop::ThemeId::Plain);
                 settle();
-                require(coloured_pixels(window.grab().toImage()) == 0,
+                const auto plain_picture = window.grab().toImage();
+                if (coloured_pixels(plain_picture) != 0)
+                    std::cerr << colour_report(window, plain_picture);
+                require(coloured_pixels(plain_picture) == 0,
                         "And the home screen has no colour anywhere: cards, badges, drawing, decoration");
                 window.set_theme(wearing);
                 settle();
