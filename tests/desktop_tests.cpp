@@ -319,18 +319,18 @@ namespace
                                               { return apart(pixel, ink) < apart(pixel, ground); }));
     }
 
-    // A window photographed with its lettering smoothed in greys alone. Where
+    // A widget photographed with its lettering smoothed in greys alone. Where
     // the platform smooths text with the screen's red, green and blue
     // subpixels, every grey letter is drawn with a coloured fringe the
     // application never chose. Each widget keeps its own font, told only to
     // smooth in greys -- a widget a style sheet dresses does not inherit its
     // parent's. Only what is on show is touched, being all a photograph holds;
     // it is checked to stay where it was, then put back and checked again.
-    QImage grab_without_subpixel_text(QWidget &window)
+    QImage grab_without_subpixel_text(QWidget &pictured)
     {
-        std::vector<QPointer<QWidget>> widgets{&window};
-        for (auto *widget : window.findChildren<QWidget *>())
-            if (widget->window() == &window && widget->isVisible())
+        std::vector<QPointer<QWidget>> widgets{&pictured};
+        for (auto *widget : pictured.findChildren<QWidget *>())
+            if (widget->window() == pictured.window() && widget->isVisible())
                 widgets.emplace_back(widget);
         std::vector<QFont> fonts;
         std::vector<bool> own;
@@ -357,7 +357,7 @@ namespace
                         "Every widget's lettering is smoothed in greys for the photograph");
                 require(widgets[i]->geometry() == places[i], "Smoothing the lettering moves and resizes nothing");
             }
-        const auto picture = window.grab().toImage();
+        const auto picture = pictured.grab().toImage();
         // Parents before their children, as findChildren lists them. A style
         // sheet lays its lettering over a widget's own font when the style
         // polishes the widget, so one it dresses is polished again to have it.
@@ -2266,6 +2266,19 @@ namespace
             desktop::SchemaView view(model);
             view.set_theme(desktop::theme(desktop::ThemeId::Azure));
             view.resize(1600, 1400);
+            const auto index_of = [&](domain::ElementRef origin)
+            {
+                const auto &tables = view.preview().tables;
+                const auto found = std::find_if(tables.begin(), tables.end(), [&](const auto &table)
+                                                { return table.origin == origin; });
+                require(found != tables.end(), "Each of the three is a table");
+                return static_cast<std::size_t>(found - tables.begin());
+            };
+            // How much further right the bridge reaches than either participant
+            // when they are stacked; and how much open canvas beside a table a
+            // line leaving it needs, its stand-off and lanes included.
+            constexpr double stagger = 60;
+            constexpr double corridor_width = 60;
             for (const bool stacked : {false, true})
             {
                 require(model.move_schema_tables({{domain::ElementRef{student}, {150, 100}},
@@ -2274,6 +2287,23 @@ namespace
                             .ok,
                         "Place tables");
                 view.refresh();
+                if (stacked)
+                {
+                    // Stacked tables have no facing sides, so a line leaves by
+                    // whichever side their edges come nearer to lining up on,
+                    // unless the other is cleaner. Tables whose right edges each
+                    // platform's lettering may happen to line up too are made to
+                    // line up on the left alone: the bridge, plainly wider.
+                    const auto natural = view.table_boxes();
+                    domain::SchemaTableBox wider;
+                    wider.width = std::max(natural[index_of(domain::ElementRef{student})].width(),
+                                           natural[index_of(domain::ElementRef{course})].width()) +
+                                  stagger;
+                    wider.height = natural[index_of(domain::ElementRef{bridge})].height();
+                    require(model.resize_schema_tables({{domain::ElementRef{bridge}, wider}}).ok,
+                            "The bridge is made wider than either participant");
+                    view.refresh();
+                }
                 const auto boxes = view.table_boxes();
                 const auto rows = view.row_boxes();
                 const auto lines = view.line_shapes();
@@ -2306,11 +2336,32 @@ namespace
                         const auto match = std::find_if(lines.begin(), lines.end(), [&](const auto &line)
                                                         { return std::abs(line.front().y() - rows[t][c].center().y()) < 0.01 && std::abs(line.back().y() - rows[*column.references][column.references_column].center().y()) < 0.01; });
                         require(match != lines.end(), "The exact FK row connects to its referenced PK row");
+                        // The left is shown to be the side to leave by before the
+                        // line is held to it. Side by side, the referenced table
+                        // stands wholly to the left with open canvas between them;
+                        // stacked, the two line up on the left and plainly not on
+                        // the right. Either way no table stands where the line runs.
+                        const auto &own = boxes[t];
+                        const auto &referenced = boxes[*column.references];
+                        const auto across = stacked ? own.left() - corridor_width : referenced.right();
+                        if (stacked)
+                            require(std::abs(own.left() - referenced.left()) < 0.01 &&
+                                        own.right() - referenced.right() >= stagger - 0.01,
+                                    "Stacked, the tables line up on the left and not on the right");
+                        else
+                            require(own.left() - referenced.right() >= corridor_width,
+                                    "Side by side, the referenced table stands wholly to the left");
+                        const QRectF corridor(QPointF(across, std::min(own.top(), referenced.top())),
+                                              QPointF(own.left(), std::max(own.bottom(), referenced.bottom())));
+                        require(std::none_of(boxes.begin(), boxes.end(), [&](const QRectF &box)
+                                             { return box.intersects(corridor); }),
+                                "And nothing stands in the way on the left");
                         require(std::abs(match->front().x() - boxes[t].left()) < 0.01,
                                 "A clear left-side FK attachment is preferred");
                     }
                 }
             }
+            require(model.undo().ok, "The bridge is given back the width it takes of itself");
             // Put an obstacle immediately left of the FK rows: the automatic
             // attachment must use the right while retaining the same rows.
             const auto obstacle = std::get<domain::EntityId>(*model.create_entity("Obstacle", {}).created);
@@ -9414,7 +9465,10 @@ int main(int argc, char **argv)
                 const auto wearing = window.canvas()->theme_id();
                 window.set_theme(desktop::ThemeId::Plain);
                 settle_for(200);
-                require(coloured_pixels(schema->grab().toImage()) == 0,
+                // Photographed with its lettering smoothed in greys, as the
+                // whole window is: names, types and keys are written in grey,
+                // which subpixel smoothing would fringe with colour of its own.
+                require(coloured_pixels(grab_without_subpixel_text(*schema)) == 0,
                         "Under Plain the schema's lines, keys and tables have no colour");
                 window.set_theme(wearing);
                 settle_for(200);
