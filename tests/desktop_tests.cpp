@@ -4537,6 +4537,128 @@ namespace
             model.mark_saved(model.revision());
         }
     }
+
+    // A locked tool's padlock is seen whatever room its row has (2026-10-09).
+    // A row too narrow for names shows the tools' icons alone, and the padlock
+    // that follows a locked tool's name went with it: on Windows, where display
+    // scaling leaves less room, no locked tool looked locked. There the padlock
+    // is painted on the icon, gold, grey under Plain, and gone once unlocked.
+    void tool_lock_mark_tests(infrastructure::QtIdGenerator &ids)
+    {
+        application::Editor editor(ids);
+        infrastructure::ErdxProjectStore store;
+        desktop::MainWindow window(editor, store, ids);
+        window.resize(1440, 920);
+        window.show();
+        window.show_home(false);
+        settle_for(300);
+        const auto drawn = [](QWidget *button)
+        {
+            QImage image(button->size() * 2, QImage::Format_ARGB32_Premultiplied);
+            image.setDevicePixelRatio(2);
+            image.fill(button->palette().color(QPalette::Window));
+            button->render(&image);
+            return image;
+        };
+        // Gold: a strong, bright colour between orange and yellow.
+        const auto gold = [](const QImage &image, int right)
+        {
+            int count = 0;
+            for (int y = 0; y < image.height(); ++y)
+                for (int x = 0; x < std::min(right, image.width()); ++x)
+                {
+                    const auto colour = image.pixelColor(x, y);
+                    if (colour.hsvSaturation() > 110 && colour.value() > 150 && colour.hsvHue() >= 33 && colour.hsvHue() <= 55)
+                        ++count;
+                }
+            return count;
+        };
+        const auto differing = [](const QImage &one, const QImage &other)
+        {
+            int count = 0;
+            for (int y = 0; y < std::min(one.height(), other.height()); ++y)
+                for (int x = 0; x < std::min(one.width(), other.width()); ++x)
+                {
+                    const auto a = one.pixelColor(x, y);
+                    const auto b = other.pixelColor(x, y);
+                    if (std::max({std::abs(a.red() - b.red()), std::abs(a.green() - b.green()), std::abs(a.blue() - b.blue())}) > 48)
+                        ++count;
+                }
+            return count;
+        };
+        const auto lock = [](QWidget *button)
+        {
+            QMouseEvent twice(QEvent::MouseButtonDblClick, QPointF(5, 5), button->mapToGlobal(QPointF(5, 5)),
+                              Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+            QApplication::sendEvent(button, &twice);
+            settle();
+        };
+        auto *row = child<QToolBar>(window, "modelTools");
+        auto *select = child<QAction>(window, "toolSelect");
+        child<QAction>(window, "isaGeneralization")->trigger();
+        select->trigger();
+        settle();
+        const std::array<std::tuple<const char *, desktop::Tool, QToolButton *>, 6> tools{{
+            {"Entity", desktop::Tool::Entity, qobject_cast<QToolButton *>(row->widgetForAction(child<QAction>(window, "toolEntity")))},
+            {"Attribute", desktop::Tool::Attribute, qobject_cast<QToolButton *>(row->widgetForAction(child<QAction>(window, "toolAttribute")))},
+            {"Relationship", desktop::Tool::Relationship, qobject_cast<QToolButton *>(row->widgetForAction(child<QAction>(window, "toolRelationship")))},
+            {"Generalization", desktop::Tool::Generalization, child<QToolButton>(window, "isaButton")},
+            {"Connect", desktop::Tool::Connect, child<QToolButton>(window, "connectButton")},
+            {"Note", desktop::Tool::Note, qobject_cast<QToolButton *>(row->widgetForAction(child<QAction>(window, "toolNote")))},
+        }};
+        const QString padlock = QStringLiteral(" \U0001F512");
+        for (const auto theme : {desktop::ThemeId::Azure, desktop::ThemeId::HighContrast, desktop::ThemeId::Plain})
+        {
+            window.set_theme(theme);
+            settle();
+            const bool colourless = theme == desktop::ThemeId::Plain;
+            for (const auto &[name, tool, button] : tools)
+            {
+                require(button && button->toolButtonStyle() == Qt::ToolButtonIconOnly,
+                        "At 1440 wide the diagram's tools show their icons alone");
+                button->defaultAction()->trigger();
+                settle();
+                require(window.canvas()->tool() == tool && !window.canvas()->tool_locked() && !button->text().endsWith(padlock),
+                        "A tool taken up once is not locked, and its button says nothing of a lock");
+                const auto once = drawn(button);
+                require(gold(once, once.width()) == 0, "And no padlock is drawn on it");
+                lock(button);
+                require(window.canvas()->tool() == tool && window.canvas()->tool_locked() && button->text() == name + padlock,
+                        "Double-clicked, the tool is locked and its button says so");
+                const auto locked = drawn(button);
+                require(locked.size() == once.size(), "Locking does not change the button's size");
+                require(differing(locked, once) >= 60, "A locked tool showing only its icon wears a padlock on it");
+                if (colourless)
+                    require(gold(locked, locked.width()) == 0, "Under Plain the padlock is grey");
+                else
+                    require(gold(locked, locked.width()) >= 60, "The padlock on its icon is gold");
+                select->trigger();
+                settle();
+                require(!window.canvas()->tool_locked() && !button->text().endsWith(padlock),
+                        "Put down, the tool is unlocked");
+                button->defaultAction()->trigger();
+                settle();
+                require(differing(drawn(button), once) == 0, "Taken up once again, its button is drawn as before, padlock gone");
+                select->trigger();
+                settle();
+            }
+        }
+        // With room for names the padlock follows the name, as it always has,
+        // and the icon carries none of its own.
+        window.set_theme(desktop::ThemeId::Azure);
+        window.resize(2400, 920);
+        settle_for(200);
+        for (const auto &[name, tool, button] : tools)
+        {
+            require(button->toolButtonStyle() == Qt::ToolButtonTextBesideIcon, "At 2400 wide the tools show their names");
+            lock(button);
+            require(window.canvas()->tool_locked() && button->text() == name + padlock, "A locked tool's name carries the padlock");
+            const auto image = drawn(button);
+            require(gold(image, (button->iconSize().width() + 12) * 2) == 0, "And its icon wears none of its own");
+            select->trigger();
+            settle();
+        }
+    }
 }
 
 int main(int argc, char **argv)
@@ -4590,6 +4712,8 @@ int main(int argc, char **argv)
             std::cout << "Relational Design desktop tests passed\n";
             return 0;
         }
+        if (whole || window_part)
+            tool_lock_mark_tests(ids);
         application::Editor editor(ids);
         infrastructure::ErdxProjectStore project_store;
         desktop::MainWindow window(editor, project_store, ids);

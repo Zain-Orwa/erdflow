@@ -58,6 +58,7 @@
 #include <QMimeData>
 #include <QPaintEvent>
 #include <QPainter>
+#include <QPainterPath>
 #include <QPlainTextEdit>
 #include <QRegularExpression>
 #include <QPushButton>
@@ -1780,6 +1781,59 @@ namespace erdflow::desktop
                 if (ancestor->objectName() == QLatin1String("searchBar"))
                     return;
             widget->clearFocus();
+        }
+
+        // The padlock a locked tool wears on its icon where its button shows no
+        // name, in the bottom-right corner as Pan's is. Gold as the primary key's
+        // mark is, with a steel shackle, and grey where the theme has no colour.
+        // Painted rather than taken from a font, so it is the same everywhere.
+        void paint_icon_lock(QToolButton &button, bool greyed)
+        {
+            QStyleOptionToolButton option;
+            option.initFrom(&button);
+            if (button.popupMode() == QToolButton::MenuButtonPopup)
+            {
+                option.features |= QStyleOptionToolButton::MenuButtonPopup;
+                option.subControls |= QStyle::SC_ToolButtonMenu;
+            }
+            // The icon stands centred in the part of the button that is not its
+            // arrow.
+            const QRectF room = button.style()->subControlRect(QStyle::CC_ToolButton, &option, QStyle::SC_ToolButton, &button);
+            QRectF icon(QPointF(), QSizeF(button.iconSize()));
+            icon.moveCenter(room.center());
+            const auto side = icon.width();
+            const QRectF lock(icon.left() + side * 0.56, icon.top() + side * 0.44, side * 0.4, side * 0.5);
+            const auto ink = [greyed](const char *colour)
+            {
+                const auto chosen = QColor::fromString(QLatin1String(colour));
+                const auto level = qGray(chosen.rgb());
+                return greyed ? QColor(level, level, level) : chosen;
+            };
+            QPainter painter(&button);
+            painter.setRenderHint(QPainter::Antialiasing);
+            const QRectF bow(lock.left() + lock.width() * 0.2, lock.top(), lock.width() * 0.6, lock.height() * 0.6);
+            const auto shoulder = lock.top() + lock.height() * 0.5;
+            QPainterPath shackle;
+            shackle.moveTo(bow.left(), shoulder);
+            shackle.lineTo(bow.left(), bow.center().y());
+            shackle.arcTo(bow, 180, -180);
+            shackle.lineTo(bow.right(), shoulder);
+            painter.setBrush(Qt::NoBrush);
+            painter.setPen(QPen(ink("#5F666E"), std::max<qreal>(1.2, lock.width() * 0.17), Qt::SolidLine, Qt::FlatCap));
+            painter.drawPath(shackle);
+            const QRectF body(lock.left(), lock.top() + lock.height() * 0.42, lock.width(), lock.height() * 0.58);
+            QLinearGradient gold(body.topLeft(), body.bottomLeft());
+            gold.setColorAt(0, ink("#FFE07A"));
+            gold.setColorAt(0.45, ink("#F8CD4A"));
+            gold.setColorAt(1, ink("#E0A417"));
+            painter.setPen(QPen(ink("#8A5A04"), std::max<qreal>(1.0, lock.width() * 0.08)));
+            painter.setBrush(gold);
+            painter.drawRoundedRect(body, lock.width() * 0.14, lock.width() * 0.14);
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(ink("#6B4503"));
+            const QPointF hole(body.center().x(), body.top() + body.height() * 0.42);
+            painter.drawEllipse(hole, lock.width() * 0.1, lock.width() * 0.1);
+            painter.drawRect(QRectF(hole.x() - lock.width() * 0.04, hole.y(), lock.width() * 0.08, body.height() * 0.3));
         }
     }
 
@@ -6542,6 +6596,19 @@ namespace erdflow::desktop
             place_schema_controls();
             return false;
         }
+        // A locked tool says so after its name, but a row too narrow for names
+        // shows its buttons' icons alone, and the padlock went with the name: a
+        // locked tool looked no different from one taken up once (2026-10-09).
+        // There the button is drawn as it always is and the padlock put on its icon.
+        if (event->type() == QEvent::Paint)
+            if (auto *button = qobject_cast<QToolButton *>(watched);
+                button && button->toolButtonStyle() == Qt::ToolButtonIconOnly &&
+                button->text().endsWith(QStringLiteral(" \U0001F512")))
+            {
+                watched->event(event);
+                paint_icon_lock(*button, colourless(theme_));
+                return true;
+            }
         if (event->type() == QEvent::MouseButtonDblClick)
         {
             if (watched == static_cast<QObject *>(findChild<QToolButton *>("canvasPan")))
