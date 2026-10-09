@@ -1,5 +1,4 @@
-
-name: "🐛 Bug Report"
+name: "Bug Report"
 description: "Report a bug, crash, regression, or incorrect behavior in ERDFlow."
 title: "[Bug]: "
 labels: ["bug"]
@@ -11,8 +10,13 @@ body:
 
         Before submitting:
         - Search existing issues for duplicates.
-        - Use the latest available version when possible.
+        - Use the latest `main` or the latest available version when possible.
         - Do not include passwords, tokens, or private data.
+        - Do not upload private or sensitive database designs, client data, or
+          confidential `.erdx` projects. Reduce the problem to a small example
+          you are free to share.
+
+        Something is slow rather than wrong? Please use the **Performance** form instead.
 
   - type: dropdown
     id: area
@@ -22,12 +26,15 @@ body:
       options:
         - Conceptual Design
         - Relational Schema
-        - Physical / Table Design
-        - SQL Generation
-        - Data Grid
+        - Schema conversion (Conceptual ↔ Schema)
+        - Relationships / Connectors
+        - Rendering / Layout
+        - Workspace / UI
         - Import / Export
-        - Project Save / Load
-        - Application UI
+        - Save / Load
+        - Examples / Templates
+        - Build / CI
+        - Performance
         - Other
     validations:
       required: true
@@ -49,7 +56,7 @@ body:
     id: version
     attributes:
       label: ERDFlow Version
-      description: Enter the version or commit hash, if known.
+      description: Enter the version or commit hash, if known (for a source build, `git rev-parse --short HEAD`).
       placeholder: "Example: commit abc1234"
     validations:
       required: false
@@ -70,7 +77,7 @@ body:
       description: Provide exact steps to reproduce the problem.
       placeholder: |
         1. Open ERDFlow.
-        2. Create or open a project.
+        2. Create or open a project (for example, an M:M relationship between two entities).
         3. Select...
         4. Observe...
     validations:
@@ -112,10 +119,11 @@ body:
       options:
         - label: Undo / Redo
         - label: Save / Load
-        - label: Conceptual to Schema conversion
+        - label: Conceptual ↔ Schema conversion
         - label: Schema editing
         - label: Relationships / Connectors
         - label: Rendering / Layout
+        - label: Import / Export
         - label: None of the above
 
   - type: textarea
@@ -124,7 +132,8 @@ body:
       label: Screenshots, Logs, or Example Files
       description: |
         Attach screenshots, relevant logs, or a minimal
-        example project if available. Remove sensitive data.
+        example project if available. Remove sensitive data, and do not attach
+        private database designs or confidential `.erdx` projects.
     validations:
       required: false
 

@@ -212,3 +212,9 @@ The current development build has been verified on macOS arm64. Windows/Linux
 support and release packaging remain unverified. The project is released under
 the [MIT License](LICENSE); a dependency/module license review for
 distribution has not yet been performed.
+
+## Contributing
+
+Contributions are welcome: bug reports, feature ideas, documentation
+improvements and code. Read [CONTRIBUTING.md](CONTRIBUTING.md) to get started,
+and see [SECURITY.md](SECURITY.md) for how to report a vulnerability privately.
