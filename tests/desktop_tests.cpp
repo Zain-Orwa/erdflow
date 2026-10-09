@@ -20,6 +20,7 @@
 #include "app/desktop/schema_explorer.hpp"
 #include "infrastructure/project_store.hpp"
 
+#include <QAbstractAnimation>
 #include <QAction>
 #include <cmath>
 #include <QDebug>
@@ -124,6 +125,30 @@ namespace
             QApplication::processEvents(QEventLoop::AllEvents, 5);
             settle();
         }
+    }
+    // Lets whatever is moving in a window come to rest -- a panel rising over
+    // 280 ms, or falling away -- however long the machine takes over it. A
+    // fixed wait is longer than the move on a quick machine and may be shorter
+    // than it on a slow one; this waits exactly as long as the move does
+    // (2026-10-09). Only for a move with nothing timed to follow it: opening
+    // the schema full, raising the Conceptual preview and converting each do
+    // something more a little after their panel lands.
+    void settle_motion(const QWidget &window)
+    {
+        QElapsedTimer clock;
+        clock.start();
+        const auto moving = [&]
+        {
+            const auto animations = window.findChildren<QAbstractAnimation *>();
+            return std::any_of(animations.begin(), animations.end(), [](const QAbstractAnimation *animation)
+                               { return animation->state() == QAbstractAnimation::Running; });
+        };
+        while (moving())
+        {
+            require(clock.elapsed() < 10000, "What moves in the window comes to rest");
+            QApplication::processEvents(QEventLoop::AllEvents, 5);
+        }
+        settle();
     }
     template <class T>
     T *child(desktop::MainWindow &window, const char *name)
@@ -723,24 +748,14 @@ namespace
         state(false, false, false);
         std::cout << "Export state tests passed\n";
     }
-}
 
-int main(int argc, char **argv)
-{
-    QApplication app(argc, argv);
-    // The window remembers the chosen theme. Point that at a throwaway domain so
-    // running the tests cannot disturb the real preferences.
-    QCoreApplication::setOrganizationName("ERDFlowTests");
-    QCoreApplication::setApplicationName("ERDFlowTests");
-    // Start from nothing, so a remembered value has to be written by this run
-    // rather than left behind by the last one.
-    QSettings().clear();
-    try
+    // Relational Design's checks that come first, each in a window of its own:
+    // the Explorer's order, where the examples are offered, Relational
+    // Design's own examples and template, a key on a relationship, and lines
+    // whose ends follow their rows. With the next, they run as a part of the
+    // suite on their own as well as in the whole of it (2026-10-09; see main).
+    void relational_design_tests(infrastructure::QtIdGenerator &ids)
     {
-        export_state_tests();
-        if (QCoreApplication::arguments().contains("--export-state"))
-            return 0;
-        infrastructure::QtIdGenerator ids;
         // The Explorer lists attributes in the order they were made (Zain,
         // 2026-10-03), under their owner and in the group of them all, as the
         // schema lists them -- not by their identities, which here run backwards.
@@ -1255,12 +1270,12 @@ int main(int argc, char **argv)
                 require(conceptual_half->isChecked() && !schema_half->isChecked() && !raised->isChecked(),
                         "Conceptual is lit in the diagram's row, and Schema is not");
                 schema_half->click();
-                settle_for(450);
+                settle_motion(relational);
                 require(raised->isChecked() && panel->isVisible() && schema_half->isChecked() &&
                             conceptual_half->isChecked() && opened.revision() == revision,
                         "Schema raises the schema, as Convert to Schema does, and lights while it is up");
                 conceptual_half->click();
-                settle_for(450);
+                settle_motion(relational);
                 require(!raised->isChecked() && !panel->isVisible() && !schema_half->isChecked() &&
                             conceptual_half->isChecked() && opened.revision() == revision,
                         "Conceptual puts it away again, and stays lit");
@@ -2245,11 +2260,13 @@ int main(int argc, char **argv)
             require(model.project().decisions.bridge_key.at(bridge) == domain::BridgeKey::Own,
                     "Choosing a separate key reaches the editor");
         }
-        if (app.arguments().contains("--schema-connections-only"))
-        {
-            std::cout << "PASS schema row connections and manual endpoint overrides\n";
-            return 0;
-        }
+    }
+
+    // The schema drawn by hand, each check in a window of its own: the Schema
+    // Explorer, connections drawn from a key and let go, the schema's tools,
+    // and where a line being drawn would land.
+    void schema_drawing_tests(infrastructure::QtIdGenerator &ids)
+    {
         {
             // Stage 2 (Zain, 2026-09-29): the Schema Explorer for a schema worked
             // out from a diagram made for it -- an invoice and a shipment each
@@ -4348,6 +4365,56 @@ int main(int argc, char **argv)
             settle();
             model.mark_saved(model.revision());
         }
+    }
+}
+
+int main(int argc, char **argv)
+{
+    QApplication app(argc, argv);
+    // CTest runs the suite in three parts, each a process of its own with a
+    // timeout of its own (2026-10-09): Export's commands; Relational Design's
+    // checks, which each make their own window; and the main window's, which
+    // carry one window through both workspaces. Run with none of them asked
+    // for, it runs whole, in the order it always has.
+    const auto arguments = QCoreApplication::arguments();
+    const bool export_part = arguments.contains("--export-state");
+    const bool relational_part = arguments.contains("--relational-part");
+    const bool window_part = arguments.contains("--window-part");
+    const bool whole = !export_part && !relational_part && !window_part;
+    // The window remembers the chosen theme. Point that at a throwaway domain so
+    // running the tests cannot disturb the real preferences -- a domain for
+    // each part, so that parts run side by side cannot disturb each other's.
+    QCoreApplication::setOrganizationName("ERDFlowTests");
+    QCoreApplication::setApplicationName(relational_part ? "ERDFlowTests-Relational"
+                                         : window_part   ? "ERDFlowTests-Window"
+                                                         : "ERDFlowTests");
+    // Start from nothing, so a remembered value has to be written by this run
+    // rather than left behind by the last one.
+    QSettings().clear();
+    try
+    {
+        if (whole || export_part)
+        {
+            export_state_tests();
+            if (export_part)
+                return 0;
+        }
+        infrastructure::QtIdGenerator ids;
+        if (whole || relational_part)
+        {
+            relational_design_tests(ids);
+            if (arguments.contains("--schema-connections-only"))
+            {
+                std::cout << "PASS schema row connections and manual endpoint overrides\n";
+                return 0;
+            }
+            schema_drawing_tests(ids);
+        }
+        if (relational_part)
+        {
+            std::cout << "Relational Design desktop tests passed\n";
+            return 0;
+        }
         application::Editor editor(ids);
         infrastructure::ErdxProjectStore project_store;
         desktop::MainWindow window(editor, project_store, ids);
@@ -5959,7 +6026,7 @@ int main(int argc, char **argv)
             window.load_example();
             settle();
             child<QPushButton>(window, "previewSchema")->click();
-            settle_for(600);
+            settle_motion(window);
             require(back->isVisible(), "With the schema preview open");
             auto *full = child<QPushButton>(window, "schemaFull");
             full->click();
@@ -5978,7 +6045,7 @@ int main(int argc, char **argv)
             full->click();
             settle();
             child<QPushButton>(window, "previewSchema")->click();
-            settle_for(400);
+            settle_motion(window);
         }
         window.load_example();
         settle();
@@ -8434,7 +8501,7 @@ int main(int argc, char **argv)
             // The schema rises over the diagram, and the panel it rises in can
             // be pulled to any height: half the stage, all of it, or a sliver.
             child<QPushButton>(window, "previewSchema")->click();
-            settle_for(600); // the panel rises over 280ms
+            settle_motion(window); // the panel rises over 280ms
             auto *grip = child<QWidget>(window, "schemaGrip");
             require(grip->isVisible(), "The panel wears a grip to resize it by");
             // Sharing the stage with the diagram, the schema's work can be
@@ -9012,7 +9079,7 @@ int main(int argc, char **argv)
             require(!child<QWidget>(window, "schemaHeaderTools")->isVisible(),
                     "And its undo and redo go with it, the toolbar's being the diagram's");
             child<QPushButton>(window, "previewSchema")->click();
-            settle_for(400);
+            settle_motion(window);
             child<QPushButton>(window, "previewSchema")->click();
             settle();
         }
@@ -9049,7 +9116,7 @@ int main(int argc, char **argv)
                     "With the schema put away, the docks hold the diagram's Explorer and Properties");
 
             child<QPushButton>(window, "previewSchema")->click();
-            settle_for(300);
+            settle_motion(window);
             require(schema_panels() && explorer_dock->isVisible() && properties_dock->isVisible(),
                     "Raising the schema over the diagram puts the schema's own Explorer and Properties beside it");
             {
@@ -9193,17 +9260,17 @@ int main(int argc, char **argv)
 
             // Put away, the diagram's come back; raised again, the schema's.
             child<QPushButton>(window, "previewSchema")->click();
-            settle_for(300);
+            settle_motion(window);
             require(diagram_panels() && explorer_dock->isVisible() && properties_dock->isVisible(),
                     "Putting the schema away gives the diagram its own panels back");
             require(shows_entity(), "Still showing what is chosen on the diagram");
             child<QPushButton>(window, "previewSchema")->click();
-            settle_for(300);
+            settle_motion(window);
             require(schema_panels(), "Raising it again gives them to the schema again");
             click_canvas(*window.canvas(), QPointF(body.x + body.width / 2, body.y + body.height / 2));
             require(diagram_panels(), "And pressing the diagram gives them back again, every time");
             child<QPushButton>(window, "previewSchema")->click();
-            settle_for(300);
+            settle_motion(window);
             require(diagram_panels(), "The schema put away from there leaves the diagram's in place");
             window.canvas()->select_elements(diagram_had);
             settle();
@@ -9215,7 +9282,7 @@ int main(int argc, char **argv)
             // table it joins, and a double-click hands the whole line back to
             // the router.
             child<QPushButton>(window, "previewSchema")->click();
-            settle_for(600);
+            settle_motion(window);
             auto *schema = window.schema();
             require(schema != nullptr, "The panel holds the schema itself");
             const auto drawn = schema->line_shapes();
@@ -9442,7 +9509,7 @@ int main(int argc, char **argv)
             require(schema->shaped_lines() == 0, "And Tidy gives back the ends as well");
 
             child<QPushButton>(window, "previewSchema")->click();
-            settle_for(400);
+            settle_motion(window);
         }
 
         {
@@ -9451,7 +9518,7 @@ int main(int argc, char **argv)
             // question box that follows it both stop and wait for somebody, so
             // what they drive is checked here instead of what they look like.
             child<QPushButton>(window, "previewSchema")->click();
-            settle_for(600);
+            settle_motion(window);
             auto *schema = window.schema();
             require(schema->asked != nullptr, "Right-clicking the schema asks what can be done");
             const auto columns_of = [&](const QString &table)
@@ -9469,9 +9536,9 @@ int main(int argc, char **argv)
             const auto reopen = [&]
             {
                 child<QPushButton>(window, "previewSchema")->click();
-                settle_for(400);
+                settle_motion(window);
                 child<QPushButton>(window, "previewSchema")->click();
-                settle_for(600);
+                settle_motion(window);
             };
 
             // Taken by value: the preview is worked out afresh after every
@@ -9521,7 +9588,7 @@ int main(int argc, char **argv)
                     "And the schema stops saying they differ");
 
             child<QPushButton>(window, "previewSchema")->click();
-            settle_for(400);
+            settle_motion(window);
         }
 
         {
@@ -9529,7 +9596,7 @@ int main(int argc, char **argv)
             // a whole kind of table; and the questions a conversion cannot
             // settle are answered on the tables they are about.
             child<QPushButton>(window, "previewSchema")->click();
-            settle_for(600);
+            settle_motion(window);
             auto *schema = window.schema();
             const auto boxes = schema->table_boxes();
             require(boxes.size() >= 3, "The example makes several tables");
@@ -10208,7 +10275,7 @@ int main(int argc, char **argv)
             require(schema->table_boxes() == where, "And leaves every table where it was");
 
             child<QPushButton>(window, "previewSchema")->click();
-            settle_for(400);
+            settle_motion(window);
         }
 
         {
@@ -10217,7 +10284,7 @@ int main(int argc, char **argv)
             // like any other rather than something the window keeps to itself
             // and loses.
             child<QPushButton>(window, "previewSchema")->click();
-            settle_for(600);
+            settle_motion(window);
             auto *schema = window.schema();
             auto *undo = child<QAction>(window, "undoCommand");
             auto *redo = child<QAction>(window, "redoCommand");
@@ -10660,7 +10727,7 @@ int main(int argc, char **argv)
                     "With the arrangement exactly as it was left");
 
             child<QPushButton>(window, "previewSchema")->click();
-            settle_for(400);
+            settle_motion(window);
         }
 
         // Export: how the work leaves. A picture any system can open, with
@@ -11428,7 +11495,7 @@ int main(int argc, char **argv)
             require(conceptual_state->text().startsWith("2 entities · 1 relationship"),
                     "The preview follows the schema as it is drawn");
             child<QPushButton>(window, "conceptualClose")->click();
-            settle_for(700);
+            settle_motion(window);
             require(conceptual->isHidden() && !to_conceptual->isChecked(), "And Close puts it away again");
             // Schema, in the switch, puts it away too, and stays the one chosen.
             to_conceptual->click();
@@ -11436,7 +11503,7 @@ int main(int argc, char **argv)
             require(conceptual->isVisible() && to_conceptual->isChecked() && schema_mode->isChecked(),
                     "Conceptual raises the preview, with Schema still the design being drawn");
             schema_mode->click();
-            settle_for(700);
+            settle_motion(window);
             require(conceptual->isHidden() && !to_conceptual->isChecked() && schema_mode->isChecked(),
                     "And Schema puts it away again");
 

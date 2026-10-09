@@ -188,7 +188,13 @@ if(BUILD_TESTING)
     add_test(NAME theme COMMAND theme_tests)
     add_executable(desktop_tests tests/desktop_tests.cpp)
     target_link_libraries(desktop_tests PRIVATE erdflow_desktop erdflow_infrastructure erdflow_warnings)
-    add_test(NAME desktop COMMAND desktop_tests)
+    # The desktop suite runs as three parts, each a process with its own
+    # timeout, rather than as one that had grown to within a few seconds of
+    # its limit in Debug (2026-10-09). Together they are the whole suite;
+    # run with no part named, desktop_tests still runs all of it.
+    add_test(NAME desktop_export COMMAND desktop_tests --export-state)
+    add_test(NAME desktop_relational COMMAND desktop_tests --relational-part)
+    add_test(NAME desktop_window COMMAND desktop_tests --window-part)
     add_test(NAME desktop_smoke COMMAND erdflow --example --smoke-test)
     # Home and both workspaces photographed at the 1440 x 1080 reference and
     # held to pictures kept per platform, plus an audit of keyboard reach,
@@ -200,8 +206,10 @@ if(BUILD_TESTING)
         ERDFLOW_VISUAL_BASELINES="${CMAKE_SOURCE_DIR}/tests/visual"
         ERDFLOW_VISUAL_OUTPUT="${CMAKE_BINARY_DIR}/visual-output")
     add_test(NAME visual COMMAND visual_tests)
-    set_tests_properties(canvas theme desktop desktop_smoke visual PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
+    set_tests_properties(canvas theme desktop_export desktop_relational desktop_window desktop_smoke visual
+                         PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
     # The desktop suite drives the whole window through both workspaces and
     # outgrew 30 s in Debug with the Schema Explorer's tests (Zain, 2026-09-29).
-    set_tests_properties(desktop PROPERTIES TIMEOUT 60)
+    # Each of its parts keeps the limit the whole suite had.
+    set_tests_properties(desktop_export desktop_relational desktop_window PROPERTIES TIMEOUT 60)
 endif()
