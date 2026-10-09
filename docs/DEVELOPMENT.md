@@ -91,8 +91,10 @@ the window no room until it is wanted.
 
 `--tab` brings a ribbon row to the front before the screenshot is taken, so a
 row other than Home can be looked at without a person clicking the tab first.
-The tabs are named `tabHome`, `tabInsert`, `tabDesign`, `tabExport`,
-`tabView` and `tabHelp`.
+The three that always stand are `tabFile`, `tabHome` and `tabSettings`, each
+showing the row last chosen under it; the rows' own tabs are `tabExport` and
+`tabImport` (under File) and `tabDesign`, `tabView` and `tabHelp` (under
+Settings).
 
 `--size` sets the window's size before the screenshot, so the Home screen
 can be looked at on a small window as well as the one it opens at, and at the
@@ -185,6 +187,11 @@ of its own:
   all. It is also the fallback whenever an artwork file cannot be read, so a
   missing asset never leaves a button blank.
 
+The ribbon's tab and row icons have no painted drawing, and the coloured set has
+artwork for only a few of them, so wherever a set has none they are drawn from
+their line art in that set too, inked the same way (`line_art_only` in
+`icons.cpp`).
+
 The user chooses the mode under **View → Icons**, and the choice is remembered.
 CMake embeds all three sets with `qt_add_resources` and links Qt Svg.
 
@@ -196,13 +203,23 @@ which is ISC licensed; the licence text travels with them in
 `appearance` -- are Lucide's designs too (house, history, book-open,
 layout-template, file-input, circle-help, graduation-cap, network, table,
 file-code, zap, chevron-right, chevron-down and contrast), under the same
-licence. Each file names the Lucide icon it is. They are not glyphs: nothing
-in the ribbon uses them, and `outline_pixmap` draws them by name. Lucide has no icons for the Chen
+licence. Each file names the Lucide icon it is. `outline_pixmap` draws them by
+name; `appearance`, `import` and `help` are also the glyphs of the ribbon's
+Design, Import and Help tabs, and `house` and `settings` of its Home and
+Settings tabs. Twenty-five more Lucide files give the View tab
+and most of the commands on the Design, Export, Import, View and Help rows their
+icons. Each is named for what it stands for rather than for its drawing
+(`project-file`, `zoom-in`, `about` and so on), so another icon set can draw its
+own under the same name, and each names the Lucide icon it is. Three more --
+`file` (Lucide's file), `insert` (square-plus) and `no-panels` (square, the
+frame the panel icons divide) -- are the File tab, Home's Insert, and the
+raft's side-panel button with neither panel out. Lucide has no icons for the Chen
 shapes, so `entity`, `attribute`, `relationship`, `isa` and `connect` are
 ERDFlow's own, drawn on the same 24-unit grid at the same 2-unit stroke weight
-so the set reads as one family.
+so the set reads as one family. So is `notation`, the crow's foot on the Design
+row.
 
-`symbols.cpp` holds the character table the Insert tab's gallery offers, as
+`symbols.cpp` holds the character table the Insert menu's gallery offers, as
 eight named groups of named characters; `symbol_picker.cpp` is the gallery
 itself. Some of the people are joined sequences rather than single characters,
 so a new one is worth measuring against the picker's cell before it is added:

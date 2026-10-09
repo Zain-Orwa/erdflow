@@ -399,6 +399,17 @@ void StartRouteCard::paintEvent(QPaintEvent*) {
         painter.fillPath(foot.subtracted(shape), ends);
     }
     painter.fillPath(shape, glass);
+    // Chosen, a card takes a light wash of the theme's own accent over its
+    // glass, deeper towards the foot (Zain, 2026-10-06): plainly chosen in
+    // every theme and in its colour, never a block poured full of one. Its edge
+    // and an inner glow, below, say the rest.
+    const bool dark = t.surface.lightness() < 128;
+    if (lit) {
+        QLinearGradient wash(box.topLeft(), box.bottomLeft());
+        wash.setColorAt(0.0, tint(t.primary, dark ? 30 : 16));
+        wash.setColorAt(1.0, tint(t.primary, dark ? 48 : 30));
+        painter.fillPath(shape, wash);
+    }
     if (lit) {
         // The pale-blue highlight a chosen card carries, strongest at the top
         // and gone by the middle: a light on it, not a colour poured into it.
@@ -419,7 +430,6 @@ void StartRouteCard::paintEvent(QPaintEvent*) {
         painter.scale(1.0, 0.34);
         QRadialGradient gleam(QPointF(0, 0), 56);
         // Faint on a dark card, where white would glare.
-        const bool dark = t.surface.lightness() < 128;
         gleam.setColorAt(0.0, QColor(255, 255, 255, dark ? 40 : 240));
         gleam.setColorAt(0.5, QColor(255, 255, 255, dark ? 18 : 140));
         gleam.setColorAt(1.0, QColor(255, 255, 255, 0));
@@ -430,20 +440,34 @@ void StartRouteCard::paintEvent(QPaintEvent*) {
     painter.setPen(QPen(QColor(255, 255, 255, t.surface.lightness() < 128 ? 40 : 235), 1.0));
     painter.drawLine(QPointF(box.left() + t.radius_large_card, box.top() + 1.2),
                      QPointF(box.right() - t.radius_large_card, box.top() + 1.2));
-    const auto edge = lit ? blend(t.surface, t.primary, 0.42)
-                    : highlighted ? own(QColor("#B8D8FB")) : blend(t.surface, t.primary, 0.20);
-    painter.setPen(QPen(edge, lit ? 1.4 : 1.0));
+    // Pointed at, the edge is Azure's own pale blue there and the theme's
+    // accent, lightened, everywhere else; chosen, it is the accent itself,
+    // firmer, with a soft glow inside it -- stronger than pointing, so the two
+    // are never confused, and in the theme's colour whether pointed at or not.
+    const auto pointed_edge = theme_ == ThemeId::Azure ? QColor("#B8D8FB") : blend(t.surface, t.primary, 0.38);
+    const auto edge = lit ? blend(t.surface, t.primary, dark ? 0.80 : 0.70)
+                    : highlighted ? own(pointed_edge) : blend(t.surface, t.primary, 0.20);
     painter.setBrush(Qt::NoBrush);
+    if (lit)
+        for (int inset = 1; inset <= 3; ++inset) {
+            painter.setPen(QPen(tint(t.primary, (dark ? 72 : 56) / (inset * 2 - 1)), 1.0));
+            painter.drawRoundedRect(box.adjusted(inset + 0.5, inset + 0.5, -inset - 0.5, -inset - 0.5),
+                                    t.radius_large_card - inset, t.radius_large_card - inset);
+        }
+    painter.setPen(QPen(edge, lit ? 1.6 : 1.0));
     painter.drawPath(shape);
 
     // One window header at the top of the full panel; no footer divider.
     const auto header_bottom = flow_at(width()).title.bottom() + 10;
     painter.setPen(QPen(tint(t.primary, 22), 0.7));
     painter.drawLine(QPointF(box.left() + 1, header_bottom), QPointF(box.right() - 1, header_bottom));
+    // The window's three dots: Azure's own pale blue there, and the theme's
+    // accent half-way to the card everywhere else.
     painter.setPen(Qt::NoPen);
-    painter.setBrush(own(QColor("#9DD9FF")));
+    painter.setBrush(theme_ == ThemeId::Azure ? own(QColor("#9DD9FF")) : blend(t.surface, t.primary, 0.55));
     for (int dot = 0; dot < 3; ++dot)
         painter.drawEllipse(QPointF(box.right() - 12 - dot * 8, 10), 2.5, 2.5);
+    painter.setBrush(Qt::NoBrush);
 
     // And under each button, a small soft shadow, so the two stand up off
     // the card, each on its own: + Create's in its own blue.
@@ -465,6 +489,9 @@ void StartRouteCard::paintEvent(QPaintEvent*) {
     if (hasFocus()) {
         auto ring = t.primary;
         ring.setAlphaF(0.45f);
+        // A ring only: the dots' brush left on here once filled the whole
+        // card with their pale blue whenever a card was clicked.
+        painter.setBrush(Qt::NoBrush);
         painter.setPen(QPen(ring, 2.0));
         painter.drawRoundedRect(box.adjusted(3, 3, -3, -3),
                                 t.radius_large_card - 3, t.radius_large_card - 3);

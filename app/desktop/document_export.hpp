@@ -47,9 +47,9 @@ struct DocumentResult {
 
 // Writes the project as a listing. The view is asked only for the diagram the
 // page-shaped formats put at the top; the words all come from the project.
-DocumentResult draw_document(DiagramView& view, const domain::Project& project,
+DocumentResult draw_document(ExportView view, const domain::Project& project,
                              DocumentFormat format, QByteArray& out);
-DocumentResult write_document(DiagramView& view, const domain::Project& project,
+DocumentResult write_document(ExportView view, const domain::Project& project,
                               DocumentFormat format, const QString& path);
 
 } // namespace erdflow::desktop

@@ -41,6 +41,7 @@ struct Row {
 };
 
 struct Listing {
+    bool relational = false;
     QString title;
     QString summary;
     std::vector<Row> entities;
@@ -205,6 +206,44 @@ void in_reading_order(const Map& map, Fn&& append) {
     return listing;
 }
 
+[[nodiscard]] Listing listing_of(const Project& project, const ExportView& view) {
+    if (!view.schema) return listing_of(project);
+    Listing listing;
+    listing.relational = true;
+    listing.title = shown(text(project.name));
+    std::size_t columns = 0;
+    for (const auto& table : view.schema->tables) {
+        QStringList names, primary_key;
+        for (const auto index : table.primary_key)
+            if (index < table.columns.size()) primary_key << text(table.columns[index].name);
+        for (const auto& column : table.columns) {
+            if (column.ignored) continue;
+            ++columns;
+            names << text(column.name);
+            QStringList rules;
+            if (column.primary_key) rules << "PRIMARY KEY";
+            if (column.foreign_key) rules << "FOREIGN KEY";
+            rules << (column.required ? "NOT NULL" : "NULL");
+            if (column.unique) rules << "UNIQUE";
+            if (column.auto_increment) rules << "IDENTITY";
+            if (column.references && *column.references < view.schema->tables.size()) {
+                const auto& target = view.schema->tables[*column.references];
+                if (column.references_column < target.columns.size()) {
+                    const auto reference = text(target.name) + "." + text(target.columns[column.references_column].name);
+                    rules << "REFERENCES " + reference;
+                    listing.relationships.push_back({"Foreign key", text(column.name), text(table.name),
+                                                      "FOREIGN KEY", reference, {}});
+                }
+            }
+            listing.attributes.push_back({"Column", text(column.name), text(table.name),
+                                          view.column_type(column), rules.join("; "), {}});
+        }
+        listing.entities.push_back({"Table", text(table.name), {}, primary_key.join(", "), names.join(", "), {}});
+    }
+    listing.summary = QString("%1 tables, %2 columns").arg(view.schema->tables.size()).arg(columns);
+    return listing;
+}
+
 [[nodiscard]] QString escaped_html(const QString& value) {
     return value.toHtmlEscaped();
 }
@@ -252,7 +291,26 @@ const std::vector<Column>& hierarchy_columns() {
 
 struct Section { const char* heading; const std::vector<Row> Listing::*rows; const std::vector<Column>& (*columns)(); };
 
-const std::vector<Section>& sections() {
+const std::vector<Column>& table_columns() {
+    static const std::vector<Column> columns{{"Table", &Row::name}, {"Primary key", &Row::kind}, {"Columns", &Row::detail}};
+    return columns;
+}
+const std::vector<Column>& schema_columns() {
+    static const std::vector<Column> columns{{"Column", &Row::name}, {"Table", &Row::belongs},
+                                            {"Type", &Row::kind}, {"Constraints", &Row::detail}};
+    return columns;
+}
+const std::vector<Column>& foreign_key_columns() {
+    static const std::vector<Column> columns{{"Column", &Row::name}, {"Table", &Row::belongs}, {"References", &Row::detail}};
+    return columns;
+}
+const std::vector<Section>& sections(bool relational) {
+    static const std::vector<Section> schema{
+        {"Tables", &Listing::entities, table_columns},
+        {"Columns", &Listing::attributes, schema_columns},
+        {"Foreign keys", &Listing::relationships, foreign_key_columns},
+    };
+    if (relational) return schema;
     static const std::vector<Section> list{
         {"Entities", &Listing::entities, entity_columns},
         {"Relationships", &Listing::relationships, relationship_columns},
@@ -266,7 +324,7 @@ const std::vector<Section>& sections() {
     QString out;
     out += "# " + listing.title + "\n\n";
     out += listing.summary + ".\n";
-    for (const auto& section : sections()) {
+    for (const auto& section : sections(listing.relational)) {
         const auto& rows = listing.*section.rows;
         if (rows.empty()) continue;
         const auto& columns = section.columns();
@@ -293,7 +351,7 @@ const std::vector<Section>& sections() {
 
 [[nodiscard]] QByteArray csv_of(const Listing& listing) {
     QString out = "Element,Name,Belongs to,Kind,Detail,Description\n";
-    for (const auto& section : sections()) {
+    for (const auto& section : sections(listing.relational)) {
         for (const auto& row : listing.*section.rows) {
             const QStringList cells{escaped_csv(row.element), escaped_csv(row.name), escaped_csv(row.belongs),
                                     escaped_csv(row.kind), escaped_csv(row.detail), escaped_csv(row.description)};
@@ -307,7 +365,7 @@ const std::vector<Section>& sections() {
 // the web page cannot drift into listing different things.
 [[nodiscard]] QString tables_html(const Listing& listing) {
     QString out;
-    for (const auto& section : sections()) {
+    for (const auto& section : sections(listing.relational)) {
         const auto& rows = listing.*section.rows;
         if (rows.empty()) continue;
         const auto& columns = section.columns();
@@ -331,7 +389,7 @@ const std::vector<Section>& sections() {
 
 // The diagram, drawn the way the picture half draws it, so a report and an
 // exported picture of the same project are the same picture.
-[[nodiscard]] PictureResult diagram_picture(DiagramView& view, PictureFormat format, double target_width,
+[[nodiscard]] PictureResult diagram_picture(ExportView view, PictureFormat format, double target_width,
                                             QByteArray& out) {
     PictureOptions options;
     options.format = format;
@@ -345,7 +403,7 @@ const std::vector<Section>& sections() {
     return draw_picture(view, options, {}, out);
 }
 
-[[nodiscard]] QByteArray html_of(DiagramView& view, const Listing& listing) {
+[[nodiscard]] QByteArray html_of(ExportView view, const Listing& listing) {
     QByteArray drawing;
     QString picture;
     // One self-contained page: the diagram travels inside it as inline SVG, so
@@ -388,7 +446,7 @@ const std::vector<Section>& sections() {
     return out.toUtf8();
 }
 
-[[nodiscard]] DocumentResult pdf_of(DiagramView& view, const Listing& listing, QByteArray& out) {
+[[nodiscard]] DocumentResult pdf_of(ExportView view, const Listing& listing, QByteArray& out) {
     QBuffer buffer(&out);
     if (!buffer.open(QIODevice::WriteOnly)) return {false, "The document could not be written."};
     {
@@ -467,10 +525,11 @@ const DocumentFormatInfo& document_format(DocumentFormat format) {
     return found == formats.end() ? formats.front() : *found;
 }
 
-DocumentResult draw_document(DiagramView& view, const Project& project, DocumentFormat format, QByteArray& out) {
-    if (project.entities.empty() && project.relationships.empty() && project.attributes.empty())
+DocumentResult draw_document(ExportView view, const Project& project, DocumentFormat format, QByteArray& out) {
+    if (view.schema ? view.schema->tables.empty()
+                    : (project.entities.empty() && project.relationships.empty() && project.attributes.empty()))
         return {false, "The project is empty, so there is nothing to list."};
-    const auto listing = listing_of(project);
+    const auto listing = listing_of(project, view);
     out.clear();
     switch (format) {
         case DocumentFormat::Markdown: out = markdown_of(listing); return {true, {}};
@@ -481,7 +540,7 @@ DocumentResult draw_document(DiagramView& view, const Project& project, Document
     return {false, "That document format is not one ERDFlow writes."};
 }
 
-DocumentResult write_document(DiagramView& view, const Project& project, DocumentFormat format, const QString& path) {
+DocumentResult write_document(ExportView view, const Project& project, DocumentFormat format, const QString& path) {
     QByteArray bytes;
     auto result = draw_document(view, project, format, bytes);
     if (!result) return result;

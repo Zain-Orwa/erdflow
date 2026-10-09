@@ -55,7 +55,7 @@ const std::vector<Choice>& backgrounds() {
 
 } // namespace
 
-ExportDialog::ExportDialog(DiagramView& view, const domain::Project& project, QWidget* parent)
+ExportDialog::ExportDialog(ExportView view, const domain::Project& project, QWidget* parent)
     : QDialog(parent), view_(view), project_(project) {
     setObjectName("exportDialog");
     setWindowTitle("Export");
@@ -205,6 +205,16 @@ void ExportDialog::refresh() {
         carry_->setEnabled(false);
         caution_->setText(QString::fromUtf8(info.caution));
         caution_->setVisible(true);
+        if (view_.schema) {
+            std::size_t columns = 0;
+            for (const auto& table : view_.schema->tables)
+                for (const auto& column : table.columns) if (!column.ignored) ++columns;
+            size_->setText(QString("A listing of %1 tables and %2 columns%3.")
+                .arg(view_.schema->tables.size()).arg(columns)
+                .arg(info.carries_diagram ? ", with the diagram above it" : ", without the diagram"));
+            refreshing_ = false;
+            return;
+        }
         const auto entities = project_.entities.size();
         const auto attributes = project_.attributes.size();
         const auto relationships = project_.relationships.size();

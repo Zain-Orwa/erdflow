@@ -141,6 +141,27 @@ qt_add_resources(erdflow_desktop "erdflow_icons_outline"
         assets/icons-outline/sparkles.svg
         # The schema's Arrange, in the header of a schema drawn by hand.
         assets/icons-outline/layers.svg
+        # The ribbon's tabs and the commands on the Design, Export, Import,
+        # View and Help rows, named for what they stand for so another icon set
+        # can draw its own under the same names.
+        assets/icons-outline/view.svg assets/icons-outline/background.svg
+        assets/icons-outline/icon-set.svg assets/icons-outline/notation.svg
+        assets/icons-outline/lines.svg assets/icons-outline/project-file.svg
+        assets/icons-outline/pdf-document.svg assets/icons-outline/data-dictionary.svg
+        assets/icons-outline/html-report.svg assets/icons-outline/csv-listing.svg
+        assets/icons-outline/svg-picture.svg assets/icons-outline/pdf-page.svg
+        assets/icons-outline/more-pictures.svg assets/icons-outline/copy-picture.svg
+        assets/icons-outline/project-picture.svg assets/icons-outline/other-tool.svg
+        assets/icons-outline/actual-size.svg assets/icons-outline/zoom-in.svg
+        assets/icons-outline/zoom-out.svg assets/icons-outline/grid.svg
+        assets/icons-outline/align-to-grid.svg assets/icons-outline/canvas-controls.svg
+        assets/icons-outline/comment.svg assets/icons-outline/history.svg
+        assets/icons-outline/guide.svg assets/icons-outline/about.svg
+        # The File, Home and Settings tabs (Settings is the Home screen's own
+        # settings.svg, House its house.svg), Home's Insert, and the raft's
+        # panel button when neither panel is showing.
+        assets/icons-outline/file.svg assets/icons-outline/insert.svg
+        assets/icons-outline/no-panels.svg
 )
 
 add_executable(erdflow app/desktop/main.cpp)
@@ -167,7 +188,14 @@ if(BUILD_TESTING)
     add_test(NAME theme COMMAND theme_tests)
     add_executable(desktop_tests tests/desktop_tests.cpp)
     target_link_libraries(desktop_tests PRIVATE erdflow_desktop erdflow_infrastructure erdflow_warnings)
-    add_test(NAME desktop COMMAND desktop_tests)
+    # The desktop suite runs as four parts, each a process with its own
+    # timeout, rather than as one that had grown to within a few seconds of
+    # its limit in Debug (2026-10-09). Together they are the whole suite;
+    # run with no part named, desktop_tests still runs all of it.
+    add_test(NAME desktop_export COMMAND desktop_tests --export-state)
+    add_test(NAME desktop_relational COMMAND desktop_tests --relational-part)
+    add_test(NAME desktop_window COMMAND desktop_tests --window-part)
+    add_test(NAME desktop_new_projects COMMAND desktop_tests --new-projects-part)
     add_test(NAME desktop_smoke COMMAND erdflow --example --smoke-test)
     # Home and both workspaces photographed at the 1440 x 1080 reference and
     # held to pictures kept per platform, plus an audit of keyboard reach,
@@ -179,8 +207,18 @@ if(BUILD_TESTING)
         ERDFLOW_VISUAL_BASELINES="${CMAKE_SOURCE_DIR}/tests/visual"
         ERDFLOW_VISUAL_OUTPUT="${CMAKE_BINARY_DIR}/visual-output")
     add_test(NAME visual COMMAND visual_tests)
-    set_tests_properties(canvas theme desktop desktop_smoke visual PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
+    set(erdflow_offscreen_test_environment "QT_QPA_PLATFORM=offscreen")
+    # On Windows the offscreen platform reads fonts only from QT_QPA_FONTDIR or
+    # Qt's own lib/fonts, which Qt no longer ships, so it would draw no letters.
+    if(WIN32)
+        list(APPEND erdflow_offscreen_test_environment "QT_QPA_FONTDIR=C:/Windows/Fonts")
+    endif()
+    set_tests_properties(canvas theme desktop_export desktop_relational desktop_window desktop_new_projects
+                         desktop_smoke visual
+                         PROPERTIES ENVIRONMENT "${erdflow_offscreen_test_environment}" TIMEOUT 30)
     # The desktop suite drives the whole window through both workspaces and
     # outgrew 30 s in Debug with the Schema Explorer's tests (Zain, 2026-09-29).
-    set_tests_properties(desktop PROPERTIES TIMEOUT 60)
+    # Each of its parts keeps the limit the whole suite had.
+    set_tests_properties(desktop_export desktop_relational desktop_window desktop_new_projects
+                         PROPERTIES TIMEOUT 60)
 endif()

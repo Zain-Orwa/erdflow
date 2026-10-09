@@ -32,7 +32,24 @@ enum class Glyph {
     SchemaRelationships,
     // The canvas raft's side-panel buttons (Zain, 2026-10-03): the Explorer
     // on the left, Properties on the right, and both together.
-    ExplorerPanel, PropertiesPanel, SidePanels
+    ExplorerPanel, PropertiesPanel, SidePanels,
+    // The ribbon's tabs and the commands on its Design, Export, Import, View
+    // and Help rows (Zain, 2026-10-06). Drawn as line art in every set: the
+    // painted set has no drawing of its own for them, and the coloured set
+    // only where it has artwork by the same name (line_art_only).
+    Import, View, Help,
+    Background, IconSet, Notation, Lines,
+    ProjectFile, PdfDocument, DataDictionary, HtmlReport, CsvListing,
+    SvgPicture, PdfPage, MorePictures, CopyPicture,
+    ProjectPicture, OtherTool,
+    ActualSize, ZoomIn, ZoomOut, Grid, AlignToGrid, CanvasControls, Comments, History,
+    Guide, About,
+    // The remaining tabs, Home's Insert, and the canvas raft's one panel
+    // button when neither panel is showing (Zain, 2026-10-06).
+    FileTab, Home, Insert, Settings, NoPanels,
+    // The header's Model menu: connected entities, the Home screen's own mark
+    // for the conceptual model (Zain, 2026-10-07).
+    Model
 };
 
 // Which set a glyph is taken from. Painted follows the theme's colours and

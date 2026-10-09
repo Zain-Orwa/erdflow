@@ -17,6 +17,7 @@
 #include <QWidget>
 
 class QLineEdit;
+class QAbstractScrollArea;
 #include <functional>
 #include <map>
 #include <optional>
@@ -27,6 +28,7 @@ class QLineEdit;
 namespace erdflow::application { class Editor; struct EditResult; }
 
 namespace erdflow::desktop {
+struct ExportView;
 
 struct Theme;
 
@@ -195,6 +197,7 @@ public:
     // companion to line_shapes: between them they are the whole of what the
     // schema looks like, which is otherwise knowable only by reading pixels.
     [[nodiscard]] std::vector<QRectF> table_boxes() const;
+    [[nodiscard]] ExportView export_view();
     // How wide a table is drawn with every column shown, before a hand has
     // said otherwise. The width is measured from the lettering, which each
     // platform draws at its own size, so a layout made in advance asks here
@@ -218,6 +221,14 @@ public:
         QRectF rules;
     };
     [[nodiscard]] std::vector<std::vector<Cell>> cell_boxes() const;
+    // What a row's Constraints cell writes, in the order it writes it: PK, FK,
+    // NULL or NOT NULL, UNIQUE, IDENTITY. Empty for a row with no such cell.
+    [[nodiscard]] QString constraints_said(std::size_t table, std::size_t row) const;
+    // The ink a row's key letters are written in, or none for a row with no
+    // key: a reference always in the theme's green, a key that refers to
+    // nothing in its orange. It is the ink they are painted in, softened only
+    // where a search fades the table.
+    [[nodiscard]] std::optional<QColor> key_letters_ink(std::size_t table, std::size_t row) const;
     // How many lines have been bent by hand rather than left to the router.
     [[nodiscard]] std::size_t shaped_lines() const;
     // How many line ends have been pulled off the table they belong to. They
@@ -365,10 +376,19 @@ public:
     void set_placing(bool on);
     [[nodiscard]] bool placing() const { return placing_; }
     std::function<void(bool)> placing_changed;
-    // Somewhere on the empty schema asked for a table, by a double click
-    // there, in the view's own coordinates. Only where the schema is drawn by
-    // hand: on a schema worked out from a diagram a table comes from the
-    // diagram.
+    // Pan in hand (Zain, 2026-10-08): the floating controls' Pan, as the
+    // diagram's. While it is on, a press takes hold of the view rather than
+    // of anything drawn on it, and dragging scrolls the schema; nothing is
+    // chosen, moved, opened or routed. Escape puts it down, and says so
+    // through panning_changed; panned says one drag has been let go.
+    void set_panning(bool on);
+    [[nodiscard]] bool panning() const { return panning_; }
+    std::function<void(bool)> panning_changed;
+    std::function<void()> panned;
+    // Somewhere on the empty schema asked for a table, by a press there with
+    // the Table tool in hand, in the view's own coordinates. Only where the
+    // schema is drawn by hand: on a schema worked out from a diagram a table
+    // comes from the diagram.
     std::function<void(QPointF at)> add_table;
     // The empty schema asked what can be done there, by the right button: the
     // place in the view's coordinates, and where a menu should open.
@@ -379,6 +399,7 @@ public:
 
 protected:
     void paintEvent(QPaintEvent* event) override;
+    void paint_schema(QPainter& painter, const QRectF& exposed, bool exporting = false);
     void resizeEvent(QResizeEvent* event) override;
     void mousePressEvent(QMouseEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;
@@ -687,6 +708,15 @@ private:
     // done, so routing on that resize as well would do the whole of the
     // costliest work twice for one movement of the pointer (2026-10-06).
     bool sizing_canvas_ = false;
+    // How far down the canvas has to reach while tables are being carried
+    // downward: a whole view below the lowest of them, so the hand can scroll
+    // on and go on carrying them in the same drag rather than letting go to
+    // make room. Nothing while no drag is going down, or while the schema is
+    // put away (2026-10-09).
+    [[nodiscard]] double drag_room() const;
+    // Whether the canvas last arranged was made taller than its contents for
+    // that room, so the room is given back as soon as it is no longer wanted.
+    bool drag_roomy_ = false;
     // What the project says about the arrangement, in the painter's units.
     // Read from the model rather than kept here, so that an undo of a move or
     // of a shape is seen the same way as an undo of anything else.
@@ -734,6 +764,16 @@ private:
     [[nodiscard]] std::optional<domain::LinkSource> link_of(domain::ForeignKeyId key) const;
     bool connecting_ = false;
     bool placing_ = false;
+    bool panning_ = false;
+    // Where a drag with Pan in hand was taken hold of, and where the schema
+    // was scrolled to then.
+    struct PanHold {
+        QPointF from;
+        int across = 0;
+        int down = 0;
+    };
+    std::optional<PanHold> pan_hold_;
+    [[nodiscard]] QAbstractScrollArea* scroller() const;
     // The press that placed a table, so the double click it may turn out to
     // be the first half of does not do a double click's work as well.
     bool placed_on_press_ = false;

@@ -7,7 +7,7 @@
 > look like afterwards, and whether it is a gain or a loss. He decides.
 > Full rule: [CLAUDE.md](../CLAUDE.md).
 
-**Updated:** 2026-10-05
+**Updated:** 2026-10-09
 
 **Scope:** Part 1 — the Conceptual ERD editor, one page per project, and
 Relational Design: a schema worked out from the diagram, or drawn by hand in a
@@ -18,9 +18,9 @@ This is the record of implemented behavior. The numbered Product, Architecture,
 Domain Model, Scale, and Roadmap documents also describe capabilities that have
 not been built yet. Their presence in those documents is not a completion claim.
 
-## Current state at a glance (2026-10-02)
+## Current state at a glance (2026-10-09)
 
-Checked against the code on 2026-10-02. Each item has its own entry under
+Checked against the code at `7b12b70` on 2026-10-09. Each item has its own entry under
 *What works*; this list only says what is finished, so that nothing below is
 read as still to do.
 
@@ -58,6 +58,44 @@ read as still to do.
   relationship (Zain, 2026-10-05; ADR-021 §5b, its open conflict closed).
 - The two *Table detail* presentations: **Physical schema** (named so on
   2026-10-02; it was *Names, types and constraints*) and **Compact schema**.
+- The schema card's **Constraints** cell writes every constraint a column
+  has, and pressing it offers the whole set, the keys handled exactly as in
+  Properties (committed in `009a4d6`).
+- The workspace shell (committed in `0085e62`): the clean-up that followed
+  the ribbon -- Model and Theme menus, Conceptual Explorer folding, Home's
+  theming; one workspace row on the diagram as on the schema, led by Home,
+  *Schema | Conceptual* and the title; the diagram's Search a real field;
+  the schema's working tools shown only under Home's tab; and the diagram's
+  raft of view controls on the schema.
+- Export from whichever workspace is in front, the schema included, through
+  the same document and picture exports (committed in `3e29264`).
+- **Temporary downward drag room in Relational Design** (committed in
+  `86fd989`): while one table, a gathered group or Select All is dragged
+  downward, the canvas gives the lowest dragged table about one viewport of
+  temporary room below it, then returns to normal sizing on release. The same
+  drag can continue while the user scrolls with the wheel or trackpad; there is
+  no timer or automatic edge-autoscroll.
+- **Desktop timeout risk reduced without weakening coverage** (committed in
+  `7b12b70`): the old single `desktop` CTest entry is split into
+  `desktop_export`, `desktop_relational` and `desktop_window` (the last since
+  split in two; see the next item); no timeout was raised, no assertion was
+  removed, and production code was not changed. The six-item batch from
+  2026-10-08/09 is complete.
+- **The main window's desktop tests split once more, for CI headroom**
+  (2026-10-09): `desktop_window` had grown to about 32 s locally and timed
+  out at 60 s on the macOS Intel CI runner, where its Qt work slows and its
+  fixed waits do not. Its last three blocks -- the project started from its
+  schema, the two large Conceptual examples, and the generated foreign key
+  made UNIQUE -- now run as `desktop_new_projects`
+  (`desktop_tests --new-projects-part`), on a window of their own dressed in
+  the default theme as the application dresses one at launch;
+  `desktop_window` (`--window-part`) keeps everything from Home through
+  Export. The four desktop entries are `desktop_export`,
+  `desktop_relational`, `desktop_window` and `desktop_new_projects`, each
+  with a 60 s TIMEOUT. Every assertion remains, nothing is skipped, no wait
+  was removed and no timeout was raised; `desktop_tests` with no flag still
+  runs the complete historical sequence in one window. The split is for CI
+  runtime reliability only; the application's behaviour is unchanged.
 
 **Column reordering is not built.** Task 4A is complete. Task 4B is
 complete as a foundation: a derived table can be listed in a stored order,
@@ -165,9 +203,9 @@ to build in Part 1* at the end. The state of the test suites is under
     is put down again; a double click locks it (*Connect 🔒*); Escape or a
     second press puts it down. Its arrow carries how the lines run -- *Around
     the tables* or *Straight there*, the same entries as in Arrange.
-  - *Tables* are made by **Table** in the header, by a double
-    click on the empty schema, or by *Add table here* on its right-click
-    menu. A table is put where it was asked for and its name opened for
+  - *Tables* are made by **Table** in the header, or by *Add table here* on
+    the empty schema's right-click menu; a double click on the empty schema
+    makes none (Zain, 2026-10-06). A table is put where it was asked for and its name opened for
     typing; it starts with one column, an `int` primary key named for the
     table -- `TableID`, and `StudentID` once the table is named `Student`
     (`Editor::create_relation`). A key still called by the table's old name
@@ -258,7 +296,7 @@ to build in Part 1* at the end. The state of the test suites is under
   schema; in a diagram's, once **Relational Design** is raised, once the
   schema is pressed, and in **Full** -- and the diagram's come back once the
   diagram is pressed or the schema is put away (`MainWindow::wear_schema_panels`,
-  `follow_pressed_half`). In Full the other panels and the ribbon still go,
+  `follow_pressed_half`). In Full the other panels and Home's drawing row still go (the ribbon's tabs stay, 2026-10-06),
   and the header runs the whole width over the two panels, as it does over a
   schema drawn by hand (`lay_header_over_panels`). Both panels began as
   shells; the Explorer's frame was *Schema ▸ Tables, Relationships* with
@@ -431,8 +469,8 @@ to build in Part 1* at the end. The state of the test suites is under
   and checked look of the other tools). **Table** no longer makes a table when
   pressed: it is a placing tool, its pointer a cross as on the diagram, and a
   press on the schema makes the table there (header under the pointer)
-  through the same `add_schema_table` the empty schema's double click uses,
-  then hands back to Select -- before the new table opens its name, as the
+  through the same `add_schema_table` the empty schema's *Add table here*
+  uses, then hands back to Select -- before the new table opens its name, as the
   diagram's placing tools hand back. A double click locks Table (*Table 🔒*)
   for placing several; pressed again, as Connect is, it is put down.
   **Connect** keeps every Stage 5 rule and hands back to Select after one
@@ -754,7 +792,8 @@ to build in Part 1* at the end. The state of the test suites is under
   ticked one changes nothing), a rule, **UNIQUE — no duplicate values** and
   **IDENTITY — auto-generated number**. Foreign Key appears where it did
   before, on tables drawn by hand. The canvas's own constraints list keeps
-  its words. Independent states
+  its words (**SUPERSEDED 2026-10-08**: the canvas's list is now the whole
+  set as well -- see "The card's Constraints cell" below). Independent states
   appear together, with elision and complete tooltips for narrow docks.
   **+ Add Column** uses the same add command and canvas naming as before.
   Non-stored derived values are listed separately with
@@ -879,6 +918,73 @@ to build in Part 1* at the end. The state of the test suites is under
   Home as the Home command does, leaving the project open behind it. (It
   first came only with an example or the template opened from Home; Zain
   asked for it everywhere the same day.)
+- **The diagram has one row, as the schema does** (Zain, 2026-10-08). While
+  the diagram is in front and the ribbon's Home row is showing, the header's
+  own Home, **Schema | Conceptual** switch and project title lead that row,
+  before Save, and the header strip under it (Back to Home | CONCEPTUAL |
+  title) is put away, so the canvas starts under the row. They are the same
+  widgets, carried there and back (`MainWindow::place_workspace_identity`,
+  container `conceptualIdentity`), never copies. Compact in this row, as
+  Zain chose: Home is its arrow alone (named on hover and to a screen
+  reader), the switch's halves have 10 px padding, the rule and the rename
+  pencil stay in the header (the project is renamed from the Explorer, as it
+  was), and the title gives way before the tools do: the row is fitted with
+  it at no more than 48 px and it then takes what room is left, up to 140 px,
+  elided with the whole name on hover (`TitleLabel`, `fit_toolbar`). In a
+  diagram the switch reads the other way round: Conceptual lit, Schema
+  raising the schema it converts to (as Convert to Schema does) and lit while
+  it is up, Conceptual putting it away (`wear_workspace_switch`). Under
+  another ribbon tab, or with the row put away for full view, the header has
+  them back and shows exactly as before. Relational Design -- a schema drawn
+  by hand, or a diagram's schema with the whole window -- has its header
+  exactly as before. Width cost at the reference sizes (Azure, offscreen):
+  1440, the tools as before; 1280, 24 px icons, Notation without its label,
+  Search / Model / Theme as icons; 1920, 24 px icons with their words and
+  Notation without its label.
+- **The diagram's Search is a field, as the schema's is** (Zain,
+  2026-10-08). The Search button in the diagram's row is replaced by the
+  schema's own `SearchField`, dressed by the same rule, with the glass, a
+  clear button and "Search conceptual design…", just left of Model, Theme
+  outermost. It is the search bar's text box (`SearchBar::use_text`): typing
+  in it opens the bar and narrows the diagram exactly as before; the bar keeps
+  the kind, Options, the count and ✕, without a box of its own; Find (Ctrl+F)
+  puts the caret in it; Escape and ✕ close the search, put the whole diagram
+  back and clear it. Its least width in this row is 120 px (the schema's is
+  150), as Zain chose so 1280 keeps the Notation picker; the row is fitted
+  with it at its least and it takes spare room up to 240 px. Width cost, also
+  Zain's choice: at 1440 the row steps down (24 px icons, Notation unlabelled,
+  Model and Theme as icons), and the tools' names come back from about
+  1850 px. Leaving a schema drawn by hand no longer squeezes the side panels:
+  the header is put back between them hidden, and shown only if it has to be.
+- **The schema's working tools follow the ribbon's tab** (Zain, 2026-10-08).
+  While Relational Design is in front its header is Home's row, and the
+  ribbon did not know it: under File and Settings the header's tools stood
+  under the chosen row. Now the ribbon says when its row changes
+  (`Ribbon::on_row_changed`, `home_in_front`, `schema_in_front`) and the
+  window shows the header's drawing tools, its undo and redo with the search,
+  Model and Theme only while Home is the tab in front
+  (`MainWindow::wear_schema_header_for_tab`, also applied wherever those
+  groups are shown). Home, Schema | Conceptual and the title stay under every
+  tab, as Zain chose, as the diagram's do. Nothing is rebuilt: the same
+  widgets are hidden and shown, so the tool in hand, the search's text and the
+  project are as they were. The diagram's own rows are unchanged.
+- **The schema has the diagram's raft of view controls** (Zain, 2026-10-08).
+  The raft is made by one builder for both (`MainWindow::make_view_raft`,
+  placed by `place_raft`): over the bottom-right of the schema's scroll area,
+  the same parts in the same order and size -- grip, Full view, Fit, Pan, +,
+  −, a rule, the side panels -- named `schemaControls`, `schemaRaft…`.
+  Full view puts the panels beside the schema away and back with its own
+  account of them (`put_schema_panels_away`), so the schema's whole-window
+  view, which borrows the diagram's, is undisturbed. The schema is drawn at
+  its actual size, so Fit, + and − stay pressable and say in the status bar
+  that it cannot be fitted or zoomed yet, as Zain chose. Pan is a schema tool
+  (`SchemaTool::Pan`, `SchemaView::set_panning`): a drag scrolls the schema
+  and touches nothing on it; one drag hands it back, a double click locks it
+  (the lock mark on the button), Escape puts it down. The side panels'
+  button is the diagram's own action. The raft is put away and brought back
+  with the diagram's (View ▸ View controls on the diagram, or the empty
+  schema's own menu while it is away). The diagram's raft is built by the
+  same builder and is pixel-identical to before.
 - **Return from Home to the workspace** (2026-09-27). Once a workspace has
   been in front, Home's top bar offers the way back into it beside Theme:
   **Return to Conceptual Design →**, or **Return to Relational Design →** when
@@ -1004,20 +1110,22 @@ to build in Part 1* at the end. The state of the test suites is under
   it. Right-clicking it offers to put it away; right-clicking the diagram then
   offers it back, as does **View → View controls on the diagram**, and that
   offer appears only while it is away. It is shown to begin with.
-- **The raft shows and hides the side panels** (Zain, 2026-10-03). Below
-  its **−**, after a thin rule in the theme's border colour, three more
-  buttons of the same size: **Show/Hide Explorer** (a window with its left
-  section filled), **Show/Hide Properties** (its right section) and **Show/Hide
-  Side Panels** (both side sections; Full view's picture fills the middle
-  instead). The first two press the panels' own entries in the View menu
-  (`QDockWidget::toggleViewAction`) and are lit while their panel shows, so
-  the menu and the raft always agree. The third puts both away when both are
-  showing and otherwise brings both back, and is lit while both show. Panels
-  are hidden, not rebuilt, and come back at the width they had; what is
-  chosen, the project, its history and its unsaved state are untouched. The
-  raft keeps its width and its corner, growing upward. The pictures are in
-  all three sets (`panel-left`, `panel-right`, `side-panels`; the line art is
-  Lucide's panel-left, panel-right and columns-3).
+- **The raft shows and hides the side panels** with one button (Zain,
+  2026-10-03; one button in place of three, 2026-10-06). Below its **−**,
+  after a thin rule in the theme's border colour, a button of the same size,
+  **Show/Hide Side Panels** (`viewSidePanels`). Each press takes the next
+  step of *Both → Properties only → Neither → Both*, worked out from the
+  panels' own entries in the View menu (`QDockWidget::toggleViewAction`)
+  rather than counted, so a panel shown or put away from the menu, the View
+  row or a workspace coming back is where the next press starts; the
+  Explorer alone, which the cycle never leaves, goes on to both. Its picture
+  is the panels that are out -- both side sections (`side-panels`), the right
+  one (`panel-right`), the left one (`panel-left`), or the bare frame
+  (`no-panels`, line art only) -- and its hover text says which and what the
+  next press does. Panels are hidden, not rebuilt, and come back at the width
+  they had; what is chosen, the project, its history and its unsaved state
+  are untouched. The raft keeps its width and its corner. The line art is
+  Lucide's panel-left, panel-right, columns-3 and square.
 - Fitting the diagram into the view and searching it are drawn as different
   things. In the coloured set they were the same file: a magnifying glass for
   both, saying "look" for one and "look" for the other. Fitting is now a frame
@@ -1052,12 +1160,32 @@ to build in Part 1* at the end. The state of the test suites is under
   what belongs to what. Pressing a mark folds that group and does nothing else,
   so reaching for one never throws away the selection being worked with.
 - A row of tabs above the toolbar, the way an office application arranges its
-  commands: **File** drops the File menu from its tab; **Home** is the modeling
-  toolbar, with Note after Connect; **Insert** carries Picture and Symbols; **Design** carries Theme,
-  Icons, Notation and Lines; **Export** carries everything that leaves and
-  **Import** everything that comes back, side by side;
-  **View** carries the panels, framing, grid and
-  align-to-grid; **Help** carries the guide and About. The rows are built from the same
+  commands. Three stand there for good (Zain, 2026-10-06), each with an icon
+  before its name: **File**, **Home** and **Settings**. **Home** is the
+  modeling toolbar, with Note after Connect and then **Insert ▾**, which drops
+  the Insert menu (Picture and Symbols; Insert has no tab of its own any
+  more). Home's Theme button is put away there -- Settings' Design row offers
+  the theme -- so the modeling row keeps its words and the notation picker at
+  the 1440 px reference width. **File** gathers **Export**, everything that
+  leaves, and **Import**, everything that comes back, with **Open & Save**
+  beside them dropping the File menu (New, Open, Save, Save as, the examples
+  and templates) that the File tab used to drop. **Settings** gathers
+  **Design** (Background, Theme, Icons, Notation and Lines), **View** (the
+  panels, Checks, framing, zoom, Grid, Align Grid, the raft, comments and
+  History) and **Help** (Guide and About). While File or Settings is chosen,
+  its rows' own tabs stand beside the three after a thin line, each bringing
+  up its row, and the chosen one is marked as well; each opens on the row
+  last chosen under it, Export and Design to begin with. With the Relational
+  Schema in front the tabs stay, so the window is found in the same place in
+  both workspaces: Home brings up no row there (the schema's tools are in its
+  header), and the rows leave out what acts on the conceptual diagram alone
+  -- Background and Lines; Checks, Full, Fit, 100%, Zoom, Grid, Align Grid,
+  the raft and comments -- while View gains **Panels**, the raft's side-panel
+  button (the schema has had a raft of its own since 2026-10-08, carrying the
+  same button; see *The schema has the diagram's raft of view controls*). The
+  menus are untouched either way
+  (`Ribbon::set_schema_in_front`, `keep_to_conceptual`, `add_for_schema`).
+  The rows are built from the same
   actions as the menus and the Home toolbar, so a tool chosen or locked on one
   row is chosen or locked on the other. A chosen tab wears the theme's accent,
   and the row it brings up is set in the theme's own ink at a heavier weight
@@ -1065,8 +1193,39 @@ to build in Part 1* at the end. The state of the test suites is under
   you just chose rather than as a strip of quiet text that looks the same
   whichever tab is showing. Home is left alone, being the drawing tools, which
   their icons already tell apart. The Export entries go quiet while
-  there is nothing drawn to hand on, rather than the row coming and going as
-  work starts. A Convert tab still waits, because there is nothing to convert to.
+  there is nothing to hand on, rather than the row coming and going as
+  work starts -- each by what it exports, in the workspace in front, since
+  2026-10-09 (see *Export follows the workspace in front*). A Convert tab
+  still waits, because there is nothing to convert to.
+- **The clean-up that followed the ribbon** (Zain, 2026-10-06 and
+  2026-10-07; accepted 2026-10-08). Built on the File | Home | Settings
+  ribbon above:
+  - **Model** and **Theme**, two menus at the top right of both workspaces,
+    Theme outermost. Model holds what is done to the model as a whole: on the
+    diagram *Convert to Schema*, *Check model* and *Open example*; on a schema
+    drawn by hand *Convert to Conceptual* and Relational Design's own
+    examples and template; on a diagram's schema with the whole window the
+    way back to the diagram and those examples (`fill_model_menu`). The
+    separate conversion, example and *Check model* buttons are put away.
+    Theme drops the window's one theme menu, which Settings ▸ Design and the
+    View menu keep as well. On the diagram, Search stands before the two
+    (a field since 2026-10-08).
+  - A narrow window gives way in a fixed order. On the diagram's row the
+    icons shrink and the names go before the Notation picker does. In the
+    schema's header its own tools give up their words first and Model and
+    Theme last, the header held to the window's width
+    (`fit_schema_header_words`).
+  - The Conceptual Explorer's Entities, Attributes and Relationships start
+    folded in a new project, keep whatever fold is given them through every
+    edit, count what they hold while folded, and are not opened by choosing
+    an element on the canvas; another project starts folded again.
+  - Home: a start card that is clicked is chosen and takes the keyboard, in
+    the theme's own accent (it used to fill pale blue, the three dots' brush
+    left on). The hero's panels, database, platform and lines follow dark
+    themes, the database drawn in three readable tiers of the accent's hue;
+    light themes are unchanged.
+  - No visual baseline was retaken: `card-selected` differs from its
+    baseline (3.58016%) until Zain has looked at it.
 - **Insert → Symbols…** opens a gallery of the characters a conceptual diagram
   wants and a keyboard has not got: relational algebra (select, project,
   rename, the six joins, union, intersection, difference, product, division),
@@ -1594,9 +1753,9 @@ to build in Part 1* at the end. The state of the test suites is under
   rule the grid and the comment switch follow. Closing it puts the whole diagram
   back, so a filter is never left on behind a bar nobody can see.
 - Work leaves ERDFlow through **Export** and comes back through **Import**, the
-  pair the database tools it sits beside use. Each has a tab of its own on the
-  ribbon and a menu under File, side by side, because a reader looking for one
-  expects the other in the same place.
+  pair the database tools it sits beside use. Each has a row of its own on the
+  ribbon, side by side under its File tab (2026-10-06), and a menu under File,
+  because a reader looking for one expects the other in the same place.
 - **Export → ERDFlow project** writes a copy of the project itself, losing
   nothing. It is not Save As: the project being worked on keeps its own file and
   its own unsaved state, so this is a copy put somewhere rather than a change of
@@ -1657,6 +1816,22 @@ to build in Part 1* at the end. The state of the test suites is under
 - A picture is of the diagram and not of the editor looking at it: no grid, no
   paper, no selection rings and no handles, and exporting gives the selection
   back exactly as it found it.
+- **Export follows the workspace in front** (committed in `3e29264`,
+  2026-10-09). With Relational Design in front -- a schema drawn by hand, or a
+  diagram's schema with the whole window -- the documents and pictures are of
+  the schema, through the same exports as the diagram's; otherwise of the
+  diagram. **Copy as picture** copies whichever is in front. Each Export entry
+  is on only while what it exports exists there: the project copy while the
+  project holds anything; the documents while there is something to list;
+  the pictures while there is something drawn; with the schema in front,
+  while it has a table. Saved or not, the project can be exported, and
+  exporting leaves its unsaved state as it was. Where the file goes is still
+  asked in the save dialog. The tests drive every Export command whole by
+  giving the destination where the dialog would ask
+  (`MainWindow::choose_export_location`, which the application never sets),
+  so no test depends on answering a modal dialog: they write each document
+  and picture to real temporary files, check what they hold, and check that
+  a cancelled destination writes nothing.
 - An exported file carries nothing tying it to the machine that wrote it. Fonts
   are the one thing SVG cannot carry cheaply, so its text names a chain ending
   in a CSS generic family — `'Helvetica Neue', Helvetica, Arial, 'Liberation
@@ -1908,6 +2083,17 @@ diagram is still worked out as described here.
   it and writes the place in the same edit as the size. Room given to a
   table's height is shared out between its rows, and a table is never pulled
   shorter than the rows and questions it holds.
+- **A downward table drag has temporary room to keep going** (2026-10-09,
+  `86fd989`). While the hand is holding one table, several gathered tables or
+  Select All and the drag has moved below where it started, `SchemaView`
+  extends the canvas to the greater of its ordinary content height (lowest
+  table plus 30 px) and the bottom of the lowest dragged table plus the
+  current visible view height. Width is unchanged. The user can scroll that
+  room with the wheel or trackpad without releasing the drag; the room is
+  given back on release or when the schema leaves the screen. Upward and
+  sideways drags add none. The move is still one undo step, only the real
+  positions are saved, and a canvas-growing move keeps the existing
+  one-reroute path. No timer or automatic edge-autoscroll was added.
 
 - **A row is ruled into columns, and they are named.** Under the table's own
   header a second row says what each column holds -- Column, Type,
@@ -2146,6 +2332,26 @@ exists.)*
   Constraints cell, `PK, NOT NULL`. The orange `PK` letters are kept for key
   columns that are not foreign keys, so orange means primary key and green
   means foreign key.
+- **The card's Constraints cell** (Zain, 2026-10-08). It writes, in one
+  order whatever order things were chosen in, `PK`, `FK`, `NULL` or `NOT
+  NULL`, `UNIQUE`, `IDENTITY` (e.g. `FK, NULL`, `PK, FK, NOT NULL`, `NOT
+  NULL, UNIQUE`). `FK` is written as well as marked in the gutter; the
+  column's width is measured from what it writes, so a table whose longest
+  list gains `FK, ` is that much wider. The words are drawn in the theme's
+  muted ink, the Data Type's own, not the name's. A new ordinary column is
+  `NULL`, because the model says so (`required = false`); there is no unset
+  state and no warning. Pressing the cell lists **Primary Key**, **Foreign
+  Key**, a rule, **NULL — may be empty** / **NOT NULL — required** (one
+  ticked, never both), a rule, **UNIQUE — no duplicate values**, **IDENTITY
+  — auto-generated number**. Primary Key and Foreign Key run exactly what
+  their Properties switches run (`MainWindow::press_schema_primary_key`,
+  `press_schema_foreign_key`, shared by both): the Foreign Key goes through
+  the Stage 5 Connect path and its question; nothing is greyed out, and a
+  key that cannot be put on or taken off says why in the status bar. The
+  rules are the Properties list's own (`populate_schema_rules`). Desktop
+  tests cover a schema drawn by hand and one converted from a diagram,
+  Properties agreeing both ways, Undo/Redo, save and load, conversion to a
+  diagram, and the ink in a light and a dark theme.
 - **A column that is both keys wears both marks** (Zain, 2026-10-01). Its
   gutter shows the golden key, the orange `PK`, then the green `FK`, side by
   side, each in its own colour -- separate marks, not a merged badge -- so
@@ -2553,7 +2759,7 @@ outside the repository at `erdflow-notes/UI-AZURE-TASKS.md`. What is built:
   Project and Recent, then Settings and Help at its foot; this replaces what
   the entries above and ADR-022 §9.14 and §9.20 say about its Examples,
   Templates and Import rows. Every example and the template are Conceptual
-  diagrams, so they stand in the File menu -- the ribbon's File tab --
+  diagrams, so they stand in the File menu -- *Open & Save* under the ribbon's File tab --
   beside Import: *Open example*, *Company Database*, *University Database*
   and, new there, *New from template*; Import's own tab and the header's
   *Open example* are as they were. While Relational Design is in front, a
@@ -2592,8 +2798,9 @@ outside the repository at `erdflow-notes/UI-AZURE-TASKS.md`. What is built:
   Relational Design only*, and its empty state. Internal names are unchanged.
 - **Relational Design offers only its own tools.** While it has the whole
   window, the header's badge reads RELATIONAL DESIGN rather than CONCEPTUAL.
-  The ribbon and its drawing tools (Entity, Attribute, Relationship,
-  Specialization, Connect, Note) are put away with the diagram, and so is
+  Home's drawing tools (Entity, Attribute, Relationship, Specialization,
+  Connect, Note) are put away with the diagram -- the ribbon's tabs stay,
+  their rows keeping to what can act on the schema (2026-10-06) -- and so is
   Insert › Picture, which places a picture on the diagram nobody can see.
   What stays is its own: Arrange, Appearance, undo and redo, its search and
   the theme. The Conceptual workspace keeps Select, Entity, Attribute,
@@ -2657,13 +2864,11 @@ Not built yet, though some of it is on screen:
   it is in front; a schema worked out from a diagram still gains tables only
   from the diagram. In a project begun from its schema, Relational Design is
   the whole workspace, and tables are made by hand with the header's
-  *Select | Table | Connect* tools. The Conceptual workspace has a ribbon --
-  File, Home, Insert, Design, Export, Import, View and Help. Relational Design
-  puts the ribbon and the drawing rows away by design and carries its own
-  tools in the header instead, so the ribbon has no Table tool and Insert no
-  relational entries. Whether Relational Design should have the ribbon is a
-  decision waiting on Zain, not a missing piece. *(Corrected 2026-10-02: this
-  said Relational Design was still only a panel over the diagram.)*
+  *Select | Table | Connect* tools. Both workspaces have the ribbon's File,
+  Home and Settings tabs (Zain, 2026-10-06); Relational Design puts Home's
+  drawing row away and carries its own tools in the header instead, so the
+  ribbon has no Table tool. *(Corrected 2026-10-02: this said Relational
+  Design was still only a panel over the diagram.)*
   SQL and Data are not built, so there is nothing of theirs to dress.
 - Reference pictures exist for one system and release. The audit is
   offscreen and does not prove what a real screen reader announces.
@@ -2679,6 +2884,60 @@ Not built yet, though some of it is on screen:
 | Usable | Focused property editing, named undo actions, usable example, warnings that permit unfinished drafts, protected open/save. | Screen-reader support, broader keyboard/high-DPI/device checks, and production polish remain unverified. |
 
 ## Verification
+
+**2026-10-09**, after `656599a` (*Make Plain rendering checks
+platform-neutral*): `desktop_window` is split in two over the same
+`desktop_tests` binary for CI runtime reliability, so the desktop entries are
+now four -- `desktop_export --export-state`,
+`desktop_relational --relational-part`, `desktop_window --window-part` and
+`desktop_new_projects --new-projects-part` -- each with a 60 s TIMEOUT. No
+timeout was raised and no assertion was removed: `require(` 2,039, `must(` 31
+and `require_table_properties(` 15 before and after, and every block of the
+old entry runs in exactly one of the two. Profiling put 23.2 s of the old
+entry's 33.5 s in waiting, 11.6 s of it fixed waits that are timing checks
+themselves or cover timed follow-ups a test cannot observe, so the entry was
+split rather than its waits cut. In Release `desktop_window` took
+19.72–20.26 s (mean 19.85 s over five runs) and `desktop_new_projects`
+13.00–13.09 s (mean 13.04 s), where the single entry took 32.4 s; in Debug
+20.45–21.20 s and 14.18–14.20 s. The two pass side by side (`ctest -j2`), and
+the whole suite passes sequentially and with `ctest -j3` in both builds.
+`desktop_tests` with no flag still runs the complete historical sequence
+(51.4 s Debug, 47.1 s Release). `visual` differs on the same three reference
+pictures as below; none was retaken.
+
+**2026-10-09**, at `7b12b70` (*Split desktop tests to reduce timeout risk*),
+after `86fd989` (*Add temporary drag room for schema moves*): all functional
+coverage passes in Debug and in Release, nothing skipped. The old single
+`desktop` CTest entry is replaced by three entries over the same
+`desktop_tests` binary: `desktop_export --export-state`,
+`desktop_relational --relational-part`, and `desktop_window --window-part`
+(since split in two; see the entry above).
+Running `desktop_tests` with no flag still runs the complete suite in its
+original order, and the existing focused modes including
+`--schema-connections-only` remain. Twenty-two fixed waits used only for
+panel/workspace motion now use `settle_motion(window)`, which waits for the
+actual animation to finish; timing-sensitive waits were kept. No timeout was
+raised and no assertion was removed. In Debug the three entries took about
+1.5–2.0 s, 15.92 s and 34.36–34.45 s (51.8–52.4 s sequential, about 34.6 s
+with `ctest -j3`); in Release they took 2.01 s, 13.47 s and 32.63 s
+(about 48.1 s sequential). The slowest Debug desktop entry is therefore
+about 34.4 s against its unchanged 60 s limit, replacing the former
+approximately 57 s single-entry risk. The complete no-flag desktop binary
+also passed (51.2 s in the validation run). `visual` still differs on the
+same three reference pictures: `card-selected` (3.58016 %), `conceptual`
+(5.7545 %) and `relational-design` (8.39088 %); no reference picture was
+retaken.
+
+**2026-10-09**, at `3e29264` (*Add workspace-aware export support*): all
+six functional suites pass in Debug and in Release -- `core`,
+`persistence`, `canvas`, `theme`, `desktop` and `desktop_smoke` -- with the
+whole desktop suite run, nothing skipped, including the export-state tests
+(`export_state_tests()`, about 2 s; they used to hang on a save dialog in
+the working tree, and now give the destination where the dialog would ask).
+`desktop` took 54.2 s in Debug and 50.9 s in Release, close to ctest's 60 s
+limit in Debug -- a risk, not a failure. `visual` fails on three reference
+pictures, `card-selected` (3.58016 %), `conceptual` (5.7545 %) and
+`relational-design` (8.39088 %); no reference picture was retaken.
 
 **2026-10-05**, after Relational Design's examples and template were added,
 the keyless-entity edit of 2026-10-03 was reverted, and ADR-021 §5b was
@@ -2809,8 +3068,9 @@ built is kept below.*
   recorded with the two large examples (naive plurals, missing spaces).
 - **Interface wording:** the disabled *Import ▸ From another tool…* still
   says there is nowhere to put SQL, CSV and JSON.
-- **Technical debt:** `SchemaView` has no `Q_OBJECT`, so tests find it by its
-  object name; the Debug desktop suite can run past ctest's time limit.
+- **Technical debt**: `SchemaView` has no `Q_OBJECT`, so tests find it by its
+  object name. The former desktop CTest timeout risk was resolved in
+  `7b12b70`; see Verification.
 - **Longer term:** the Data workspace; multiple pages; autosave and recovery;
   a cross-project clipboard; spacing shapes out evenly (alignment guides and
   group alignment are built); freely draggable connector endpoint handles.
@@ -2827,9 +3087,9 @@ building:
   *Physical schema* and *Compact schema* (see *Optional compact schema
   view*). What Physical schema adds next -- defaults, checks, indexes and
   the rest of a physical design -- is building work, not a naming decision.
-- Whether Relational Design gets the ribbon (File, Home, Insert, Design,
-  Export, Import, View, Help, as the Conceptual workspace has), or keeps its
-  header tools.
+- ~~Whether Relational Design gets the ribbon~~ -- **decided 2026-10-06**:
+  it has the same File, Home and Settings tabs, keeps its tools in its
+  header, and its rows leave out what acts on the diagram alone.
 - The gesture for reordering columns.
 - *Strong* or *Regular* for an entity that is not weak. Today an entity is
   *Regular* or *Weak*, and a relationship *Regular* or *Identifying*.

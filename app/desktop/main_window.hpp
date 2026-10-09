@@ -108,6 +108,13 @@ namespace erdflow::desktop
         // Writes a copy of the project itself, losing nothing. Saving keeps working
         // on the file it wrote; this leaves the open project where it is.
         bool export_project_file(const QString &location = {});
+        // Where an export goes, when nothing has said already. Unset, the person is
+        // asked in a save dialog; set, it is asked instead, given the suggested
+        // file and the dialog's filter, and its answer is taken exactly as a file
+        // chosen in the dialog would be -- empty for a cancel. Everything after the
+        // choice is the export itself, the same either way. It is how the tests,
+        // which have nobody to answer a dialog, drive the Export commands whole.
+        std::function<QString(const QString &suggested, const QString &filter)> choose_export_location;
         // Brings another project's contents into this one, from a project file or
         // from a picture carrying one. Everything arrives with fresh identities and
         // clear of what is already drawn, and the whole import undoes in one step.
@@ -240,8 +247,16 @@ namespace erdflow::desktop
         void populate_schema_key_actions(QMenu &menu, const SchemaView::Spot &spot);
         // Classified, as the table's Properties list offers them: NULL and NOT
         // NULL as two opposite choices, then UNIQUE and IDENTITY, each saying
-        // what it means. The canvas's own constraints menu is not classified.
-        void populate_schema_rules(QMenu &menu, const SchemaView::Constrained &hit, bool classified = false);
+        // what it means. The canvas's constraints list offers them the same way,
+        // under the column's keys.
+        void populate_schema_rules(QMenu &menu, const SchemaView::Constrained &hit);
+        // A column's primary key and its foreign key, put on or taken off. What
+        // the Properties switches do and what the canvas's constraints list
+        // does, so that the two are one command each and say the same thing
+        // where it cannot be done.
+        bool trigger_schema_key_action(const SchemaColumnRef &handle, const char *name);
+        void press_schema_primary_key(const SchemaColumnRef &handle);
+        void press_schema_foreign_key(const SchemaColumnRef &handle, QPoint at);
         void pick_schema_column_type(const SchemaColumnRef &handle, QPoint at, bool size, bool compact = false);
         // One of a row's constraint marks was pressed. Which command that is
         // depends on what the column is made of, and this is the only place that
@@ -251,8 +266,9 @@ namespace erdflow::desktop
         void toggle_schema_constraint(const SchemaView::Constrained &hit,
                                       SchemaView::Constraint which);
         // The list of what can be said about one column's constraints, opened
-        // where the cell is. Several of them apply at once, so it is a list of
-        // things to tick rather than a choice between them.
+        // where the cell is: its keys, then its rules. Several of them apply at
+        // once, so it is a list of things to tick rather than a choice between
+        // them.
         void offer_schema_rules(const SchemaView::Constrained &hit, QPoint at);
         // Which side of a relationship carries a foreign key, given the side it
         // points at. The preview remembers the target, because that is what
@@ -285,6 +301,9 @@ namespace erdflow::desktop
         void follow_schema_first();
         bool schema_first_ = false;
         domain::ProjectId schema_first_project_;
+        // The project the Conceptual Explorer's folds belong to: another
+        // project starts with its groups folded rather than wearing these.
+        domain::ProjectId explorer_project_;
         QToolButton *schema_add_table_ = nullptr;
         QPushButton *schema_convert_ = nullptr;
         QWidget *schema_narrowing_ = nullptr;
@@ -306,7 +325,9 @@ namespace erdflow::desktop
         {
             Select,
             Table,
-            Connect
+            Connect,
+            // The floating controls' Pan (Zain, 2026-10-08), as the diagram's.
+            Pan
         };
         SchemaTool schema_tool_ = SchemaTool::Select;
         bool schema_tool_locked_ = false;
@@ -366,6 +387,10 @@ namespace erdflow::desktop
         // written anywhere.
         bool schema_properties_rebuilding_ = false;
         QAction *schema_search_mark_ = nullptr;
+        // The diagram's search field, in its row as the schema's is in its header
+        // (Zain, 2026-10-08): the search bar's own text box, moved up.
+        QLineEdit *conceptual_search_ = nullptr;
+        QAction *conceptual_search_mark_ = nullptr;
         // What a schema drawn by hand is converted from: where each table is on
         // the schema now, and how big each kind of element is made. Asked by
         // Convert and by the Conceptual preview alike, so the preview shows
@@ -459,6 +484,14 @@ namespace erdflow::desktop
         std::map<Notation, QAction *> notation_actions_;
         std::map<ThemeId, QAction *> theme_actions_;
         std::map<QAction *, Glyph> action_glyphs_;
+        // The ribbon's tabs, whose icons are drawn small and follow the tab's own
+        // way of being chosen (dress_ribbon); the commands whose icons are worn
+        // by their buttons on the ribbon's rows rather than by their actions,
+        // which the menus share; and the ribbon's one menu button that has no
+        // action at all.
+        std::map<QAction *, Glyph> tab_glyphs_;
+        std::map<QAction *, Glyph> row_glyphs_;
+        std::map<QToolButton *, Glyph> button_glyphs_;
         // What the window is currently showing, and what the user actually chose.
         // They differ only while a theme is being previewed under the pointer.
         ThemeId theme_ = ThemeId::OfficeLight;
@@ -481,6 +514,34 @@ namespace erdflow::desktop
         [[nodiscard]] int icon_pixels() const;
         // Keeps the canvas's own controls in the corner of the view as it resizes.
         void place_canvas_controls();
+        // The raft of view controls, made the same way on the diagram and on
+        // the schema (Zain, 2026-10-08): what each of its buttons does there,
+        // what its zoom signs say, and where its grip takes it.
+        struct RaftParts
+        {
+            QAction *full_view = nullptr;
+            QAction *fit = nullptr;
+            QAction *pan = nullptr;
+            QAction *panels = nullptr;
+            std::function<void(int)> zoom;
+            std::function<QString(int)> zoom_tip;
+            std::function<void(QPoint)> dragged;
+            QString hide_tip;
+        };
+        QWidget *make_view_raft(QWidget *host, const QString &raft_name, const QString &prefix, const RaftParts &parts);
+        void place_raft(QWidget *raft, QWidget *host, const std::optional<QPointF> &place);
+        // The schema's raft, over its scroll area: placed, dragged, its Full
+        // view, and its Pan's lock mark.
+        void place_schema_controls();
+        void move_schema_controls(QPoint by);
+        void put_schema_panels_away(bool away);
+        void refresh_schema_pan_button();
+        QWidget *schema_controls_ = nullptr;
+        std::optional<QPointF> schema_controls_place_;
+        QAction *schema_full_view_ = nullptr;
+        QAction *schema_fit_ = nullptr;
+        QAction *schema_pan_ = nullptr;
+        std::vector<QPointer<QDockWidget>> schema_away_panels_;
 
     public:
         // Moves the raft by the given amount and remembers where it was put, as a
@@ -519,9 +580,12 @@ namespace erdflow::desktop
         // What the export dialog last settled on, kept for the session so a
         // second export of the same work takes one press rather than four.
         ExportChoice export_choice_;
-        // Everything under Export, kept so they can be turned off together while
-        // there is nothing drawn to make anything of.
-        std::vector<QAction *> export_actions_;
+        // Each exporter follows its target in the active workspace, independent
+        // of whether the working project has a saved path or unsaved edits.
+        enum class ExportTarget { Project, Document, Picture, Options };
+        std::vector<std::pair<QAction *, ExportTarget>> export_actions_;
+        [[nodiscard]] bool export_available(ExportTarget target) const;
+        [[nodiscard]] ExportView export_view() const;
         void export_dialog();
         // Asks which file to import, looking among projects or among pictures.
         void import_dialog(bool pictures);
@@ -598,6 +662,42 @@ namespace erdflow::desktop
         void choose_line_style(LineStyle style);
         void refresh_tool_labels();
         void refresh_icons();
+        // Icons for the ribbon's tabs and for the commands on its Design, Export,
+        // Import, View and Help rows, and shorter names on those rows.
+        void dress_ribbon();
+        // Draws those icons again, for the theme and icon set in use: part of
+        // refresh_icons, and all that dressing the ribbon needs drawn.
+        void refresh_ribbon_icons();
+        // The canvas raft's one button for the side panels, and the picture
+        // and words it wears for the panels that are out.
+        QAction *side_panels_ = nullptr;
+        void refresh_side_panels_action();
+        // The header's top right corner: Model, then Theme outermost.
+        QToolButton *header_model_ = nullptr;
+        QToolButton *header_theme_ = nullptr;
+        QAction *model_to_conceptual_ = nullptr;
+        void fill_model_menu();
+        QWidget *conceptual_corner_ = nullptr;
+        // The start of the diagram's tool row (Zain, 2026-10-08): the header's
+        // own Home, Schema | Conceptual and title, carried there while the
+        // diagram is in front so the diagram has one row as the schema does,
+        // and given back to the header while Relational Design is in front.
+        QWidget *conceptual_identity_ = nullptr;
+        QAction *conceptual_identity_action_ = nullptr;
+        QAction *conceptual_identity_rule_ = nullptr;
+        bool identity_relational_ = false;
+        bool placing_identity_ = false;
+        void place_workspace_controls(bool relational);
+        void place_workspace_identity(bool relational);
+        // The schema's working tools in its header -- its drawing tools, undo
+        // and redo with its search, Model and Theme -- shown only while Home is
+        // the ribbon's tab in front (Zain, 2026-10-08): the header is Home's row
+        // while the schema is in front, and goes with it under File and
+        // Settings, all but Home, Schema | Conceptual and the title.
+        void wear_schema_header_for_tab();
+        // Which half of Schema | Conceptual is lit, and what each half says it
+        // does, for the project in front.
+        void wear_workspace_switch();
         // A sample drawn for an ordinary row and again for a highlighted one, so it
         // is never drawn in the colour it is standing on. See the definition.
         [[nodiscard]] QIcon two_tone(const std::function<QPixmap(std::optional<QColor>)> &draw) const;

@@ -537,6 +537,19 @@ void draw(QPainter& painter, Glyph glyph, const Theme& colors, qreal side) {
                          QPointF(slip.left() + slip.width() * 0.55, centre.y() + box.height() * 0.2));
         break;
     }
+    // The ribbon's own are drawn from their line art in every set
+    // (line_art_only), so nothing is painted for them here.
+    case Glyph::Import: case Glyph::View: case Glyph::Help:
+    case Glyph::Background: case Glyph::IconSet: case Glyph::Notation: case Glyph::Lines:
+    case Glyph::ProjectFile: case Glyph::PdfDocument: case Glyph::DataDictionary: case Glyph::HtmlReport:
+    case Glyph::CsvListing: case Glyph::SvgPicture: case Glyph::PdfPage: case Glyph::MorePictures:
+    case Glyph::CopyPicture: case Glyph::ProjectPicture: case Glyph::OtherTool:
+    case Glyph::ActualSize: case Glyph::ZoomIn: case Glyph::ZoomOut: case Glyph::Grid:
+    case Glyph::AlignToGrid: case Glyph::CanvasControls: case Glyph::Comments: case Glyph::History:
+    case Glyph::Guide: case Glyph::About:
+    case Glyph::FileTab: case Glyph::Home: case Glyph::Insert: case Glyph::Settings: case Glyph::NoPanels:
+    case Glyph::Model:
+        break;
     }
 }
 
@@ -598,6 +611,45 @@ QString icon_name(Glyph glyph) {
     case Glyph::ExplorerPanel: return QStringLiteral("panel-left");
     case Glyph::PropertiesPanel: return QStringLiteral("panel-right");
     case Glyph::SidePanels: return QStringLiteral("side-panels");
+    // The ribbon's, named for what they stand for rather than for the
+    // drawing, so another set can draw its own under the same name. The
+    // coloured set has artwork for Import and for comments.
+    case Glyph::Import: return QStringLiteral("import");
+    case Glyph::View: return QStringLiteral("view");
+    case Glyph::Help: return QStringLiteral("help");
+    case Glyph::Background: return QStringLiteral("background");
+    case Glyph::IconSet: return QStringLiteral("icon-set");
+    case Glyph::Notation: return QStringLiteral("notation");
+    case Glyph::Lines: return QStringLiteral("lines");
+    case Glyph::ProjectFile: return QStringLiteral("project-file");
+    case Glyph::PdfDocument: return QStringLiteral("pdf-document");
+    case Glyph::DataDictionary: return QStringLiteral("data-dictionary");
+    case Glyph::HtmlReport: return QStringLiteral("html-report");
+    case Glyph::CsvListing: return QStringLiteral("csv-listing");
+    case Glyph::SvgPicture: return QStringLiteral("svg-picture");
+    case Glyph::PdfPage: return QStringLiteral("pdf-page");
+    case Glyph::MorePictures: return QStringLiteral("more-pictures");
+    case Glyph::CopyPicture: return QStringLiteral("copy-picture");
+    case Glyph::ProjectPicture: return QStringLiteral("project-picture");
+    case Glyph::OtherTool: return QStringLiteral("other-tool");
+    case Glyph::ActualSize: return QStringLiteral("actual-size");
+    case Glyph::ZoomIn: return QStringLiteral("zoom-in");
+    case Glyph::ZoomOut: return QStringLiteral("zoom-out");
+    case Glyph::Grid: return QStringLiteral("grid");
+    case Glyph::AlignToGrid: return QStringLiteral("align-to-grid");
+    case Glyph::CanvasControls: return QStringLiteral("canvas-controls");
+    case Glyph::Comments: return QStringLiteral("comment");
+    case Glyph::History: return QStringLiteral("history");
+    case Glyph::Guide: return QStringLiteral("guide");
+    case Glyph::About: return QStringLiteral("about");
+    // The coloured set has artwork for Settings alone among these.
+    case Glyph::FileTab: return QStringLiteral("file");
+    case Glyph::Home: return QStringLiteral("house");
+    case Glyph::Insert: return QStringLiteral("insert");
+    case Glyph::Settings: return QStringLiteral("settings");
+    case Glyph::NoPanels: return QStringLiteral("no-panels");
+    // Lucide's network, which both sets have as the Home screen's conceptual.
+    case Glyph::Model: return QStringLiteral("conceptual");
     }
     return QStringLiteral("select");
 }
@@ -663,51 +715,79 @@ QPixmap solid_pixmap(const QString& name, const QColor& ink, int size) {
 }
 
 namespace {
+// The ribbon's glyphs, which have no painted drawing: in the painted set they
+// are their line art, and in the coloured set too wherever it has no artwork
+// of the same name.
+bool line_art_only(Glyph glyph) {
+    switch (glyph) {
+    case Glyph::Import: case Glyph::View: case Glyph::Help:
+    case Glyph::Background: case Glyph::IconSet: case Glyph::Notation: case Glyph::Lines:
+    case Glyph::ProjectFile: case Glyph::PdfDocument: case Glyph::DataDictionary: case Glyph::HtmlReport:
+    case Glyph::CsvListing: case Glyph::SvgPicture: case Glyph::PdfPage: case Glyph::MorePictures:
+    case Glyph::CopyPicture: case Glyph::ProjectPicture: case Glyph::OtherTool:
+    case Glyph::ActualSize: case Glyph::ZoomIn: case Glyph::ZoomOut: case Glyph::Grid:
+    case Glyph::AlignToGrid: case Glyph::CanvasControls: case Glyph::Comments: case Glyph::History:
+    case Glyph::Guide: case Glyph::About:
+    case Glyph::FileTab: case Glyph::Home: case Glyph::Insert: case Glyph::Settings: case Glyph::NoPanels:
+    case Glyph::Model:
+        return true;
+    default:
+        return false;
+    }
+}
+
+// A glyph from the line-art set, or nothing where the set has no such file.
+QIcon line_art_icon(Glyph glyph, const Theme& colors, int size) {
+    // The line art is drawn in one colour, named in the file as the colour
+    // of the surrounding text. Qt's renderer does not resolve that itself,
+    // so the ink asked for is put in its place before the file is drawn --
+    // which is what makes one set of files serve every palette.
+    // The line-art set files its table as relational, the level it is
+    // the unit of; every other glyph goes by the same name in both sets.
+    QFile file(QStringLiteral(":/erdflow/icons-outline/%1.svg")
+                   .arg(glyph == Glyph::Table ? QStringLiteral("relational") : icon_name(glyph)));
+    if (file.open(QIODevice::ReadOnly)) {
+        const auto source = file.readAll();
+        const auto inked = [&](const QColor& ink) {
+            auto drawing = source;
+            drawing.replace("currentColor", ink.name().toLatin1());
+            QSvgRenderer renderer(drawing);
+            if (!renderer.isValid()) return QPixmap();
+            QPixmap pixmap(QSize(size, size) * 3);
+            pixmap.setDevicePixelRatio(3);
+            pixmap.fill(Qt::transparent);
+            QPainter painter(&pixmap);
+            painter.setRenderHint(QPainter::Antialiasing);
+            // A little air around the drawing, so a button's edge never
+            // crowds the line the way a full-bleed glyph would.
+            const qreal inset = size * 0.08;
+            renderer.render(&painter, QRectF(inset, inset, size - inset * 2, size - inset * 2));
+            return pixmap;
+        };
+        const auto resting = inked(colors.text);
+        if (!resting.isNull()) {
+            QIcon icon(resting);
+            // A tool that is on sits on a chip of the theme's accent, and a
+            // line inked for the panel can all but vanish against it. The
+            // set is a single colour, so the same file is drawn again in
+            // the ink that reads on the accent and kept as the icon's "on"
+            // state, which is what Qt asks for when a button is checked.
+            const auto lit = inked(readable_on(colors.accent));
+            if (!lit.isNull()) {
+                icon.addPixmap(lit, QIcon::Normal, QIcon::On);
+                icon.addPixmap(lit, QIcon::Active, QIcon::On);
+                icon.addPixmap(lit, QIcon::Selected, QIcon::On);
+            }
+            return icon;
+        }
+    }
+    return {};
+}
+
 QIcon inked_icon(Glyph glyph, const Theme& colors, int size, IconMode mode) {
     if (mode == IconMode::Outline) {
-        // The line art is drawn in one colour, named in the file as the colour
-        // of the surrounding text. Qt's renderer does not resolve that itself,
-        // so the ink asked for is put in its place before the file is drawn --
-        // which is what makes one set of files serve every palette.
-        // The line-art set files its table as relational, the level it is
-        // the unit of; every other glyph goes by the same name in both sets.
-        QFile file(QStringLiteral(":/erdflow/icons-outline/%1.svg")
-                       .arg(glyph == Glyph::Table ? QStringLiteral("relational") : icon_name(glyph)));
-        if (file.open(QIODevice::ReadOnly)) {
-            const auto source = file.readAll();
-            const auto inked = [&](const QColor& ink) {
-                auto drawing = source;
-                drawing.replace("currentColor", ink.name().toLatin1());
-                QSvgRenderer renderer(drawing);
-                if (!renderer.isValid()) return QPixmap();
-                QPixmap pixmap(QSize(size, size) * 3);
-                pixmap.setDevicePixelRatio(3);
-                pixmap.fill(Qt::transparent);
-                QPainter painter(&pixmap);
-                painter.setRenderHint(QPainter::Antialiasing);
-                // A little air around the drawing, so a button's edge never
-                // crowds the line the way a full-bleed glyph would.
-                const qreal inset = size * 0.08;
-                renderer.render(&painter, QRectF(inset, inset, size - inset * 2, size - inset * 2));
-                return pixmap;
-            };
-            const auto resting = inked(colors.text);
-            if (!resting.isNull()) {
-                QIcon icon(resting);
-                // A tool that is on sits on a chip of the theme's accent, and a
-                // line inked for the panel can all but vanish against it. The
-                // set is a single colour, so the same file is drawn again in
-                // the ink that reads on the accent and kept as the icon's "on"
-                // state, which is what Qt asks for when a button is checked.
-                const auto lit = inked(readable_on(colors.accent));
-                if (!lit.isNull()) {
-                    icon.addPixmap(lit, QIcon::Normal, QIcon::On);
-                    icon.addPixmap(lit, QIcon::Active, QIcon::On);
-                    icon.addPixmap(lit, QIcon::Selected, QIcon::On);
-                }
-                return icon;
-            }
-        }
+        const auto icon = line_art_icon(glyph, colors, size);
+        if (!icon.isNull()) return icon;
         // A missing file must not leave a button blank; the drawn glyph stands in.
     }
     if (mode == IconMode::Modern) {
@@ -719,12 +799,22 @@ QIcon inked_icon(Glyph glyph, const Theme& colors, int size, IconMode mode) {
         const bool on_dark = readable_on(colors.panel) == QColor(0xff, 0xff, 0xff);
         // Scalable artwork reports no fixed sizes of its own, so whether it
         // loaded is asked by rendering it rather than by listing what it offers.
-        QIcon artwork(QStringLiteral(":/erdflow/%1/%2.svg")
-                          .arg(on_dark ? QStringLiteral("icons-on-dark") : QStringLiteral("icons"),
-                               icon_name(glyph)));
-        if (!artwork.pixmap(size).isNull()) return artwork;
+        // A name the set has no file for is not asked for at all: Qt's reader
+        // says so on the console every time it is asked.
+        const auto path = QStringLiteral(":/erdflow/%1/%2.svg")
+                              .arg(on_dark ? QStringLiteral("icons-on-dark") : QStringLiteral("icons"),
+                                   icon_name(glyph));
+        if (QFile::exists(path)) {
+            QIcon artwork(path);
+            if (!artwork.pixmap(size).isNull()) return artwork;
+        }
         // A missing file must not leave a button blank, so the drawn glyph
         // stands in. Nothing else in the window has to know it happened.
+    }
+    // A glyph with no drawing of its own is its line art in every set.
+    if (line_art_only(glyph)) {
+        const auto icon = line_art_icon(glyph, colors, size);
+        if (!icon.isNull()) return icon;
     }
     QPixmap pixmap(QSize(size, size) * 3);
     pixmap.setDevicePixelRatio(3);

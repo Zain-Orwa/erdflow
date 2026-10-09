@@ -450,7 +450,116 @@ QSize WelcomeFlowIllustration::sizeHint() const {
 QColor WelcomeFlowIllustration::hero_blue() const {
     // The reference's database blue for Azure; any other theme's own primary,
     // so the drawing belongs to whichever palette is on.
-    return theme_ == ThemeId::Azure ? QColor("#3B82F6") : tokens(theme_).primary;
+    return palette_.accent;
+}
+
+QColor WelcomeFlowIllustration::hero_light(ThemeId id) { return palette_for(id).light; }
+
+WelcomeFlowIllustration::Palette WelcomeFlowIllustration::palette_for(ThemeId id) {
+    const auto& t = tokens(id);
+    Palette made;
+    made.accent = id == ThemeId::Azure ? QColor("#3B82F6") : t.primary;
+    made.dark = t.surface.lightness() < 128;
+    auto& base = made.database;
+    if (!made.dark) {
+        made.light = QColor(Qt::white);
+        made.raised = t.surface;
+        // A deep shade of the drawing's own blue, which reads on the pale
+        // panel whatever the theme's own lettering is.
+        made.word = mix(made.accent, Qt::black, 0.55);
+        // The database as it was always drawn on a light page: its blue run
+        // towards white for the lit side and the lids, a little deeper on the
+        // right, and no outline.
+        const auto& blue = made.accent;
+        const QColor white(Qt::white);
+        for (auto& wall : base.side) {
+            wall[0] = mix(blue, white, 0.34);
+            wall[1] = mix(blue, white, 0.48);
+            wall[2] = mix(blue, white, 0.14);
+            wall[3] = blue.darker(112);
+        }
+        base.lid_top = mix(blue, white, 0.90);
+        base.lid_foot = mix(blue, white, 0.58);
+        base.lid_edge = mix(blue, white, 0.94);
+        base.seam = Qt::transparent;
+        base.shadow = with_alpha(blue.darker(140), 0.22);
+        base.plate_under = mix(blue, white, 0.70);
+        base.plate_top = mix(blue, white, 0.95);
+        base.plate_foot = mix(blue, white, 0.83);
+        base.plate_rim = with_alpha(white, 0.9);
+        base.plate_inner = mix(blue, white, 0.78);
+        base.glow = with_alpha(blue, 0.20);
+        return made;
+    }
+    // Under half way to white, so the database and its lines still read as
+    // lit and round without burning against a dark page: lilac beside a
+    // violet accent, mint beside a green one, grey where there is no colour.
+    made.light = mix(made.accent, Qt::white, 0.42);
+    // The theme's own surface, lifted a little towards that light, so a
+    // panel stands off the page as a thing of the same palette.
+    made.raised = mix(t.surface, made.light, 0.12);
+    made.word = made.light;
+    // On a dark page every part of the database is the accent's hue at a
+    // lightness of its own, so the parts stay apart whatever the accent is.
+    // The accent's own lightness is set aside -- a neon yellow, a near-white
+    // and a deep blue would otherwise give three different databases, two of
+    // them one glare -- and its saturation is capped, so a neon reads as a
+    // colour rather than a light. A theme with no colour gets greys.
+    float hue = -1, saturation = 0, lightness = 0;
+    made.accent.getHslF(&hue, &saturation, &lightness);
+    saturation = hue < 0 ? 0.0f : std::min(saturation, 0.62f);
+    const auto at = [hue, saturation](double level, double strength = 1.0) {
+        return QColor::fromHslF(std::max(0.0f, hue), static_cast<float>(saturation * strength),
+                                static_cast<float>(level));
+    };
+    // Lit from the left: a lit flank, a brighter shoulder, the body, and the
+    // side turned away; each tier a little deeper than the one above it.
+    for (int tier = 0; tier < 3; ++tier) {
+        const auto lower = 0.045 * tier;
+        base.side[tier][0] = at(0.60 - lower);
+        base.side[tier][1] = at(0.67 - lower);
+        base.side[tier][2] = at(0.52 - lower);
+        base.side[tier][3] = at(0.36 - lower);
+    }
+    // The lids are the lightest of it, well clear of the walls, and still
+    // the accent's own: never white.
+    base.lid_top = at(0.84);
+    base.lid_foot = at(0.70);
+    base.lid_edge = at(0.90, 0.8);
+    // The seams and the outline: a deep shade, thin, so each tier ends in a
+    // line against the lid below it and the whole stands clear of its glow.
+    base.seam = with_alpha(at(0.22), 0.85);
+    base.shadow = with_alpha(at(0.10), 0.45);
+    // The platform below it in value as well as in place: a tray of the same
+    // hue, quieter and darker than the database, with a rim to edge it.
+    base.plate_under = at(0.24, 0.7);
+    base.plate_top = at(0.40, 0.7);
+    base.plate_foot = at(0.33, 0.7);
+    base.plate_rim = with_alpha(at(0.62, 0.8), 0.9);
+    base.plate_inner = at(0.50, 0.7);
+    // And the light it casts, softer than the database itself.
+    base.glow = with_alpha(at(0.50), 0.12);
+    return made;
+}
+
+QColor WelcomeFlowIllustration::tone_of(const HeroOrbitItem& item) const {
+    const auto& accent = palette_.accent;
+    if (!palette_.dark || accent.hsvHue() < 0) return accent;
+    const auto turned = [&accent](int by) {
+        return QColor::fromHsv((accent.hsvHue() + by + 360) % 360, accent.hsvSaturation(), accent.value());
+    };
+    // The relationships turned one way and SQL the other; the structure and
+    // the table keep the accent itself, the table filled with it.
+    switch (item.icon) {
+    case HeroIcon::Conceptual: return turned(-22);
+    case HeroIcon::Sql: return turned(18);
+    default: return accent;
+    }
+}
+
+bool WelcomeFlowIllustration::warm(const HeroOrbitItem& item) const {
+    const auto& t = tokens(theme_);
+    return item.accent == t.gold && t.gold != t.primary;
 }
 
 std::vector<HeroOrbitItem> WelcomeFlowIllustration::product_cards(const Tokens& t) {
@@ -502,6 +611,7 @@ void WelcomeFlowIllustration::wear(ThemeId id) {
     const bool was_product = !items_.empty() && items_.front().id == "conceptual"
                           && items_.size() == product_cards(tokens(theme_)).size();
     theme_ = id;
+    palette_ = palette_for(id);
     // A caller's own panels keep the accents that caller chose; the ready-made
     // set follows the theme, because it is the product's own and the product
     // is what changed.
@@ -550,7 +660,6 @@ const QPixmap& WelcomeFlowIllustration::backdrop() const {
 
 void WelcomeFlowIllustration::draw_backdrop(QPainter& painter) const {
     const auto& t = tokens(theme_);
-    const auto blue = hero_blue();
     painter.save();
     painter.setTransform(stage_transform());
     painter.setPen(Qt::NoPen);
@@ -573,8 +682,8 @@ void WelcomeFlowIllustration::draw_backdrop(QPainter& painter) const {
     painter.translate(axis_x, platform_y + 14);
     painter.scale(1.0, 0.36);
     QRadialGradient under(QPointF(0, 0), 132);
-    under.setColorAt(0.0, with_alpha(blue, 0.20));
-    under.setColorAt(1.0, with_alpha(blue, 0.0));
+    under.setColorAt(0.0, palette_.database.glow);
+    under.setColorAt(1.0, with_alpha(palette_.database.glow, 0.0));
     painter.setBrush(under);
     painter.drawEllipse(QPointF(0, 0), 132, 132);
     painter.restore();
@@ -588,13 +697,14 @@ void WelcomeFlowIllustration::draw_backdrop(QPainter& painter) const {
     seen.scale(1.0, platform_squash);
     seen.rotate(45);
     const auto top = seen.map(square);
-    painter.setBrush(mix(blue, Qt::white, 0.70));
+    const auto& base = palette_.database;
+    painter.setBrush(base.plate_under);
     painter.drawPath(top.translated(0, platform_thickness));
     QLinearGradient face(QPointF(0, platform_y - 42), QPointF(0, platform_y + 42));
-    face.setColorAt(0.0, mix(blue, Qt::white, 0.95));
-    face.setColorAt(1.0, mix(blue, Qt::white, 0.83));
+    face.setColorAt(0.0, base.plate_top);
+    face.setColorAt(1.0, base.plate_foot);
     painter.setBrush(face);
-    painter.setPen(QPen(with_alpha(Qt::white, 0.9), 1.3));
+    painter.setPen(QPen(base.plate_rim, 1.3));
     painter.drawPath(top);
     // An inner rim, which is what makes it read as a tray rather than a tile.
     QPainterPath inner;
@@ -602,7 +712,7 @@ void WelcomeFlowIllustration::draw_backdrop(QPainter& painter) const {
                                 (platform_half - 11) * 2, (platform_half - 11) * 2),
                          platform_round - 5, platform_round - 5);
     painter.setBrush(Qt::NoBrush);
-    painter.setPen(QPen(mix(blue, Qt::white, 0.78), 1.0));
+    painter.setPen(QPen(base.plate_inner, 1.0));
     painter.drawPath(seen.map(inner));
     painter.restore();
 }
@@ -617,7 +727,7 @@ void WelcomeFlowIllustration::draw_connectors(QPainter& painter) const {
     const auto pulse = moving_
         ? connector_pulse_amount * std::sin(turned * 2.0 * M_PI * connector_pulse_cycles)
         : 0.0;
-    const auto base = theme_ == ThemeId::Azure ? QColor("#79BDF2") : mix(blue, Qt::white, 0.42);
+    const auto base = theme_ == ThemeId::Azure ? QColor("#79BDF2") : mix(blue, palette_.light, 0.42);
     const auto scale = drawing_scale();
     painter.save();
     painter.setBrush(Qt::NoBrush);
@@ -658,7 +768,7 @@ void WelcomeFlowIllustration::draw_connectors(QPainter& painter) const {
     const auto tube = std::clamp(5.6 * scale, 3.6, 5.4);
     const auto core = tube * 0.44;
     const auto wall = mix(base, blue, 0.28);
-    const auto light = mix(base, Qt::white, 0.78);
+    const auto light = mix(base, palette_.light, 0.78);
     for (const auto& path : paths) {
         painter.setPen(QPen(with_alpha(base, 0.16), tube + 5.0 * scale, Qt::SolidLine, Qt::RoundCap,
                             Qt::RoundJoin));
@@ -687,12 +797,12 @@ void WelcomeFlowIllustration::draw_connectors(QPainter& painter) const {
             const auto along = std::fmod(seconds_ / lap_seconds + 0.29 * static_cast<double>(n) + 0.5 * k, 1.0);
             const auto at = paths[n].pointAtPercent(back_in ? along : 1.0 - along);
             const auto strength = std::sin(along * M_PI);
-            const auto glowing = back_in ? mix(base, Qt::white, 0.25) : blue;
+            const auto glowing = back_in ? mix(base, palette_.light, 0.25) : blue;
             painter.setBrush(with_alpha(glowing, 0.22 * strength));
             painter.drawEllipse(at, core * 2.2, core * 2.2);
             painter.setBrush(with_alpha(glowing, 0.45 * strength));
             painter.drawEllipse(at, core * 1.2, core * 1.2);
-            painter.setBrush(with_alpha(Qt::white, strength));
+            painter.setBrush(with_alpha(palette_.light, strength));
             painter.drawEllipse(at, core * 0.62, core * 0.62);
         }
     }
@@ -705,10 +815,10 @@ void WelcomeFlowIllustration::draw_connectors(QPainter& painter) const {
             painter.setBrush(with_alpha(base, 0.28));
             painter.drawEllipse(at, radius * 1.9, radius * 1.9);
             painter.setPen(QPen(wall, std::max(0.8, 0.9 * scale)));
-            painter.setBrush(mix(base, Qt::white, 0.85));
+            painter.setBrush(mix(base, palette_.light, 0.85));
             painter.drawEllipse(at, radius, radius);
             painter.setPen(Qt::NoPen);
-            painter.setBrush(mix(blue, Qt::white, 0.1));
+            painter.setBrush(mix(blue, palette_.light, 0.1));
             painter.drawEllipse(at, radius * 0.45, radius * 0.45);
         };
         socket(line.back(), std::max(2.6, 3.4 * scale));
@@ -718,7 +828,6 @@ void WelcomeFlowIllustration::draw_connectors(QPainter& painter) const {
 }
 
 void WelcomeFlowIllustration::draw_database(QPainter& painter) const {
-    const auto blue = hero_blue();
     painter.save();
     painter.setTransform(stage_transform());
     // A very slight breathing in the cylinder's size, about its foot so it
@@ -736,8 +845,9 @@ void WelcomeFlowIllustration::draw_database(QPainter& painter) const {
     painter.translate(axis_x, cylinder_base + 2);
     painter.scale(1.0, 0.34);
     QRadialGradient shade(QPointF(0, 0), cylinder_radius * 1.25);
-    shade.setColorAt(0.0, with_alpha(blue.darker(140), 0.22));
-    shade.setColorAt(1.0, with_alpha(blue, 0.0));
+    const auto& base = palette_.database;
+    shade.setColorAt(0.0, base.shadow);
+    shade.setColorAt(1.0, with_alpha(base.shadow, 0.0));
     painter.setPen(Qt::NoPen);
     painter.setBrush(shade);
     painter.drawEllipse(QPointF(0, 0), cylinder_radius * 1.25, cylinder_radius * 1.25);
@@ -757,19 +867,22 @@ void WelcomeFlowIllustration::draw_database(QPainter& painter) const {
                    180, 180);
         side.lineTo(right, y);
         side.closeSubpath();
+        const auto& wall = base.side[k];
         QLinearGradient round(QPointF(left, 0), QPointF(right, 0));
-        round.setColorAt(0.0, mix(blue, Qt::white, 0.34));
-        round.setColorAt(0.32, mix(blue, Qt::white, 0.48));
-        round.setColorAt(0.68, mix(blue, Qt::white, 0.14));
-        round.setColorAt(1.0, blue.darker(112));
-        painter.setPen(Qt::NoPen);
+        round.setColorAt(0.0, wall[0]);
+        round.setColorAt(0.32, wall[1]);
+        round.setColorAt(0.68, wall[2]);
+        round.setColorAt(1.0, wall[3]);
+        // Edged in the seam's shade where there is one, so the tier ends in
+        // a line against the lid beneath it.
+        painter.setPen(base.seam.alpha() > 0 ? QPen(base.seam, 1.0) : QPen(Qt::NoPen));
         painter.setBrush(round);
         painter.drawPath(side);
         QLinearGradient lid(QPointF(0, y - cylinder_face), QPointF(0, y + cylinder_face));
-        lid.setColorAt(0.0, mix(blue, Qt::white, 0.90));
-        lid.setColorAt(1.0, mix(blue, Qt::white, 0.58));
+        lid.setColorAt(0.0, base.lid_top);
+        lid.setColorAt(1.0, base.lid_foot);
         painter.setBrush(lid);
-        painter.setPen(QPen(mix(blue, Qt::white, 0.94), 1.2));
+        painter.setPen(QPen(base.lid_edge, 1.2));
         painter.drawEllipse(QPointF(axis_x, y), cylinder_radius, cylinder_face);
     }
     painter.restore();
@@ -779,9 +892,10 @@ void WelcomeFlowIllustration::draw_card(QPainter& painter, std::size_t which) co
     const auto& t = tokens(theme_);
     const auto& item = items_[which];
     const auto blue = hero_blue();
+    const auto& light = palette_.light;
     // Gold where a panel asks for it; the product's panels are all blue.
-    const bool warm = item.accent == t.gold;
-    const bool filled = !warm && item.icon == HeroIcon::Relational;
+    const bool golden = warm(item);
+    const bool filled = !golden && item.icon == HeroIcon::Relational;
     const bool pointed_at = static_cast<int>(which) == under_pointer_;
     const QRectF card(-item.size.width() / 2, -item.size.height() / 2, item.size.width(),
                       item.size.height());
@@ -803,29 +917,36 @@ void WelcomeFlowIllustration::draw_card(QPainter& painter, std::size_t which) co
     shape.addRoundedRect(card, radius, radius);
     QLinearGradient fill(card.topLeft(), card.bottomLeft());
     QColor edge;
-    if (warm) {
+    if (golden) {
         fill.setColorAt(0.0, mix(t.gold, Qt::white, 0.84));
         fill.setColorAt(1.0, mix(t.gold, Qt::white, 0.64));
         edge = mix(t.gold, Qt::white, 0.30);
     } else if (filled) {
-        fill.setColorAt(0.0, mix(blue, Qt::white, 0.36));
-        fill.setColorAt(1.0, mix(blue, Qt::white, 0.10));
-        edge = mix(blue, Qt::white, 0.22);
-    } else {
+        fill.setColorAt(0.0, mix(blue, light, 0.36));
+        fill.setColorAt(1.0, mix(blue, light, 0.10));
+        edge = mix(blue, light, 0.22);
+    } else if (!palette_.dark) {
         fill.setColorAt(0.0, with_alpha(mix(blue, Qt::white, 0.965), 0.96));
         fill.setColorAt(1.0, with_alpha(mix(blue, Qt::white, 0.885), 0.96));
         edge = mix(blue, Qt::white, 0.70);
+    } else {
+        // On a dark page, the theme's surface raised towards the panel's own
+        // tone rather than white paper, with an edge of that tone in the light.
+        const auto tone = tone_of(item);
+        fill.setColorAt(0.0, with_alpha(mix(palette_.raised, tone, 0.34), 0.96));
+        fill.setColorAt(1.0, with_alpha(mix(palette_.raised, tone, 0.22), 0.96));
+        edge = mix(tone, light, 0.30);
     }
     painter.fillPath(shape, fill);
     // Pointed at, the border comes up a little: a highlight, and nothing
     // else. The panel keeps travelling.
-    painter.setPen(QPen(pointed_at ? mix(blue, Qt::white, filled ? 0.0 : 0.25) : edge,
+    painter.setPen(QPen(pointed_at ? mix(blue, light, filled ? 0.0 : 0.25) : edge,
                         pointed_at ? 1.8 : 1.1));
     painter.setBrush(Qt::NoBrush);
     painter.drawPath(shape);
     // A catch of light along the top edge, which is most of what makes it
     // read as a thing standing in the light rather than a flat rectangle.
-    painter.setPen(QPen(with_alpha(Qt::white, filled ? 0.45 : 0.85), 1.0));
+    painter.setPen(QPen(with_alpha(light, palette_.dark ? (filled ? 0.35 : 0.45) : filled ? 0.45 : 0.85), 1.0));
     painter.drawLine(QPointF(card.left() + radius, card.top() + 1.2),
                      QPointF(card.right() - radius, card.top() + 1.2));
 
@@ -845,7 +966,7 @@ void WelcomeFlowIllustration::draw_card(QPainter& painter, std::size_t which) co
         lettering.setPixelSize(std::max(1, static_cast<int>(std::round(item.size.width() * 0.15))));
         lettering.setWeight(QFont::DemiBold);
         painter.setFont(lettering);
-        painter.setPen(filled ? QColor(Qt::white) : warm ? QColor("#8A5B00") : t.text_secondary);
+        painter.setPen(filled ? QColor(Qt::white) : golden ? QColor("#8A5B00") : t.text_secondary);
         painter.drawText(QRectF(card.left(), card.bottom() - item.size.height() * 0.3,
                                 card.width(), item.size.height() * 0.2),
                          Qt::AlignCenter, item.title);
@@ -866,6 +987,8 @@ void WelcomeFlowIllustration::draw_mark(QPainter& painter, const HeroOrbitItem& 
                                         const QRectF& card) const {
     const auto& t = tokens(theme_);
     const auto blue = hero_blue();
+    // White on a light page, the accent's own light on a dark one.
+    const auto& light = palette_.light;
     const auto u = card.width() * 0.155;
     // The mark sits in the upper part of the panel, higher where there are
     // words to leave room for.
@@ -879,7 +1002,7 @@ void WelcomeFlowIllustration::draw_mark(QPainter& painter, const HeroOrbitItem& 
         painter.drawLine(QPointF(cx - 1.0 * u, my), QPointF(cx - 0.72 * u, my));
         painter.drawLine(QPointF(cx + 0.72 * u, my), QPointF(cx + 1.0 * u, my));
         painter.setPen(QPen(blue, 1.2));
-        painter.setBrush(mix(blue, Qt::white, 0.82));
+        painter.setBrush(mix(blue, light, 0.82));
         painter.drawRoundedRect(QRectF(cx - 2.45 * u, my - 0.55 * u, 1.45 * u, 1.1 * u), 2.5, 2.5);
         painter.drawRoundedRect(QRectF(cx + 1.0 * u, my - 0.55 * u, 1.45 * u, 1.1 * u), 2.5, 2.5);
         painter.setPen(QPen(t.gold, 1.4));
@@ -893,7 +1016,7 @@ void WelcomeFlowIllustration::draw_mark(QPainter& painter, const HeroOrbitItem& 
     case HeroIcon::Structure: {
         // A small structure of boxes, one over two, joined by elbows: the
         // shape of a model before it has names.
-        const auto line = mix(blue, Qt::white, 0.35);
+        const auto line = mix(blue, light, 0.35);
         painter.setPen(QPen(line, 1.3, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
         painter.setBrush(Qt::NoBrush);
         QPainterPath joins;
@@ -907,12 +1030,12 @@ void WelcomeFlowIllustration::draw_mark(QPainter& painter, const HeroOrbitItem& 
         joins.lineTo(cx - 1.35 * u, my + 1.75 * u);
         joins.lineTo(cx - 0.35 * u, my + 1.75 * u);
         painter.drawPath(joins);
-        painter.setPen(QPen(mix(blue, Qt::white, 0.1), 1.0));
-        painter.setBrush(mix(blue, Qt::white, 0.3));
+        painter.setPen(QPen(mix(blue, light, 0.1), 1.0));
+        painter.setBrush(mix(blue, light, 0.3));
         painter.drawRoundedRect(QRectF(cx - 0.75 * u, my - 1.75 * u, 1.5 * u, 0.9 * u), 2, 2);
         painter.drawRoundedRect(QRectF(cx - 2.1 * u, my + 0.45 * u, 1.5 * u, 0.9 * u), 2, 2);
         painter.drawRoundedRect(QRectF(cx + 0.6 * u, my + 0.45 * u, 1.5 * u, 0.9 * u), 2, 2);
-        painter.setBrush(mix(blue, Qt::white, 0.62));
+        painter.setBrush(mix(blue, light, 0.62));
         painter.drawRoundedRect(QRectF(cx - 0.35 * u, my + 1.35 * u, 1.3 * u, 0.8 * u), 2, 2);
         break;
     }
@@ -920,16 +1043,16 @@ void WelcomeFlowIllustration::draw_mark(QPainter& painter, const HeroOrbitItem& 
         // A table, drawn in white on the blue panel: a header row and cells.
         const QRectF grid(cx - 2.0 * u, my - 1.55 * u, 4.0 * u, 3.1 * u);
         painter.setPen(Qt::NoPen);
-        painter.setBrush(with_alpha(Qt::white, 0.22));
+        painter.setBrush(with_alpha(light, 0.22));
         painter.drawRoundedRect(grid, 3, 3);
-        painter.setBrush(with_alpha(Qt::white, 0.92));
+        painter.setBrush(with_alpha(light, 0.92));
         QPainterPath header;
         header.addRoundedRect(QRectF(grid.left(), grid.top(), grid.width(), 0.8 * u), 3, 3);
         painter.drawPath(header);
-        painter.setPen(QPen(with_alpha(Qt::white, 0.92), 1.2));
+        painter.setPen(QPen(with_alpha(light, 0.92), 1.2));
         painter.setBrush(Qt::NoBrush);
         painter.drawRoundedRect(grid, 3, 3);
-        painter.setPen(QPen(with_alpha(Qt::white, 0.75), 1.0));
+        painter.setPen(QPen(with_alpha(light, 0.75), 1.0));
         painter.drawLine(QPointF(grid.left() + grid.width() * 0.42, grid.top() + 0.8 * u),
                          QPointF(grid.left() + grid.width() * 0.42, grid.bottom()));
         for (const auto row : {1.55, 2.3})
@@ -953,17 +1076,17 @@ void WelcomeFlowIllustration::draw_mark(QPainter& painter, const HeroOrbitItem& 
         page.lineTo(page_left, top + page_tall);
         page.closeSubpath();
         // In the panel's own colour: gold on a warm panel, blue on the rest.
-        const auto ink = item.accent == t.gold ? t.gold : hero_blue();
+        const auto ink = warm(item) ? t.gold : tone_of(item);
         painter.setPen(QPen(ink.darker(112), 1.1));
-        painter.setBrush(mix(ink, Qt::white, 0.08));
+        painter.setBrush(mix(ink, light, 0.08));
         painter.drawPath(page);
         QPainterPath corner;
         corner.moveTo(page_left + page_wide - fold, top);
         corner.lineTo(page_left + page_wide - fold, top + fold);
         corner.lineTo(page_left + page_wide, top + fold);
-        painter.setBrush(mix(ink, Qt::white, 0.55));
+        painter.setBrush(mix(ink, light, 0.55));
         painter.drawPath(corner);
-        painter.setPen(QPen(with_alpha(Qt::white, 0.9), 1.3, Qt::SolidLine, Qt::RoundCap));
+        painter.setPen(QPen(with_alpha(light, 0.9), 1.3, Qt::SolidLine, Qt::RoundCap));
         for (const auto row : {1.35, 1.85, 2.35})
             painter.drawLine(QPointF(page_left + 0.45 * u, top + row * u),
                              QPointF(page_left + page_wide - (row < 1.5 ? 1.1 : 0.45) * u,
@@ -974,9 +1097,9 @@ void WelcomeFlowIllustration::draw_mark(QPainter& painter, const HeroOrbitItem& 
             word.setPixelSize(std::max(1, static_cast<int>(std::round(1.45 * u))));
             word.setWeight(QFont::Bold);
             painter.setFont(word);
-            // On a blue panel, a deep shade of the drawing's own blue, which
-            // reads on the pale panel whatever the theme's own lettering is.
-            painter.setPen(item.accent != t.gold ? mix(hero_blue(), Qt::black, 0.55)
+            // On a blue panel, the palette's word: a deep shade of the
+            // drawing's blue on a pale panel, its light on a dark one.
+            painter.setPen(!warm(item) ? palette_.word
                            : theme_ == ThemeId::Azure ? QColor("#4A3500") : t.text_heading);
             painter.drawText(QRectF(card.left(), top + page_tall + 0.25 * u, card.width(), 1.9 * u),
                              Qt::AlignCenter, QStringLiteral("SQL"));

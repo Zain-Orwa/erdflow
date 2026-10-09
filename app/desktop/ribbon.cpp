@@ -7,7 +7,6 @@
 #include "ribbon.hpp"
 
 #include <QAction>
-#include <QActionGroup>
 #include <QEvent>
 #include <QMainWindow>
 #include <QMenu>
@@ -28,6 +27,9 @@ Ribbon::Ribbon(QMainWindow& window) : QObject(&window), window_(window) {
     tabs_->setMovable(false);
     tabs_->setFloatable(false);
     tabs_->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    // A tab that is given an icon wears it small beside its name: no taller
+    // than the name itself, so the row of tabs keeps its height (add_tab).
+    tabs_->setIconSize(QSize(15, 15));
     // The tabs are the only way to the rows, so the window's context menu is
     // not allowed to close them: a row with no tab to reach it is a dead end.
     tabs_->toggleViewAction()->setVisible(false);
@@ -35,46 +37,29 @@ Ribbon::Ribbon(QMainWindow& window) : QObject(&window), window_(window) {
     window.insertToolBar(home_, tabs_);
     window.insertToolBarBreak(home_);
 
-    // File is a list of things to do with the whole project rather than a row
-    // of tools, so it drops down from its tab.
-    add_menu_tab("File", "tabFile", window.findChild<QMenu*>("fileMenu"));
+    // The three that stand for good (Zain, 2026-10-06).
+    auto* file = add_tab("File", "tabFile");
+    auto* home = add_tab("Home", "tabHome");
+    auto* settings = add_tab("Settings", "tabSettings");
+    // Home is the tool row the window already has. What Insert carried -- a
+    // picture from a file, and symbols -- is on it too, behind one button of
+    // the window's own, so the tab is no longer needed.
+    rows_.emplace_back(home, home_);
+    // Then a line, and the chosen tab's own row tabs beyond it.
+    rule_ = tabs_->addSeparator();
 
-    // Home is the tool row the window already has.
-    rows_.emplace_back(add_tab("Home", "tabHome"), home_);
-
-    // Insert carries what is brought in from outside the model: for now a
-    // picture from a file. The model's own elements, and the note placed like
-    // one, stay on Home.
-    auto* insert = add_row("Insert", "tabInsert", "insertTools");
-    insert->setToolButtonStyle(home_->toolButtonStyle());
-    connect(home_, &QToolBar::toolButtonStyleChanged, insert, &QToolBar::setToolButtonStyle);
-    if (auto* insert_menu = window.findChild<QMenu*>("insertMenu"))
-        for (auto* action : insert_menu->actions()) {
-            insert->addAction(action);
-            // An entry that carries a submenu, as Symbols does, is a button
-            // that drops its list: a click on it is a request for the list,
-            // not for the action that merely names it.
-            if (action->menu())
-                if (auto* button = qobject_cast<QToolButton*>(insert->widgetForAction(action)))
-                    button->setPopupMode(QToolButton::InstantPopup);
-        }
-
-    // Design is how the diagram looks: the choices the View menu keeps in its
-    // submenus, and the line style Connect keeps on its arrow.
-    auto* view_menu = window.findChild<QMenu*>("viewMenu");
-    auto* design = add_row("Design", "tabDesign", "designTools");
-    if (view_menu)
-        for (auto* action : view_menu->actions())
-            if (action->menu()) {
-                design->addAction(action);
-                // A click on the button is a request for the menu, not for
-                // the action that merely names it.
-                if (auto* button = qobject_cast<QToolButton*>(design->widgetForAction(action)))
-                    button->setPopupMode(QToolButton::InstantPopup);
-            }
-    if (auto* connect_button = window.findChild<QToolButton*>("connectButton"))
-        add_menu_button(design, "Lines", "designLinesButton", connect_button->menu())
-            ->setToolTip("How connectors are drawn.");
+    // File used to drop its menu from its tab: New, Open, Save and the rest
+    // of what is done with the whole project. The tab now brings up Export
+    // and Import, so the menu stands beside them, the first thing there.
+    file_menu_button_ = new QToolButton(tabs_);
+    file_menu_button_->setObjectName("fileMenuButton");
+    file_menu_button_->setText("Open && Save");
+    file_menu_button_->setToolTip("The File menu: a new project, Open, Save, Save as, the examples and templates.");
+    file_menu_button_->setMenu(window.findChild<QMenu*>("fileMenu"));
+    file_menu_button_->setPopupMode(QToolButton::InstantPopup);
+    file_menu_button_->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    file_menu_button_->setFocusPolicy(Qt::NoFocus);
+    auto* beside_file = tabs_->addWidget(file_menu_button_);
 
     // Export is how work leaves ERDFlow. It waited until there was something
     // to hand on, which there now is. Convert is still waiting, because there
@@ -96,10 +81,9 @@ Ribbon::Ribbon(QMainWindow& window) : QObject(&window), window_(window) {
             // An entry carrying a submenu, as the rarer picture formats do, is
             // a button that drops its list: a click on it asks for the list,
             // not for the action that merely names it.
-            if (action->menu())
-                if (auto* button = qobject_cast<QToolButton*>(exporting->widgetForAction(action)))
-                    button->setPopupMode(QToolButton::InstantPopup);
+            dress_button(exporting, action);
         }
+    auto* export_tab = rows_.back().first;
 
     // Import has a tab of its own beside Export, because it is its pair and a
     // reader looking for one expects the other in the same place. Its row is
@@ -114,6 +98,24 @@ Ribbon::Ribbon(QMainWindow& window) : QObject(&window), window_(window) {
             if (action->objectName().endsWith(QLatin1String("Heading"))) { importing->addSeparator(); continue; }
             importing->addAction(action);
         }
+    auto* import_tab = rows_.back().first;
+
+    // Design is how the diagram looks: the choices the View menu keeps in its
+    // submenus, and the line style Connect keeps on its arrow.
+    auto* view_menu = window.findChild<QMenu*>("viewMenu");
+    auto* design = add_row("Design", "tabDesign", "designTools");
+    if (view_menu)
+        for (auto* action : view_menu->actions())
+            if (action->menu()) {
+                design->addAction(action);
+                // A click on the button is a request for the menu, not for
+                // the action that merely names it.
+                dress_button(design, action);
+            }
+    if (auto* connect_button = window.findChild<QToolButton*>("connectButton"))
+        add_menu_button(design, "Lines", "designLinesButton", connect_button->menu())
+            ->setToolTip("How connectors are drawn.");
+    auto* design_tab = rows_.back().first;
 
     // View is what the window shows and how much of it: the panels, the
     // framing and the grid, which is the rest of the View menu.
@@ -121,10 +123,27 @@ Ribbon::Ribbon(QMainWindow& window) : QObject(&window), window_(window) {
     if (view_menu)
         for (auto* action : view_menu->actions())
             if (!action->menu()) view->addAction(action);
+    auto* view_tab = rows_.back().first;
 
     auto* help = add_row("Help", "tabHelp", "helpTools");
     if (auto* help_menu = window.findChild<QMenu*>("helpMenu"))
         for (auto* action : help_menu->actions()) help->addAction(action);
+    auto* help_tab = rows_.back().first;
+
+    // File gathers what goes in and out of the project, Settings how the
+    // window looks, what it shows, and help. Each opens on its first row and
+    // after that on whichever was last chosen.
+    groups_.push_back({file, {export_tab, import_tab}, export_tab, beside_file});
+    groups_.push_back({home, {}, home, nullptr});
+    groups_.push_back({settings, {design_tab, view_tab, help_tab}, design_tab, nullptr});
+    for (const auto& group : groups_) {
+        connect(group.tab, &QAction::triggered, this, [this, tab = group.tab] {
+            for (const auto& candidate : groups_)
+                if (candidate.tab == tab) show_row(candidate.chosen);
+        });
+        for (auto* section : group.sections)
+            connect(section, &QAction::triggered, this, [this, section] { show_row(section); });
+    }
 
     // Fitting the window changes the size of Home's buttons, and every row
     // has to change with it.
@@ -132,34 +151,23 @@ Ribbon::Ribbon(QMainWindow& window) : QObject(&window), window_(window) {
     connect(home_, &QToolBar::iconSizeChanged, this, [this] { match_home_height(); });
     connect(home_, &QToolBar::toolButtonStyleChanged, this, [this] { match_home_height(); });
     match_home_height();
-    show_row(rows_.front().first);
+    show_row(home);
 }
 
 QAction* Ribbon::add_tab(const QString& label, const char* name) {
-    static constexpr const char* group_name = "ribbonTabGroup";
-    auto* group = tabs_->findChild<QActionGroup*>(group_name);
-    if (!group) {
-        group = new QActionGroup(tabs_);
-        group->setObjectName(group_name);
-        group->setExclusive(true);
-    }
     auto* tab = tabs_->addAction(label);
     tab->setObjectName(name);
+    // Checked while it is the one chosen; show_row keeps exactly the chosen
+    // tabs checked, so a second press on a chosen tab leaves it chosen.
     tab->setCheckable(true);
-    tab->setActionGroup(group);
-    connect(tab, &QAction::triggered, this, [this, tab] { show_row(tab); });
+    // A tab with an icon shows it before its name; one without stays as it
+    // was, its name alone, and no wider for the icon it does not have.
+    connect(tab, &QAction::changed, this, [this, tab] {
+        if (auto* button = qobject_cast<QToolButton*>(tabs_->widgetForAction(tab)))
+            button->setToolButtonStyle(tab->icon().isNull() ? Qt::ToolButtonTextOnly
+                                                            : Qt::ToolButtonTextBesideIcon);
+    });
     return tab;
-}
-
-void Ribbon::add_menu_tab(const QString& label, const char* name, QMenu* menu) {
-    auto* tab = new QToolButton(tabs_);
-    tab->setObjectName(name);
-    tab->setText(label);
-    tab->setMenu(menu);
-    tab->setPopupMode(QToolButton::InstantPopup);
-    tab->setToolButtonStyle(Qt::ToolButtonTextOnly);
-    tab->setFocusPolicy(Qt::NoFocus);
-    tabs_->addWidget(tab);
 }
 
 QToolBar* Ribbon::add_row(const QString& label, const char* tab_name, const char* row_name) {
@@ -210,9 +218,152 @@ QToolButton* Ribbon::add_menu_button(QToolBar* row, const QString& label, const 
     return button;
 }
 
+void Ribbon::set_row_icon(QAction* action, const QIcon& icon) {
+    if (!action) return;
+    const bool first = !row_icons_.contains(action);
+    row_icons_[action] = icon;
+    // A button restates its action's icon whenever the action changes -- its
+    // name, whether it is checked, whether it can be pressed -- and for these
+    // that icon is none. The action says it has changed only once its buttons
+    // have been told, so the ribbon's icon is put back then.
+    if (first) connect(action, &QAction::changed, this, [this, action] { wear_row_icon(action); });
+    wear_row_icon(action);
+}
+
+void Ribbon::wear_row_icon(QAction* action) const {
+    const auto found = row_icons_.find(action);
+    if (found == row_icons_.end()) return;
+    for (const auto& [tab, row] : rows_)
+        if (auto* button = qobject_cast<QToolButton*>(row->widgetForAction(action))) button->setIcon(found->second);
+}
+
 void Ribbon::show_row(QAction* tab) {
-    for (const auto& [candidate, row] : rows_) row->setVisible(candidate == tab);
-    tab->setChecked(true);
+    const Group* chosen = nullptr;
+    for (auto& group : groups_)
+        if (group.tab == tab || std::find(group.sections.begin(), group.sections.end(), tab) != group.sections.end()) {
+            group.chosen = tab;
+            chosen = &group;
+        }
+    if (!chosen) return;
+    current_ = tab;
+    for (const auto& group : groups_) {
+        const bool in_front = &group == chosen;
+        group.tab->setChecked(in_front);
+        for (auto* section : group.sections) {
+            section->setVisible(in_front);
+            section->setChecked(section == tab);
+        }
+        if (group.beside) group.beside->setVisible(in_front);
+    }
+    rule_->setVisible(!chosen->sections.empty());
+    settle();
+}
+
+void Ribbon::settle() {
+    if (!tabs_) return;
+    tabs_->setVisible(!away_);
+    for (const auto& [tab, row] : rows_) row->setVisible(!away_ && tab == current_ && !(schema_ && row == home_));
+    if (on_row_changed) on_row_changed();
+}
+
+void Ribbon::set_put_away(bool away) {
+    away_ = away;
+    settle();
+}
+
+void Ribbon::set_schema_in_front(bool schema) {
+    if (!tabs_ || schema_ == schema) return;
+    schema_ = schema;
+    for (const auto& [row, order] : orders_) rescope(row);
+    settle();
+    match_home_height();
+}
+
+std::vector<QAction*>& Ribbon::order_of(QToolBar* row) {
+    const auto [found, fresh] = orders_.try_emplace(row);
+    if (fresh) {
+        const auto standing = row->actions();
+        found->second.assign(standing.begin(), standing.end());
+    }
+    return found->second;
+}
+
+void Ribbon::keep_to_conceptual(QAction* action) {
+    if (!action) return;
+    conceptual_only_.insert(action);
+    for (const auto& [tab, row] : rows_)
+        if (row != home_ && row->actions().contains(action)) {
+            order_of(row);
+            if (schema_) rescope(row);
+        }
+}
+
+void Ribbon::add_for_schema(const QString& tab_name, QAction* action, QAction* after) {
+    if (!action) return;
+    QToolBar* row = nullptr;
+    for (const auto& [tab, candidate] : rows_)
+        if (tab->objectName() == tab_name) row = candidate;
+    if (!row || row == home_) return;
+    auto& order = order_of(row);
+    const auto at = std::find(order.begin(), order.end(), after);
+    order.insert(at == order.end() ? order.end() : at + 1, action);
+    schema_only_.insert(action);
+    rescope(row);
+}
+
+void Ribbon::rescope(QToolBar* row) {
+    auto& order = order_of(row);
+    const auto in_scope = [this](QAction* action) {
+        return schema_ ? !conceptual_only_.contains(action) : !schema_only_.contains(action);
+    };
+    // A line between groups stays while there is something on either side of
+    // it: one whose group beyond is all left out goes with it, so no two lines
+    // meet and none is left trailing. With nothing left out, every line the
+    // row had stands, as it did.
+    std::vector<bool> wanted(order.size());
+    for (std::size_t index = 0; index < order.size(); ++index) {
+        auto* action = order[index];
+        if (!action->isSeparator()) {
+            wanted[index] = in_scope(action);
+            continue;
+        }
+        bool before_any = false, before_kept = false;
+        for (std::size_t back = 0; back < index; ++back)
+            if (!order[back]->isSeparator()) {
+                before_any = true;
+                before_kept = before_kept || in_scope(order[back]);
+            }
+        bool after_any = false, after_kept = false;
+        for (std::size_t ahead = index + 1; ahead < order.size() && !order[ahead]->isSeparator(); ++ahead) {
+            after_any = true;
+            after_kept = after_kept || in_scope(order[ahead]);
+        }
+        wanted[index] = (!before_any || before_kept) && (!after_any || after_kept);
+    }
+    for (std::size_t index = 0; index < order.size(); ++index) {
+        auto* action = order[index];
+        const bool standing = row->actions().contains(action);
+        if (standing == wanted[index]) continue;
+        if (!wanted[index]) {
+            row->removeAction(action);
+            continue;
+        }
+        QAction* before = nullptr;
+        for (std::size_t ahead = index + 1; ahead < order.size() && !before; ++ahead)
+            if (row->actions().contains(order[ahead])) before = order[ahead];
+        row->insertAction(before, action);
+        dress_button(row, action);
+        wear_row_icon(action);
+    }
+}
+
+void Ribbon::dress_button(QToolBar* row, QAction* action) {
+    // A command that carries a submenu is a button that drops its list: a
+    // click on it is a request for the list, not for the action that merely
+    // names it.
+    if (action->menu())
+        if (auto* button = qobject_cast<QToolButton*>(row->widgetForAction(action)))
+            button->setPopupMode(QToolButton::InstantPopup);
 }
 
 // A button with no icon is only as tall as its name, so a row of them would
@@ -252,8 +403,11 @@ bool Ribbon::eventFilter(QObject* watched, QEvent* event) {
 }
 
 void Ribbon::show_tab(const QString& name) {
-    for (const auto& [tab, row] : rows_)
-        if (tab->objectName() == name) { show_row(tab); return; }
+    for (const auto& group : groups_) {
+        if (group.tab->objectName() == name) { show_row(group.chosen); return; }
+        for (auto* section : group.sections)
+            if (section->objectName() == name) { show_row(section); return; }
+    }
 }
 
 } // namespace erdflow::desktop

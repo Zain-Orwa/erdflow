@@ -92,6 +92,38 @@ public:
     explicit WelcomeFlowIllustration(QWidget* parent = nullptr);
 
     void wear(ThemeId id);
+    // The light the platform, the lines and the database are lit with, and
+    // the tube that runs to them across the page. White on a light page; on a
+    // dark one a pale tint of the theme's own accent, so they glow in the
+    // theme's colour rather than burning white against it (Zain, 2026-10-06).
+    [[nodiscard]] static QColor hero_light(ThemeId id);
+    // The colours the whole drawing is made of, worked out once for a theme
+    // (Zain, 2026-10-06). On a light page they are the drawing's own whites
+    // and blues, exactly as they always were; on a dark one its whites become
+    // the accent's own light, and the panels the theme's surface raised
+    // towards a tone of their own, so nothing in it stands on the page as
+    // white paper from some other palette.
+    struct Palette {
+        bool dark = false;
+        QColor accent;  // the drawing's blue
+        QColor light;   // what it is lit with: white, or the accent's pale tint
+        QColor raised;  // a panel's surface before its tone, on a dark page
+        QColor word;    // SQL, lettered on its panel
+        // The database and the platform it stands on, part by part (Zain,
+        // 2026-10-07), so its tiers, seams and lids read apart in every
+        // theme: on a light page the drawing's own blues and whites; on a dark
+        // one fixed steps of lightness in the accent's hue, its saturation
+        // capped, so a neon, white or grey accent cannot melt it into one mass.
+        struct Database {
+            QColor side[3][4];      // each tier's wall, left to right
+            QColor lid_top, lid_foot, lid_edge;
+            QColor seam;            // the foot of each tier, and its outline
+            QColor shadow;          // its shadow on the platform
+            QColor plate_under, plate_top, plate_foot, plate_rim, plate_inner;
+            QColor glow;            // the light the platform casts beneath it
+        } database;
+    };
+    [[nodiscard]] static Palette palette_for(ThemeId id);
 
     // What the panels say. Passing none puts back the four the product uses.
     void show_items(std::vector<HeroOrbitItem> items);
@@ -209,6 +241,14 @@ private:
     [[nodiscard]] QColor hero_blue() const;
 
     ThemeId theme_ = ThemeId::Azure;
+    Palette palette_ = palette_for(ThemeId::Azure);
+    // A panel's own tone: the accent on a light page; on a dark one the
+    // accent turned a little one way or the other, so the panels stay told
+    // apart by colour as well as by mark.
+    [[nodiscard]] QColor tone_of(const HeroOrbitItem& item) const;
+    // Whether a panel asked for the theme's gold. Not where the gold is the
+    // accent itself, as in High Contrast, or every panel would read as one.
+    [[nodiscard]] bool warm(const HeroOrbitItem& item) const;
     std::vector<HeroOrbitItem> items_;
     bool moving_ = true;
     // How long the orbit has run. Advanced from a monotonic clock rather than

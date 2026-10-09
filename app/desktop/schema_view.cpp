@@ -5,6 +5,10 @@
 // and whether it is a gain or a loss. He decides. Fixing a real defect is not
 // covered by this — fix it and say what was wrong. Full rule: CLAUDE.md.
 #include "schema_view.hpp"
+#include <QScrollBar>
+#include <QAbstractScrollArea>
+#include "picture_export.hpp"
+#include <QScopedValueRollback>
 #include "schema_facts.hpp"
 #include "schema_router.hpp"
 
@@ -202,13 +206,17 @@ QString typed_label(const domain::PreviewColumn& column) {
                 : QString("(%1)").arg(column.length));
 }
 
-// Everything a column enforces, in the order SQL would state it. A key is
-// not said to be unique as well: it is unique by being the key, and saying so
-// twice would be a constraint the database already keeps.
+// Everything a column enforces, in one order whatever order it was chosen in:
+// PK, FK, NULL or NOT NULL, UNIQUE, IDENTITY. A foreign key is written here as
+// well as marked in the gutter (Zain, 2026-10-08): the mark is seen at a
+// glance, the cell states the whole of what the column is. A key is not said
+// to be unique as well: it is unique by being the key, and saying so twice
+// would be a constraint the database already keeps.
 QString rules_text(const domain::PreviewColumn& column) {
     if (column.ignored) return {};
     QStringList said;
     if (column.primary_key) said << "PK";
+    if (column.foreign_key) said << "FK";
     said << (column.required ? longest_null : "NULL");
     if (column.unique && !column.primary_key) said << longest_unique;
     if (column.auto_increment) said << longest_identity;
@@ -459,6 +467,13 @@ std::pair<std::size_t, double> run_nearest(const std::vector<QPointF>& line, QPo
         nearest = i - 1;
     }
     return {nearest, closest};
+}
+
+// The ink a key's letters are written in: a reference always in green, even
+// where the column is also part of the key, and a key that refers to nothing in
+// orange.
+const QColor& key_ink(const Theme& theme, const domain::PreviewColumn& column) {
+    return column.foreign_key ? theme.valid : theme.warning;
 }
 } // namespace
 
@@ -950,6 +965,13 @@ void SchemaView::select_all() {
 }
 
 void SchemaView::keyPressEvent(QKeyEvent* event) {
+    // Escape puts Pan down, as it puts Table and Connect down.
+    if (event->key() == Qt::Key_Escape && panning_) {
+        set_panning(false);
+        if (panning_changed) panning_changed(false);
+        event->accept();
+        return;
+    }
     // Escape puts Table down, as it puts a placing tool down on the diagram.
     if (event->key() == Qt::Key_Escape && placing_) {
         set_placing(false);
@@ -1296,10 +1318,33 @@ void SchemaView::arrange() {
         measure(as_shape(line));
     }
     if (shaping_shape_) measure(shaping_shape_->second);
+    // While tables are carried downward the canvas reaches a view further than
+    // the lowest of them (see drag_room); otherwise it reaches just past what
+    // is on it, as it always has.
+    const auto room = drag_room();
+    const auto high = static_cast<int>(std::max(tallest + 30, room));
+    const bool was_roomy = drag_roomy_;
+    drag_roomy_ = room > tallest + 30;
     // Every caller routes the lines as soon as this returns, so the resize
     // this may cause does not route them as well (see sizing_canvas_).
     const QScopedValueRollback<bool> sizing(sizing_canvas_, true);
-    setMinimumSize(static_cast<int>(widest + 40), static_cast<int>(tallest + 30));
+    setMinimumSize(static_cast<int>(widest + 40), high);
+    // The room a drag was given is taken back here and now, under the same
+    // guard, rather than left for the scroll area to take back later: that
+    // resize would route every line again, straight after the caller has.
+    if (was_roomy && !drag_roomy_ && height() > high)
+        if (auto* area = scroller()) resize(width(), std::max(high, area->viewport()->height()));
+}
+
+double SchemaView::drag_room() const {
+    if (!dragging_ || carried_by_.y() <= 0 || !isVisible()) return 0;
+    auto* area = scroller();
+    if (!area) return 0;
+    double lowest = 0;
+    for (std::size_t t = 0; t < placed_.size() && t < preview_.tables.size(); ++t)
+        if (preview_.tables[t].origin && dragging_at_.contains(*preview_.tables[t].origin))
+            lowest = std::max(lowest, placed_[t].box.bottom());
+    return lowest + area->viewport()->height();
 }
 
 SchemaView::Shape SchemaView::as_shape(const domain::SchemaLine& line) {
@@ -1382,6 +1427,18 @@ std::vector<std::vector<QRectF>> SchemaView::row_boxes() const {
     rows.reserve(placed_.size());
     for (const auto& one : placed_) rows.push_back(one.rows);
     return rows;
+}
+
+QString SchemaView::constraints_said(std::size_t table, std::size_t row) const {
+    if (table >= preview_.tables.size() || row >= preview_.tables[table].columns.size()) return {};
+    return rules_text(preview_.tables[table].columns[row]);
+}
+
+std::optional<QColor> SchemaView::key_letters_ink(std::size_t table, std::size_t row) const {
+    if (!theme_ || table >= preview_.tables.size() || row >= preview_.tables[table].columns.size()) return std::nullopt;
+    const auto& column = preview_.tables[table].columns[row];
+    if (!column.foreign_key && !column.primary_key) return std::nullopt;
+    return key_ink(*theme_, column);
 }
 
 std::vector<std::vector<SchemaView::Cell>> SchemaView::cell_boxes() const {
@@ -1578,6 +1635,16 @@ void SchemaView::mousePressEvent(QMouseEvent* event) {
     // Taken here as well as by the focus policy, so a press always hands the
     // schema the keyboard, whatever the press came from.
     setFocus(Qt::MouseFocusReason);
+    // With Pan in hand a press takes hold of the view, before anything drawn
+    // there answers, as the diagram's Pan does.
+    if (panning_) {
+        if (auto* area = scroller())
+            pan_hold_ = PanHold{event->globalPosition(), area->horizontalScrollBar()->value(),
+                                area->verticalScrollBar()->value()};
+        setCursor(Qt::ClosedHandCursor);
+        event->accept();
+        return;
+    }
     // With Table in hand, a press places a table where it lands, before
     // anything there answers, as the diagram's placing tools place wherever
     // they are pressed.
@@ -1741,6 +1808,18 @@ void SchemaView::mousePressEvent(QMouseEvent* event) {
 }
 
 void SchemaView::mouseMoveEvent(QMouseEvent* event) {
+    // With Pan in hand the pointer only moves the view, and only while it is
+    // held; nothing under it is pointed at.
+    if (panning_) {
+        if (pan_hold_ && (event->buttons() & Qt::LeftButton))
+            if (auto* area = scroller()) {
+                const auto by = event->globalPosition() - pan_hold_->from;
+                area->horizontalScrollBar()->setValue(pan_hold_->across - qRound(by.x()));
+                area->verticalScrollBar()->setValue(pan_hold_->down - qRound(by.y()));
+            }
+        event->accept();
+        return;
+    }
     // Which table is being looked at, so it can wear its plus. Not while
     // something is being dragged: a table under the pointer in the middle of a
     // gesture is not a table being considered.
@@ -1872,6 +1951,16 @@ void SchemaView::mouseMoveEvent(QMouseEvent* event) {
 }
 
 void SchemaView::mouseReleaseEvent(QMouseEvent* event) {
+    // A drag with Pan in hand let go: the view stays where it was taken, and
+    // the hand opens again.
+    if (panning_ && event->button() == Qt::LeftButton) {
+        const bool held = pan_hold_.has_value();
+        pan_hold_.reset();
+        setCursor(Qt::OpenHandCursor);
+        event->accept();
+        if (held && panned) panned();
+        return;
+    }
     // Table still in hand after placing one: the press did all there was to
     // do, and the pointer goes on saying where the next one goes.
     if (placing_) {
@@ -1955,6 +2044,14 @@ void SchemaView::mouseReleaseEvent(QMouseEvent* event) {
     // One edit for the whole drag, written when the hand lets go. Editing on
     // every frame would put a pixel of movement into the history each time.
     commit_arrangement();
+    // Writing the edit has the schema arranged again, which gives back the
+    // room a drag downward was given. A view nobody refreshes gives it back
+    // itself.
+    if (drag_roomy_) {
+        arrange();
+        reroute();
+        update();
+    }
     // And, once it is written, whatever is wrong with where the end was put.
     // Said on release rather than during the drag: a warning that flickered as
     // the pointer crossed each row would be noise rather than news.
@@ -2235,6 +2332,11 @@ void SchemaView::hideEvent(QHideEvent* event) {
         linking_.reset();
         update();
     }
+    // Nor is the room a drag downward was given left below the schema.
+    if (drag_roomy_) {
+        arrange();
+        reroute();
+    }
 }
 
 // A line is given back to the router by double-clicking it, which is the way
@@ -2243,6 +2345,12 @@ void SchemaView::hideEvent(QHideEvent* event) {
 void SchemaView::mouseDoubleClickEvent(QMouseEvent* event) {
     if (event->button() != Qt::LeftButton) {
         QWidget::mouseDoubleClickEvent(event);
+        return;
+    }
+    // Pan opens nothing: a double click with it in hand is two presses on the
+    // view.
+    if (panning_) {
+        event->accept();
         return;
     }
     // The second half of a press that placed a table places nothing more and
@@ -2264,12 +2372,9 @@ void SchemaView::mouseDoubleClickEvent(QMouseEvent* event) {
             event->accept();
             return;
         }
-        // The empty schema, where it is drawn by hand, makes a table there.
-        if (drawn_by_hand() && add_table) {
-            add_table(event->position());
-            event->accept();
-            return;
-        }
+        // The empty schema makes nothing on a double click: a table is placed
+        // with the Table tool only (Zain, 2026-10-06), so two quick presses
+        // with Select in hand cannot leave a table behind.
         QWidget::mouseDoubleClickEvent(event);
         return;
     }
@@ -2864,13 +2969,62 @@ std::optional<Qt::CursorShape> SchemaView::run_cursor(QPointF point) const {
     return std::abs(a.x() - b.x()) < 0.01 ? Qt::SizeHorCursor : Qt::SizeVerCursor;
 }
 
+ExportView SchemaView::export_view() {
+    ExportView result;
+    result.schema = &preview_;
+    result.column_type = [](const domain::PreviewColumn& column) { return typed_label(column); };
+    result.background = theme_ ? theme_->canvas : QColor(Qt::white);
+    result.bounds = [this](PictureExtent extent) {
+        if (preview_.tables.empty()) return QRectF{};
+        if (extent == PictureExtent::CurrentView) return QRectF(visibleRegion().boundingRect());
+        QRectF bounds;
+        for (std::size_t t = 0; t < placed_.size(); ++t) {
+            if (extent == PictureExtent::Selection && !is_marked(preview_.tables[t])) continue;
+            bounds = bounds.united(placed_[t].box.adjusted(-12, -12, 12, 12));
+            for (const auto& chip : placed_[t].chips) bounds = bounds.united(chip.box);
+        }
+        for (const auto& route : routes_) {
+            const bool chosen = route.link && picked_ &&
+                std::holds_alternative<domain::ForeignKeyId>(*picked_) &&
+                link_of(std::get<domain::ForeignKeyId>(*picked_)) == route.link;
+            if (extent == PictureExtent::Selection && !chosen) continue;
+            bounds = bounds.united(route.path.boundingRect().adjusted(-56, -56, 56, 56));
+        }
+        return bounds;
+    };
+    result.paint = [this](QPainter& painter, const QRectF& target, const QRectF& source) {
+        // Remove only transient interaction decoration for the export. Restore
+        // every value before returning, without an edit, signal or on-screen repaint.
+        QScopedValueRollback<decltype(selected_)> selected(selected_, {});
+        QScopedValueRollback<decltype(picked_)> picked(picked_, {});
+        QScopedValueRollback<decltype(hovered_)> hovered(hovered_, {});
+        QScopedValueRollback<decltype(hovered_table_)> table(hovered_table_, {});
+        QScopedValueRollback<decltype(hovered_constraint_)> constraint(hovered_constraint_, {});
+        QScopedValueRollback<decltype(hovered_type_)> type(hovered_type_, {});
+        QScopedValueRollback<decltype(linking_)> linking(linking_, {});
+        QScopedValueRollback<decltype(painted_)> painted(painted_);
+        painter.save();
+        painter.setClipRect(target);
+        painter.translate(target.topLeft());
+        painter.scale(target.width() / source.width(), target.height() / source.height());
+        painter.translate(-source.topLeft());
+        paint_schema(painter, source, true);
+        painter.restore();
+    };
+    return result;
+}
+
 void SchemaView::paintEvent(QPaintEvent* event) {
+    QPainter painter(this);
+    paint_schema(painter, event->rect());
+}
+
+void SchemaView::paint_schema(QPainter& painter, const QRectF& exposed, bool exporting) {
     painted_.tables.clear();
     painted_.lines.clear();
     if (!theme_) return;
-    QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing, true);
-    painter.fillRect(rect(), theme_->canvas);
+    if (!exporting) painter.fillRect(rect(), theme_->canvas);
     painter.setBrush(Qt::NoBrush);
 
     if (preview_.tables.empty()) {
@@ -2888,7 +3042,6 @@ void SchemaView::paintEvent(QPaintEvent* event) {
     // every table and line was still drawn, word by word, only to be thrown
     // away. Each is drawn exactly as before wherever anything it could put
     // down -- measured generously, never tightly -- reaches what is painted.
-    const QRectF exposed = event->rect();
     // A line puts down its route under the widest pen it is drawn with, 7 px,
     // whose mitred corners reach up to twice that width past the corner; and
     // the symbols at its ends, which stand as far from them as a Chen or
@@ -3263,7 +3416,7 @@ void SchemaView::paintEvent(QPaintEvent* event) {
                                      Qt::AlignRight | Qt::AlignVCenter, QStringLiteral("PK"));
                     letters = after + fitted.horizontalAdvance(QStringLiteral("PK"));
                 }
-                painter.setPen(dim(column.foreign_key ? theme_->valid : theme_->warning, here));
+                painter.setPen(dim(key_ink(*theme_, column), here));
                 painter.drawText(QRectF(where.left(), where.top(), gutter_width - 4, where.height()),
                                  Qt::AlignRight | Qt::AlignVCenter, marks);
                 if (both) painter.restore();
@@ -3436,7 +3589,8 @@ void SchemaView::paintEvent(QPaintEvent* event) {
             }
             // What the column enforces, in one Constraints cell at the right
             // of every real column, written the way the generated SQL will
-            // write it (rules_text): PK where the column is in the key; then
+            // write it (rules_text): PK where the column is in the key, FK
+            // where it refers to one; then
             // NULL or NOT NULL, always written out either way, because a
             // column that may be empty must never look like one nobody has
             // decided about; then UNIQUE and IDENTITY, each only where it is
@@ -3460,7 +3614,10 @@ void SchemaView::paintEvent(QPaintEvent* event) {
                     painter.setBrush(QBrush(Qt::NoBrush));
                 }
                 const auto said = rules_text(column);
-                painter.setPen(dim(theme_->text, here));
+                // In the type's ink rather than the name's (Zain, 2026-10-08):
+                // the name is what a row is, and what it holds and enforces is
+                // read after it.
+                painter.setPen(dim(theme_->muted, here));
                 painter.drawText(cell.rules.adjusted(6, 0, -6, 0),
                                  Qt::AlignLeft | Qt::AlignVCenter,
                                  QFontMetricsF(mono).elidedText(said, Qt::ElideRight,
@@ -3569,6 +3726,7 @@ void SchemaView::paintEvent(QPaintEvent* event) {
     // The band goes over everything: it is the thing being done, not part of
     // what is being looked at. Before the hovered line's grips, which give up
     // early, so a band is drawn whether or not a line happens to be hovered.
+    if (exporting) return;
     draw_band(painter);
     draw_linking(painter);
 
@@ -3615,6 +3773,21 @@ void SchemaView::set_connecting(bool on) {
     if (!on) linking_.reset();
     setCursor(Qt::ArrowCursor);
     update();
+}
+
+void SchemaView::set_panning(bool on) {
+    if (panning_ == on) return;
+    panning_ = on;
+    pan_hold_.reset();
+    setCursor(on ? Qt::OpenHandCursor : Qt::ArrowCursor);
+    update();
+}
+
+// The scroll area the schema is shown in, which is what Pan moves.
+QAbstractScrollArea* SchemaView::scroller() const {
+    for (auto* up = parentWidget(); up; up = up->parentWidget())
+        if (auto* area = qobject_cast<QAbstractScrollArea*>(up)) return area;
+    return nullptr;
 }
 
 void SchemaView::set_placing(bool on) {

@@ -82,6 +82,8 @@
 #include <QEasingCurve>
 #include <QVBoxLayout>
 #include <QWidgetAction>
+#include <QToolTip>
+#include <QScopedValueRollback>
 
 #include <algorithm>
 #include <string_view>
@@ -1217,6 +1219,50 @@ namespace erdflow::desktop
                 return style()->sizeFromContents(QStyle::CT_ToolButton, &option, QSize(across, down), this);
             }
         };
+
+        // The project's name, which gives way in the diagram's tool row (Zain,
+        // 2026-10-08): there it is cut with an ellipsis at a width it never
+        // passes and said whole on hover, so a long name never pushes the
+        // tools out of the row. In the header it is an ordinary label.
+        class TitleLabel final : public QLabel
+        {
+        public:
+            explicit TitleLabel(QWidget *parent) : QLabel(parent) {}
+            void set_eliding(bool eliding, int widest)
+            {
+                eliding_ = eliding;
+                setMaximumWidth(eliding ? widest : QWIDGETSIZE_MAX);
+                update();
+            }
+
+        protected:
+            void paintEvent(QPaintEvent *event) override
+            {
+                if (!eliding_ || fontMetrics().horizontalAdvance(text()) <= contentsRect().width())
+                {
+                    QLabel::paintEvent(event);
+                    return;
+                }
+                QPainter painter(this);
+                style()->drawItemText(&painter, contentsRect(), Qt::AlignLeft | Qt::AlignVCenter, palette(),
+                                      isEnabled(),
+                                      fontMetrics().elidedText(text(), Qt::ElideRight, contentsRect().width()),
+                                      foregroundRole());
+            }
+            bool event(QEvent *event) override
+            {
+                if (event->type() == QEvent::ToolTip && eliding_ && toolTip().isEmpty() &&
+                    fontMetrics().horizontalAdvance(text()) > contentsRect().width())
+                {
+                    QToolTip::showText(static_cast<QHelpEvent *>(event)->globalPos(), text(), this);
+                    return true;
+                }
+                return QLabel::event(event);
+            }
+
+        private:
+            bool eliding_ = false;
+        };
         // A constraint's switch in a chosen column's Properties (Zain, 2026-10-01):
         // on or off at a glance at the right of its row. Underneath it is the check
         // box it replaced, so it is read, pressed and reached by keyboard as one, and
@@ -1757,6 +1803,9 @@ namespace erdflow::desktop
         build_history();
         // The tabs go on once every action and menu they are built from exists.
         ribbon_ = new Ribbon(*this);
+        ribbon_->on_row_changed = [this]
+        { wear_schema_header_for_tab(); };
+        dress_ribbon();
         wire_home();
         // Which field a picked character goes into is decided by where the caret
         // was, so the last text field written in is remembered as focus moves.
@@ -1818,6 +1867,11 @@ namespace erdflow::desktop
             explorer_->selectionModel()->disconnect(this);
         if (issues_)
             issues_->disconnect(this);
+        // The side panels' switches say so as their docks are hidden on the
+        // way out, which the raft's panel button listens to.
+        for (const char *named : {"explorerDock", "propertiesDock"})
+            if (auto *dock = findChild<QDockWidget *>(named))
+                dock->toggleViewAction()->disconnect(this);
         delete properties_->takeWidget();
         delete takeCentralWidget();
     }
@@ -2261,6 +2315,14 @@ namespace erdflow::desktop
         schema_mode->setToolTip("The schema being drawn. Puts the Conceptual preview away if it is open.");
         connect(schema_mode, &QPushButton::clicked, this, [this, schema_mode]
                 {
+        // In a diagram's own row the switch reads the other way round (Zain,
+        // 2026-10-08): Conceptual is the design in front, and Schema raises the
+        // schema it converts to, as Convert to Schema in the Model menu does.
+        if (!editor_.project().schema.standalone) {
+            show_schema(!schema_open_);
+            wear_workspace_switch();
+            return;
+        }
         schema_mode->setChecked(true);
         show_conceptual(false); });
         modes_layout->addWidget(schema_mode);
@@ -2270,7 +2332,7 @@ namespace erdflow::desktop
         auto *badge = new QLabel("CONCEPTUAL", header);
         badge->setObjectName("workspaceBadge");
         header_layout->addWidget(badge);
-        document_label_ = new QLabel(header);
+        document_label_ = new TitleLabel(header);
         document_label_->setObjectName("documentTitle");
         header_layout->addWidget(document_label_, 1);
         // The title's pencil, in the header of a schema drawn by hand: the same
@@ -2323,13 +2385,20 @@ namespace erdflow::desktop
         // What the model becomes, beside the badge that says what workspace this
         // is. It belongs here rather than among the drawing tools: it is about
         // what is being looked at, not something to draw with.
-        auto *preview = new QPushButton("Relational Design", header);
+        // Named for what pressing it does (Zain, 2026-10-06): from the diagram
+        // it converts to the schema; while the schema has the whole window it
+        // goes back the other way and says so (set_schema_full).
+        auto *preview = new QPushButton("Convert to Schema", header);
         preview->setObjectName("previewSchema");
         preview->setCheckable(true);
-        preview->setToolTip("The Relational Design this diagram becomes, raised over the lower half of "
-                            "the canvas. It is a preview: nothing is converted, and nothing is written.");
+        preview->setToolTip("The Relational Schema this diagram converts to, raised over the lower half of "
+                            "the canvas. Nothing is written.");
         connect(preview, &QPushButton::clicked, this, [this]
                 { show_schema(!schema_open_); });
+        // Not shown any more (Zain, 2026-10-07): converting is the first entry
+        // of the header's Model menu, below. The button stays, put away, as
+        // the toggle the rest of the window keeps checked.
+        preview->hide();
         header_layout->addWidget(preview);
         // The same place, the other way up (Zain, 2026-09-27). In a project that
         // starts from its schema, the schema is the main surface and what it
@@ -2343,7 +2412,15 @@ namespace erdflow::desktop
                                        "the schema. It is a preview: nothing is converted, and nothing is written.");
         preview_conceptual->hide();
         connect(preview_conceptual, &QPushButton::clicked, this, [this]
-                { show_conceptual(!conceptual_open_); });
+                {
+        // The diagram in front puts the schema away, as Schema in front puts
+        // the Conceptual preview away.
+        if (!editor_.project().schema.standalone) {
+            show_schema(false);
+            wear_workspace_switch();
+            return;
+        }
+        show_conceptual(!conceptual_open_); });
         modes_layout->addWidget(preview_conceptual);
         search_button_ = new QToolButton(header);
         search_button_->setObjectName("searchButton");
@@ -2402,6 +2479,9 @@ namespace erdflow::desktop
         auto *example = new QPushButton("Open example", header);
         example->setObjectName("openExample");
         connect(example, &QPushButton::clicked, this, &MainWindow::load_example);
+        // Opening an example is an entry of the Model menu now (Zain,
+        // 2026-10-07), so this one is put away.
+        example->hide();
         header_layout->addWidget(example);
         // Relational Design's Open example, in the same place (Zain, 2026-10-05):
         // it drops its two examples and its template, and is shown only while
@@ -2427,6 +2507,35 @@ namespace erdflow::desktop
                 { relational_example->setIcon(relational_example_mark->icon()); });
         relational_example->hide();
         header_layout->addWidget(relational_example);
+        // The top right corner of both workspaces holds two menus and no more
+        // (Zain, 2026-10-07): Model, with what is done to the model as a
+        // whole -- converting it, checking it, opening an example -- and Theme,
+        // outermost. They are siblings, made alike. Their menus exist only
+        // once the actions do, so they are given them at the end of
+        // build_actions; their marks are drawn actions, so they follow the
+        // icon set and the theme as the header's other marks do.
+        const auto corner_menu = [&](const char *named, const char *words, const char *tip, Glyph glyph)
+        {
+            // One that can give up its word, as the schema's own tools can, so
+            // a narrow window keeps both in sight before it loses either.
+            auto *button = new HeaderToolButton(header);
+            button->setObjectName(QLatin1String(named));
+            button->setText(QLatin1String(words));
+            button->setToolTip(QLatin1String(tip));
+            button->setPopupMode(QToolButton::InstantPopup);
+            button->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+            button->setIconSize(QSize(16, 16));
+            auto *mark = new QAction(QLatin1String(words), button);
+            action_glyphs_[mark] = glyph;
+            connect(mark, &QAction::changed, button, [button, mark]
+                    { button->setIcon(mark->icon()); });
+            header_layout->addWidget(button);
+            return button;
+        };
+        header_model_ = corner_menu("headerModel", "Model", "Convert the model, check it, or open an example.",
+                                    Glyph::Model);
+        header_theme_ = corner_menu("headerTheme", "Theme", "Change the appearance of the window and the diagram.",
+                                    Glyph::Theme);
         layout->addWidget(header);
         // The search sits directly above the thing it filters, and takes no room
         // at all until it is asked for.
@@ -2474,7 +2583,7 @@ namespace erdflow::desktop
         // preview's bar, beside the diagram it would draw, and on the Design menu;
         // Table and the schema's other tools stand in the header. Shown only while
         // the project starts from its schema; see follow_schema_first.
-        schema_convert_ = new QPushButton("Convert to Conceptual Design", schema_bar);
+        schema_convert_ = new QPushButton("Convert to Conceptual", schema_bar);
         schema_convert_->setObjectName("schemaConvert");
         schema_convert_->setToolTip("Draw this schema as the Conceptual ERD it would have come from: every "
                                     "table an entity, every foreign key a relationship. Afterwards the "
@@ -2870,8 +2979,20 @@ namespace erdflow::desktop
         {
             choose_schema_tool(on ? SchemaTool::Table : SchemaTool::Select, false);
         };
-        // A table asked for where the schema was pressed with Table in hand, or
-        // double-clicked. Table is handed back first unless locked, as the
+        // Pan as the diagram's: put down by Escape, and handed back after one
+        // drag unless it was locked.
+        schema_->panning_changed = [this](bool on)
+        {
+            choose_schema_tool(on ? SchemaTool::Pan : SchemaTool::Select, false);
+        };
+        schema_->panned = [this]
+        {
+            if (schema_tool_ == SchemaTool::Pan && !schema_tool_locked_)
+                choose_schema_tool(SchemaTool::Select, false);
+        };
+        // A table asked for where the schema was pressed with Table in hand (a
+        // double click on the empty schema makes none: Zain, 2026-10-06).
+        // Table is handed back first unless locked, as the
         // diagram's placing tools hand back before what they place opens its name,
         // so handing back cannot close the name being typed.
         schema_->add_table = [this](QPointF at)
@@ -2888,6 +3009,16 @@ namespace erdflow::desktop
             add->setObjectName("schemaAddTableHere");
             connect(add, &QAction::triggered, this, [this, at]
                     { add_schema_table(at); });
+            // The way back to the raft, offered only while it is away, as the
+            // diagram's menu offers it (2026-10-08).
+            if (schema_controls_ && schema_controls_->isHidden())
+            {
+                menu.addSeparator();
+                auto *back = menu.addAction("Show the view controls");
+                back->setObjectName("showSchemaControls");
+                connect(back, &QAction::triggered, this, [this]
+                        { show_canvas_controls(true); });
+            }
             menu.exec(menu_at);
         };
         schema_->delete_asked = [this]
@@ -3340,6 +3471,7 @@ namespace erdflow::desktop
         auto *export_project = export_menu->addAction("ERDFlow project…", this, [this]
                                                       { export_project_file(); });
         export_project->setObjectName("exportProject");
+        export_actions_.emplace_back(export_project, ExportTarget::Project);
         export_project->setToolTip("Write a copy of the project, losing nothing. Saving keeps working on this one; "
                                    "this leaves it where it is.");
         menu_heading(export_menu, "Documents", "exportDocumentsHeading");
@@ -3359,6 +3491,7 @@ namespace erdflow::desktop
                                                 { export_document(format); });
             item->setObjectName(QString::fromLatin1(entry.name));
             item->setToolTip(QString::fromUtf8(info.caution));
+            export_actions_.emplace_back(item, ExportTarget::Document);
         }
 
         // Then the pictures a person reaches for without thinking about options.
@@ -3390,6 +3523,7 @@ namespace erdflow::desktop
             {
                 more_pictures = export_menu->addMenu("Other picture formats");
                 more_pictures->setObjectName("exportMorePictures");
+                export_actions_.emplace_back(more_pictures->menuAction(), ExportTarget::Picture);
             }
             auto *into = entry.common ? export_menu : more_pictures;
             auto *item = into->addAction(QString::fromUtf8(info.label) + "…", this, [this, format = entry.format]
@@ -3398,6 +3532,7 @@ namespace erdflow::desktop
             options.format = format;
             export_picture(options); });
             item->setObjectName(QString::fromLatin1(entry.name));
+            export_actions_.emplace_back(item, ExportTarget::Picture);
             if (*info.caution)
                 item->setToolTip(QString::fromUtf8(info.caution));
         }
@@ -3406,34 +3541,15 @@ namespace erdflow::desktop
         auto *export_options = export_menu->addAction("Export with options…", QKeySequence("Ctrl+Shift+E"),
                                                       this, &MainWindow::export_dialog);
         export_options->setObjectName("exportWithOptions");
+        export_actions_.emplace_back(export_options, ExportTarget::Options);
         export_options->setToolTip("Choose the format, and for a picture its size, extent and background.");
         action_glyphs_[export_options] = Glyph::Export;
         auto *copy_action = export_menu->addAction("Copy as picture", QKeySequence("Ctrl+Shift+C"),
                                                    this, [this]
                                                    { copy_picture(); });
         copy_action->setObjectName("copyAsPicture");
+        export_actions_.emplace_back(copy_action, ExportTarget::Picture);
         copy_action->setToolTip("Put a picture of the selection, or of the whole diagram, on the clipboard.");
-        // Gathered so they can be turned off together while there is nothing drawn.
-        // A submenu's own entries are collected too, since the submenu itself only
-        // names them.
-        for (auto *action : export_menu->actions())
-        {
-            if (action->isSeparator())
-                continue;
-            // A heading is not a command, so it is not one of the things turned on
-            // when there is something to export: turning it on would make it look
-            // like something that could be pressed.
-            if (action->objectName().endsWith(QLatin1String("Heading")))
-                continue;
-            if (auto *submenu = action->menu())
-            {
-                for (auto *nested : submenu->actions())
-                    export_actions_.push_back(nested);
-                export_actions_.push_back(action);
-                continue;
-            }
-            export_actions_.push_back(action);
-        }
         file->addMenu(export_menu);
 
         // Import sits next to Export, because that is its pair. It reads what
@@ -3587,14 +3703,14 @@ namespace erdflow::desktop
             menuBar()->insertMenu(at + 1 == order.end() ? nullptr : *(at + 1),
                                   design_menu);
         }
-        auto *to_schema = design_menu->addAction("Relational Design", QKeySequence("Ctrl+R"),
+        auto *to_schema = design_menu->addAction("Convert to Schema", QKeySequence("Ctrl+R"),
                                                  this, [this]
                                                  { show_schema(true); });
         to_schema->setObjectName("designRelational");
         // Converting a schema drawn by hand, reachable without opening the
         // Conceptual preview whose bar also offers it. Shown only while the
         // project starts from its schema; see follow_schema_first.
-        auto *to_diagram = design_menu->addAction("Convert to Conceptual Design", this,
+        auto *to_diagram = design_menu->addAction("Convert to Conceptual", this,
                                                   [this]
                                                   { convert_schema_to_diagram(); });
         to_diagram->setObjectName("designConvert");
@@ -3669,6 +3785,17 @@ namespace erdflow::desktop
         // at. The toolbar runs out of width before it runs out of room in height,
         // so anything past this pushes buttons into the overflow.
         toolbar->setIconSize(QSize(34, 34));
+        // Home, Schema | Conceptual and the title lead the row, as they lead the
+        // schema's (Zain, 2026-10-08). The controls are the header's own, carried
+        // in while the diagram is in front; see place_workspace_controls.
+        conceptual_identity_ = new QWidget(toolbar);
+        conceptual_identity_->setObjectName("conceptualIdentity");
+        auto *identity_layout = new QHBoxLayout(conceptual_identity_);
+        identity_layout->setContentsMargins(2, 0, 2, 0);
+        identity_layout->setSpacing(6);
+        conceptual_identity_action_ = toolbar->addWidget(conceptual_identity_);
+        toolbar->installEventFilter(this);
+        conceptual_identity_rule_ = toolbar->addSeparator();
         toolbar->addAction(action_save);
         toolbar->addSeparator();
         toolbar->addAction(undo_);
@@ -3838,6 +3965,18 @@ namespace erdflow::desktop
         action_glyphs_[symbols] = Glyph::Symbols;
         connect(symbols, &QAction::triggered, this, [this]
                 { show_symbols(QStringLiteral("Relational algebra")); });
+        // Insert's own tab is gone (Zain, 2026-10-06): what it carried is on
+        // Home, after Note, as one button that drops the Insert menu -- the
+        // picture and the symbols, the visual aids beside the note.
+        auto *insert_button = new QToolButton(toolbar);
+        insert_button->setObjectName("insertButton");
+        insert_button->setText("Insert");
+        insert_button->setToolTip("Insert a picture from a file, or symbols for names and notes.");
+        insert_button->setMenu(insert_menu);
+        insert_button->setPopupMode(QToolButton::InstantPopup);
+        insert_button->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+        insert_button->setIconSize(toolbar->iconSize());
+        toolbar->addWidget(insert_button);
         canvas_->on_insert_picture = [this](QPointF at)
         { insert_picture_dialog(at); };
         canvas_->on_comment = [this](std::vector<domain::CommentTarget> targets)
@@ -3931,12 +4070,42 @@ namespace erdflow::desktop
         auto *stretch = new QWidget(toolbar);
         stretch->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
         toolbar->addWidget(stretch);
-        toolbar->addSeparator();
-        // One button for both halves of looking at the findings: it opens them,
-        // and once they are open it puts them away again. The button says which
-        // it will do by the mark it wears, and follows the panel however the panel
-        // was opened or closed.
-        check_ = toolbar->addAction("Check model", this, [this]
+        conceptual_corner_ = new QWidget(toolbar);
+        conceptual_corner_->setObjectName("conceptualCorner");
+        auto *corner_layout = new QHBoxLayout(conceptual_corner_);
+        corner_layout->setContentsMargins(0, 0, 0, 0);
+        corner_layout->setSpacing(8);
+        toolbar->addWidget(conceptual_corner_);
+        // Search as a field, as the schema's is (Zain, 2026-10-08): the same
+        // field, dressed and sized the same, standing where the Search button
+        // stood. It is the search bar's text box, so typing in it is the
+        // diagram's search as it always was, and the bar keeps the rest.
+        {
+            auto *field = new SearchField(conceptual_corner_);
+            field->setObjectName("conceptualSearch");
+            field->setPlaceholderText("Search conceptual design…");
+            field->setClearButtonEnabled(true);
+            field->setToolTip(find_action_->toolTip());
+            // A little narrower at its least than the schema's (Zain,
+            // 2026-10-08), so a window 1280 wide keeps the Notation picker.
+            field->setMinimumWidth(120);
+            field->setMaximumWidth(260);
+            field->prefer_width(240);
+            conceptual_search_mark_ = field->addAction(QIcon(), QLineEdit::LeadingPosition);
+            conceptual_search_mark_->setObjectName("conceptualSearchMark");
+            action_glyphs_[conceptual_search_mark_] = Glyph::Search;
+            conceptual_search_ = field;
+            search_bar_->use_text(field);
+        }
+        place_workspace_controls(false);
+        // One action for both halves of looking at the findings: it opens them,
+        // and once they are open it puts them away again. It says which it will
+        // do by the mark it wears, and follows the panel however the panel was
+        // opened or closed. It is offered from the header's Model menu (Zain,
+        // 2026-10-07) rather than from a button at the end of this row.
+        check_ = new QAction(this);
+        check_->setText("Check model");
+        connect(check_, &QAction::triggered, this, [this]
                                     {
         finish_field_edit();
         if (validation_dock_->isVisible()) {
@@ -3951,137 +4120,127 @@ namespace erdflow::desktop
         connect(validation_dock_, &QDockWidget::visibilityChanged, this, [this]
                 { refresh_check_action(); });
 
+        // Below the zoom, after a rule, one button for the side panels (Zain,
+        // 2026-10-06), where there were three -- Explorer, Properties and both.
+        // Each press takes the next step of Both -> Properties only -> Neither
+        // -> Both, read from the panels' own entries in the View menu rather
+        // than counted, so wherever else a panel is shown or put away (the
+        // menu, the View row, a workspace coming back) the next press starts
+        // from what is really there. The Explorer alone, which the cycle never
+        // leaves, goes on to both. Its picture is the panels that are out.
+        // Only the panels are put away; what they hold, and what is chosen,
+        // stay as they are.
+        auto *explorer_shown = findChild<QDockWidget *>("explorerDock")->toggleViewAction();
+        auto *properties_shown = findChild<QDockWidget *>("propertiesDock")->toggleViewAction();
+        side_panels_ = new QAction("Show/Hide Side Panels", this);
+        side_panels_->setObjectName("viewSidePanels");
+        side_panels_->setIconText("Panels");
+        connect(side_panels_, &QAction::triggered, this, [explorer_shown, properties_shown]
+                {
+                const bool explorer = explorer_shown->isChecked();
+                const bool properties = properties_shown->isChecked();
+                if (explorer && properties)
+                    explorer_shown->trigger();
+                else if (properties)
+                    properties_shown->trigger();
+                else
+                {
+                    if (!explorer) explorer_shown->trigger();
+                    properties_shown->trigger();
+                } });
+        connect(explorer_shown, &QAction::toggled, this, [this]
+                { refresh_side_panels_action(); });
+        connect(properties_shown, &QAction::toggled, this, [this]
+                { refresh_side_panels_action(); });
+
         // A small raft of view controls over the bottom-right of the canvas, where
         // a diagram is framed and zoomed rather than across the window from it.
-        canvas_controls_ = new QWidget(canvas_);
-        canvas_controls_->setObjectName("canvasControls");
-        // Right-clicking the raft offers to put it away. The buttons do not answer
-        // a right-click themselves, so the press reaches the raft beneath them and
-        // the offer is the same wherever on it the pointer was.
-        canvas_controls_->setContextMenuPolicy(Qt::CustomContextMenu);
-        connect(canvas_controls_, &QWidget::customContextMenuRequested, this, [this](const QPoint &at)
-                {
-        QMenu menu(canvas_controls_);
-        auto* away = menu.addAction("Hide these controls");
-        away->setObjectName("hideCanvasControls");
-        away->setToolTip("Put the raft away. Right-click the diagram to bring it back.");
-        if (menu.exec(canvas_controls_->mapToGlobal(at)) == away) show_canvas_controls(false); });
-        auto *stack = new QVBoxLayout(canvas_controls_);
-        stack->setContentsMargins(4, 4, 4, 4);
-        stack->setSpacing(2);
-        auto *grip = new RaftGrip(canvas_controls_);
-        grip->setObjectName("canvasControlsGrip");
-        grip->ink = [this]
-        { return theme(theme_).muted; };
-        grip->dragged = [this](QPoint by)
-        { move_canvas_controls(by); };
-        stack->addWidget(grip);
-        // Every button on the raft is the same size and sits on the same centre
-        // line, so the column reads as one control rather than as icons that
-        // happen to be near some signs.
-        stack->setAlignment(Qt::AlignHCenter);
-        const auto raft_button = [&](QAction *action, const char *named)
         {
-            auto *button = new QToolButton(canvas_controls_);
-            button->setObjectName(named);
-            button->setDefaultAction(action);
-            button->setToolButtonStyle(Qt::ToolButtonIconOnly);
-            button->setAutoRaise(true);
-            button->setIconSize(QSize(18, 18));
-            button->setFixedSize(26, 24);
-            stack->addWidget(button, 0, Qt::AlignHCenter);
-            return button;
-        };
-        raft_button(full_view_, "canvasFullView");
-        raft_button(fit, "canvasFit");
-        // Pan locks on a double-click, exactly as the tools on the toolbar do, so
-        // a long look around the diagram does not need the button pressed again
-        // after every drag.
-        raft_button(pan_action, "canvasPan")->installEventFilter(this);
-        // Zooming has no glyph of its own in either set, and a pair of signs says
-        // what it does more plainly than a picture would at this size.
-        // The name the platform gives the key that zooms: the Command symbol on a
-        // Mac, the word Control elsewhere. Taken from Qt rather than written out
-        // twice, so it can never be right on one platform and wrong on the other.
-        const auto zoom_key = QKeySequence(QKeySequence::ZoomIn)
-                                  .toString(QKeySequence::NativeText)
-                                  .section(QChar('+'), 0, 0);
-        for (const auto &[text, name, step] : std::initializer_list<std::tuple<const char *, const char *, int>>{
-                 {"+", "canvasZoomIn", 1}, {"\u2212", "canvasZoomOut", -1}})
-        {
-            auto *button = new QToolButton(canvas_controls_);
-            button->setObjectName(name);
-            button->setText(QString::fromUtf8(text));
-            button->setToolTip(QString("%1. Or hold %2 and scroll, which zooms about the pointer.")
-                                   .arg(step > 0 ? "Zoom in" : "Zoom out", zoom_key));
-            button->setAutoRaise(true);
-            button->setFixedSize(26, 24);
-            connect(button, &QToolButton::clicked, this,
-                    [this, step]
-                    { if (step > 0) canvas_->zoom_in(); else canvas_->zoom_out(); });
-            stack->addWidget(button, 0, Qt::AlignHCenter);
-        }
-        // Below the zoom, after a rule, the side panels (Zain, 2026-10-03): the
-        // Explorer, Properties, and both together. The first two press the
-        // panels' own entries in the View menu and show what those show, so the
-        // raft and the menu never disagree. The third puts both away where both
-        // are showing, and otherwise brings both back. Only the panels are put
-        // away; what they hold, and what is chosen, stay as they are.
-        {
-            stack->addSpacing(2);
-            auto *rule = new QFrame(canvas_controls_);
-            rule->setObjectName("canvasControlsRule");
-            rule->setFixedSize(20, 1);
-            stack->addWidget(rule, 0, Qt::AlignHCenter);
-            stack->addSpacing(2);
-            auto *explorer_shown = findChild<QDockWidget *>("explorerDock")->toggleViewAction();
-            auto *properties_shown = findChild<QDockWidget *>("propertiesDock")->toggleViewAction();
-            const auto panel_action = [&](const QString &words, const char *named, const char *button_name, Glyph glyph)
+            // The name the platform gives the key that zooms: the Command symbol on a
+            // Mac, the word Control elsewhere. Taken from Qt rather than written out
+            // twice, so it can never be right on one platform and wrong on the other.
+            const auto zoom_key = QKeySequence(QKeySequence::ZoomIn)
+                                      .toString(QKeySequence::NativeText)
+                                      .section(QChar('+'), 0, 0);
+            RaftParts parts;
+            parts.full_view = full_view_;
+            parts.fit = fit;
+            parts.pan = pan_action;
+            parts.panels = side_panels_;
+            parts.zoom = [this](int step)
+            { if (step > 0) canvas_->zoom_in(); else canvas_->zoom_out(); };
+            parts.zoom_tip = [zoom_key](int step)
             {
-                auto *action = new QAction(words, this);
-                action->setObjectName(named);
-                action->setCheckable(true);
-                action->setToolTip(words);
-                action_glyphs_[action] = glyph;
-                raft_button(action, button_name);
-                return action;
+                return QString("%1. Or hold %2 and scroll, which zooms about the pointer.")
+                    .arg(step > 0 ? "Zoom in" : "Zoom out", zoom_key);
             };
-            auto *explorer_button = panel_action("Show/Hide Explorer", "viewExplorerPanel", "canvasExplorer",
-                                                 Glyph::ExplorerPanel);
-            auto *properties_button = panel_action("Show/Hide Properties", "viewPropertiesPanel", "canvasProperties",
-                                                   Glyph::PropertiesPanel);
-            auto *both_button = panel_action("Show/Hide Side Panels", "viewSidePanels", "canvasSidePanels",
-                                             Glyph::SidePanels);
-            const auto follow = [explorer_shown, properties_shown, explorer_button, properties_button, both_button]
-            {
-                explorer_button->setChecked(explorer_shown->isChecked());
-                properties_button->setChecked(properties_shown->isChecked());
-                both_button->setChecked(explorer_shown->isChecked() && properties_shown->isChecked());
-            };
-            connect(explorer_shown, &QAction::toggled, this, follow);
-            connect(properties_shown, &QAction::toggled, this, follow);
-            connect(explorer_button, &QAction::triggered, this, [explorer_shown, follow]
-                    { explorer_shown->trigger(); follow(); });
-            connect(properties_button, &QAction::triggered, this, [properties_shown, follow]
-                    { properties_shown->trigger(); follow(); });
-            connect(both_button, &QAction::triggered, this, [explorer_shown, properties_shown, follow]
-                    {
-                const bool both = explorer_shown->isChecked() && properties_shown->isChecked();
-                for (auto *shown : {explorer_shown, properties_shown})
-                    if (shown->isChecked() == both) shown->trigger();
-                follow(); });
-            follow();
+            parts.dragged = [this](QPoint by)
+            { move_canvas_controls(by); };
+            parts.hide_tip = "Put the raft away. Right-click the diagram to bring it back.";
+            canvas_controls_ = make_view_raft(canvas_, "canvasControls", "canvas", parts);
         }
+        refresh_side_panels_action();
         canvas_->installEventFilter(this);
         place_canvas_controls();
+
+        // The same raft on the schema (Zain, 2026-10-08), made by the same hands,
+        // over the bottom-right of the schema as the diagram's is over the
+        // diagram: its grip, Full view, Fit, Pan, the two zoom signs, a rule and
+        // the side panels. The schema is always drawn at its actual size, so Fit
+        // and the zoom signs cannot do anything to it yet; they are still there
+        // and still pressable, and say so, as nothing on the schema is ever
+        // greyed out. Pan is the schema's own tool, as it is the diagram's.
+        if (schema_scroll_)
+        {
+            schema_full_view_ = new QAction("Full view", this);
+            schema_full_view_->setObjectName("schemaFullViewAction");
+            schema_full_view_->setCheckable(true);
+            schema_full_view_->setToolTip("Full view — put the panels away and give the whole window to the schema.");
+            action_glyphs_[schema_full_view_] = Glyph::FullView;
+            connect(schema_full_view_, &QAction::toggled, this, [this](bool on)
+                    { put_schema_panels_away(on); });
+            const auto not_yet = QStringLiteral("The schema is always shown at its actual size: it cannot be "
+                                                "fitted or zoomed yet.");
+            schema_fit_ = new QAction("Fit", this);
+            schema_fit_->setObjectName("schemaFitAction");
+            schema_fit_->setToolTip("Fit. " + not_yet);
+            action_glyphs_[schema_fit_] = Glyph::Fit;
+            connect(schema_fit_, &QAction::triggered, this, [this, not_yet]
+                    { statusBar()->showMessage(not_yet, 7000); });
+            schema_pan_ = new QAction("Pan", this);
+            schema_pan_->setObjectName("schemaPanAction");
+            schema_pan_->setCheckable(true);
+            action_glyphs_[schema_pan_] = Glyph::Pan;
+            connect(schema_pan_, &QAction::triggered, this, [this](bool on)
+                    { choose_schema_tool(on ? SchemaTool::Pan : SchemaTool::Select, false); });
+            RaftParts parts;
+            parts.full_view = schema_full_view_;
+            parts.fit = schema_fit_;
+            parts.pan = schema_pan_;
+            parts.panels = side_panels_;
+            parts.zoom = [this, not_yet](int)
+            { statusBar()->showMessage(not_yet, 7000); };
+            parts.zoom_tip = [not_yet](int step)
+            { return QString(step > 0 ? "Zoom in. " : "Zoom out. ") + not_yet; };
+            parts.dragged = [this](QPoint by)
+            { move_schema_controls(by); };
+            parts.hide_tip = "Put the raft away. Bring it back from the View menu.";
+            schema_controls_ = make_view_raft(schema_scroll_, "schemaControls", "schemaRaft", parts);
+            schema_scroll_->installEventFilter(this);
+            place_schema_controls();
+            refresh_schema_pan_button();
+        }
 
         auto *view = findChild<QMenu *>("viewMenu");
         view->addAction(full_view_);
         view->addSeparator();
         view->addAction(fit);
-        view->addAction("Actual size", QKeySequence("Ctrl+1"), canvas_, &DiagramView::actual_size);
-        view->addAction("Zoom in", QKeySequence::ZoomIn, canvas_, &DiagramView::zoom_in);
-        view->addAction("Zoom out", QKeySequence::ZoomOut, canvas_, &DiagramView::zoom_out);
+        view->addAction("Actual size", QKeySequence("Ctrl+1"), canvas_, &DiagramView::actual_size)
+            ->setObjectName("viewActualSize");
+        view->addAction("Zoom in", QKeySequence::ZoomIn, canvas_, &DiagramView::zoom_in)
+            ->setObjectName("viewZoomIn");
+        view->addAction("Zoom out", QKeySequence::ZoomOut, canvas_, &DiagramView::zoom_out)
+            ->setObjectName("viewZoomOut");
         // Dragging follows the pointer continuously by default. Aligning to the
         // grid rounds movement to the grid step, which reads as stuttering rather
         // than as help, so it stays available but off until it is asked for.
@@ -4239,9 +4398,13 @@ namespace erdflow::desktop
         }
 
         // Outermost on the right: the corner is where a choice about the whole
-        // window is looked for.
-        toolbar->addSeparator();
-        toolbar->addWidget(theme_button_);
+        // window is looked for. It is no longer shown there (Zain, 2026-10-06):
+        // Home is the modelling row, and since its Insert joined it the row has
+        // no room at the reference width for a second way to the theme, which
+        // Settings' Design row offers. The button stays, put away, because the
+        // header of a schema given the whole window borrows its menu and icon.
+        toolbar->addSeparator()->setVisible(false);
+        toolbar->addWidget(theme_button_)->setVisible(false);
         auto *notations = view->addMenu("Notation");
         notations->setObjectName("notationMenu");
         auto *notation_group = new QActionGroup(this);
@@ -4267,7 +4430,8 @@ namespace erdflow::desktop
             ->setObjectName("quickGuide");
         help->addAction("About ERDFlow", this, [this]
                         { QMessageBox::about(this, "ERDFlow", "ERDFlow 0.1 · Conceptual editor foundation\n\n"
-                                                              "Draw once, progressively refine.\nC++20 · Qt 6 · Local project files"); });
+                                                              "Draw once, progressively refine.\nC++20 · Qt 6 · Local project files"); })
+            ->setObjectName("aboutErdflow");
 
         // The header's undo and redo were built with the shell, before any of
         // these actions existed. They are the same two actions, so they are
@@ -4276,6 +4440,59 @@ namespace erdflow::desktop
             button->setDefaultAction(undo_);
         if (auto *button = findChild<QToolButton *>("schemaRedo"))
             button->setDefaultAction(redo_);
+
+        // The corner's Theme drops the window's one theme menu -- the same
+        // menu Settings' Design row and the View menu drop -- so all three say
+        // the same theme and a choice in any is a choice in all.
+        if (header_theme_)
+            header_theme_->setMenu(findChild<QMenu *>("themeMenu"));
+        // The corner's Model holds the window's own actions for the model as a
+        // whole, chosen as it opens for the workspace in front. Nothing in it
+        // is new but the way back to the diagram from its schema, which the
+        // header's Convert button used to be.
+        model_to_conceptual_ = new QAction("Convert to Conceptual", this);
+        model_to_conceptual_->setObjectName("modelToConceptual");
+        model_to_conceptual_->setToolTip("Put the schema away and bring the Conceptual diagram back in front.");
+        connect(model_to_conceptual_, &QAction::triggered, this, [this]
+                { show_schema(false); });
+        if (auto *relational_examples = findChild<QMenu *>("openRelationalExampleMenu"))
+            relational_examples->setTitle("Open example");
+        if (header_model_)
+        {
+            auto *model_menu = new QMenu(header_model_);
+            model_menu->setObjectName("headerModelMenu");
+            header_model_->setMenu(model_menu);
+            connect(model_menu, &QMenu::aboutToShow, this, [this]
+                    { fill_model_menu(); });
+            fill_model_menu();
+        }
+    }
+
+    // What the Model menu offers, in order: converting to the other design,
+    // checking the model, and an example of the design in front. Only what can
+    // be done there is offered -- the model's checks and its example are the
+    // diagram's, so with the schema in front they are its own examples alone.
+    void MainWindow::fill_model_menu()
+    {
+        if (!header_model_ || !header_model_->menu())
+            return;
+        auto *menu = header_model_->menu();
+        menu->clear();
+        const bool schema_first = editor_.project().schema.standalone;
+        const bool relational = schema_first || schema_full_;
+        if (schema_first)
+            menu->addAction(findChild<QAction *>("designConvert"));
+        else if (schema_full_)
+            menu->addAction(model_to_conceptual_);
+        else
+            menu->addAction(findChild<QAction *>("designRelational"));
+        if (!relational)
+        {
+            menu->addAction(check_);
+            menu->addAction(findChild<QAction *>("fileOpenExample"));
+        }
+        else if (auto *examples = findChild<QMenu *>("openRelationalExampleMenu"))
+            menu->addMenu(examples);
     }
 
     void MainWindow::refresh()
@@ -4298,10 +4515,17 @@ namespace erdflow::desktop
         undo_->setToolTip(undo_->text() + "\t" + undo_->shortcut().toString(QKeySequence::NativeText));
         redo_->setToolTip(redo_->text() + "\t" + redo_->shortcut().toString(QKeySequence::NativeText));
         refresh_selection_commands();
-        refresh_export_actions();
         refresh_schema();
+        refresh_export_actions();
         auto title = text(editor_.project().name);
+        const auto title_room = [this]
+        { return std::min(document_label_->sizeHint().width(), document_label_->maximumWidth()); };
+        const auto title_was = title_room();
         document_label_->setText(title + (editor_.dirty() ? " · Unsaved" : ""));
+        // In the diagram's row the title is one of the things the row is fitted
+        // to, so a name that takes more or less room fits the row again.
+        if (conceptual_identity_ && conceptual_identity_->isAncestorOf(document_label_) && title_room() != title_was)
+            fit_toolbar();
         setWindowTitle(title + "[*] — ERDFlow");
         setWindowModified(editor_.dirty());
         const auto &project = editor_.project();
@@ -4323,17 +4547,22 @@ namespace erdflow::desktop
             const auto id = index.data(Qt::UserRole).toString();
             return id.isEmpty() ? index.data(Qt::DisplayRole).toString() : id;
         };
+        // Only a row with something under it can have been opened: a group
+        // that was empty when its fold was asked for has nothing to show open,
+        // and must not spring open on its own once something is put in it.
         const auto remember = [&](auto &&self, const QModelIndex &parent) -> void
         {
             for (int row = 0; row < explorer_model_->rowCount(parent); ++row)
             {
                 const auto index = explorer_model_->index(row, 0, parent);
-                if (explorer_->isExpanded(index))
+                if (explorer_model_->hasChildren(index) && explorer_->isExpanded(index))
                     opened.insert(identity(index));
                 self(self, index);
             }
         };
-        const bool first_build = explorer_model_->rowCount() == 0;
+        // Another project is a fresh start for the folds too, as the first is.
+        const bool first_build = explorer_model_->rowCount() == 0 || editor_.project().id != explorer_project_;
+        explorer_project_ = editor_.project().id;
         remember(remember, QModelIndex());
 
         explorer_model_->clear();
@@ -4437,12 +4666,13 @@ namespace erdflow::desktop
         if (!editor_.project().notes.empty())
             append("Notes", Glyph::Note, editor_.project().notes, false);
 
-        // The groups start open and the elements under them folded, so the tree
-        // shows what there is without spilling every attribute twice. After that
-        // it keeps whatever the user has opened.
+        // The groups start folded, each saying how many it holds, and open
+        // only when the user opens them (Zain, 2026-10-07): adding to a group
+        // or choosing one of its elements on the canvas leaves its fold as it
+        // was. After that the tree keeps whatever the user has opened.
         if (first_build)
         {
-            explorer_->expandToDepth(1);
+            explorer_->expand(explorer_model_->index(0, 0));
         }
         else
         {
@@ -5484,6 +5714,174 @@ namespace erdflow::desktop
         if (canvas_ && canvas_->tool() != Tool::Select) canvas_->set_tool(Tool::Select); });
     }
 
+    QIcon with_lock_badge(const QIcon &base, const Theme &colors, int size);
+
+    // The raft of view controls, made the same way wherever it floats (Zain,
+    // 2026-10-08): on the diagram, and on the schema. Its parts are named after
+    // the raft and the prefix it is given, so each can be told apart.
+    QWidget *MainWindow::make_view_raft(QWidget *host, const QString &raft_name, const QString &prefix,
+                                        const RaftParts &parts)
+    {
+        auto *raft = new QWidget(host);
+        raft->setObjectName(raft_name);
+        // Right-clicking the raft offers to put it away. The buttons do not answer
+        // a right-click themselves, so the press reaches the raft beneath them and
+        // the offer is the same wherever on it the pointer was.
+        raft->setContextMenuPolicy(Qt::CustomContextMenu);
+        connect(raft, &QWidget::customContextMenuRequested, this, [this, raft, tip = parts.hide_tip](const QPoint &at)
+                {
+        QMenu menu(raft);
+        auto* away = menu.addAction("Hide these controls");
+        away->setObjectName("hideCanvasControls");
+        away->setToolTip(tip);
+        if (menu.exec(raft->mapToGlobal(at)) == away) show_canvas_controls(false); });
+        auto *stack = new QVBoxLayout(raft);
+        stack->setContentsMargins(4, 4, 4, 4);
+        stack->setSpacing(2);
+        auto *grip = new RaftGrip(raft);
+        grip->setObjectName(raft_name + "Grip");
+        grip->ink = [this]
+        { return theme(theme_).muted; };
+        grip->dragged = parts.dragged;
+        stack->addWidget(grip);
+        // Every button on the raft is the same size and sits on the same centre
+        // line, so the column reads as one control rather than as icons that
+        // happen to be near some signs.
+        stack->setAlignment(Qt::AlignHCenter);
+        const auto raft_button = [&](QAction *action, const QString &named)
+        {
+            auto *button = new QToolButton(raft);
+            button->setObjectName(named);
+            button->setDefaultAction(action);
+            button->setToolButtonStyle(Qt::ToolButtonIconOnly);
+            button->setAutoRaise(true);
+            button->setIconSize(QSize(18, 18));
+            button->setFixedSize(26, 24);
+            stack->addWidget(button, 0, Qt::AlignHCenter);
+            return button;
+        };
+        raft_button(parts.full_view, prefix + "FullView");
+        raft_button(parts.fit, prefix + "Fit");
+        // Pan locks on a double-click, exactly as the tools on the toolbar do, so
+        // a long look around the diagram does not need the button pressed again
+        // after every drag.
+        raft_button(parts.pan, prefix + "Pan")->installEventFilter(this);
+        // Zooming has no glyph of its own in either set, and a pair of signs says
+        // what it does more plainly than a picture would at this size.
+        for (const auto &[text, name, step] : std::initializer_list<std::tuple<const char *, const char *, int>>{
+                 {"+", "ZoomIn", 1}, {"\u2212", "ZoomOut", -1}})
+        {
+            auto *button = new QToolButton(raft);
+            button->setObjectName(prefix + QLatin1String(name));
+            button->setText(QString::fromUtf8(text));
+            button->setToolTip(parts.zoom_tip(step));
+            button->setAutoRaise(true);
+            button->setFixedSize(26, 24);
+            connect(button, &QToolButton::clicked, this, [zoom = parts.zoom, step]
+                    { zoom(step); });
+            stack->addWidget(button, 0, Qt::AlignHCenter);
+        }
+        stack->addSpacing(2);
+        auto *rule = new QFrame(raft);
+        rule->setObjectName(raft_name + "Rule");
+        rule->setFixedSize(20, 1);
+        stack->addWidget(rule, 0, Qt::AlignHCenter);
+        stack->addSpacing(2);
+        raft_button(parts.panels, prefix + "SidePanels");
+        return raft;
+    }
+
+    // Where a raft stands on what it floats over: where it was dragged to, as a
+    // fraction of it, or its bottom-right corner.
+    void MainWindow::place_raft(QWidget *raft, QWidget *host, const std::optional<QPointF> &place)
+    {
+        if (!raft || !host)
+            return;
+        raft->adjustSize();
+        const auto size = raft->size();
+        QPoint at;
+        if (place)
+        {
+            // Kept where it was put as a fraction of the view, so a raft dragged
+            // to the middle stays in the middle when the window is resized rather
+            // than drifting towards a corner.
+            at = QPoint(qRound(place->x() * host->width()), qRound(place->y() * host->height()));
+        }
+        else
+        {
+            // Measured from the view's own edge and inset by a scrollbar's thickness
+            // whether or not one is showing, so fitting the diagram — which brings
+            // scrollbars in or takes them out — never moves the raft.
+            const auto bar = host->style()->pixelMetric(QStyle::PM_ScrollBarExtent, nullptr, host);
+            at = QPoint(host->width() - size.width() - bar - 12, host->height() - size.height() - bar - 12);
+        }
+        // Held inside the view: a raft dragged to an edge and then met with a
+        // smaller window must not end up off the side where it cannot be reached.
+        at.setX(std::clamp(at.x(), 4, std::max(4, host->width() - size.width() - 4)));
+        at.setY(std::clamp(at.y(), 4, std::max(4, host->height() - size.height() - 4)));
+        raft->move(at);
+        raft->raise();
+    }
+
+    void MainWindow::place_schema_controls()
+    {
+        place_raft(schema_controls_, schema_scroll_, schema_controls_place_);
+    }
+
+    void MainWindow::move_schema_controls(QPoint by)
+    {
+        if (!schema_controls_ || !schema_scroll_ || schema_scroll_->width() <= 0 || schema_scroll_->height() <= 0)
+            return;
+        const auto at = schema_controls_->pos() + by;
+        schema_controls_place_ = QPointF(static_cast<double>(at.x()) / schema_scroll_->width(),
+                                         static_cast<double>(at.y()) / schema_scroll_->height());
+        place_schema_controls();
+    }
+
+    // The schema raft's Full view (Zain, 2026-10-08): the panels beside the
+    // schema put away and brought back, as the diagram's Full view does it,
+    // keeping its own account of them so the schema's own whole-window view,
+    // which borrows the diagram's, is never disturbed.
+    void MainWindow::put_schema_panels_away(bool away)
+    {
+        if (away)
+        {
+            schema_away_panels_.clear();
+            for (auto *dock : findChildren<QDockWidget *>())
+                if (dock->isVisible() && dock != header_dock_)
+                {
+                    schema_away_panels_.push_back(dock);
+                    dock->hide();
+                }
+        }
+        else
+        {
+            for (const auto &dock : schema_away_panels_)
+                if (dock)
+                    dock->show();
+            schema_away_panels_.clear();
+        }
+        if (schema_full_view_)
+            schema_full_view_->setToolTip(away ? "Full view. Press again to bring the panels back."
+                                               : "Full view — put the panels away and give the whole window to the schema.");
+        statusBar()->showMessage(away ? "Full view. Press it again to bring the panels back." : "Panels restored.", 5000);
+        place_schema_controls();
+    }
+
+    // The schema raft's Pan wears the lock when it is locked, as the diagram's
+    // does, and says how to stop.
+    void MainWindow::refresh_schema_pan_button()
+    {
+        auto *hand = findChild<QToolButton *>("schemaRaftPan");
+        if (!hand)
+            return;
+        const bool locked = schema_tool_ == SchemaTool::Pan && schema_tool_locked_;
+        const auto plain = glyph_icon(Glyph::Pan, theme(theme_), 18, icon_mode_);
+        hand->setIcon(locked ? with_lock_badge(plain, theme(theme_), 18) : plain);
+        hand->setToolTip(locked ? "Pan is locked. Drag as much as you like; choose another tool or press Escape to stop."
+                                : "Pan. Double-click to lock it for a longer look around.");
+    }
+
     void MainWindow::place_canvas_controls()
     {
         if (!canvas_controls_)
@@ -5533,13 +5931,24 @@ namespace erdflow::desktop
         canvas_controls_->setVisible(shown);
         if (shown)
             place_canvas_controls();
+        // One answer for both rafts: the schema's goes and comes with the
+        // diagram's (2026-10-08).
+        if (schema_controls_)
+        {
+            schema_controls_->setVisible(shown);
+            if (shown)
+                place_schema_controls();
+        }
         if (auto *entry = findChild<QAction *>("viewCanvasControls"); entry && entry->isChecked() != shown)
         {
             const QSignalBlocker quiet(entry);
             entry->setChecked(shown);
         }
+        const bool schema_in_front = ribbon_ && ribbon_->schema_in_front();
         statusBar()->showMessage(shown ? "The view controls are back."
-                                       : "View controls put away. Right-click the diagram to bring them back.",
+                                 : schema_in_front
+                                     ? "View controls put away. Bring them back from the View menu."
+                                     : "View controls put away. Right-click the diagram to bring them back.",
                                  7000);
     }
 
@@ -5554,28 +5963,64 @@ namespace erdflow::desktop
         QMainWindow::resizeEvent(event);
         fit_toolbar();
         lay_out_schema();
+        // The header lies across the whole window while it is over the panels,
+        // and the dock it sits in would otherwise take the header's own width
+        // even where that is more than the window's -- running its corner,
+        // Model and Theme, off the edge. Held to the window, it gives way
+        // within it as it was made to: its title first, then the words of its
+        // tools (2026-10-07, fix).
+        if (header_dock_)
+            header_dock_->setMaximumWidth(width());
         // A notice stands where it was put, so it is put there again whenever the
         // window it is laid over changes shape under it.
         if (notice_)
             notice_->settle_again();
     }
 
-    // A tool that has fallen off the end of the toolbar may as well not exist, so
-    // the toolbar sheds what it can spare before it sheds a tool, and it sheds
-    // the cheapest thing first: some of the icons' size, then the words on the
-    // corner controls, whose check mark and half disc are read at a glance, then
-    // the notation picker, which the View menu also offers, and the names only
-    // when the window has been made genuinely small.
-    //
-    // Which of those is needed is measured rather than guessed from the window's
-    // width. What fits depends on how many tools there are and how long their names
-    // read, and a threshold picked by hand goes wrong the moment either changes.
+    // Fit by measured content, reducing icon size and labels before hiding
+    // controls. Notation stays available beside the shared right-side controls
+    // while the tools can fit as icons, as in the Schema header.
     void MainWindow::fit_toolbar()
     {
         auto *toolbar = findChild<QToolBar *>("modelTools");
         if (!toolbar || fitting_)
             return;
         fitting_ = true;
+        // The title gives way before the tools do (Zain, 2026-10-08), as the
+        // schema's does in its header: the row is fitted with the name at no
+        // more than a short word's width, and the name is given whatever room
+        // is left afterwards, up to its cap, said whole on hover.
+        constexpr int title_floor = 48;
+        constexpr int title_cap = 140;
+        auto *title = conceptual_identity_ && document_label_ && conceptual_identity_->isAncestorOf(document_label_)
+                          ? static_cast<TitleLabel *>(document_label_)
+                          : nullptr;
+        const auto title_least = title ? std::min(title_floor, title->sizeHint().width()) : 0;
+        // The row measures what it holds from what it was last told, so it is
+        // told at once whenever the name is given another width.
+        const auto give_title = [&](int widest)
+        {
+            title->set_eliding(true, widest);
+            conceptual_identity_->layout()->invalidate();
+            conceptual_identity_->updateGeometry();
+        };
+        if (title)
+            give_title(title_least);
+        // The search field gives way as the schema's does, down to its least
+        // (Zain, 2026-10-08): the row is fitted with it there, and it is given
+        // what room is left afterwards, up to the width it prefers.
+        auto *search_field = conceptual_search_ && conceptual_corner_ &&
+                                     conceptual_corner_->isAncestorOf(conceptual_search_)
+                                 ? static_cast<SearchField *>(conceptual_search_)
+                                 : nullptr;
+        const auto give_search = [&](int widest)
+        {
+            search_field->setMaximumWidth(widest);
+            conceptual_corner_->layout()->invalidate();
+            conceptual_corner_->updateGeometry();
+        };
+        if (search_field)
+            give_search(search_field->minimumWidth());
         struct Step
         {
             Qt::ToolButtonStyle style;
@@ -5584,19 +6029,14 @@ namespace erdflow::desktop
             bool notation_named;
             bool corner_named;
         };
-        // Names stay for as long as they possibly can: a tool's lock mark hangs on
-        // its name, and a bar of bare icons is the state for a window that has
-        // been made small, not for one at an ordinary size. The icons give up
-        // size first, then the picker its word, then the corner controls theirs,
-        // then the picker, and only then the names.
         static constexpr std::array<Step, 9> steps{{
             {Qt::ToolButtonTextBesideIcon, 34, true, true, true},
             {Qt::ToolButtonTextBesideIcon, 28, true, true, true},
             {Qt::ToolButtonTextBesideIcon, 24, true, true, true},
             {Qt::ToolButtonTextBesideIcon, 24, true, false, true},
             {Qt::ToolButtonTextBesideIcon, 24, true, false, false},
-            {Qt::ToolButtonTextBesideIcon, 24, false, false, false},
-            {Qt::ToolButtonIconOnly, 28, true, false, false},
+            {Qt::ToolButtonIconOnly, 28, true, true, true},
+            {Qt::ToolButtonIconOnly, 24, true, false, false},
             {Qt::ToolButtonIconOnly, 24, false, false, false},
             {Qt::ToolButtonIconOnly, 20, false, false, false},
         }};
@@ -5605,7 +6045,7 @@ namespace erdflow::desktop
             const auto &step = steps[index];
             toolbar->setToolButtonStyle(step.style);
             toolbar->setIconSize(QSize(step.icon, step.icon));
-            for (const char *named : {"isaButton", "connectButton"})
+            for (const char *named : {"isaButton", "connectButton", "insertButton"})
                 if (auto *button = findChild<QToolButton *>(named))
                 {
                     button->setToolButtonStyle(step.style);
@@ -5613,7 +6053,7 @@ namespace erdflow::desktop
                 }
             // The corner controls are set after the bar, since the bar hands its
             // own style to the buttons it made and the corner's may differ.
-            const auto corner_style = step.corner_named ? step.style : Qt::ToolButtonIconOnly;
+            const auto corner_style = step.corner_named ? Qt::ToolButtonTextBesideIcon : Qt::ToolButtonIconOnly;
             if (auto *check = findChild<QAction *>("checkModel"))
                 if (auto *button = qobject_cast<QToolButton *>(toolbar->widgetForAction(check)))
                     button->setToolButtonStyle(corner_style);
@@ -5622,6 +6062,10 @@ namespace erdflow::desktop
                 theme_button_->setToolButtonStyle(corner_style);
                 theme_button_->setIconSize(toolbar->iconSize());
             }
+            if (conceptual_corner_)
+                for (auto *button : {search_button_, header_model_, header_theme_})
+                    if (button && button->parentWidget() == conceptual_corner_)
+                        button->setToolButtonStyle(corner_style);
             // Hiding the widget would leave its room behind in the toolbar's layout;
             // it is the action holding it that has to go.
             for (auto *hidden : {notation_separator_, notation_action_})
@@ -5632,6 +6076,18 @@ namespace erdflow::desktop
             toolbar->adjustSize();
             if (toolbar->sizeHint().width() <= width() || index + 1 == steps.size())
                 break;
+        }
+        if (title)
+        {
+            const auto spare = std::max(0, width() - toolbar->sizeHint().width());
+            give_title(std::min({title_cap, title->sizeHint().width(), title_least + spare}));
+            toolbar->adjustSize();
+        }
+        if (search_field)
+        {
+            const auto spare = std::max(0, width() - toolbar->sizeHint().width());
+            give_search(std::min(search_field->sizeHint().width(), search_field->minimumWidth() + spare));
+            toolbar->adjustSize();
         }
         fitting_ = false;
         refresh_icons();
@@ -5787,6 +6243,7 @@ namespace erdflow::desktop
             schema_->set_icon_mode(icon_mode_);
         for (const auto &[action, glyph] : action_glyphs_)
             action->setIcon(glyph_icon(glyph, colors, icon_pixels(), icon_mode_));
+        refresh_ribbon_icons();
         if (theme_button_)
             theme_button_->setIcon(glyph_icon(Glyph::Theme, colors, icon_pixels(), icon_mode_));
         if (notation_box_)
@@ -5801,6 +6258,194 @@ namespace erdflow::desktop
         refresh_tool_labels();
         // And Check model wears whichever of its two marks the panel calls for.
         refresh_check_action();
+    }
+
+    void MainWindow::refresh_ribbon_icons()
+    {
+        const auto &colors = theme(theme_);
+        for (const auto &[button, glyph] : button_glyphs_)
+            button->setIcon(glyph_icon(glyph, colors, icon_pixels(), icon_mode_));
+        if (ribbon_)
+            for (const auto &[action, glyph] : row_glyphs_)
+                ribbon_->set_row_icon(action, glyph_icon(glyph, colors, icon_pixels(), icon_mode_));
+        // A tab is chosen by turning its name the accent on the window's own
+        // ground, not by sitting on a chip of the accent as a tool does. So a
+        // chosen tab's line art is inked in the accent too, matching its name,
+        // rather than in the ink that reads on a chip. The coloured and painted
+        // sets keep their own colours either way.
+        // Drawn at the size the row of tabs shows them at, which is the ribbon's.
+        const int tab_icon_pixels = ribbon_ && ribbon_->tabs() ? ribbon_->tabs()->iconSize().width() : 16;
+        const auto tab_icon = [&](Glyph glyph)
+        {
+            const auto resting = glyph_icon(glyph, colors, tab_icon_pixels, icon_mode_)
+                                     .pixmap(QSize(tab_icon_pixels, tab_icon_pixels), 3.0);
+            auto chosen = resting;
+            if (icon_mode_ == IconMode::Outline && !chosen.isNull())
+            {
+                auto ink = colors.accent;
+                if (colourless(colors.id))
+                    ink = QColor(qGray(ink.rgb()), qGray(ink.rgb()), qGray(ink.rgb()));
+                QPainter tint(&chosen);
+                tint.setCompositionMode(QPainter::CompositionMode_SourceIn);
+                tint.fillRect(chosen.rect(), ink);
+            }
+            QIcon wearing(resting);
+            wearing.addPixmap(chosen, QIcon::Normal, QIcon::On);
+            wearing.addPixmap(chosen, QIcon::Active, QIcon::On);
+            return wearing;
+        };
+        for (const auto &[tab, glyph] : tab_glyphs_)
+            tab->setIcon(tab_icon(glyph));
+        // File's menu, beside its row tabs, at their size.
+        if (ribbon_ && ribbon_->file_menu_button())
+            ribbon_->file_menu_button()->setIcon(tab_icon(Glyph::Open));
+    }
+
+    // The side panels' one button wears the panels that are out, and says
+    // which those are and what a press will do next.
+    void MainWindow::refresh_side_panels_action()
+    {
+        auto *explorer_dock = findChild<QDockWidget *>("explorerDock");
+        auto *properties_dock = findChild<QDockWidget *>("propertiesDock");
+        if (!side_panels_ || !explorer_dock || !properties_dock)
+            return;
+        const bool explorer = explorer_dock->toggleViewAction()->isChecked();
+        const bool properties = properties_dock->toggleViewAction()->isChecked();
+        const auto glyph = explorer && properties ? Glyph::SidePanels
+                           : properties           ? Glyph::PropertiesPanel
+                           : explorer             ? Glyph::ExplorerPanel
+                                                  : Glyph::NoPanels;
+        const auto said = explorer && properties ? "Explorer and Properties are showing. Press to put the Explorer away."
+                          : properties           ? "Properties is showing. Press to put it away too."
+                          : explorer             ? "The Explorer is showing. Press to bring Properties back as well."
+                                                 : "Both panels are away. Press to bring the Explorer and Properties back.";
+        side_panels_->setToolTip(QString::fromUtf8(said));
+        if (const auto known = action_glyphs_.find(side_panels_); known != action_glyphs_.end() && known->second == glyph)
+            return;
+        action_glyphs_[side_panels_] = glyph;
+        side_panels_->setIcon(glyph_icon(glyph, theme(theme_), icon_pixels(), icon_mode_));
+    }
+
+    // The ribbon's Design, Export, Import, View and Help tabs wear an icon before
+    // their names, and the commands on their rows wear one beside theirs, with
+    // the rows' longer names shortened (Zain, 2026-10-06). The commands are the
+    // menus' own actions, so the menus must read exactly as before: an icon is
+    // worn by the command's button on its row rather than by its action (a menu
+    // makes room for an icon as soon as an action has one, shown or not), and a
+    // short name is the action's icon text, which a button on a row shows and a
+    // menu does not. Hovering still gives the full name, or the description
+    // where an action has one.
+    void MainWindow::dress_ribbon()
+    {
+        for (const auto &[name, glyph] : std::initializer_list<std::pair<const char *, Glyph>>{
+                 {"tabFile", Glyph::FileTab}, {"tabHome", Glyph::Home}, {"tabSettings", Glyph::Settings},
+                 {"tabDesign", Glyph::Appearance}, {"tabExport", Glyph::Export}, {"tabImport", Glyph::Import},
+                 {"tabView", Glyph::View}, {"tabHelp", Glyph::Help}})
+            if (auto *tab = findChild<QAction *>(name))
+                tab_glyphs_[tab] = glyph;
+
+        // A command is found by its own name; a submenu, by its menu's; a panel's
+        // switch, by its dock's.
+        const auto command = [this](const char *name) -> QAction *
+        {
+            if (auto *action = findChild<QAction *>(name))
+                return action;
+            if (auto *menu = findChild<QMenu *>(name))
+                return menu->menuAction();
+            if (auto *dock = findChild<QDockWidget *>(name))
+                return dock->toggleViewAction();
+            return nullptr;
+        };
+        struct Dress
+        {
+            const char *name;
+            Glyph glyph;
+            const char *label; // nullptr where the name is already short
+        };
+        static constexpr Dress dresses[] = {
+            // Design
+            {"backgroundMenu", Glyph::Background, nullptr},
+            {"themeMenu", Glyph::Theme, nullptr},
+            {"iconMenu", Glyph::IconSet, nullptr},
+            {"notationMenu", Glyph::Notation, nullptr},
+            // Export
+            {"exportProject", Glyph::ProjectFile, "Project"},
+            {"exportPdfDocument", Glyph::PdfDocument, "PDF"},
+            {"exportMarkdown", Glyph::DataDictionary, "Data Dictionary"},
+            {"exportHtml", Glyph::HtmlReport, "HTML"},
+            {"exportCsv", Glyph::CsvListing, "CSV"},
+            {"exportSvg", Glyph::SvgPicture, "SVG"},
+            {"exportPng", Glyph::Picture, "PNG"},
+            {"exportPdfPage", Glyph::PdfPage, "PDF Page"},
+            {"exportMorePictures", Glyph::MorePictures, "More Formats"},
+            {"exportWithOptions", Glyph::Export, "Options"},
+            {"copyAsPicture", Glyph::CopyPicture, "Copy Image"},
+            // Import
+            {"importProject", Glyph::ProjectFile, "Project"},
+            {"importPicture", Glyph::ProjectPicture, "Project Image"},
+            {"importFromOtherTools", Glyph::OtherTool, "Other Tool"},
+            // View
+            {"explorerDock", Glyph::ExplorerPanel, nullptr},
+            {"propertiesDock", Glyph::PropertiesPanel, nullptr},
+            {"validationDock", Glyph::Check, "Checks"},
+            {"viewFullView", Glyph::FullView, "Full"},
+            {"viewFit", Glyph::Fit, nullptr},
+            {"viewActualSize", Glyph::ActualSize, "100%"},
+            {"viewZoomIn", Glyph::ZoomIn, "Zoom In"},
+            {"viewZoomOut", Glyph::ZoomOut, "Zoom Out"},
+            // Shortened too, or the row would not fit the window and History
+            // would be put away behind the toolbar's arrow. Align Grid rather
+            // than Snap, which promises a different way of moving (Zain,
+            // 2026-10-06).
+            {"viewShowGrid", Glyph::Grid, "Grid"},
+            {"viewAlignToGrid", Glyph::AlignToGrid, "Align Grid"},
+            {"viewCanvasControls", Glyph::CanvasControls, "On-canvas Controls"},
+            {"viewShowComments", Glyph::Comments, "Comments"},
+            {"viewHistory", Glyph::History, nullptr},
+            // Help
+            {"quickGuide", Glyph::Guide, "Guide"},
+            {"aboutErdflow", Glyph::About, "About"},
+        };
+        for (const auto &dress : dresses)
+        {
+            auto *action = command(dress.name);
+            if (!action)
+                continue;
+            // A command that already wore an icon keeps it, wherever it was shown.
+            if (!action_glyphs_.contains(action))
+                row_glyphs_[action] = dress.glyph;
+            if (dress.label)
+                action->setIconText(QString::fromUtf8(dress.label));
+        }
+        // Lines is a button of the ribbon's own, with a menu and no action.
+        auto *lines = findChild<QToolButton *>("designLinesButton");
+        if (lines)
+            button_glyphs_[lines] = Glyph::Lines;
+        // Home's Insert, a button of the window's own with the Insert menu.
+        if (auto *insert = findChild<QToolButton *>("insertButton"))
+            button_glyphs_[insert] = Glyph::Insert;
+        if (ribbon_ && ribbon_->file_menu_button())
+            ribbon_->file_menu_button()->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+
+        // With the Relational Schema in front the tabs stay, and the rows keep
+        // to what can act on it (Zain, 2026-10-06): what draws on, frames or
+        // marks up the conceptual diagram is left off them there, as the
+        // drawing tools are, and the menus are left as they are. The side
+        // panels' one button, on the diagram's raft otherwise, stands on the
+        // View row instead, since the schema has no raft.
+        if (ribbon_)
+        {
+            for (const char *name : {"backgroundMenu", "validationDock", "viewFullView", "viewFit", "viewActualSize",
+                                     "viewZoomIn", "viewZoomOut", "viewShowGrid", "viewAlignToGrid",
+                                     "viewCanvasControls", "viewShowComments"})
+                ribbon_->keep_to_conceptual(command(name));
+            if (auto *design = findChild<QToolBar *>("designTools"); design && lines)
+                for (auto *action : design->actions())
+                    if (design->widgetForAction(action) == lines)
+                        ribbon_->keep_to_conceptual(action);
+            ribbon_->add_for_schema("tabView", side_panels_, command("propertiesDock"));
+        }
+        refresh_ribbon_icons();
     }
 
     // A small padlock in the corner of an icon, for a button that has no name to
@@ -5836,6 +6481,7 @@ namespace erdflow::desktop
                                  ? "Pan is locked. Drag as much as you like; choose another tool or press Escape to stop."
                                  : "Pan. Double-click to lock it for a longer look around.");
         }
+        refresh_schema_pan_button();
         for (const auto &[tool, action] : tool_actions_)
         {
             // Generalization and specialization share one action, so only the mode
@@ -5860,6 +6506,14 @@ namespace erdflow::desktop
 
     bool MainWindow::eventFilter(QObject *watched, QEvent *event)
     {
+        // The diagram's row coming and going -- another tab of the ribbon, full
+        // view -- takes Home, the switch and the title with it or gives them back.
+        if (conceptual_identity_ && watched == conceptual_identity_->parentWidget() &&
+            (event->type() == QEvent::Show || event->type() == QEvent::Hide))
+        {
+            place_workspace_identity(identity_relational_);
+            return false;
+        }
         if (schema_header_ && watched == schema_header_.data() && (event->type() == QEvent::Resize || event->type() == QEvent::LayoutRequest))
         {
             fit_schema_header_words();
@@ -5880,11 +6534,24 @@ namespace erdflow::desktop
             lay_out_conceptual();
             return false;
         }
+        // The schema's raft floats over its scroll area, and is put back in its
+        // corner whenever that changes size, as the diagram's is.
+        if (schema_scroll_ && watched == schema_scroll_ &&
+            (event->type() == QEvent::Resize || event->type() == QEvent::Show))
+        {
+            place_schema_controls();
+            return false;
+        }
         if (event->type() == QEvent::MouseButtonDblClick)
         {
             if (watched == static_cast<QObject *>(findChild<QToolButton *>("canvasPan")))
             {
                 choose_tool(Tool::Pan, true);
+                return true;
+            }
+            if (watched == static_cast<QObject *>(findChild<QToolButton *>("schemaRaftPan")))
+            {
+                choose_schema_tool(SchemaTool::Pan, true);
                 return true;
             }
             if (watched == static_cast<QObject *>(findChild<QToolButton *>("isaButton")))
@@ -6015,15 +6682,19 @@ namespace erdflow::desktop
                 // The ribbon is the workspace's tool system, and Home has nothing
                 // for it to act on, so its rows give way to Home's own slim bar.
                 // The native menu bar and the status line stay: Home is never
-                // left without its menus (ADR-022 section 9.14). Exactly the rows
-                // that were out are remembered, so the one that was in front
-                // comes back rather than an assumed Home row.
-                for (auto *bar : findChildren<QToolBar *>())
-                    if (!bar->isHidden())
-                    {
-                        hidden_chrome_for_home_.push_back(bar);
-                        bar->hide();
-                    }
+                // left without its menus (ADR-022 section 9.14). The ribbon keeps
+                // which row was in front, so that one comes back rather than an
+                // assumed Home row -- and comes back as the workspace then in
+                // front has it, whichever that is by then.
+                if (ribbon_)
+                    ribbon_->set_put_away(true);
+                else
+                    for (auto *bar : findChildren<QToolBar *>())
+                        if (!bar->isHidden())
+                        {
+                            hidden_chrome_for_home_.push_back(bar);
+                            bar->hide();
+                        }
             }
         }
         else
@@ -6036,6 +6707,8 @@ namespace erdflow::desktop
                 if (chrome)
                     chrome->show();
             hidden_chrome_for_home_.clear();
+            if (ribbon_)
+                ribbon_->set_put_away(false);
             home_chrome_hidden_ = false;
             workspace_seen_ = true;
         }
@@ -6048,6 +6721,7 @@ namespace erdflow::desktop
                                             : schema_full_   ? QStringLiteral("Relational Design")
                                                              : QStringLiteral("Conceptual Design"));
         pages_->setCurrentIndex(on ? 0 : 1);
+        refresh_export_actions();
     }
 
     bool MainWindow::showing_home() const
@@ -6587,8 +7261,10 @@ namespace erdflow::desktop
     void MainWindow::export_dialog()
     {
         finish_field_edit();
+        if (!export_available(ExportTarget::Options))
+            return;
         canvas_->cancel_interaction();
-        ExportDialog dialog(*canvas_, editor_.project(), this);
+        ExportDialog dialog(export_view(), editor_.project(), this);
         dialog.set_choice(export_choice_);
         if (dialog.exec() != QDialog::Accepted)
             return;
@@ -6606,8 +7282,9 @@ namespace erdflow::desktop
         const auto stem = path_.isEmpty() ? QString("Untitled") : QFileInfo(path_).completeBaseName();
         const auto suggested = path_.isEmpty() ? stem + "." + suffix
                                                : QFileInfo(path_).dir().filePath(stem + "." + suffix);
-        auto location = QFileDialog::getSaveFileName(this, "Export", suggested,
-                                                     QString("%1 (*.%2)").arg(label, suffix));
+        const auto filter = QString("%1 (*.%2)").arg(label, suffix);
+        auto location = choose_export_location ? choose_export_location(suggested, filter)
+                                               : QFileDialog::getSaveFileName(this, "Export", suggested, filter);
         if (location.isEmpty())
             return {};
         if (!location.endsWith("." + suffix, Qt::CaseInsensitive))
@@ -6624,6 +7301,8 @@ namespace erdflow::desktop
     bool MainWindow::export_document(DocumentFormat format, const QString &location_given)
     {
         finish_field_edit();
+        if (!export_available(ExportTarget::Document))
+            return false;
         canvas_->cancel_interaction();
         const auto &info = document_format(format);
         auto location = location_given;
@@ -6631,7 +7310,7 @@ namespace erdflow::desktop
             location = export_location(QString::fromLatin1(info.suffix), QString::fromUtf8(info.label));
         if (location.isEmpty())
             return false;
-        const auto result = write_document(*canvas_, editor_.project(), format, location);
+        const auto result = write_document(export_view(), editor_.project(), format, location);
         if (!result)
         {
             QMessageBox::warning(this, "Document could not be written", result.error);
@@ -6646,6 +7325,8 @@ namespace erdflow::desktop
     bool MainWindow::export_picture(const PictureOptions &options, const QString &location_given)
     {
         finish_field_edit();
+        if (!export_available(ExportTarget::Picture))
+            return false;
         canvas_->cancel_interaction();
         const auto &info = picture_format(options.format);
         const auto suffix = QString::fromLatin1(info.suffix);
@@ -6656,7 +7337,7 @@ namespace erdflow::desktop
             return false;
         QString note;
         const auto payload = options.carry_project && info.carries_project ? project_payload(note) : QByteArray();
-        const auto result = write_picture(*canvas_, options, payload, location);
+        const auto result = write_picture(export_view(), options, payload, location);
         if (!result)
         {
             QMessageBox::warning(this, "Picture could not be written", result.error);
@@ -6679,17 +7360,19 @@ namespace erdflow::desktop
     bool MainWindow::copy_picture()
     {
         finish_field_edit();
+        if (!export_available(ExportTarget::Picture))
+            return false;
         canvas_->cancel_interaction();
         // A copy is of what is selected, and of the whole diagram when nothing is,
         // which is what every drawing application does with the same command.
         auto options = export_choice_.as_picture;
-        options.extent = canvas_->selection_bounds().isEmpty() ? PictureExtent::WholeDiagram : PictureExtent::Selection;
+        options.extent = picture_extent(export_view(), PictureExtent::Selection).isEmpty() ? PictureExtent::WholeDiagram : PictureExtent::Selection;
         QString note;
         const auto payload = options.carry_project ? project_payload(note) : QByteArray();
 
         options.format = PictureFormat::Png;
         QByteArray png;
-        const auto raster = draw_picture(*canvas_, options, payload, png);
+        const auto raster = draw_picture(export_view(), options, payload, png);
         if (!raster)
         {
             statusBar()->showMessage(raster.error, 9000);
@@ -6697,7 +7380,7 @@ namespace erdflow::desktop
         }
         options.format = PictureFormat::Svg;
         QByteArray svg;
-        const auto vector = draw_picture(*canvas_, options, payload, svg);
+        const auto vector = draw_picture(export_view(), options, payload, svg);
 
         // Both pictures go on at once and the destination takes whichever it
         // prefers: a word processor usually takes the vector, a chat window the
@@ -6904,6 +7587,13 @@ namespace erdflow::desktop
         if (!search_bar_)
             return;
         search_bar_->hide();
+        // The row's field is cleared with it: words left standing in a field
+        // above a diagram nothing is narrowing would say a search is on.
+        if (conceptual_search_)
+        {
+            const QSignalBlocker quiet(conceptual_search_);
+            conceptual_search_->clear();
+        }
         // Closing puts the whole diagram back: a filter left on behind a closed bar
         // would be a diagram missing pieces for no visible reason.
         canvas_->set_search({});
@@ -6913,6 +7603,8 @@ namespace erdflow::desktop
     bool MainWindow::export_project_file(const QString &location_given)
     {
         finish_field_edit();
+        if (!export_available(ExportTarget::Project))
+            return false;
         canvas_->cancel_interaction();
         auto location = location_given;
         if (location.isEmpty())
@@ -7067,6 +7759,7 @@ namespace erdflow::desktop
         rise->start(QAbstractAnimation::DeleteWhenStopped);
         if (auto *button = findChild<QPushButton *>("previewSchema"))
             button->setChecked(shown);
+        wear_workspace_switch();
     }
 
     void MainWindow::place_schema_header_tools()
@@ -7074,10 +7767,13 @@ namespace erdflow::desktop
         if (!schema_header_tools_)
             return;
         schema_header_tools_->setVisible(schema_open_);
+        wear_schema_header_for_tab();
         if (schema_search_)
             schema_search_->setVisible(schema_full_);
+        // The header's own Theme, in its corner, serves the schema too (Zain,
+        // 2026-10-07), so this one is no longer shown.
         if (schema_theme_)
-            schema_theme_->setVisible(schema_full_);
+            schema_theme_->setVisible(false);
     }
 
     // Nothing but the schema. The panel takes the whole stage and the surrounding
@@ -7098,8 +7794,173 @@ namespace erdflow::desktop
         return furniture;
     }
 
+    // Reuse the same controls and menus in the active workspace's tool row.
+    // Schema keeps its existing header layout; Conceptual uses the expanding
+    // spacer at the end of its toolbar. Reparenting preserves actions and state.
+    void MainWindow::place_workspace_controls(bool relational)
+    {
+        if (!conceptual_corner_)
+            return;
+        auto *header = findChild<QWidget *>("workspaceHeader");
+        place_workspace_identity(relational);
+        auto *destination = relational ? header : conceptual_corner_;
+        for (auto *button : {header_model_, header_theme_})
+        {
+            if (button->parentWidget() != destination)
+                destination->layout()->addWidget(button);
+            button->show();
+        }
+        wear_schema_header_for_tab();
+        // The diagram's search is its field now (Zain, 2026-10-08); the button
+        // that opened the bar stays put away in the header.
+        if (conceptual_search_)
+        {
+            if (conceptual_corner_->layout()->indexOf(conceptual_search_) < 0)
+                static_cast<QHBoxLayout *>(conceptual_corner_->layout())->insertWidget(0, conceptual_search_);
+            conceptual_search_->show();
+        }
+        search_button_->hide();
+        fit_toolbar();
+    }
+
+    void MainWindow::place_workspace_identity(bool relational)
+    {
+        if (placing_identity_)
+            return;
+        const QScopedValueRollback<bool> placing(placing_identity_, true);
+        identity_relational_ = relational;
+        auto *header = findChild<QWidget *>("workspaceHeader");
+        // Home, Schema | Conceptual and the title: at the
+        // start of the diagram's tool row while the diagram is in front, and
+        // back in the header, where they were, while Relational Design is
+        // (Zain, 2026-10-08). With them gone the header has nothing left to say
+        // beside the diagram -- its undo and redo are the row's own two -- so it
+        // is put away, and the canvas starts under the row as the schema's does.
+        auto *modes = findChild<QWidget *>("schemaModeSwitch");
+        auto *rule = findChild<QWidget *>("schemaTitleRule");
+        auto *pencil = findChild<QWidget *>("renameDocument");
+        auto *badge = findChild<QLabel *>("workspaceBadge");
+        // The rule and the pencil stay in the header: the diagram's row has no
+        // room for them (Zain, 2026-10-08) -- the row's own separator follows the
+        // title, and the project is renamed from the Explorer there, as it always
+        // was.
+        const std::array<QWidget *, 3> identity{back_to_home_, modes, document_label_};
+        if (header && conceptual_identity_ && std::all_of(identity.begin(), identity.end(), [](QWidget *one)
+                                                          { return one != nullptr; }))
+        {
+            // Only while the row is there to hold them. With another tab of the
+            // ribbon in front, or the row put away for full view, the header has
+            // them back and is shown as it always was, so the way Home and the
+            // project's name are never out of sight.
+            const bool in_row = !relational && !conceptual_identity_->parentWidget()->isHidden();
+            auto *row = static_cast<QHBoxLayout *>(header->layout());
+            if (in_row && back_to_home_->parentWidget() != conceptual_identity_)
+            {
+                for (auto *one : identity)
+                    conceptual_identity_->layout()->addWidget(one);
+            }
+            else if (!in_row && back_to_home_->parentWidget() != header)
+            {
+                // Each to the place it was made in: Home and the switch before the
+                // rule and the badge that never left, the title after them and
+                // before its pencil.
+                row->insertWidget(0, back_to_home_);
+                row->insertWidget(1, modes);
+                row->insertWidget(4, document_label_, schema_first_ ? 0 : 1);
+            }
+            auto *title = static_cast<TitleLabel *>(document_label_);
+            if (in_row)
+            {
+                // Compact, since the row is full (Zain, 2026-10-08): Home as its
+                // arrow alone, named on hover and to a screen reader, and the
+                // name cut where it would crowd the tools.
+                back_to_home_->setText(QStringLiteral("←"));
+                back_to_home_->setAccessibleName(QStringLiteral("Home"));
+                for (auto *one : {modes, static_cast<QWidget *>(back_to_home_), static_cast<QWidget *>(document_label_)})
+                    one->show();
+                title->set_eliding(true, std::min(140, title->sizeHint().width()));
+                if (auto *half = findChild<QWidget *>("previewConceptual"))
+                    half->show();
+            }
+            else
+            {
+                // As the header wears them for the project in front.
+                title->set_eliding(false, 0);
+                back_to_home_->setAccessibleName({});
+                back_to_home_->setText(schema_first_ ? QStringLiteral("← Home") : QStringLiteral("← Back to Home"));
+                for (auto *one : {modes, rule, pencil})
+                    if (one)
+                        one->setVisible(schema_first_);
+                if (badge)
+                    badge->setVisible(!schema_first_);
+            }
+            for (auto *one : identity)
+            {
+                one->style()->unpolish(one);
+                one->style()->polish(one);
+                for (auto *inner : one->findChildren<QWidget *>())
+                {
+                    inner->style()->unpolish(inner);
+                    inner->style()->polish(inner);
+                }
+            }
+            if (conceptual_identity_action_)
+                conceptual_identity_action_->setVisible(in_row);
+            if (conceptual_identity_rule_)
+                conceptual_identity_rule_->setVisible(in_row);
+            header->setVisible(!in_row);
+            wear_workspace_switch();
+            if (in_row)
+                fit_toolbar();
+        }
+    }
+
+    void MainWindow::wear_schema_header_for_tab()
+    {
+        auto *header = findChild<QWidget *>("workspaceHeader");
+        if (!header || !ribbon_ || !ribbon_->schema_in_front())
+            return;
+        const bool home = ribbon_->home_in_front();
+        if (schema_top_tools_)
+            schema_top_tools_->setVisible(home && schema_first_);
+        if (schema_header_tools_)
+            schema_header_tools_->setVisible(home && schema_open_);
+        for (auto *button : {header_model_, header_theme_})
+            if (button && button->parentWidget() == header)
+                button->setVisible(home);
+    }
+
+    void MainWindow::wear_workspace_switch()
+    {
+        auto *schema_half = findChild<QPushButton *>("schemaModeSchema");
+        auto *conceptual_half = findChild<QPushButton *>("previewConceptual");
+        if (!schema_half || !conceptual_half)
+            return;
+        if (editor_.project().schema.standalone)
+        {
+            // The schema drawn by hand, as it always was: Schema lit, and
+            // Conceptual lit while its preview is up.
+            schema_half->setChecked(true);
+            conceptual_half->setChecked(conceptual_open_);
+            schema_half->setToolTip("The schema being drawn. Puts the Conceptual preview away if it is open.");
+            conceptual_half->setToolTip("The Conceptual Design this schema becomes, raised over the lower half of "
+                                        "the schema. It is a preview: nothing is converted, and nothing is written.");
+        }
+        else
+        {
+            // A diagram: Conceptual lit, and Schema lit while the schema it
+            // converts to is up.
+            schema_half->setChecked(schema_open_);
+            conceptual_half->setChecked(true);
+            schema_half->setToolTip("The Relational Schema this diagram converts to, raised over the lower half of "
+                                    "the canvas. Nothing is written.");
+            conceptual_half->setToolTip("The diagram being drawn. Puts the schema away if it is open.");
+        }
+    }
+
     void MainWindow::set_workspace_in_front(bool relational)
     {
+        place_workspace_controls(relational);
         if (auto *badge = findChild<QLabel *>("workspaceBadge"))
             badge->setText(relational ? "RELATIONAL DESIGN" : "CONCEPTUAL");
         if (auto *picture = findChild<QAction *>("insertPicture"))
@@ -7123,14 +7984,20 @@ namespace erdflow::desktop
                                  "homeExampleUniversityRelational", "homeTemplateRelational"})
             if (auto *entry = findChild<QAction *>(name))
                 entry->setVisible(relational);
-        if (auto *button = findChild<QToolButton *>("openRelationalExample"))
-            button->setVisible(relational);
+        // Its examples are offered from the header's Model menu instead
+        // (Zain, 2026-10-07), so the mark is no longer shown.
+        (void)findChild<QToolButton *>("openRelationalExample");
+        refresh_export_actions();
     }
 
     void MainWindow::set_schema_full(bool full)
     {
         if (schema_full_ == full)
             return;
+        // Leaving the schema's whole window, whatever its raft put away comes
+        // back first, so the diagram's own account of its panels is what is left.
+        if (!full && schema_full_view_ && schema_full_view_->isChecked())
+            schema_full_view_->setChecked(false);
         schema_full_ = full;
         if (full)
         {
@@ -7159,16 +8026,21 @@ namespace erdflow::desktop
                 }
             // And the tools for drawing go with the canvas they draw on. A row of
             // shapes to place, above a diagram nobody can currently see, is a row
-            // of things that cannot be done -- so the ribbon and the tool rows are
-            // put away and the few things still worth reaching for come out in the
-            // header instead.
+            // of things that cannot be done -- so Home's row is put away, and the
+            // few things still worth reaching for come out in the header instead.
+            // The tabs stay, and File's and Settings' rows with them, keeping to
+            // what can act on the schema (Zain, 2026-10-06), so the window is
+            // found in the same place in both workspaces.
             hidden_chrome_.clear();
-            for (auto *furniture : chrome_for_drawing())
-                if (furniture && furniture->isVisible())
-                {
-                    hidden_chrome_.push_back(furniture);
-                    furniture->hide();
-                }
+            if (ribbon_)
+                ribbon_->set_schema_in_front(true);
+            else
+                for (auto *furniture : chrome_for_drawing())
+                    if (furniture && furniture->isVisible())
+                    {
+                        hidden_chrome_.push_back(furniture);
+                        furniture->hide();
+                    }
             if (schema_theme_ && theme_button_)
             {
                 schema_theme_->setMenu(theme_button_->menu());
@@ -7209,6 +8081,8 @@ namespace erdflow::desktop
                 if (furniture)
                     furniture->show();
             hidden_chrome_.clear();
+            if (ribbon_)
+                ribbon_->set_schema_in_front(false);
             place_schema_header_tools();
             set_workspace_in_front(false);
             schema_share_ = schema_share_before_full_;
@@ -7222,6 +8096,9 @@ namespace erdflow::desktop
             button->setChecked(full);
             button->setText(full ? "Exit full" : "Full");
         }
+        // With the schema in front, the header's way back to the diagram.
+        if (auto *button = findChild<QPushButton *>("previewSchema"))
+            button->setText(full ? "Convert to Conceptual" : "Convert to Schema");
         // A schema drawn by hand has no Full to press and nothing behind it to
         // bring back, so it says what can be done with it instead.
         statusBar()->showMessage(full ? (editor_.project().schema.standalone
@@ -7274,13 +8151,57 @@ namespace erdflow::desktop
     // entry does not.
     void MainWindow::offer_schema_rules(const SchemaView::Constrained &hit, QPoint at)
     {
+        if (!schema_ || hit.table >= schema_->preview().tables.size())
+            return;
+        const auto &table = schema_->preview().tables[hit.table];
+        if (hit.row >= table.columns.size())
+            return;
+        const auto &column = table.columns[hit.row];
+        const auto handle = schema_->column_ref(hit.table, hit.row);
         QMenu menu(this);
         menu.setObjectName("schemaRulesMenu");
+        // The whole of what the column can be said to enforce (Zain,
+        // 2026-10-08): its keys, in the order the cell writes them, then the
+        // rules the Properties panel offers. Each key does exactly what its
+        // Properties switch does, so the two can never disagree, and one that
+        // cannot apply is still offered and says why. A key is done once the
+        // list has closed, because putting a foreign key on asks which key it is
+        // to reference, in a list of its own.
+        std::function<void()> keyed;
+        if (handle)
+        {
+            const auto key = [&](const QString &label, const char *name, bool on, const QString &tip,
+                                 std::function<void()> pressed)
+            {
+                auto *action = menu.addAction(label);
+                action->setObjectName(name);
+                action->setCheckable(true);
+                action->setChecked(on);
+                if (!tip.isEmpty())
+                    action->setToolTip(tip);
+                connect(action, &QAction::triggered, this, [&keyed, pressed]
+                        { keyed = pressed; });
+            };
+            key("Primary Key", "schemaRulePrimaryKey", column.primary_key,
+                column.origin  ? QString(column.primary_key ? "It stops being a key on the diagram too."
+                                                            : "It becomes a key on the diagram too, and is made required.")
+                : column.added ? QString()
+                               : QString("The conversion made this column, so there is nothing behind it to change."),
+                [this, handle = *handle]
+                { press_schema_primary_key(handle); });
+            key("Foreign Key", "schemaRuleForeignKey", column.foreign_key,
+                column.foreign_key ? QString("Take the foreign key off.") : QString("Choose the key it is to reference."),
+                [this, handle = *handle, at]
+                { press_schema_foreign_key(handle, at); });
+            menu.addSeparator();
+        }
         populate_schema_rules(menu, hit);
         menu.exec(at);
+        if (keyed)
+            keyed();
     }
 
-    void MainWindow::populate_schema_rules(QMenu &menu, const SchemaView::Constrained &hit, bool classified)
+    void MainWindow::populate_schema_rules(QMenu &menu, const SchemaView::Constrained &hit)
     {
         if (!schema_ || hit.table >= schema_->preview().tables.size())
             return;
@@ -7309,42 +8230,31 @@ namespace erdflow::desktop
                                 : column.foreign_key ? QString("This says whether the side carrying it sees one row.")
                                                      : QString();
         const auto identity_why = QStringLiteral("The database fills this in, counting up. Whole numbers only.");
-        if (classified)
+        // Nullability as the two answers to one question (Zain, 2026-10-01),
+        // side by side, the one the column has ticked. The other is the same
+        // toggle as ever, refused where it always was; the one it has already
+        // changes nothing.
+        auto *answers = new QActionGroup(&menu);
+        answers->setExclusive(true);
+        const auto answer = [&](const QString &label, const char *name, bool required)
         {
-            // Nullability as the two answers to one question (Zain, 2026-10-01),
-            // side by side, the one the column has ticked. The other is the same
-            // toggle as ever, refused where it always was; the one it has already
-            // changes nothing.
-            auto *answers = new QActionGroup(&menu);
-            answers->setExclusive(true);
-            const auto answer = [&](const QString &label, const char *name, bool required)
-            {
-                auto *action = menu.addAction(label);
-                action->setObjectName(name);
-                action->setCheckable(true);
-                action->setChecked(column.required == required);
-                action->setActionGroup(answers);
-                if (!nullable_why.isEmpty())
-                    action->setToolTip(nullable_why);
-                connect(action, &QAction::triggered, this, [this, hit, now = column.required, required]
-                        {
+            auto *action = menu.addAction(label);
+            action->setObjectName(name);
+            action->setCheckable(true);
+            action->setChecked(column.required == required);
+            action->setActionGroup(answers);
+            if (!nullable_why.isEmpty())
+                action->setToolTip(nullable_why);
+            connect(action, &QAction::triggered, this, [this, hit, now = column.required, required]
+                    {
                 if (now != required) toggle_schema_constraint(hit, SchemaView::Constraint::Nullability); });
-            };
-            answer("NULL — may be empty", "schemaRuleNull", false);
-            answer("NOT NULL — required", "schemaRuleNotNull", true);
-            menu.addSeparator();
-            entry("UNIQUE — no duplicate values", "schemaRuleUnique", column.unique, SchemaView::Constraint::Unique,
-                  unique_why);
-            entry("IDENTITY — auto-generated number", "schemaRuleIdentity", column.auto_increment,
-                  SchemaView::Constraint::AutoIncrement, identity_why);
-            return;
-        }
-        // Nullability is the one that always says which way it went, so it reads
-        // as the state it is in rather than as a box that happens to be empty.
-        entry(column.required ? "NOT NULL" : "NULL — may be empty", "schemaRuleNotNull",
-              column.required, SchemaView::Constraint::Nullability, nullable_why);
-        entry("UNIQUE", "schemaRuleUnique", column.unique, SchemaView::Constraint::Unique, unique_why);
-        entry("IDENTITY", "schemaRuleIdentity", column.auto_increment,
+        };
+        answer("NULL — may be empty", "schemaRuleNull", false);
+        answer("NOT NULL — required", "schemaRuleNotNull", true);
+        menu.addSeparator();
+        entry("UNIQUE — no duplicate values", "schemaRuleUnique", column.unique, SchemaView::Constraint::Unique,
+              unique_why);
+        entry("IDENTITY — auto-generated number", "schemaRuleIdentity", column.auto_increment,
               SchemaView::Constraint::AutoIncrement, identity_why);
     }
 
@@ -7581,6 +8491,94 @@ namespace erdflow::desktop
             return;
         }
         }
+    }
+
+    // One of the canvas's own key actions for this row, taken from the menu the
+    // row offers and done exactly as choosing it there does; false where the
+    // row offers no such action.
+    bool MainWindow::trigger_schema_key_action(const SchemaColumnRef &handle, const char *name)
+    {
+        const auto where = schema_->locate(handle);
+        if (!where)
+            return false;
+        QMenu offered;
+        populate_schema_key_actions(offered, {where->first, where->second, QCursor::pos()});
+        auto *action = offered.findChild<QAction *>(name);
+        if (!action)
+            return false;
+        action->trigger();
+        return true;
+    }
+
+    void MainWindow::press_schema_primary_key(const SchemaColumnRef &handle)
+    {
+        if (!trigger_schema_key_action(handle, "schemaPrimaryKey"))
+            statusBar()->showMessage("The conversion made this column, so there is nothing behind it "
+                                     "to change.",
+                                     12000);
+    }
+
+    void MainWindow::press_schema_foreign_key(const SchemaColumnRef &handle, QPoint at)
+    {
+        const auto where = schema_->locate(handle);
+        if (!where)
+            return;
+        const auto &tables = schema_->preview().tables;
+        const auto &now = tables[where->first].columns[where->second];
+        if (now.foreign_key)
+        {
+            // Taken off as the row's own menu takes it off.
+            if (!trigger_schema_key_action(handle, "schemaRemoveForeignKey"))
+                statusBar()->showMessage("This column is the relationship's key. It goes when "
+                                         "the relationship does.",
+                                         12000);
+            return;
+        }
+        const auto &holder = tables[where->first];
+        if (!holder.origin || !std::holds_alternative<domain::RelationId>(*holder.origin) || !now.added)
+        {
+            statusBar()->showMessage("In a schema worked out from a diagram, a foreign key comes "
+                                     "from a relationship: draw one on the diagram.",
+                                     12000);
+            return;
+        }
+        // Put on as a line drawn from the chosen key onto
+        // this row puts one on (Stage 5): checked first,
+        // asked about, never retyping anything.
+        QMenu targets(this);
+        targets.setObjectName("schemaColumnReferenceMenu");
+        for (std::size_t other_at = 0; other_at < tables.size(); ++other_at)
+        {
+            const auto &other = tables[other_at];
+            if (!other.origin || !std::holds_alternative<domain::RelationId>(*other.origin))
+                continue;
+            const auto rows = primary_key_rows(other);
+            if (rows.size() != 1 || !other.columns[rows.front()].added)
+                continue;
+            if (other_at == where->first && rows.front() == where->second)
+                continue;
+            auto *choice = targets.addAction(
+                QString("%1.%2").arg(text(other.name), text(other.columns[rows.front()].name)));
+            connect(choice, &QAction::triggered, this,
+                    [this, handle, other_at, row = rows.front(), at]
+                    {
+                        const auto here = schema_->locate(handle);
+                        if (!here)
+                            return;
+                        const auto before = editor_.revision();
+                        link_schema_rows(SchemaView::Linked{other_at, row, here->first, here->second, at});
+                        if (editor_.revision() != before)
+                            schema_->choose(ChosenColumn{handle});
+                    });
+        }
+        if (targets.isEmpty())
+        {
+            statusBar()->showMessage("A foreign key points at a table's primary key, and no other "
+                                     "table has one of a single column yet.",
+                                     12000);
+            return;
+        }
+        targets.exec(at);
     }
 
     void MainWindow::populate_schema_key_actions(QMenu &menu, const SchemaView::Spot &spot)
@@ -8332,7 +9330,7 @@ namespace erdflow::desktop
             // There is no diagram to go back to, so nothing offers to go back to
             // one; and the narrowing by where a table came from has nothing to
             // narrow, since every table came from here.
-            for (const char *name : {"schemaFull", "schemaClose", "previewSchema"})
+            for (const char *name : {"schemaFull", "schemaClose"})
                 if (auto *widget = findChild<QWidget *>(name))
                     widget->setVisible(!first);
             if (schema_narrowing_)
@@ -8344,8 +9342,12 @@ namespace erdflow::desktop
             if (schema_panel_)
                 if (auto *grip = schema_panel_->findChild<QWidget *>("schemaGrip", Qt::FindDirectChildrenOnly))
                     grip->setVisible(!first);
+            // Conceptual is half of the switch in either kind of project (Zain,
+            // 2026-10-08): the preview in a schema drawn by hand, the design in
+            // front in a diagram's row. The switch as a whole is put away where
+            // it does not belong.
             if (auto *widget = findChild<QWidget *>("previewConceptual"))
-                widget->setVisible(first);
+                widget->setVisible(true);
             if (!first)
                 show_conceptual(false);
             // Its tools are up in the header while it is drawn by hand, and the
@@ -8354,6 +9356,7 @@ namespace erdflow::desktop
             // the Design menu as well as in the preview's bar.
             if (schema_top_tools_)
                 schema_top_tools_->setVisible(first);
+            wear_schema_header_for_tab();
             wear_schema_first_header(first);
             wear_schema_panels(first);
             if (document_label_ && !first)
@@ -8381,6 +9384,11 @@ namespace erdflow::desktop
                     std::min(document_label_->fontMetrics().horizontalAdvance(document_label_->text()) + 4, 140));
             }
             // Relational Design is the whole of it until the schema is converted.
+            // The ribbon is told at once, rather than when the schema has risen
+            // to the whole window, so the diagram's drawing tools never show
+            // over a project that has no diagram to draw on.
+            if (ribbon_)
+                ribbon_->set_schema_in_front(true);
             if (!schema_open_ || !schema_full_)
                 open_schema(true);
             // Another project that starts from its schema puts the preview away,
@@ -8397,6 +9405,9 @@ namespace erdflow::desktop
         // schema open beneath it. A different project altogether puts the schema
         // away, as a new diagram has it.
         set_schema_full(false);
+        // Placed even where the schema had not yet risen to the whole window,
+        // so the header between the panels is shown or put away as it should be.
+        place_workspace_identity(false);
         if (!same)
             show_schema(false);
     }
@@ -8452,6 +9463,7 @@ namespace erdflow::desktop
         rise->start(QAbstractAnimation::DeleteWhenStopped);
         if (auto *button = findChild<QPushButton *>("previewConceptual"))
             button->setChecked(shown);
+        wear_workspace_switch();
     }
 
     // The diagram the schema becomes, worked out by the same rules and from the
@@ -8784,7 +9796,12 @@ namespace erdflow::desktop
         auto *header = findChild<QWidget *>("workspaceHeader");
         if (!header)
             return;
+        // A schema drawn by hand is never a diagram in front, so its header has
+        // its Home, switch and title from the start rather than once the schema
+        // has risen to the whole window.
         lay_header_over_panels(first);
+        if (first)
+            place_workspace_identity(true);
         for (const char *named : {"schemaModeSwitch", "schemaTitleRule", "renameDocument", "schemaTitleRoom",
                                   "schemaHistoryRule"})
             if (auto *widget = header->findChild<QWidget *>(QLatin1String(named)))
@@ -8859,9 +9876,13 @@ namespace erdflow::desktop
             header_dock_->hide();
             std::erase_if(hidden_for_home_, [this](const auto &dock)
                           { return dock == header_dock_; });
+            // Put back hidden: it still wears what it wore over the panels, and
+            // shown between them like that it would squeeze them. Whether it
+            // shows there is decided with where Home, the switch and the title
+            // go (place_workspace_identity), which always follows.
+            header->hide();
             workspace_layout_->insertWidget(0, header);
             header->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
-            header->show();
         }
     }
 
@@ -9510,7 +10531,7 @@ namespace erdflow::desktop
                         }
                     }
                     if (!menu.actions().isEmpty()) menu.addSeparator();
-                    populate_schema_rules(menu, {where->first, where->second}, true);
+                    populate_schema_rules(menu, {where->first, where->second});
                     menu.exec(at); });
                     across->addWidget(rules);
                     rows->addWidget(card);
@@ -9916,22 +10937,6 @@ namespace erdflow::desktop
                                 toggle_schema_constraint(SchemaView::Constrained{where->first, where->second}, which);
                         };
                     };
-                    // One of the canvas's own key actions for this row, taken from
-                    // the menu the row offers and done exactly as choosing it there
-                    // does; false where the row offers no such action.
-                    const auto key_action = [this, handle](const char *name)
-                    {
-                        const auto where = schema_->locate(handle);
-                        if (!where)
-                            return false;
-                        QMenu offered;
-                        populate_schema_key_actions(offered, {where->first, where->second, QCursor::pos()});
-                        auto *action = offered.findChild<QAction *>(name);
-                        if (!action)
-                            return false;
-                        action->trigger();
-                        return true;
-                    };
                     const auto primary_rows = primary_key_rows(table);
                     const bool linked = column.foreign_key && !column.origin && !column.added;
                     rule_row("Primary Key", QIcon(primary_key_mark(18, devicePixelRatioF(), colourless(theme_))),
@@ -9940,80 +10945,14 @@ namespace erdflow::desktop
                                                                          : "It becomes a key on the diagram too, and is made required.")
                              : column.added ? QString()
                                             : QString("The conversion made this column, so there is nothing behind it to change."),
-                             [this, key_action]
-                             {
-                                 if (!key_action("schemaPrimaryKey"))
-                                     statusBar()->showMessage("The conversion made this column, so there is nothing behind it "
-                                                              "to change.",
-                                                              12000);
-                             });
+                             [this, handle]
+                             { press_schema_primary_key(handle); });
                     rule_row("Foreign Key", inked("link", colors.accent, 18), "Foreign Key",
                              "References a column in another table", column.foreign_key,
                              column.foreign_key ? QString("Take the foreign key off.")
                                                 : QString("Choose the key it is to reference."),
-                             [this, key_action, handle]
-                             {
-                                 const auto where = schema_->locate(handle);
-                                 if (!where)
-                                     return;
-                                 const auto &tables = schema_->preview().tables;
-                                 const auto &now = tables[where->first].columns[where->second];
-                                 if (now.foreign_key)
-                                 {
-                                     // Taken off as the row's own menu takes it off.
-                                     if (!key_action("schemaRemoveForeignKey"))
-                                         statusBar()->showMessage("This column is the relationship's key. It goes when "
-                                                                  "the relationship does.",
-                                                                  12000);
-                                     return;
-                                 }
-                                 const auto &holder = tables[where->first];
-                                 if (!holder.origin || !std::holds_alternative<domain::RelationId>(*holder.origin) || !now.added)
-                                 {
-                                     statusBar()->showMessage("In a schema worked out from a diagram, a foreign key comes "
-                                                              "from a relationship: draw one on the diagram.",
-                                                              12000);
-                                     return;
-                                 }
-                                 // Put on as a line drawn from the chosen key onto
-                                 // this row puts one on (Stage 5): checked first,
-                                 // asked about, never retyping anything.
-                                 const auto at = QCursor::pos();
-                                 QMenu targets(this);
-                                 targets.setObjectName("schemaColumnReferenceMenu");
-                                 for (std::size_t other_at = 0; other_at < tables.size(); ++other_at)
-                                 {
-                                     const auto &other = tables[other_at];
-                                     if (!other.origin || !std::holds_alternative<domain::RelationId>(*other.origin))
-                                         continue;
-                                     const auto rows = primary_key_rows(other);
-                                     if (rows.size() != 1 || !other.columns[rows.front()].added)
-                                         continue;
-                                     if (other_at == where->first && rows.front() == where->second)
-                                         continue;
-                                     auto *choice = targets.addAction(
-                                         QString("%1.%2").arg(text(other.name), text(other.columns[rows.front()].name)));
-                                     connect(choice, &QAction::triggered, this,
-                                             [this, handle, other_at, row = rows.front(), at]
-                                             {
-                                                 const auto here = schema_->locate(handle);
-                                                 if (!here)
-                                                     return;
-                                                 const auto before = editor_.revision();
-                                                 link_schema_rows(SchemaView::Linked{other_at, row, here->first, here->second, at});
-                                                 if (editor_.revision() != before)
-                                                     schema_->choose(ChosenColumn{handle});
-                                             });
-                                 }
-                                 if (targets.isEmpty())
-                                 {
-                                     statusBar()->showMessage("A foreign key points at a table's primary key, and no other "
-                                                              "table has one of a single column yet.",
-                                                              12000);
-                                     return;
-                                 }
-                                 targets.exec(at);
-                             });
+                             [this, handle]
+                             { press_schema_foreign_key(handle, QCursor::pos()); });
                     const auto nullable_tip = column.primary_key ? QString("A primary key can never be empty.")
                                               : linked           ? QString("This says whether the side it points at is total, on the diagram too.")
                                                                  : QString();
@@ -10455,6 +11394,12 @@ namespace erdflow::desktop
             schema_table_->setChecked(tool == SchemaTool::Table);
             schema_connect_->setChecked(tool == SchemaTool::Connect);
         }
+        if (schema_pan_)
+        {
+            const QSignalBlocker quiet_pan(schema_pan_);
+            schema_pan_->setChecked(tool == SchemaTool::Pan);
+        }
+        refresh_schema_pan_button();
         // A locked tool is marked on its button, as the diagram's are, since
         // nothing else would explain why it does not go down after one use.
         const bool table_locked = tool == SchemaTool::Table && schema_tool_locked_;
@@ -10470,6 +11415,8 @@ namespace erdflow::desktop
                                           "column there that is to hold it. Double-click to lock Connect for drawing several.");
         if (schema_)
         {
+            // Pan first, so the tool taken up after it leaves its own pointer.
+            schema_->set_panning(tool == SchemaTool::Pan);
             schema_->set_connecting(tool == SchemaTool::Connect);
             schema_->set_placing(tool == SchemaTool::Table);
             if (tool != SchemaTool::Select)
@@ -10481,6 +11428,9 @@ namespace erdflow::desktop
             statusBar()->showMessage(schema_connect_->toolTip(), 8000);
         if (tool != was && tool == SchemaTool::Table)
             statusBar()->showMessage(schema_table_->toolTip(), 8000);
+        if (tool != was && tool == SchemaTool::Pan)
+            statusBar()->showMessage("Drag to move around the schema. Double-click Pan to lock it for a longer look around.",
+                                     8000);
     }
 
     // The schema's rule for a press elsewhere is the diagram's (Zain,
@@ -10510,27 +11460,80 @@ namespace erdflow::desktop
     void MainWindow::fit_schema_header_words()
     {
         if (!schema_header_ || !schema_top_tools_ || !schema_top_tools_->isVisible())
+        {
+            // Only the header of a schema drawn by hand is crowded; anywhere
+            // else the corner's two keep their words.
+            for (auto *button : {header_model_, header_theme_})
+                if (button && button->parentWidget() != conceptual_corner_ &&
+                    button->toolButtonStyle() != Qt::ToolButtonTextBesideIcon)
+                    button->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
             return;
+        }
         auto *header = schema_header_.data();
+        const auto words_of = [](QToolButton *button)
+        {
+            auto *shrinking = dynamic_cast<HeaderToolButton *>(button);
+            return shrinking ? shrinking->width_with_words() - shrinking->width_without_words() : 0;
+        };
+        // Words are given up in turn (Zain, 2026-10-07): the schema's own
+        // tools first, and the corner's Model and Theme last, so a narrow
+        // window keeps every control in sight. Undo and Redo keep theirs.
+        // Measured against the window as well as the header, since the header
+        // lies across the whole window and is never wider than it can be seen.
         int words = 0;
         for (auto *button : schema_header_words_)
-            if (auto *shrinking = dynamic_cast<HeaderToolButton *>(button))
-                words += shrinking->width_with_words() - shrinking->width_without_words();
-        const auto shown = header->width() >= header->minimumSizeHint().width() + words
-                               ? Qt::ToolButtonTextBesideIcon
-                               : Qt::ToolButtonIconOnly;
-        for (auto *button : schema_header_words_)
-            if (button->toolButtonStyle() != shown)
+            words += words_of(button);
+        int corner = 0;
+        for (auto *button : {header_model_, header_theme_})
+            if (button)
+                corner += words_of(button);
+        const auto room = std::min(header->width(), width()) - header->minimumSizeHint().width();
+        const auto worded = [](bool fits) { return fits ? Qt::ToolButtonTextBesideIcon : Qt::ToolButtonIconOnly; };
+        const auto apply = [](QToolButton *button, Qt::ToolButtonStyle shown)
+        {
+            if (button && button->toolButtonStyle() != shown)
                 button->setToolButtonStyle(shown);
+        };
+        for (auto *button : schema_header_words_)
+            apply(button, worded(room >= words + corner));
+        for (auto *button : {header_model_, header_theme_})
+            apply(button, worded(room >= corner));
+    }
+
+    ExportView MainWindow::export_view() const
+    {
+        return editor_.project().schema.standalone || schema_full_ ? schema_->export_view() : ExportView(*canvas_);
+    }
+
+    bool MainWindow::export_available(ExportTarget target) const
+    {
+        if (showing_home())
+            return false;
+        const auto &project = editor_.project();
+        const bool drawing = !canvas_->diagram_bounds().isEmpty();
+        const bool listing = !project.entities.empty() || !project.attributes.empty() ||
+                             !project.relationships.empty();
+        if (target == ExportTarget::Project)
+            return listing || !project.specializations.empty() || !project.notes.empty() ||
+                   !project.pictures.empty() || !project.comments.empty() || !project.schema.relations.empty();
+        // Both the listing and drawing come from the active workspace.
+        // Neither the project path nor dirty state is an export prerequisite.
+        if (project.schema.standalone || schema_full_)
+            return schema_ && !schema_->preview().tables.empty();
+        switch (target)
+        {
+        case ExportTarget::Document: return listing;
+        case ExportTarget::Picture: return drawing;
+        case ExportTarget::Options: return drawing || listing;
+        case ExportTarget::Project: break;
+        }
+        return false;
     }
 
     void MainWindow::refresh_export_actions()
     {
-        // Nothing drawn is nothing to hand on. The entries stay where they are and
-        // go quiet, rather than the row appearing and disappearing as work starts.
-        const auto anything = !canvas_->diagram_bounds().isEmpty();
-        for (auto *action : export_actions_)
-            action->setEnabled(anything);
+        for (const auto &[action, target] : export_actions_)
+            action->setEnabled(export_available(target));
     }
 
     // The template is a starting frame, not a worked example (Zain, 2026-09-26):
