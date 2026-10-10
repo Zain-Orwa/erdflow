@@ -15,6 +15,7 @@
 #include "schema_view.hpp"
 #include "application/project_store.hpp"
 
+#include <QColor>
 #include <QMainWindow>
 #include <QPointF>
 #include <QIcon>
@@ -59,6 +60,10 @@ namespace erdflow::desktop
         bool open_path(const QString &path);
         // Applies a theme to the window and its canvas, and remembers it.
         void set_theme(ThemeId id);
+        // The gold of the padlock a locked tool's button wears, or its grey where
+        // the theme has no colour. Public so a test can look for the padlock in
+        // what the button draws rather than take the lock's word for it.
+        [[nodiscard]] static QColor tool_lock_ink(bool colourless);
         // Which of the two pages is in front. The home screen is where the
         // application starts; the workspace is where the work is. Public because
         // starting a project moves between them, and because a test has no other
