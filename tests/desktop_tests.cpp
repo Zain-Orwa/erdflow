@@ -74,6 +74,7 @@
 #include <QTimer>
 #include <QToolBar>
 #include <QWheelEvent>
+#include <QTest>
 #include <QToolButton>
 #include <QTreeView>
 
@@ -81,6 +82,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <limits>
+#include <functional>
 #include <map>
 #include <set>
 #include <stdexcept>
@@ -4537,6 +4539,109 @@ namespace
             model.mark_saved(model.revision());
         }
     }
+
+    // File, Home and Settings are the window's only top navigation (Zain,
+    // 2026-10-10; ADR-022 section 9.1). Where the menu bar is not the system's
+    // it is put away, and every command it carried still answers its keys:
+    // the same commands, given to the window as well, on Home and in both
+    // workspaces. Where the system owns the bar it is left to the system.
+    void menu_bar_shortcut_tests(infrastructure::QtIdGenerator &ids)
+    {
+        application::Editor editor(ids);
+        infrastructure::ErdxProjectStore store;
+        desktop::MainWindow window(editor, store, ids);
+        window.show();
+        window.activateWindow();
+        settle();
+        auto *bar = window.menuBar();
+        if (bar->isNativeMenuBar())
+        {
+            require(!bar->isHidden(), "Where the system owns the menu bar, it keeps its menus");
+            return;
+        }
+        require(bar->isHidden(), "A menu bar that is not the system's is not shown inside the window");
+
+        // Every command the bar carries with a key, each once, though some are
+        // in two of its menus.
+        std::vector<QAction *> keyed;
+        const std::function<void(QMenu *)> gather = [&](QMenu *menu)
+        {
+            for (auto *action : menu->actions())
+                if (action->menu())
+                    gather(action->menu());
+                else if (!action->shortcuts().isEmpty() &&
+                         std::find(keyed.begin(), keyed.end(), action) == keyed.end())
+                    keyed.push_back(action);
+        };
+        for (auto *top : bar->actions())
+            if (top->menu())
+                gather(top->menu());
+        for (const char *wanted : {"Ctrl+N", "Ctrl+O", "Ctrl+Shift+S", "Ctrl+Shift+E", "Ctrl+Shift+C",
+                                   "Ctrl+Shift+I", "Ctrl+Shift+H", "Ctrl+D", "Ctrl+F", "Ctrl+Shift+=",
+                                   "Ctrl+Shift+-", "Ctrl+1", "Ctrl++", "Ctrl+-", "Ctrl+Shift+M",
+                                   "Ctrl+S", "Ctrl+Z", "Ctrl+Y", "Ctrl+R", "Ctrl+0"})
+            require(std::any_of(keyed.begin(), keyed.end(), [&](QAction *action)
+                                { return action->shortcuts().contains(QKeySequence(QString::fromLatin1(wanted))); }),
+                    "Each key the menu bar's commands answer is among them");
+        for (auto *action : keyed)
+            require(window.actions().contains(action), "The window carries the menu bar's own command, not a copy");
+
+        // A key is heard, and stopped, at the command it belongs to: the
+        // command is not carried out, since many of them open a dialog. One
+        // that cannot act yet is let act for the moment of the test, as it
+        // would once there was something to act on.
+        struct Listener final : QObject
+        {
+            std::map<QObject *, int> heard;
+            bool eventFilter(QObject *watched, QEvent *event) override
+            {
+                if (event->type() != QEvent::Shortcut)
+                    return false;
+                if (!static_cast<QShortcutEvent *>(event)->isAmbiguous())
+                    ++heard[watched];
+                return true;
+            }
+        } listener;
+        const auto every_key_answers = [&](const char *where)
+        {
+            window.activateWindow();
+            settle();
+            for (auto *action : keyed)
+            {
+                if (!action->isVisible())
+                    continue;
+                const bool enabled = action->isEnabled();
+                action->setEnabled(true);
+                action->installEventFilter(&listener);
+                for (const auto &key : action->shortcuts())
+                {
+                    listener.heard.clear();
+                    QTest::keySequence(&window, key);
+                    if (listener.heard[action] != 1)
+                        throw std::runtime_error(action->text().remove('&').toStdString() + " does not answer " +
+                                                 key.toString().toStdString() + " " + where +
+                                                 " with the menu bar put away");
+                }
+                action->removeEventFilter(&listener);
+                action->setEnabled(enabled);
+            }
+        };
+        require(window.showing_home(), "The window opens on Home");
+        every_key_answers("on Home");
+        window.show_home(false);
+        settle();
+        require(child<QAction>(window, "tabFile")->isVisible() && child<QAction>(window, "tabHome")->isVisible() &&
+                    child<QAction>(window, "tabSettings")->isVisible(),
+                "File, Home and Settings stand at the top of the work");
+        for (auto *menus : window.findChildren<QMenuBar *>())
+            require(!menus->isVisible(), "And no row of menus stands above them");
+        every_key_answers("in the Conceptual workspace");
+        window.open_schema(true);
+        settle();
+        for (auto *menus : window.findChildren<QMenuBar *>())
+            require(!menus->isVisible(), "Nor above the schema");
+        every_key_answers("in the Schema workspace");
+    }
 }
 
 int main(int argc, char **argv)
@@ -4590,6 +4695,8 @@ int main(int argc, char **argv)
             std::cout << "Relational Design desktop tests passed\n";
             return 0;
         }
+        if (whole || window_part)
+            menu_bar_shortcut_tests(ids);
         application::Editor editor(ids);
         infrastructure::ErdxProjectStore project_store;
         desktop::MainWindow window(editor, project_store, ids);
@@ -4669,8 +4776,10 @@ int main(int argc, char **argv)
                     "The model tools belong to the work, so they wait behind it");
             for (auto *bar : window.findChildren<QToolBar *>())
                 require(!bar->isVisible(), "No ribbon row stands over the home screen");
-            require(window.menuBar()->isVisible() || window.menuBar()->isNativeMenuBar(),
-                    "The native menu bar stays, so Home is never without its menus");
+            // Where the system owns the menu bar its menus stay there; anywhere
+            // else no second row of menus stands in the window (Zain, 2026-10-10).
+            require(window.menuBar()->isNativeMenuBar() ? !window.menuBar()->isHidden() : !window.menuBar()->isVisible(),
+                    "The system's menu bar stays where it has one, and no other is shown");
             auto *brand_bar = home->top_bar();
             require(brand_bar->isVisible(), "Home's slim bar is in the ribbon's place");
             require(brand_bar->theme_button()->menu() == window.findChild<QMenu *>("themeMenu"),
