@@ -242,6 +242,17 @@ distinct:
 | **Home menu** | The native menu between File and Edit: application navigation and common starting actions |
 | **Home tab** | The ribbon tab holding the modelling tools of the open workspace |
 
+**Superseded in part, 2026-10-10 (Zain).** The window's only top navigation
+is the ribbon's `File · Home · Settings`. Where the operating system owns the
+menu bar, as on macOS, the menu bar above stays there, outside the window.
+Where Qt's menu bar is not native, as on Windows and Linux, it is not shown:
+it would be a second row of menus inside the window, above File · Home ·
+Settings. Its commands are not removed. Each is reachable from File, Home,
+Settings, the workspace header, the canvas or the Home screen, and the same
+`QAction`s are also given to the window, so every keyboard shortcut still
+works with the bar hidden. There is no Alt-to-reveal. The decision follows
+the bar being native or not, never the platform's name.
+
 ### 9.2 `SQL First` is visible but disabled, like `Relational Design First`
 
 The same product-safety principle as §5 applies: a route is enabled only when
@@ -462,6 +473,8 @@ control. Its menus are the window's own, not copies. Settings holds Theme,
 Icons and Notation. The alternative, an in-window bar with its own File,
 Home, Insert… buttons replacing the native menus, was rejected. It would show
 the menus twice on macOS and make them non-native elsewhere.
+*Superseded in part, 2026-10-10:* a menu bar that is not native is no longer
+shown inside the window; see the note under §9.1.
 
 Consequences recorded with it:
 

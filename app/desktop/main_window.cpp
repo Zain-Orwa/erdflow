@@ -1807,6 +1807,30 @@ namespace erdflow::desktop
         { wear_schema_header_for_tab(); };
         dress_ribbon();
         wire_home();
+        // File, Home and Settings are the window's only top navigation (Zain,
+        // 2026-10-10; ADR-022 section 9.1). Where the system owns the menu bar,
+        // as on macOS, the menus stay there, outside the window. Elsewhere the
+        // bar would be a second row of menus inside the window, above the
+        // ribbon, so it is put away -- after its commands are given to the
+        // window as well, since a command's shortcut is heard only while
+        // something showing carries it, and most are carried by the bar alone.
+        if (!menuBar()->isNativeMenuBar())
+        {
+            const std::function<void(QMenu *)> carry = [&](QMenu *menu)
+            {
+                for (auto *action : menu->actions())
+                {
+                    if (action->menu())
+                        carry(action->menu());
+                    else if (!action->shortcuts().isEmpty())
+                        addAction(action);
+                }
+            };
+            for (auto *top : menuBar()->actions())
+                if (top->menu())
+                    carry(top->menu());
+            menuBar()->hide();
+        }
         // Which field a picked character goes into is decided by where the caret
         // was, so the last text field written in is remembered as focus moves.
         connect(qApp, &QApplication::focusChanged, this, [this](QWidget *was, QWidget *now)

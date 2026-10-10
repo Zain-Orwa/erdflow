@@ -186,8 +186,11 @@ if(BUILD_TESTING)
     add_executable(theme_tests tests/theme_tests.cpp)
     target_link_libraries(theme_tests PRIVATE erdflow_canvas erdflow_warnings)
     add_test(NAME theme COMMAND theme_tests)
+    # Qt Test is used only to press keys the way a keyboard does, so a
+    # shortcut is heard through the window's own shortcut map.
+    find_package(Qt6 REQUIRED COMPONENTS Test)
     add_executable(desktop_tests tests/desktop_tests.cpp)
-    target_link_libraries(desktop_tests PRIVATE erdflow_desktop erdflow_infrastructure erdflow_warnings)
+    target_link_libraries(desktop_tests PRIVATE erdflow_desktop erdflow_infrastructure erdflow_warnings Qt6::Test)
     # The desktop suite runs as four parts, each a process with its own
     # timeout, rather than as one that had grown to within a few seconds of
     # its limit in Debug (2026-10-09). Together they are the whole suite;
