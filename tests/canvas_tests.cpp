@@ -346,7 +346,10 @@ void entity_to_entity_creates_a_relationship_tests() {
         // which is what keeps two readings of one pair side by side.
         const auto between = QPointF(second.center().x() - first.center().x(),
                                      second.center().y() - first.center().y());
-        const QPointF stepped(second_body.x - first_body.x, second_body.y - first_body.y);
+        // Centre to centre: the first was widened for its name, about its
+        // centre, so its corner is no longer where the second's is measured from.
+        const QPointF stepped(second_body.x + second_body.width / 2 - (first_body.x + first_body.width / 2),
+                              second_body.y + second_body.height / 2 - (first_body.y + first_body.height / 2));
         const auto along = QPointF::dotProduct(stepped, between) / std::hypot(between.x(), between.y());
         require(std::abs(along) < 1.0, "It steps across the line joining the entities, not along it");
         require(std::hypot(stepped.x(), stepped.y()) > first_body.height, "And far enough to stand clear");
@@ -2292,7 +2295,7 @@ void notation_tests() {
     require(view.notation() == desktop::Notation::CrowsFoot, "Crow's foot is the default notation");
     // An attribute is sized by hand as an entity is: a name that will not fit
     // the default has to be able to be given room.
-    require(desktop::entity_body.width == 148 && desktop::entity_body.height == 86,
+    require(desktop::entity_body.width == 133 && desktop::entity_body.height == 77,
             "The entity's default is the one that was settled on");
 
     const auto render = [&] {
@@ -3659,7 +3662,8 @@ void relationship_resize_tests() {
     click(view, {0, 0});
     const domain::ElementRef ref{editor.project().relationships.begin()->first};
     const auto original = editor.project().layout.at(ref);
-    require(original.width == 190 && original.height == 110, "The relationship default is unchanged");
+    require(original.width == desktop::relationship_body.width && original.height == desktop::relationship_body.height,
+            "Placed at the relationship default");
     require(editor.rename(ref, "Owns"), "Name the diamond");
     const auto id = std::get<domain::RelationshipId>(ref);
     require(editor.connect(id, std::get<domain::EntityId>(first)), "Connect the first entity");
@@ -3708,8 +3712,10 @@ void relationship_resize_tests() {
     };
     check_drawing();
     // Corners first, then edges, matching the existing entity handles.
-    const std::array<QPointF, 8> grips{{{2, 2}, {188, 2}, {188, 108}, {2, 108},
-                                      {95, 2}, {188, 55}, {95, 108}, {2, 55}}};
+    const auto w = original.width;
+    const auto h = original.height;
+    const std::array<QPointF, 8> grips{{{2, 2}, {w - 2, 2}, {w - 2, h - 2}, {2, h - 2},
+                                      {w / 2, 2}, {w - 2, h / 2}, {w / 2, h - 2}, {2, h / 2}}};
     const std::array<QPoint, 8> travel{{{-30, -20}, {30, -20}, {30, 20}, {-30, 20},
                                       {0, -20}, {30, 0}, {0, 20}, {-30, 0}}};
     for (std::size_t handle = 0; handle < grips.size(); ++handle) {
@@ -3927,6 +3933,286 @@ void wheel_zoom_tests() {
 }
 } // namespace
 
+// A new entity, attribute or relationship is placed at its default and, named,
+// made just wide enough for its name (Zain, 2026-10-11). The width is measured
+// as the name is painted, from fonts that differ from machine to machine, so
+// what is checked is what is painted -- the whole name, inside its shape --
+// rather than any width in figures.
+void content_aware_size_tests() {
+    SequentialIds ids;
+    application::Editor editor(ids);
+    desktop::DiagramView view(editor);
+    view.resize(1400, 900);
+    view.show();
+    view.actual_size();
+    view.centerOn(0, 0);
+    QApplication::processEvents();
+    const auto is_entity = [](const domain::ElementRef& ref) { return std::holds_alternative<domain::EntityId>(ref); };
+    const auto is_relationship = [](const domain::ElementRef& ref) {
+        return std::holds_alternative<domain::RelationshipId>(ref);
+    };
+    const auto body_of = [&](const domain::ElementRef& ref) {
+        return is_entity(ref) ? desktop::entity_body
+             : is_relationship(ref) ? desktop::relationship_body : desktop::attribute_body;
+    };
+
+    // Placed with the tools, each is its default, whatever its placeholder.
+    {
+        const std::array<std::pair<desktop::Tool, QPointF>, 3> placing{
+            {{desktop::Tool::Entity, {-400, 0}},
+             {desktop::Tool::Relationship, {0, 0}},
+             {desktop::Tool::Attribute, {400, 0}}}};
+        for (const auto& [tool, at] : placing) {
+            const auto before = editor.project().layout;
+            view.set_tool(tool);
+            click(view, at);
+            require(editor.project().layout.size() == before.size() + 1, "An element placed with its tool");
+            for (const auto& [ref, box] : editor.project().layout)
+                if (!before.contains(ref))
+                    require(box.width == body_of(ref).width && box.height == body_of(ref).height,
+                            "Placed at its default: 133 x 77, 171 x 99 or 135 x 54");
+        }
+        require(desktop::entity_body.width == 133 && desktop::entity_body.height == 77
+                    && desktop::relationship_body.width == 171 && desktop::relationship_body.height == 99
+                    && desktop::attribute_body.width == 135 && desktop::attribute_body.height == 54,
+                "The defaults are the ones settled on");
+        require(editor.undo() && editor.undo() && editor.undo(), "Taken away again");
+        view.synchronize();
+    }
+
+    // What is painted of a name: the pixels in the name's own colour, in the
+    // shape's own coordinates.
+    const auto ink_of = [&](const QString& name) {
+        view.synchronize();
+        auto* node = find_node(view, name);
+        const auto box = node->boundingRect();
+        QImage painted(QSize(static_cast<int>(std::ceil(box.right())) + 1,
+                             static_cast<int>(std::ceil(box.bottom())) + 1),
+                       QImage::Format_ARGB32);
+        painted.fill(Qt::transparent);
+        QPainter painter(&painted);
+        node->paint(&painter, nullptr, nullptr);
+        painter.end();
+        const auto text = desktop::theme(view.theme_id()).node_text;
+        std::vector<QPoint> dots;
+        for (int y = 0; y < painted.height(); ++y)
+            for (int x = 0; x < painted.width(); ++x)
+                if (painted.pixelColor(x, y) == text) dots.emplace_back(x, y);
+        return dots;
+    };
+    const auto span = [](const std::vector<QPoint>& dots) {
+        QRect ink;
+        for (const auto& dot : dots) ink |= QRect(dot, QSize(1, 1));
+        return ink;
+    };
+    // The same name painted in a box far wider than any name, at the same
+    // lettering, so nothing of it can have been cut short there. A shape
+    // resized by hand letters its name by the smaller of its two changes from
+    // the size it was first resized from, so its height is set to keep that.
+    const auto whole_width = [&](const domain::ElementRef& ref, const QString& name) {
+        const auto at = editor.project().layout.at(ref);
+        const auto base = editor.project().lettering.find(ref);
+        const auto tall = base == editor.project().lettering.end()
+            ? at.height : domain::lettering_factor(base->second, at.width, at.height) * base->second.height;
+        const std::map<domain::ElementRef, domain::Rect> wide{{ref, {at.x, at.y, 1900, tall}}};
+        require(is_entity(ref) ? editor.resize_entities(wide)
+                : is_relationship(ref) ? editor.resize_relationships(wide) : editor.resize_attributes(wide),
+                "Drawn wide enough for any name");
+        const auto width = span(ink_of(name)).width();
+        require(editor.undo(), "And put back");
+        view.synchronize();
+        return width;
+    };
+    // The whole name is written, and every dot of it is inside the room the
+    // shape gives a name: 15 in from a box's or an oval's sides, the middle of
+    // a diamond and inside its outline, and inside an oval's second ring.
+    const auto written_whole_inside = [&](const domain::ElementRef& ref, const QString& name) {
+        const auto at = editor.project().layout.at(ref);
+        const auto dots = ink_of(name);
+        require(!dots.empty(), "The name is painted");
+        const auto painted = span(dots).width();
+        require(std::abs(painted - whole_width(ref, name)) <= 1, "The whole name is written, not cut short");
+        const auto half_w = at.width / 2;
+        const auto half_h = at.height / 2;
+        for (const auto& dot : dots) {
+            const auto x = std::abs(dot.x() + 0.5 - half_w);
+            const auto y = std::abs(dot.y() + 0.5 - half_h);
+            bool inside = false;
+            if (is_entity(ref))
+                inside = x <= half_w - 15 + 1 && y <= half_h;
+            else if (is_relationship(ref))
+                inside = x <= at.width * 0.28 + 1 && x / half_w + y / half_h <= 1;
+            else
+                inside = x <= half_w - 15 + 1
+                      && (x * x) / ((half_w - 5) * (half_w - 5)) + (y * y) / ((half_h - 5) * (half_h - 5)) <= 1;
+            require(inside, "Every letter is inside the room its shape gives a name");
+        }
+    };
+
+    // Named on the diagram: a short name keeps the default, a longer one is
+    // made just wide enough, and the height is never touched.
+    struct Named { QString name; bool short_name; };
+    const std::array<std::pair<int, std::vector<Named>>, 3> naming{{
+        {0, {{"User", true}, {"Student", false}, {"Professor", false}, {"Department", false}}},
+        {1, {{"Owns", true}, {"Manages", false}, {"Enrolled", false}, {"Enrolled In", false},
+             {"Qualified In", false}, {"Belongs To", false}, {"Works On", false}}},
+        {2, {{"ID", true}, {"Age", true}, {"Department Name", false}, {"Employee Number", false},
+             {"Date Of Birth", false}}},
+    }};
+    double y = -600;
+    for (const auto& [kind, names] : naming)
+        for (const auto& named : names) {
+            y += 130;
+            const domain::Rect box{-200, y, kind == 0 ? 133.0 : kind == 1 ? 171.0 : 135.0,
+                                   kind == 0 ? 77.0 : kind == 1 ? 99.0 : 54.0};
+            const auto made = kind == 0 ? editor.create_entity("Entity", box)
+                            : kind == 1 ? editor.create_relationship("Relationship", box)
+                                        : editor.create_attribute("Attribute", box);
+            require(made && made.created, "An element to name");
+            const auto ref = *made.created;
+            const auto revision = editor.revision();
+            require(view.rename(ref, named.name.toStdString()), "Named");
+            require(editor.revision() == revision + 1 && editor.undo_label() == "Rename element",
+                    "Naming it, widened or not, is one step of history");
+            const auto& at = editor.project().layout.at(ref);
+            require(at.height == box.height, "Its height is not touched");
+            require(at.width >= box.width, "It is never narrower than its default");
+            if (named.short_name) require(at.width == box.width, "A short name keeps the default width");
+            require(std::abs(at.x + at.width / 2 - (box.x + box.width / 2)) < 0.01 && at.y == box.y,
+                    "Widened about its centre, where it was put");
+            require(editor.project().lettering.empty(), "Its name is lettered as it was: nothing is kept for it");
+            written_whole_inside(ref, named.name);
+        }
+
+    // A longer name widens it again; a shorter one leaves it as wide as it
+    // is; and Undo takes the name and its width back together.
+    {
+        const auto ref = *editor.create_entity("User", {600, 0, 133, 77}).created;
+        require(view.rename(ref, "CustomerAccount"), "A longer name");
+        const auto grown = editor.project().layout.at(ref);
+        require(grown.width > 133, "Too long for the default, it is widened");
+        written_whole_inside(ref, "CustomerAccount");
+        require(view.rename(ref, "User"), "A shorter name again");
+        require(editor.project().layout.at(ref) == grown, "Which does not narrow it");
+        require(editor.undo(), "Undo the shorter name");
+        require(editor.project().layout.at(ref) == grown, "The width stays");
+        require(editor.undo(), "Undo the longer name");
+        require(editor.project().layout.at(ref) == (domain::Rect{600, 0, 133, 77})
+                    && domain::name(editor.project(), ref) == "User",
+                "Which takes its widening back with it");
+
+        // Typed into the name box on the diagram, as somebody names it.
+        view.synchronize();
+        view.begin_rename(ref);
+        auto* field = view.findChild<QLineEdit*>("inlineName");
+        require(view.renaming() && field != nullptr, "The name box is open");
+        field->setText("Department");
+        key_to(field, Qt::Key_Return);
+        require(domain::name(editor.project(), ref) == "Department", "Named in the box");
+        require(editor.project().layout.at(ref).width >= 133, "Never narrower than its default");
+        written_whole_inside(ref, "Department");
+
+        // Resized by hand, it keeps the size it was given, however long its
+        // name: nothing puts a name's width under a hand.
+        require(editor.resize_entities({{ref, {600, 0, 90, 77}}}), "Pulled narrower than its name");
+        view.synchronize();
+        require(editor.project().layout.at(ref).width == 90, "It keeps the width it was given");
+        require(view.rename(ref, "Departments"), "Renamed longer after that");
+        require(editor.project().layout.at(ref).width > 90 && editor.project().layout.at(ref).height == 77,
+                "Which widens it again, only as far as the new name needs");
+        written_whole_inside(ref, "Departments");
+        require(editor.resize_entities({{ref, {600, 0, 80, 60}}}), "And it can still be pulled smaller by hand");
+        require(editor.project().layout.at(ref) == (domain::Rect{600, 0, 80, 60}), "To exactly what it was given");
+    }
+
+    // A widened diamond is met by its lines where its outline now is.
+    {
+        const auto first = *editor.create_entity("Left", {-1400, 900, 133, 77}).created;
+        const auto second = *editor.create_entity("Right", {-800, 1100, 133, 77}).created;
+        const auto made = editor.create_relationship("Has", {-1100, 1000, 171, 99});
+        const auto id = std::get<domain::RelationshipId>(*made.created);
+        require(editor.connect(id, std::get<domain::EntityId>(first)), "Connect the first entity");
+        const auto pinned = editor.connect(id, std::get<domain::EntityId>(second));
+        require(pinned && editor.pin_connector(*pinned.participant, 0.65, -2.5), "Pin one line to its outline");
+        require(view.rename(*made.created, "Is Qualified In"), "A name that needs a wider diamond");
+        view.synchronize();
+        QApplication::processEvents();
+        auto* node = find_node(view, "Is Qualified In");
+        const auto box = node->sceneBoundingRect().adjusted(4, 4, -4, -4);
+        require(box.width() > 171 - 8 + 1, "The diamond was widened");
+        const auto target = find_node(view, "Left")->sceneBoundingRect().center();
+        auto automatic = target - box.center();
+        if (view.line_style() == desktop::LineStyle::Elbow)
+            automatic = std::abs(automatic.x()) / box.width() >= std::abs(automatic.y()) / box.height()
+                ? QPointF(automatic.x(), 0) : QPointF(0, automatic.y());
+        for (const auto direction : {automatic, QPointF(std::cos(0.65), std::sin(0.65))}) {
+            const auto divisor = std::abs(direction.x()) / (box.width() / 2)
+                               + std::abs(direction.y()) / (box.height() / 2);
+            const auto join = box.center() + direction / divisor;
+            bool attached = false;
+            for (auto* item : view.scene()->items())
+                if (item->zValue() < 0 && item->shape().contains(item->mapFromScene(join))) attached = true;
+            require(attached, "Each line, free or pinned, meets the widened diamond's outline");
+        }
+    }
+
+    // A relationship's name is lettered as an attribute's is: as large, and
+    // no smaller for standing in a diamond.
+    {
+        SequentialIds other_ids;
+        application::Editor other(other_ids);
+        other.create_relationship("Hold", {0, 0, 171, 99});
+        other.create_attribute("Bold", {0, 300, 135, 54});
+        desktop::DiagramView beside(other);
+        beside.resize(600, 600);
+        beside.show();
+        beside.synchronize();
+        QApplication::processEvents();
+        const auto height_of = [&](const QString& name) {
+            auto* node = find_node(beside, name);
+            QImage painted(node->boundingRect().size().toSize() + QSize(2, 2), QImage::Format_ARGB32);
+            painted.fill(Qt::transparent);
+            QPainter painter(&painted);
+            node->paint(&painter, nullptr, nullptr);
+            painter.end();
+            const auto text = desktop::theme(beside.theme_id()).node_text;
+            int top = painted.height(), bottom = -1;
+            for (int y = 0; y < painted.height(); ++y)
+                for (int x = 0; x < painted.width(); ++x)
+                    if (painted.pixelColor(x, y) == text) { top = std::min(top, y); bottom = std::max(bottom, y); }
+            return bottom - top + 1;
+        };
+        require(std::abs(height_of("Hold") - height_of("Bold")) <= 1,
+                "A relationship's name is as tall as an attribute's");
+    }
+    editor.mark_saved(editor.revision());
+}
+
+// A diagram is drawn at the sizes it was saved with: one whose names are too
+// long for their shapes is not fitted to them when it is opened.
+void saved_sizes_are_kept_tests() {
+    SequentialIds ids;
+    application::Editor editor(ids);
+    const auto entity = *editor.create_entity("A Far Longer Entity Name Than Fits", {0, 0, 90, 50}).created;
+    const auto relationship = *editor.create_relationship("Is Responsible For Teaching", {200, 0, 120, 60}).created;
+    const auto attribute = *editor.create_attribute("Date Of Registration In Full", {0, 200, 80, 44}).created;
+    require(editor.resize_attributes({{attribute, {0, 200, 70, 44}}}), "One of them resized by hand");
+    const auto layout = editor.project().layout;
+    const auto lettering = editor.project().lettering;
+    const auto revision = editor.revision();
+    desktop::DiagramView view(editor);
+    view.resize(800, 600);
+    view.show();
+    view.fit_diagram();
+    view.synchronize();
+    QApplication::processEvents();
+    require(editor.revision() == revision, "Drawing the diagram edits nothing");
+    require(editor.project().layout == layout && editor.project().lettering == lettering,
+            "Every shape is the size it was saved at");
+    require(editor.project().layout.at(entity).width == 90 && editor.project().layout.at(relationship).width == 120,
+            "However short that is for its name");
+}
+
 int main(int argc, char** argv) {
     QApplication app(argc, argv);
     try {
@@ -4121,6 +4407,8 @@ int main(int argc, char** argv) {
         wheel_zoom_tests();
         entity_resize_tests();
         relationship_resize_tests();
+        content_aware_size_tests();
+        saved_sizes_are_kept_tests();
         attribute_resize_tests();
         std::cout << "Canvas tests passed\n";
     } catch (const std::exception& exception) {

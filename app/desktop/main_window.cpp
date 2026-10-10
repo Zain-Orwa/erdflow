@@ -4905,7 +4905,7 @@ namespace erdflow::desktop
                 {
         if (refreshing_ || !exists(editor_.project(), ref)) return;
         const auto value = bytes(name_edit->text());
-        if (value != name(editor_.project(), ref)) show_result(editor_.rename(ref, value)); });
+        if (value != name(editor_.project(), ref)) show_result(canvas_->rename(ref, value)); });
         layout->addLayout(form);
         // The same lock the element's right-click menu offers (Zain, 2026-09-26):
         // while it is on, every attribute placed is attached to this. Kept near
@@ -6727,7 +6727,7 @@ namespace erdflow::desktop
         const auto value = QInputDialog::getText(this, "Rename " + kind_label(ref).toLower(), "Name",
                                                  QLineEdit::Normal, text(name(editor_.project(), ref)), &accepted);
         if (accepted)
-            show_result(editor_.rename(ref, bytes(value)));
+            show_result(canvas_->rename(ref, bytes(value)));
     }
 
     bool MainWindow::confirm_discard()

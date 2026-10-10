@@ -43,14 +43,15 @@ namespace erdflow::domain {
 // what the schema said, the conversion says so in words rather than hiding it.
 
 // How big each kind of element is drawn when it is made. The desktop owns
-// these figures; the conversion is only told them.
+// these figures (desktop::entity_body and the two beside it); the conversion is
+// only told them, and these repeat them for whatever is not told.
 struct DiagramSizes {
-    double entity_width = 148;
-    double entity_height = 86;
-    double attribute_width = 150;
-    double attribute_height = 60;
-    double relationship_width = 190;
-    double relationship_height = 110;
+    double entity_width = 133;
+    double entity_height = 77;
+    double attribute_width = 135;
+    double attribute_height = 54;
+    double relationship_width = 171;
+    double relationship_height = 99;
     // How wide each kind of element has to be for a name to be written whole,
     // told by whatever draws the names. An element is made at the size above
     // unless its name needs more, as the template's diamond is drawn wider

@@ -225,6 +225,16 @@ QFont lettered(const QFont& base, double points) {
     return face;
 }
 
+// The room a name is written in inside its shape, read both where the name is
+// painted and where a shape is sized to its name (width_for_name), so the two
+// cannot come apart: 15 at either side of a box or an oval, and a fifth and
+// more of a diamond's width at either point, so the name keeps to the
+// diamond's wide middle. An oval's name keeps inside the second ring a
+// multivalued attribute draws, that far inside its outline.
+constexpr double name_side_room = 15.0;
+constexpr double diamond_point_room = 0.22;
+constexpr double oval_ring_inset = 5.0;
+
 // The marks at the end of a line, in the units the bodies are sized in. They
 // grew with the bodies: a foot that stayed the size it was would read as
 // smaller beside a larger entity, and "a bigger diagram" means the whole of it
@@ -808,7 +818,8 @@ public:
         // The marks that say what kind of thing it is, exactly as on the canvas.
         if (associative) painter->drawRect(into_place.mapRect(bounds_));
         if (std::holds_alternative<AttributeId>(ref) && attribute_kind == AttributeKind::Multivalued)
-            painter->drawEllipse(into_place.mapRect(bounds_.adjusted(5, 5, -5, -5)));
+            painter->drawEllipse(into_place.mapRect(
+                bounds_.adjusted(oval_ring_inset, oval_ring_inset, -oval_ring_inset, -oval_ring_inset)));
         if (weak) painter->drawRect(into_place.mapRect(bounds_.adjusted(5, 5, -5, -5)));
         if (identifying)
             painter->drawPath(into_place.map(diamond(bounds_.adjusted(bounds_.width() * 0.07, bounds_.height() * 0.09,
@@ -832,7 +843,8 @@ public:
             painter->drawRect(bounds_);
         }
         if (std::holds_alternative<AttributeId>(ref) && attribute_kind == AttributeKind::Multivalued)
-            painter->drawEllipse(bounds_.adjusted(5, 5, -5, -5));
+            painter->drawEllipse(
+                bounds_.adjusted(oval_ring_inset, oval_ring_inset, -oval_ring_inset, -oval_ring_inset));
         if (weak) {
             painter->setBrush(Qt::NoBrush);
             painter->drawRect(bounds_.adjusted(5, 5, -5, -5));
@@ -851,7 +863,8 @@ public:
         font.setUnderline(std::holds_alternative<AttributeId>(ref) && attribute_kind == AttributeKind::Key && !partial_key);
         painter->setFont(font);
         painter->setPen(text_);
-        const auto inset = std::holds_alternative<RelationshipId>(ref) ? bounds_.width() * 0.22 : 15.0;
+        const auto inset =
+            std::holds_alternative<RelationshipId>(ref) ? bounds_.width() * diamond_point_room : name_side_room;
         auto text_rect = bounds_.adjusted(inset, 8, -inset, -8);
         // A triangle only has room for text across its base.
         if (std::holds_alternative<SpecializationId>(ref))
@@ -1653,18 +1666,37 @@ private:
 } // namespace
 
 // Measured the way a name is drawn: the same lettering and weight, and the
-// same room left inside the shape -- 15 at either side of a box or an oval,
-// and a fifth and more of a diamond's width at either point.
-double width_for_name(NamedShape shape, const QString& name, const QFont& base) {
-    auto font = lettered(base, 12.5);
+// same room left inside the shape (name_side_room, diamond_point_room).
+double name_room_width(NamedShape shape, const QString& name, const QFont& base, double lettering, double height) {
+    auto font = lettered(base, 12.5 * lettering);
     font.setWeight(shape == NamedShape::Entity ? QFont::Bold : QFont::Medium);
-    const auto words = QFontMetricsF(font).horizontalAdvance(name) + 6;
+    const QFontMetricsF metrics(font);
+    const auto words = metrics.horizontalAdvance(name) + 6;
     switch (shape) {
-    case NamedShape::Entity: return std::max(entity_body.width, std::ceil(words + 30));
-    case NamedShape::Attribute: return std::max(attribute_body.width, std::ceil(words + 30));
-    case NamedShape::Relationship: return std::max(relationship_body.width, std::ceil(words / 0.56));
+    case NamedShape::Entity: return std::ceil(words + 2 * name_side_room);
+    case NamedShape::Relationship: return std::ceil(words / (1 - 2 * diamond_point_room));
+    case NamedShape::Attribute: {
+        // An oval narrows away from its middle, so the ends of a long name --
+        // from the tops of its capitals down to the line it stands on -- have
+        // to be inside the ring as well. A name is centred on its line, so the
+        // line is (ascent - descent) / 2 below the middle; and a ring of half
+        // height b is a * sqrt(1 - y * y / (b * b)) wide either side at y.
+        const auto line = (metrics.ascent() - metrics.descent()) / 2;
+        const auto reach = std::max(std::abs(line), std::abs(line - metrics.capHeight()));
+        const auto ring = height / 2 - oval_ring_inset;
+        auto width = words + 2 * name_side_room;
+        if (ring > reach)
+            width = std::max(width, 2 * (oval_ring_inset + words / 2 / std::sqrt(1 - reach * reach / (ring * ring))));
+        return std::ceil(width);
     }
-    return entity_body.width;
+    }
+    return std::ceil(words);
+}
+
+double width_for_name(NamedShape shape, const QString& name, const QFont& base) {
+    const auto body = shape == NamedShape::Entity ? entity_body
+                    : shape == NamedShape::Attribute ? attribute_body : relationship_body;
+    return std::max(body.width, name_room_width(shape, name, base, 1.0, body.height));
 }
 
 struct DiagramView::Impl {
@@ -2364,7 +2396,7 @@ struct DiagramView::Impl {
         inline_editor->hide();
         if (holding) view.setFocus(Qt::OtherFocusReason);
         if (!exists(editor.project(), element) || value == name(editor.project(), element)) return;
-        publish(editor.rename(element, value));
+        publish(view.rename(element, value));
     }
     void cancel_inline_edit() {
         if (!renaming) return;
@@ -2724,6 +2756,40 @@ DiagramView::~DiagramView() {
     // Scene items have callbacks into Impl. Destroy them before Impl itself.
     impl_->synchronizing = true;
     impl_->scene->clear();
+}
+
+application::EditResult DiagramView::rename(const domain::ElementRef& ref, const std::string& name) {
+    const auto& project = impl_->editor.project();
+    const auto shape = std::holds_alternative<EntityId>(ref) ? std::optional{NamedShape::Entity}
+                     : std::holds_alternative<RelationshipId>(ref) ? std::optional{NamedShape::Relationship}
+                     : std::holds_alternative<AttributeId>(ref) ? std::optional{NamedShape::Attribute}
+                     : std::nullopt;
+    double least_width = 0;
+    if (const auto found = project.layout.find(ref); shape && found != project.layout.end()) {
+        const auto& box = found->second;
+        const auto base = project.lettering.find(ref);
+        const auto needed_at = [&](double width) {
+            const auto lettering = base == project.lettering.end()
+                ? 1.0 : domain::lettering_factor(base->second, width, box.height);
+            return name_room_width(*shape, QString::fromStdString(name), font(), lettering, box.height);
+        };
+        if (needed_at(box.width) > box.width) {
+            // A name never resized by hand is lettered the same at any width.
+            // One that has been is lettered with its box, so a wider box can
+            // letter it larger: the least width that holds it is found between
+            // where it is now and what it needs lettered as large as its height
+            // lets it be, which always holds it.
+            auto narrow = box.width;
+            auto wide = std::max(narrow, needed_at(domain::max_entity_width));
+            if (base != project.lettering.end())
+                for (int halving = 0; halving < 24 && wide - narrow > 0.5; ++halving) {
+                    const auto middle = (narrow + wide) / 2;
+                    (needed_at(middle) <= middle ? wide : narrow) = middle;
+                }
+            least_width = std::ceil(wide);
+        }
+    }
+    return impl_->editor.rename(ref, name, least_width);
 }
 
 void DiagramView::synchronize() {

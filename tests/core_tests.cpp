@@ -1275,6 +1275,45 @@ void history_tells_what_was_done() {
 // The first time an entity, relationship or attribute is made another size by
 // hand, the size it had is kept as the size its name is drawn for, and the
 // name follows the box from there (Zain, 2026-09-26). Nothing else keeps one.
+
+// A rename widens an entity, relationship or attribute to the width its new
+// name needs, about its centre and in the same edit, and never narrows one
+// (2026-10-11). What a name needs is measured by whatever paints it and told
+// to the rename; the size its name is lettered for is not touched.
+void a_rename_widens_but_never_narrows() {
+    TestIds ids;
+    Editor editor(ids);
+    const ElementRef student{entity(editor, "Student")};
+    const ElementRef mentor{relationship(editor, "Mentor")};
+    const ElementRef born{attribute(editor, "Born")};
+    for (const auto& ref : {student, mentor, born}) {
+        const auto was = editor.project().layout.at(ref);
+        const auto called = name(editor.project(), ref);
+        const Rect widened{was.x - 35, was.y, was.width + 70, was.height};
+        const auto revision = editor.revision();
+        CHECK(editor.rename(ref, "A Longer Name", was.width + 70));
+        CHECK(editor.revision() == revision + 1);
+        CHECK(editor.project().layout.at(ref) == widened);
+        CHECK(editor.project().lettering.empty());
+        CHECK(editor.rename(ref, "Short"));
+        CHECK(editor.project().layout.at(ref) == widened);
+        CHECK(editor.rename(ref, "Short again", was.width + 10));
+        CHECK(editor.project().layout.at(ref) == widened);
+        CHECK(editor.undo() && editor.undo());
+        CHECK(editor.project().layout.at(ref) == widened);
+        CHECK(editor.undo());
+        CHECK(editor.project().layout.at(ref) == was);
+        CHECK(name(editor.project(), ref) == called);
+    }
+    // No wider than any element may be made.
+    CHECK(editor.rename(student, "Wide", 5000));
+    CHECK(editor.project().layout.at(student).width == max_entity_width);
+    // Nothing else is widened by its name.
+    const auto made = editor.create_note("Note", {0, 300, 200, 120});
+    CHECK(made && made.created);
+    CHECK(editor.rename(*made.created, "A note with a far longer title", 900));
+    CHECK((editor.project().layout.at(*made.created) == Rect{0, 300, 200, 120}));
+}
 void lettering_follows_resizing_by_hand() {
     // The smaller of the two changes, held between a quarter and sixteen.
     const LetteringBase base{148, 86};
@@ -4962,6 +5001,7 @@ int main() {
         {"connections can be pinned as they are made", connections_can_be_pinned_as_they_are_made},
         {"pictures and notes are placed like elements", pictures_and_notes_are_placed_like_elements},
         {"lettering follows resizing by hand", lettering_follows_resizing_by_hand},
+        {"a rename widens but never narrows", a_rename_widens_but_never_narrows},
         {"history tells what was done", history_tells_what_was_done},
         {"relating two entities is one edit", relating_two_entities_is_one_edit},
         {"weak entities and identifying relationships", weak_entities_and_identifying_relationships},

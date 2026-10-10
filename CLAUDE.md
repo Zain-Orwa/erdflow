@@ -64,10 +64,15 @@ These have been decided and are not open unless Zain reopens them.
 
 - **Crow's Foot is the default notation.** Not Chen. Four notations are offered;
   Crow's Foot is what a diagram is drawn in before anybody chooses.
-- **Element defaults are starting sizes, not rulings.** A new entity is 148×86
-  and everything else is proportioned beside it. They decide what somebody meets
-  when they draw an element; every element is then resized by hand, and a size
-  given by hand is kept and saved. The figures themselves are not to be changed.
+- **Element defaults are starting sizes, not rulings.** A new entity is 133×77,
+  a new relationship 171×99 and a new attribute 135×54 (Zain, 2026-10-11; they
+  were 148×86, 190×110 and 150×60). These are the least each is made at: one
+  whose name would be cut short is made, or on being renamed made, just wide
+  enough for it, measured as the name is painted; a shorter name never narrows
+  it. They decide what somebody meets when they draw an element; every element
+  is then resized by hand, a size given by hand is kept and saved, and a diagram
+  opens at exactly the sizes it was saved with. The figures themselves are not
+  to be changed.
 - **The conceptual canvas and the Relational Schema are sized separately.** The
   canvas has `lettering_scale` and `connector_scale`; the schema measures every
   table from what it holds. A change to one must not reach into the other.

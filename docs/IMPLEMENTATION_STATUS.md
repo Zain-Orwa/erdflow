@@ -1505,7 +1505,15 @@ to build in Part 1* at the end. The state of the test suites is under
   wears **d** or **o** for disjoint or overlapping, and a total specialization
   draws its link to the supertype as a double line. Project files are version 13.
 - **A default is a starting size, not a ruling.** A newly drawn entity is
-  148 by 86, and every other body is proportioned to sit beside it. The
+  133 by 77, a relationship 171 by 99 and an attribute 135 by 54 (Zain,
+  2026-10-11; they were 148 by 86, 190 by 110 and 150 by 60), and these are
+  the least each is made at: an entity, relationship or attribute whose name
+  would be cut short is widened just enough for it when it is named or
+  renamed, in the same step of history, measured from the name's own lettering
+  and the room its shape gives a name as it is painted -- a diamond's middle,
+  and for an oval its curve as well. A shorter name never narrows it, and
+  nothing is fitted when a diagram is opened. The placing tools still put each
+  down at its default, under its placeholder name, since that is named next. The
   figures are marked in the source as defaults that are not to be changed:
   they decide what somebody meets when they draw an element and nothing more,
   since every element is then pulled about by its corners and edges or given
