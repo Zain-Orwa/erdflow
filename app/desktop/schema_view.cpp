@@ -1126,8 +1126,9 @@ void SchemaView::resizeEvent(QResizeEvent* event) {
     QWidget::resizeEvent(event);
     // The window, the panel or the scroll area changing the view's size is
     // routed here. The arrangement growing the canvas is not: whatever asked
-    // for the arrangement routes every line straight after it.
-    if (!sizing_canvas_) reroute();
+    // for the arrangement routes every line straight after it. Nor is a resize
+    // to the size the lines were last routed at (see routed_at_).
+    if (!sizing_canvas_ && routed_at_ != size()) reroute();
     place_naming_box();
 }
 
@@ -2593,6 +2594,9 @@ bool SchemaView::eventFilter(QObject* watched, QEvent* happening) {
 // everything about its shape, and the router is not entitled to argue.
 void SchemaView::reroute() {
     routes_.clear();
+    // Nothing routed is routed at no size, so the next resize routes whatever
+    // is there by then.
+    routed_at_.reset();
     if (!theme_ || placed_.empty()) return;
     ++routings_;
     const auto dark = theme_->canvas.lightnessF() < 0.5;
@@ -2884,6 +2888,7 @@ void SchemaView::reroute() {
         routed.path = path_of(routed.corners);
         routes_.push_back(std::move(routed));
     }
+    routed_at_ = size();
 }
 
 // Which line the pointer is over, and which of its corners a drag would take

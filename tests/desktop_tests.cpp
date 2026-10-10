@@ -80,6 +80,7 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <cstring>
 #include <iostream>
 #include <limits>
 #include <functional>
@@ -1641,13 +1642,41 @@ namespace
 
                 // A size given from outside: to the view itself, which the scroll
                 // area at once gives back -- a size from outside as well -- and
-                // by the window.
+                // by the window. The scroll area gives its size back before the
+                // view hears of the one it was given, so both arrive at the size
+                // the lines were already routed at, and neither routes them
+                // (2026-10-10): they used to be routed twice over at that same
+                // size, to exactly the same lines.
                 const auto routed_now = view->routings();
                 const auto size_held = view->size();
+                const auto boxes_held = view->table_boxes();
+                const auto lines_held = view->line_shapes();
+                const auto bits_equal = [](double a, double b) { return std::memcmp(&a, &b, sizeof a) == 0; };
+                const auto same_point = [&](QPointF a, QPointF b)
+                { return bits_equal(a.x(), b.x()) && bits_equal(a.y(), b.y()); };
                 view->resize(view->width() + 40, view->height() + 40);
-                require(view->size() == size_held && view->routings() == routed_now + 2,
-                        "A size given to the view from outside routes the lines, and the scroll area giving its own "
-                        "back routes them again");
+                require(view->size() == size_held, "The scroll area gives the view its own size back");
+                require(view->routings() == routed_now,
+                        "And a size given back at the size the lines were routed at routes nothing");
+                bool tables_held = view->table_boxes().size() == boxes_held.size();
+                for (std::size_t t = 0; tables_held && t < boxes_held.size(); ++t)
+                    tables_held = same_point(view->table_boxes()[t].topLeft(), boxes_held[t].topLeft()) &&
+                                  same_point(view->table_boxes()[t].bottomRight(), boxes_held[t].bottomRight());
+                require(tables_held, "Every table stays exactly where it was");
+                const auto lines_now = view->line_shapes();
+                bool ends_held = lines_now.size() == lines_held.size();
+                bool corners_held = ends_held;
+                for (std::size_t l = 0; corners_held && l < lines_held.size(); ++l)
+                {
+                    ends_held = ends_held && !lines_now[l].empty() && lines_now[l].size() == lines_held[l].size() &&
+                                same_point(lines_now[l].front(), lines_held[l].front()) &&
+                                same_point(lines_now[l].back(), lines_held[l].back());
+                    corners_held = lines_now[l].size() == lines_held[l].size();
+                    for (std::size_t c = 0; corners_held && c < lines_held[l].size(); ++c)
+                        corners_held = same_point(lines_now[l][c], lines_held[l][c]);
+                }
+                require(ends_held, "Every line still leaves and arrives at exactly the same points");
+                require(corners_held, "And turns at exactly the same corners");
                 settle();
                 const auto size_now = view->size();
                 const auto routed_then = view->routings();
@@ -2430,6 +2459,173 @@ namespace
             require(model.project().decisions.bridge_key.at(bridge) == domain::BridgeKey::Own,
                     "Choosing a separate key reaches the editor");
         }
+    }
+
+    // Opening the schema routes its lines once (2026-10-10). The arrangement
+    // grows the canvas while the schema is still put away, and Qt holds that
+    // resize back until the panel is shown -- after the schema has already been
+    // routed at that very size -- so every opening routed every line twice, for
+    // half the time the opening took. A resize to the size the lines were routed
+    // at routes nothing now; a resize to any other size, and every routing asked
+    // for by an edit, a refresh, Undo, Redo or the theme, still routes.
+    void schema_open_routing_tests(infrastructure::QtIdGenerator &ids)
+    {
+        application::Editor model(ids);
+        std::vector<domain::EntityId> entities;
+        for (int i = 0; i < 8; ++i)
+        {
+            const auto made = model.create_entity("Item" + std::to_string(i),
+                                                  {(i % 4) * 300.0, (i / 4) * 260.0, 112, 66});
+            require(made.ok, "An entity for the schema");
+            const auto entity = std::get<domain::EntityId>(*made.created);
+            entities.push_back(entity);
+            const auto key = model.create_attribute("id", {(i % 4) * 300.0, (i / 4) * 260.0 - 60, 80, 36},
+                                                    domain::AttributeOwner{entity});
+            require(key.ok && model.set_primary_key(std::get<domain::AttributeId>(*key.created), true).ok,
+                    "With a key");
+        }
+        const auto relate = [&](std::size_t a, std::size_t b, bool many_many)
+        {
+            const auto made = model.relate(entities[a], entities[b],
+                                           {static_cast<double>(a % 4) * 300.0 + 150, static_cast<double>(a / 4) * 260.0 + 120, 137, 79});
+            require(made.ok, "Two of them related");
+            const auto &sides = model.project().relationships.at(std::get<domain::RelationshipId>(*made.created)).participants;
+            require(model.set_cardinality(sides[1].id, domain::Cardinality::Many).ok, "One to many");
+            if (many_many)
+                require(model.set_cardinality(sides[0].id, domain::Cardinality::Many).ok, "Or many to many");
+        };
+        for (std::size_t i = 0; i + 1 < entities.size(); ++i)
+            relate(i, i + 1, false);
+        relate(0, 4, true);
+        relate(2, 6, true);
+        const auto same_bits = [](double a, double b) { return std::memcmp(&a, &b, sizeof a) == 0; };
+        const auto exactly = [&](const std::vector<std::vector<QPointF>> &a, const std::vector<std::vector<QPointF>> &b)
+        {
+            if (a.size() != b.size())
+                return false;
+            for (std::size_t l = 0; l < a.size(); ++l)
+            {
+                if (a[l].size() != b[l].size())
+                    return false;
+                for (std::size_t c = 0; c < a[l].size(); ++c)
+                    if (!same_bits(a[l][c].x(), b[l][c].x()) || !same_bits(a[l][c].y(), b[l][c].y()))
+                        return false;
+            }
+            return true;
+        };
+
+        // The view on its own, as the window keeps it: arranged and routed
+        // while put away, then shown.
+        {
+            QWidget host;
+            host.resize(400, 300);
+            desktop::SchemaView view(model, &host);
+            view.set_theme(desktop::theme(desktop::ThemeId::Azure));
+            require(view.routings() == 0, "Nothing is routed while the schema has no tables placed");
+            view.refresh();
+            require(view.routings() == 1 && !view.line_shapes().empty(), "Reading the schema routes its lines");
+            require(view.testAttribute(Qt::WA_PendingResizeEvent),
+                    "Growing the canvas while it is put away leaves Qt holding that resize back");
+            const auto routed_size = view.size();
+            const auto lines = view.line_shapes();
+            host.show();
+            settle();
+            require(!view.testAttribute(Qt::WA_PendingResizeEvent) && view.size() == routed_size,
+                    "Shown, the view is handed the resize, at the size it was routed at");
+            require(view.routings() == 1 && exactly(view.line_shapes(), lines),
+                    "And it does not route the same lines again for it");
+
+            // A genuine resize still routes.
+            view.resize(view.width() + 40, view.height() + 40);
+            settle();
+            require(view.routings() == 2, "A resize to another size routes the lines");
+
+            // So does a refresh at the same size: an edit that changes
+            // nothing about how big the canvas is -- one line given a way of
+            // its own, well inside it -- still reaches the lines.
+            const auto size_held = view.size();
+            const auto shapes_before = view.line_shapes();
+            const auto boxes_before = view.table_boxes();
+            std::optional<domain::LinkSource> link;
+            for (const auto &table : view.preview().tables)
+                for (const auto &column : table.columns)
+                    if (!link && column.link)
+                        link = column.link;
+            require(link.has_value(), "The schema has a line to shape");
+            require(model.shape_schema_line(*link, {{{20, 20}, {60, 20}, {60, 40}}, {}, {}}).ok,
+                    "One line given a way of its own");
+            view.refresh();
+            settle();
+            require(view.size() == size_held && view.table_boxes() == boxes_before,
+                    "The shaped line leaves the canvas the size it was");
+            require(view.routings() == 3 && !exactly(view.line_shapes(), shapes_before),
+                    "A refresh at the size the lines were routed at routes them again, the shaped line with them");
+            require(model.undo().ok, "The shape taken back");
+            view.refresh();
+            settle();
+            require(view.size() == size_held && view.routings() == 4 && exactly(view.line_shapes(), shapes_before),
+                    "And routing again at that size puts every line back exactly where it was");
+            host.hide();
+        }
+
+        // In the window, through the way a person opens the schema.
+        infrastructure::ErdxProjectStore store;
+        desktop::MainWindow window(model, store, ids);
+        window.resize(1440, 920);
+        window.show();
+        window.show_home(false);
+        settle();
+        auto *view = window.schema();
+        const auto routed_before = view->routings();
+        window.open_schema();
+        settle_for(400);
+        require(view->routings() == routed_before + 1,
+                "Opening the schema routes its lines once, not again for the resize Qt held back");
+        // What the dropped routing would have worked out is what routing the
+        // same schema at the same size works out, which a refresh does.
+        const auto opened_lines = view->line_shapes();
+        const auto opened_boxes = view->table_boxes();
+        const auto opened_size = view->size();
+        require(!opened_lines.empty(), "The opened schema has lines");
+        view->refresh();
+        settle();
+        require(view->routings() == routed_before + 2 && view->size() == opened_size,
+                "A refresh at the same size still routes");
+        require(exactly(view->line_shapes(), opened_lines) && view->table_boxes() == opened_boxes,
+                "And routes every line exactly where the opening left it, corner for corner");
+
+        // Undo and Redo route once each, as they did.
+        const auto boxes = view->table_boxes();
+        const QPointF header = boxes.front().topLeft() + QPointF(20, 8);
+        const auto mouse = [&](QEvent::Type type, QPointF where, Qt::MouseButtons held)
+        {
+            QMouseEvent event(type, where, view->mapToGlobal(where.toPoint()),
+                              type == QEvent::MouseMove ? Qt::NoButton : Qt::LeftButton, held, Qt::NoModifier);
+            QApplication::sendEvent(view, &event);
+        };
+        mouse(QEvent::MouseButtonPress, header, Qt::LeftButton);
+        mouse(QEvent::MouseMove, header + QPointF(30, 10), Qt::LeftButton);
+        mouse(QEvent::MouseButtonRelease, header + QPointF(30, 10), Qt::NoButton);
+        settle();
+        const auto moved = view->table_boxes();
+        require(moved != boxes, "A table is moved on the schema");
+        auto routed = view->routings();
+        child<QAction>(window, "undoCommand")->trigger();
+        settle();
+        require(view->table_boxes() == boxes && view->routings() == routed + 1, "Undo routes the lines once");
+        routed = view->routings();
+        child<QAction>(window, "redoCommand")->trigger();
+        settle();
+        require(view->table_boxes() == moved && view->routings() == routed + 1, "Redo routes the lines once");
+
+        // A theme put on routes the lines, as it always has.
+        routed = view->routings();
+        window.set_theme(desktop::ThemeId::Forest);
+        settle();
+        require(view->routings() == routed + 1, "Another theme routes the lines");
+        window.set_theme(desktop::ThemeId::Azure);
+        settle();
+        model.mark_saved(model.revision());
     }
 
     // The schema drawn by hand, each check in a window of its own: the Schema
@@ -4689,6 +4885,7 @@ int main(int argc, char **argv)
                 return 0;
             }
             schema_drawing_tests(ids);
+            schema_open_routing_tests(ids);
         }
         if (relational_part)
         {
