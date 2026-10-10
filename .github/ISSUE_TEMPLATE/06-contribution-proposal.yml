@@ -1,0 +1,108 @@
+name: "Contribution Proposal"
+description: "Discuss the scope of a change you want to implement, before you spend time on a large Pull Request."
+title: "[Proposal]: "
+labels: ["contribution"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for wanting to contribute to ERDFlow!
+
+        Use this form to agree on scope **before** building something substantial.
+        It is not a second feature-request form: it is for a contributor who plans
+        to do the work.
+
+        - **Small, obvious fixes** (a typo, a clear bug with a small fix) can go
+          directly to a Pull Request.
+        - **Large behavioral, architectural, `.erdx` persistence-format, conversion,
+          or UI changes** should be discussed here first.
+
+        Please read [CONTRIBUTING.md](https://github.com/Zain-Orwa/erdflow/blob/main/CONTRIBUTING.md) before starting.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Where do you want to contribute?
+      options:
+        - Conceptual Design
+        - Relational Schema
+        - Conversion / synchronization
+        - Import / Export
+        - Project / persistence (`.erdx`)
+        - Workspace / UI
+        - Accessibility
+        - Performance
+        - Tests
+        - Documentation
+        - Build / CI
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: task
+    attributes:
+      label: Problem or Task
+      description: What problem will this solve? Link a related issue if there is one.
+    validations:
+      required: true
+
+  - type: textarea
+    id: scope
+    attributes:
+      label: Proposed Scope
+      description: What will the change include, and what will it deliberately leave out?
+    validations:
+      required: true
+
+  - type: textarea
+    id: approach
+    attributes:
+      label: Implementation Approach
+      description: How you plan to build it, if you know yet.
+    validations:
+      required: false
+
+  - type: textarea
+    id: components
+    attributes:
+      label: Expected Files / Components Affected
+      placeholder: "Example: domain/ conversion rules, app/desktop/schema_view.cpp, tests/core_tests.cpp"
+    validations:
+      required: false
+
+  - type: textarea
+    id: testing
+    attributes:
+      label: Testing Plan
+      description: Which tests will you add or update, and how will you verify the change?
+    validations:
+      required: true
+
+  - type: textarea
+    id: docs-impact
+    attributes:
+      label: Documentation Impact
+      description: Which documents will need updating, if any?
+    validations:
+      required: false
+
+  - type: dropdown
+    id: ui-change
+    attributes:
+      label: Does This Change UI Behavior?
+      options:
+        - "No"
+        - "Yes, in a small, contained way"
+        - "Yes, significantly"
+        - "Not sure yet"
+    validations:
+      required: true
+
+  - type: textarea
+    id: questions
+    attributes:
+      label: Questions for Maintainers
+    validations:
+      required: false
