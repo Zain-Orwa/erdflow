@@ -708,6 +708,16 @@ private:
     // done, so routing on that resize as well would do the whole of the
     // costliest work twice for one movement of the pointer (2026-10-06).
     bool sizing_canvas_ = false;
+    // The view's size when every line was last routed, or nothing while the
+    // routes on hand were not worked out for any size. Lines are routed over a
+    // grid the size of the view and from nothing else that changes without
+    // routing them, so a resize that arrives at that same size has nothing to
+    // route. Such a resize does arrive: the arrangement grows the canvas while
+    // the schema is put away, and Qt hands the view that resize only when the
+    // panel is shown, after the schema has already been routed at that size.
+    // Routing on it as well did the whole of the costliest work twice for
+    // every opening of the schema (2026-10-10).
+    std::optional<QSize> routed_at_;
     // How far down the canvas has to reach while tables are being carried
     // downward: a whole view below the lowest of them, so the hand can scroll
     // on and go on carrying them in the same drag rather than letting go to
