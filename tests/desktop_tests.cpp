@@ -4838,6 +4838,188 @@ namespace
             require(!menus->isVisible(), "Nor above the schema");
         every_key_answers("in the Schema workspace");
     }
+
+    // A locked tool's padlock is seen whatever room its row has and whatever
+    // fonts the machine has (2026-10-09, 2026-10-10). It once followed the name
+    // as a character, so it went with the name where the row was too narrow for
+    // names, and it was only as good as the font. Now ERDFlow paints it on the
+    // tool's icon, gold, grey under Plain, with the name or without, and the
+    // name is only the name. The tools are taken up and locked as somebody
+    // does it: one press, then a second on the same button, which the system
+    // makes a double click; and put down by pressing Select.
+    void tool_lock_mark_tests(infrastructure::QtIdGenerator &ids)
+    {
+        application::Editor editor(ids);
+        infrastructure::ErdxProjectStore store;
+        desktop::MainWindow window(editor, store, ids);
+        window.resize(1440, 920);
+        window.show();
+        window.activateWindow();
+        window.show_home(false);
+        settle_for(300);
+        const auto drawn = [](QWidget *button)
+        {
+            QImage image(button->size() * 2, QImage::Format_ARGB32_Premultiplied);
+            image.setDevicePixelRatio(2);
+            image.fill(button->palette().color(QPalette::Window));
+            button->render(&image);
+            return image;
+        };
+        // Pixels of the padlock's gold: strong, bright, and near its hue, which
+        // leaves room for the shading across it and the smoothing of its edges,
+        // and is stronger than the coloured fringes a name's letters are
+        // smoothed with.
+        // Under Plain the padlock is grey, the grey of the button it is on, so
+        // there it is found by what it changes and only its gold is looked for.
+        const auto inked = [](const QImage &image)
+        {
+            const auto ink = desktop::MainWindow::tool_lock_ink(false);
+            int count = 0;
+            for (int y = 0; y < image.height(); ++y)
+                for (int x = 0; x < image.width(); ++x)
+                {
+                    const auto colour = image.pixelColor(x, y);
+                    if (colour.hsvSaturation() > 150 && colour.value() > 150 && std::abs(colour.hsvHue() - ink.hsvHue()) <= 11)
+                        ++count;
+                }
+            return count;
+        };
+        // Where two drawings of one button differ, and how much.
+        const auto changed = [](const QImage &one, const QImage &other)
+        {
+            QRect where;
+            int count = 0;
+            for (int y = 0; y < std::min(one.height(), other.height()); ++y)
+                for (int x = 0; x < std::min(one.width(), other.width()); ++x)
+                {
+                    const auto a = one.pixelColor(x, y);
+                    const auto b = other.pixelColor(x, y);
+                    if (std::max({std::abs(a.red() - b.red()), std::abs(a.green() - b.green()), std::abs(a.blue() - b.blue())}) > 48)
+                    {
+                        ++count;
+                        where |= QRect(x, y, 1, 1);
+                    }
+                }
+            return std::pair{count, where};
+        };
+        // A press on the button's own part, not on the arrow beside it.
+        const auto press = [&](QToolButton *button, int delay)
+        {
+            const QPoint local(std::min(button->width() / 2, button->iconSize().width() / 2 + 6), button->height() / 2);
+            QTest::mouseClick(window.windowHandle(), Qt::LeftButton, {}, button->mapTo(&window, local), delay);
+            settle();
+        };
+        auto *row = child<QToolBar>(window, "modelTools");
+        const auto button_for = [&](const char *name)
+        { return qobject_cast<QToolButton *>(row->widgetForAction(child<QAction>(window, name))); };
+        auto *select = button_for("toolSelect");
+        child<QAction>(window, "isaGeneralization")->trigger();
+        press(select, 0);
+        const std::array<std::tuple<const char *, desktop::Tool, QToolButton *>, 6> tools{{
+            {"Entity", desktop::Tool::Entity, button_for("toolEntity")},
+            {"Attribute", desktop::Tool::Attribute, button_for("toolAttribute")},
+            {"Relationship", desktop::Tool::Relationship, button_for("toolRelationship")},
+            {"Generalization", desktop::Tool::Generalization, child<QToolButton>(window, "isaButton")},
+            {"Connect", desktop::Tool::Connect, child<QToolButton>(window, "connectButton")},
+            {"Note", desktop::Tool::Note, button_for("toolNote")},
+        }};
+        const auto marked = [](QToolButton *button)
+        { return button->defaultAction()->property("toolLocked").toBool(); };
+        // One tool, from taken up to locked to put down, in whichever mode its
+        // row is showing.
+        const auto lock_and_unlock = [&](const char *name, desktop::Tool tool, QToolButton *button, bool colourless)
+        {
+            press(button, 0);
+            require(window.canvas()->tool() == tool && !window.canvas()->tool_locked() && !marked(button),
+                    "A tool taken up once is not locked");
+            require(button->text() == QString::fromLatin1(name), "Its button carries its name and nothing more");
+            const auto once = drawn(button);
+            require(inked(once) == 0, "And no padlock is drawn on it");
+            press(button, 80);
+            require(window.canvas()->tool() == tool && window.canvas()->tool_locked() && marked(button),
+                    "Pressed again, the tool is locked");
+            require(button->text() == QString::fromLatin1(name), "Its name stays its name: the padlock is not a character");
+            const auto locked = drawn(button);
+            require(locked.size() == once.size(), "Locking does not change the button's size");
+            const auto [count, where] = changed(locked, once);
+            require(count >= 60, "A locked tool's button wears a padlock");
+            if (colourless)
+                require(inked(locked) == 0 && desktop::MainWindow::tool_lock_ink(true).hsvSaturation() == 0,
+                        "Under Plain the padlock is grey");
+            else
+                require(inked(locked) >= 40, "The padlock is gold");
+            // On the icon: in its lower half, and short of the name where the
+            // name follows it. Where the icon and the name are is found from
+            // what the button draws, not from fractions of its width: how much
+            // room the style puts round them, and how wide a name's letters
+            // are, differ between platforms (2026-10-11: on Windows "Note" left
+            // the icon reaching past half its button).
+            const auto icon = button->iconSize().width() * 2;
+            require(where.top() >= locked.height() / 2 - icon / 4, "The padlock sits on the lower part of the icon");
+            const bool named = button->toolButtonStyle() == Qt::ToolButtonTextBesideIcon;
+            QRect name_at;
+            if (named)
+            {
+                // The name is what drawing the button without it takes away.
+                auto *action = button->defaultAction();
+                action->setText(QString());
+                const auto nameless = drawn(button);
+                action->setText(QString::fromLatin1(name));
+                require(nameless.size() == locked.size(), "Drawn without its name at the same size");
+                name_at = changed(locked, nameless).second;
+                require(!name_at.isEmpty(), "Its name is drawn beside its icon");
+            }
+            // The icon is what the button draws, before its name, on its own
+            // background, away from its frame.
+            const auto ground = once.pixelColor(6, once.height() / 2);
+            QRect icon_at;
+            for (int y = 6; y < once.height() - 6; ++y)
+                for (int x = 6; x < (named ? name_at.left() : once.width() - 6); ++x)
+                {
+                    const auto a = once.pixelColor(x, y);
+                    if (std::max({std::abs(a.red() - ground.red()), std::abs(a.green() - ground.green()),
+                                  std::abs(a.blue() - ground.blue())}) > 48)
+                        icon_at |= QRect(x, y, 1, 1);
+                }
+            require(!icon_at.isEmpty(), "The tool's icon is drawn");
+            require(where.left() >= icon_at.left() && where.left() < icon_at.right() && where.intersects(icon_at),
+                    "The padlock is on the icon");
+            if (named)
+                require(where.right() < name_at.left(), "Beside the name, on the icon, not over the name");
+            press(select, 0);
+            require(window.canvas()->tool() == desktop::Tool::Select && !window.canvas()->tool_locked() && !marked(button),
+                    "Select pressed, the tool is put down and unlocked");
+            press(button, 0);
+            require(changed(drawn(button), once).first == 0, "Taken up once again, its button is drawn as before, padlock gone");
+            press(select, 0);
+        };
+        for (const auto theme : {desktop::ThemeId::Azure, desktop::ThemeId::Midnight, desktop::ThemeId::HighContrast,
+                                 desktop::ThemeId::Plain})
+        {
+            window.set_theme(theme);
+            settle();
+            for (const auto &[name, tool, button] : tools)
+            {
+                require(button && button->toolButtonStyle() == Qt::ToolButtonIconOnly,
+                        "At 1440 wide the diagram's tools show their icons alone");
+                lock_and_unlock(name, tool, button, theme == desktop::ThemeId::Plain);
+            }
+        }
+        // With room for names, the same padlock on the same icon.
+        window.resize(2400, 920);
+        settle_for(200);
+        for (const auto theme : {desktop::ThemeId::Azure, desktop::ThemeId::Plain})
+        {
+            window.set_theme(theme);
+            settle();
+            for (const auto &[name, tool, button] : tools)
+            {
+                require(button->toolButtonStyle() == Qt::ToolButtonTextBesideIcon, "At 2400 wide the tools show their names");
+                lock_and_unlock(name, tool, button, theme == desktop::ThemeId::Plain);
+            }
+        }
+        window.set_theme(desktop::ThemeId::Azure);
+    }
 }
 
 int main(int argc, char **argv)
@@ -4893,7 +5075,10 @@ int main(int argc, char **argv)
             return 0;
         }
         if (whole || window_part)
+        {
             menu_bar_shortcut_tests(ids);
+            tool_lock_mark_tests(ids);
+        }
         application::Editor editor(ids);
         infrastructure::ErdxProjectStore project_store;
         desktop::MainWindow window(editor, project_store, ids);
@@ -6879,7 +7064,9 @@ int main(int argc, char **argv)
         QApplication::sendEvent(button, &double_click);
         settle();
         require(window.canvas()->tool_locked(), "Double-clicking the button locks the tool");
-        require(entity_tool->text().startsWith("Entity") && entity_tool->text() != "Entity",
+        // Marked with a padlock painted on the button (tool_lock_mark_tests), so
+        // the name stays the name.
+        require(entity_tool->property("toolLocked").toBool() && entity_tool->text() == "Entity",
                 "A locked tool button is marked");
         click_canvas(*window.canvas(), QPointF(360, 250));
         click_canvas(*window.canvas(), QPointF(520, 250));
@@ -7066,7 +7253,7 @@ int main(int argc, char **argv)
         settle();
         require(window.canvas()->tool_locked() && window.canvas()->tool() == desktop::Tool::Generalization,
                 "Double-clicking ISA locks the chosen direction");
-        require(isa->text().startsWith("Generalization") && isa->text() != "Generalization",
+        require(isa->property("toolLocked").toBool() && isa->text() == "Generalization",
                 "The locked ISA button is marked");
         child<QAction>(window, "isaSpecialization")->trigger();
         settle();
@@ -8445,7 +8632,7 @@ int main(int argc, char **argv)
             settle();
             require(window.canvas()->tool() == desktop::Tool::Note && window.canvas()->tool_locked(),
                     "Double-clicking the note tool locks it");
-            require(note_tool->text() != "Note", "And the button is marked");
+            require(note_tool->property("toolLocked").toBool() && note_tool->text() == "Note", "And the button is marked");
             click_canvas(*window.canvas(), QPointF(700, 250));
             window.canvas()->commit_rename();
             click_canvas(*window.canvas(), QPointF(860, 250));

@@ -186,8 +186,9 @@ if(BUILD_TESTING)
     add_executable(theme_tests tests/theme_tests.cpp)
     target_link_libraries(theme_tests PRIVATE erdflow_canvas erdflow_warnings)
     add_test(NAME theme COMMAND theme_tests)
-    # Qt Test is used only to press keys the way a keyboard does, so a
-    # shortcut is heard through the window's own shortcut map.
+    # Qt Test is used only to press the mouse and keys the way the system
+    # does: two presses on one button arrive as a press and then a double
+    # click, and a shortcut is heard through the window's own shortcut map.
     find_package(Qt6 REQUIRED COMPONENTS Test)
     add_executable(desktop_tests tests/desktop_tests.cpp)
     target_link_libraries(desktop_tests PRIVATE erdflow_desktop erdflow_infrastructure erdflow_warnings Qt6::Test)
