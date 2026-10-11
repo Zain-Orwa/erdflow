@@ -85,7 +85,7 @@ This is a terminology correction only.
 
 ### 4. Conceptual free-text object
 
-Status: PENDING
+Status: DONE
 
 Add a lightweight borderless text object that can be placed freely on the Conceptual canvas.
 

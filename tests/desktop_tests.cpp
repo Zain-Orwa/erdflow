@@ -22,6 +22,7 @@
 
 #include <QAbstractAnimation>
 #include <QAction>
+#include <QFocusEvent>
 #include <cmath>
 #include <QDebug>
 #include <QScrollArea>
@@ -4916,13 +4917,14 @@ namespace
         auto *select = button_for("toolSelect");
         child<QAction>(window, "isaGeneralization")->trigger();
         press(select, 0);
-        const std::array<std::tuple<const char *, desktop::Tool, QToolButton *>, 6> tools{{
+        const std::array<std::tuple<const char *, desktop::Tool, QToolButton *>, 7> tools{{
             {"Entity", desktop::Tool::Entity, button_for("toolEntity")},
             {"Attribute", desktop::Tool::Attribute, button_for("toolAttribute")},
             {"Relationship", desktop::Tool::Relationship, button_for("toolRelationship")},
             {"Generalization", desktop::Tool::Generalization, child<QToolButton>(window, "isaButton")},
             {"Connect", desktop::Tool::Connect, child<QToolButton>(window, "connectButton")},
             {"Note", desktop::Tool::Note, button_for("toolNote")},
+            {"Text", desktop::Tool::Text, button_for("toolText")},
         }};
         const auto marked = [](QToolButton *button)
         { return button->defaultAction()->property("toolLocked").toBool(); };
@@ -5310,6 +5312,96 @@ void minmax_display_menu_tests()
             "Opening a project without display state preserves the existing combined default");
 }
 
+void toolbar_fitting_tests() {
+    infrastructure::QtIdGenerator ids;
+    application::Editor editor(ids);
+    infrastructure::ErdxProjectStore store;
+    desktop::MainWindow window(editor, store, ids);
+    window.resize(1920, 820); window.show(); window.show_home(false); settle();
+    auto* bar = child<QToolBar>(window, "modelTools");
+    auto* picker = child<QComboBox>(window, "notationPicker");
+    const auto actions = bar->actions();
+    const auto text = actions.indexOf(child<QAction>(window, "toolText"));
+    require(text > 0 && text + 1 < actions.size()
+            && actions[text - 1] == child<QAction>(window, "toolNote")
+            && bar->widgetForAction(actions[text + 1]) == child<QToolButton>(window, "insertButton"),
+            "Toolbar fitting preserves Note, Text, Insert order");
+    require(bar->toolButtonStyle() == Qt::ToolButtonTextBesideIcon, "A wide window shows the names");
+    require(picker->isVisible(), "A wide window keeps Notation");
+    // Find the actual compact boundary rather than assume a platform's font
+    // metrics. The smallest labeled row must be tried before names are lost.
+    int last_labeled_icon = bar->iconSize().width();
+    bool icon_only = false;
+    for (int width = 1916; width >= 1280; width -= 4) {
+        window.resize(width, 820); settle();
+        require(bar->actions() == actions, "Compact fitting loses no toolbar actions");
+        if (bar->toolButtonStyle() == Qt::ToolButtonIconOnly) { icon_only = true; break; }
+        last_labeled_icon = bar->iconSize().width();
+        require(picker->isVisible(), "Labeled tools keep Notation");
+    }
+    require(icon_only && last_labeled_icon == 20, "Compact labeled tools fit before falling back to icon-only");
+    window.resize(1280, 820); settle();
+    require(picker->isVisible(), "A tighter one keeps Notation beside the corner controls");
+    require(bar->actions() == actions, "1280 fitting loses no toolbar actions");
+    window.resize(700, 620); settle();
+    require(bar->toolButtonStyle() == Qt::ToolButtonIconOnly && !picker->isVisible(),
+            "Small windows use icon-only tools and put Notation away");
+    require(bar->actions() == actions, "Small fitting loses no toolbar actions");
+    window.resize(1920, 820); settle();
+    require(bar->toolButtonStyle() == Qt::ToolButtonTextBesideIcon && picker->isVisible(),
+            "Widening restores the names and Notation");
+}
+
+void free_text_desktop_tests() {
+    infrastructure::QtIdGenerator ids;
+    application::Editor editor(ids);
+    infrastructure::ErdxProjectStore store;
+    desktop::MainWindow window(editor, store, ids);
+    window.resize(1600, 900); window.show(); window.show_home(false); settle();
+    auto* tool = child<QAction>(window, "toolText");
+    auto* toolbar = child<QToolBar>(window, "modelTools");
+    const auto actions = toolbar->actions();
+    const auto index = actions.indexOf(tool);
+    require(index > 0 && actions[index - 1] == child<QAction>(window, "toolNote"), "Text follows existing Note");
+    require(index + 1 < actions.size() && toolbar->widgetForAction(actions[index + 1]) == child<QToolButton>(window, "insertButton"),
+            "Text immediately precedes the existing Picture/Insert control");
+    require(child<QToolButton>(window, "insertButton")->menu()->actions().contains(child<QAction>(window, "insertPicture")), "Picture remains in Insert");
+    require(toolbar->widgetForAction(tool)->isVisible() && tool->text() == "Text" && !tool->icon().isNull(), "Text is a visible toolbar tool");
+    require(tool->icon().pixmap(34, 34).toImage() == child<QAction>(window, "toolNote")->icon().pixmap(34, 34).toImage(), "Text reuses the unchanged Note icon");
+    QMouseEvent lock(QEvent::MouseButtonDblClick, QPointF(10, 10), QPointF(10, 10), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(toolbar->widgetForAction(tool), &lock);
+    require(window.canvas()->tool() == desktop::Tool::Text && window.canvas()->tool_locked(), "Text inherits double-click placement locking");
+    window.canvas()->set_tool(desktop::Tool::Select);
+    const auto height = toolbar->height();
+    tool->trigger();
+    QTest::mouseClick(window.canvas()->viewport(), Qt::LeftButton, Qt::NoModifier, window.canvas()->mapFromScene(QPointF(0, 0)));
+    settle();
+    auto* inline_text = child<QPlainTextEdit>(window, "inlineText");
+    require(inline_text->isVisible(), "Toolbar placement opens multiline editing");
+    inline_text->setPlainText("Customer data imported from CRM\nReviewed"); window.canvas()->commit_rename(); settle();
+    const auto id = editor.project().notes.begin()->first;
+    require(child<QLabel>(window, "propertyHeading")->text() == "Text", "Properties identifies Text");
+    require(!window.findChild<QLineEdit*>("elementName") && !window.findChild<QSpinBox*>("symbolSize"), "Text has no title or symbol size fields");
+    auto* properties = child<QPlainTextEdit>(window, "elementText");
+    properties->setPlainText("Properties edit\nStill plain");
+    QFocusEvent leave(QEvent::FocusOut); QApplication::sendEvent(properties, &leave); settle();
+    require(editor.project().notes.at(id).description == "Properties edit\nStill plain", "Properties uses text editing history");
+    auto* explorer = child<QTreeView>(window, "explorer");
+    require(!explorer->model()->match(explorer->model()->index(0, 0), Qt::DisplayRole, "Notes", 1, Qt::MatchExactly | Qt::MatchRecursive).isEmpty(), "Text reuses Notes group");
+    require(!explorer->model()->match(explorer->model()->index(0, 0), Qt::DisplayRole, "Text · Properties edit", 1, Qt::MatchExactly | Qt::MatchRecursive).isEmpty(), "Explorer shows useful Text preview");
+    require(toolbar->height() == height, "Text placement does not change toolbar row height");
+    const auto card = editor.create_note("Card", {100, 100, 200, 120}, "Body");
+    window.canvas()->synchronize(); window.canvas()->select_elements({*card.created}); settle();
+    require(child<QLabel>(window, "propertyHeading")->text() == "Note" && window.findChild<QLineEdit*>("elementName"),
+            "Existing card Note retains its title Properties");
+    const auto symbol = editor.create_symbol("⋈", {400, 100, 56, 56});
+    window.canvas()->synchronize(); window.canvas()->select_elements({*symbol.created}); settle();
+    require(child<QLabel>(window, "propertyHeading")->text() == "Symbol" && window.findChild<QSpinBox*>("symbolSize"),
+            "Existing Symbol retains its size Properties");
+    window.open_schema(true); settle_for(450);
+    require(!toolbar->widgetForAction(tool)->isVisible(), "Schema workspace does not show Conceptual Text tool");
+}
+
 void entity_kind_terminology_tests()
 {
     infrastructure::QtIdGenerator ids;
@@ -5376,6 +5468,8 @@ int main(int argc, char **argv)
     const auto arguments = QCoreApplication::arguments();
     const bool appearance_only = arguments.contains("--appearance-hover-only");
     const bool navigation_only = arguments.contains("--navigation-only");
+    const bool text_only = arguments.contains("--free-text-only");
+    const bool toolbar_fit_only = arguments.contains("--toolbar-fit-only");
     const bool entity_kind_only = arguments.contains("--entity-kind-only");
     const bool export_part = arguments.contains("--export-state");
     const bool relational_part = arguments.contains("--relational-part");
@@ -5395,6 +5489,10 @@ int main(int argc, char **argv)
     QSettings().clear();
     try
     {
+        if (toolbar_fit_only || whole || window_part) toolbar_fitting_tests();
+        if (toolbar_fit_only) { std::cout << "Toolbar fitting tests passed\n"; return 0; }
+        if (text_only || whole || window_part) free_text_desktop_tests();
+        if (text_only) { std::cout << "Free Text desktop tests passed\n"; return 0; }
         if (entity_kind_only || whole || window_part) entity_kind_terminology_tests();
         if (entity_kind_only) { std::cout << "Entity Kind terminology tests passed\n"; return 0; }
         if (appearance_only || whole || window_part) appearance_hover_tests();
@@ -8251,6 +8349,7 @@ int main(int argc, char **argv)
             window.resize(1280, 820);
             settle();
             require(picker->isVisible(), "A tighter one keeps Notation beside the corner controls");
+            require(bar->actions().size() == tools, "1280 keeps every toolbar action");
             require(bar->iconSize().width() <= wide, "Compact tools use no larger icons than the wide row");
 
             window.resize(700, 620);
@@ -8980,7 +9079,7 @@ int main(int argc, char **argv)
             require(tabs->height() <= 30, "And the row of tabs is no taller for it");
             const auto row_height = home->height();
 
-            // What Insert carried is on Home, after Note: one button dropping
+            // What Insert carried is on Home, after Note and Text: one button dropping
             // the Insert menu.
             auto *insert = child<QToolButton>(window, "insertButton");
             auto *note_tool = child<QAction>(window, "toolNote");
@@ -8989,7 +9088,9 @@ int main(int argc, char **argv)
             for (int i = 0; i < home_actions.size(); ++i)
                 if (home->widgetForAction(home_actions[i]) == insert)
                     insert_at = i;
-            require(insert_at == home_actions.indexOf(note_tool) + 1, "Insert stands on Home right after Note");
+            require(home_actions.indexOf(child<QAction>(window, "toolText")) == home_actions.indexOf(note_tool) + 1
+                    && insert_at == home_actions.indexOf(child<QAction>(window, "toolText")) + 1,
+                    "Text stands between Note and the existing Insert control");
             require(insert->menu() == child<QMenu>(window, "insertMenu") && insert->popupMode() == QToolButton::InstantPopup &&
                         !insert->icon().isNull(),
                     "It drops the Insert menu, picture and symbols, and wears an icon");
@@ -9629,10 +9730,10 @@ int main(int argc, char **argv)
             // The conceptual workspace's own family, as the specification
             // names it, on the row it opens on.
             for (const char *conceptual : {"toolSelect", "toolEntity", "toolAttribute", "toolRelationship",
-                                           "toolIsa", "toolConnect", "toolNote"})
+                                           "toolIsa", "toolConnect", "toolNote", "toolText"})
                 require(window.findChild<QAction *>(conceptual) != nullptr,
                         "The conceptual workspace offers Select, Entity, Attribute, Relationship, "
-                        "Specialization, Connect and Note");
+                        "Specialization, Connect, Note and Text");
             require(explorer_dock->isVisible(), "Leaving it brings them back");
             require(child<QToolBar>(window, "modelTools")->isVisible(), "The drawing tools with them");
             // Undo and redo stay beside the schema while it is open, sharing

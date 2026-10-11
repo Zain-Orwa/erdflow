@@ -1162,7 +1162,7 @@ to build in Part 1* at the end. The state of the test suites is under
 - A row of tabs above the toolbar, the way an office application arranges its
   commands. Three stand there for good (Zain, 2026-10-06), each with an icon
   before its name: **File**, **Home** and **Settings**. **Home** is the
-  modeling toolbar, with Note after Connect and then **Insert ▾**, which drops
+  modeling toolbar, with Note after Connect, **Text**, and then **Insert ▾**, which drops
   the Insert menu (Picture and Symbols; Insert has no tab of its own any
   more). Home's Theme button is put away there -- Settings' Design row offers
   the theme -- so the modeling row keeps its words and the notation picker at
@@ -1276,6 +1276,19 @@ to build in Part 1* at the end. The state of the test suites is under
   duplicated, deleted, undone and saved like elements, appear in the explorer
   under groups of their own, and are not database objects: nothing connects to
   them and no attribute belongs to them. Project files are version 11.
+- **Text** is a visible Conceptual toolbar tool immediately before the
+  existing Insert control containing Picture. It places borderless annotations
+  and reuses the Note icon and
+  Note/NoteId storage with `free_text = true`, independently of card notes and
+  symbols. Placement opens a transient multiline plain-text editor; double-click
+  edits it again, Ctrl+Return or focus loss commits, and Escape cancels. Only
+  normal-weight prose appears when deselected, with no fill, border or icon;
+  selection uses a temporary dashed outline. Measured bounds preserve the
+  origin, without wrapping or resize handles. Properties has only Text content;
+  Explorer uses Notes with a first-line preview. Movement, duplication, deletion
+  and Undo/Redo use existing note history. Format 35 persists the presentation;
+  older formats default it off. Text has no connectors or Schema semantics,
+  appears in visual exports and is absent from structured database listings.
 - Connections join where they are clicked. With **Connect ▾ → Join where I
   click** (the default, remembered between sessions) each end of a new line is
   pinned to the point clicked on its shape, in the same edit as the connection;
@@ -3104,9 +3117,8 @@ building:
 - What optimization is to cover.
 - What icon and information polish is to cover. Known: the Outline icons'
   "on" drawing is hard to see on the Conceptual Explorer's open group rows.
-- Borderless, free text boxes on the diagram, and whether notes or text
-  belong on the schema. Already available on the diagram: the card note, the
-  plain note and review comments.
+- Whether notes or text belong on the schema. Conceptual already has card
+  notes, symbols, borderless free-text annotations and review comments.
 - Any presentation of cardinality and optionality beyond what is there: the
   four notations (Chen, Min–max, Crow's foot -- the default -- and Bachman,
   chosen from either canvas's Appearance menu) and *Show constraints on this

@@ -707,6 +707,27 @@ reported as a picture that carries no project, not as a damaged one. A project
 opened out of a picture has no project file of its own, so the next save asks
 where it should go rather than overwriting the picture with project bytes.
 
+## Version 35: Conceptual free-text annotations
+
+The current writer emits version 35. Each note has exactly `id`, `name`,
+`description`, `plain`, and the required boolean `free_text`. Legal presentations
+are:
+
+| `plain` | `free_text` | Presentation |
+| --- | --- | --- |
+| `false` | `false` | Existing titled card note |
+| `true` | `false` | Existing scalable symbol |
+| `false` | `true` | Borderless plain text; `description` is the visible prose |
+
+Both flags being `true` is invalid. Free-text creation leaves `name` empty and
+uses the ordinary note ID and layout rectangle. Multiline Unicode prose is saved
+without rich-text interpretation. It has no database or Schema semantics.
+
+Versions 1–34 retain their strict historical field sets and must not contain
+`free_text`. Opening them defaults that flag to `false`, preserving cards and
+symbols exactly. Version 35 rejects missing, non-boolean, or conflicting
+presentation flags. Saving an older project writes version 35.
+
 ## Verification
 
 `tests/persistence_tests.cpp` covers exact graph and Unicode roundtrips, copied

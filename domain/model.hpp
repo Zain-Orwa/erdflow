@@ -354,6 +354,9 @@ struct Note {
     // sits in a line of chat. It is still a note in every other way, so it is
     // moved, coloured, copied, deleted and undone like one.
     bool plain = false;
+    // Plain prose, distinct from both a titled card and a scalable symbol.
+    // Its visible content is description; name is unused.
+    bool free_text = false;
     auto operator<=>(const Note&) const = default;
 };
 // The paper a diagram is drawn on. Theme leaves the canvas the plain colour

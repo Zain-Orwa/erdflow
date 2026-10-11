@@ -259,7 +259,9 @@ std::vector<HistoryChange> summarise(const Delta& delta, const Project& now) {
         const auto was = delta.notes.alternate.find(id);
         const bool plain = found != now.notes.end() ? found->second.plain
                          : was != delta.notes.alternate.end() && was->second.plain;
-        return plain ? "Symbol" : "Note";
+        const bool free_text = found != now.notes.end() ? found->second.free_text
+                             : was != delta.notes.alternate.end() && was->second.free_text;
+        return free_text ? "Text" : plain ? "Symbol" : "Note";
     };
     // Created, deleted, renamed or otherwise changed, for each kind of element
     // whose only question is its name.
@@ -853,6 +855,27 @@ EditResult Editor::create_symbol(std::string character, Rect rect) {
         delta.notes.put(id, Note{id, std::move(character), {}, true});
         delta.layout.put(ElementRef{id}, rect);
         return EditResult{true, {}, ElementRef{id}, {}};
+    });
+}
+EditResult Editor::create_free_text(std::string text, Rect rect) {
+    return impl_->edit("Insert text", [&](Delta& delta) {
+        const NoteId id{impl_->next_id()};
+        delta.notes.put(id, Note{id, {}, std::move(text), false, true});
+        delta.layout.put(ElementRef{id}, rect);
+        return EditResult{true, {}, ElementRef{id}, {}};
+    });
+}
+EditResult Editor::edit_free_text(NoteId id, std::string text, Rect rect) {
+    return impl_->edit("Edit text", [&](Delta& delta) {
+        const auto found = project().notes.find(id);
+        if (found == project().notes.end() || !found->second.free_text)
+            return failure("The text annotation no longer exists.");
+        auto value = found->second;
+        value.description = std::move(text);
+        if (value != found->second) delta.notes.put(id, std::move(value));
+        const ElementRef ref{id};
+        if (project().layout.at(ref) != rect) delta.layout.put(ref, rect);
+        return EditResult{};
     });
 }
 EditResult Editor::set_inheritance_direction(SpecializationId specialization, Inheritance direction) {

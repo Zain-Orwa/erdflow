@@ -113,6 +113,8 @@ namespace erdflow::desktop
             if (const auto *note_id = std::get_if<NoteId>(&ref))
             {
                 const auto found = project.notes.find(*note_id);
+                if (found != project.notes.end() && found->second.free_text)
+                    return QStringLiteral("Text");
                 if (found != project.notes.end() && found->second.plain)
                     return QStringLiteral("Symbol");
             }
@@ -290,6 +292,11 @@ namespace erdflow::desktop
 
         QString display_name(const Project &project, ElementRef ref)
         {
+            if (const auto *id = std::get_if<NoteId>(&ref); id && project.notes.at(*id).free_text)
+            {
+                const auto first = text(project.notes.at(*id).description).section('\n', 0, 0);
+                return first.isEmpty() ? QStringLiteral("Text") : QStringLiteral("Text · ") + first.left(64);
+            }
             const auto value = text(name(project, ref));
             return value.isEmpty() ? QStringLiteral("(unnamed)") : value;
         }
@@ -4076,8 +4083,18 @@ namespace erdflow::desktop
         connect(symbols, &QAction::triggered, this, [this]
                 { show_symbols(QStringLiteral("Relational algebra")); });
         // Insert's own tab is gone (Zain, 2026-10-06): what it carried is on
-        // Home, after Note, as one button that drops the Insert menu -- the
+        // Home, after Note and Text, as one button that drops the Insert menu -- the
         // picture and the symbols, the visual aids beside the note.
+        auto *text_action = new QAction("Text", this);
+        text_action->setObjectName("toolText");
+        text_action->setData("Text");
+        text_action->setCheckable(true);
+        text_action->setActionGroup(group);
+        action_glyphs_[text_action] = Glyph::Note;
+        tool_actions_[Tool::Text] = text_action;
+        connect(text_action, &QAction::triggered, this, [this] { choose_tool(Tool::Text, false); });
+        toolbar->addAction(text_action);
+        if (auto *button = toolbar->widgetForAction(text_action)) button->installEventFilter(this);
         auto *insert_button = new QToolButton(toolbar);
         insert_button->setObjectName("insertButton");
         insert_button->setText("Insert");
@@ -4915,6 +4932,24 @@ namespace erdflow::desktop
         const auto surface = surface_of(project, colors, ref);
         const auto ink = readable_on(surface);
         layout->addWidget(heading);
+        if (const auto* id = std::get_if<NoteId>(&ref); id && project.notes.at(*id).free_text) {
+            layout->addWidget(field_label("Text", label_tone, panel));
+            auto *words = new DescriptionEdit(panel);
+            words->setObjectName("elementText");
+            words->setLineWrapMode(QPlainTextEdit::NoWrap);
+            words->setPlainText(text(project.notes.at(*id).description));
+            words->setMinimumHeight(120);
+            words->commit = [this, id = *id, words] {
+                if (refreshing_ || !editor_.project().notes.contains(id)) return;
+                if (bytes(words->toPlainText()) != editor_.project().notes.at(id).description)
+                    show_result(canvas_->edit_free_text(id, words->toPlainText()));
+            };
+            layout->addWidget(words);
+            layout->addWidget(hint("Text changes apply when you leave the field. Every applied change can be undone.", panel));
+            layout->addStretch();
+            properties_->setWidget(panel);
+            return;
+        }
         auto *form = new QFormLayout;
         form->setRowWrapPolicy(QFormLayout::WrapAllRows);
         // The name is written inside the shape the element is drawn as, in the ink
@@ -6191,14 +6226,20 @@ namespace erdflow::desktop
             bool notation_named;
             bool corner_named;
         };
-        static constexpr std::array<Step, 9> steps{{
+        static constexpr std::array<Step, 11> steps{{
             {Qt::ToolButtonTextBesideIcon, 34, true, true, true},
             {Qt::ToolButtonTextBesideIcon, 28, true, true, true},
             {Qt::ToolButtonTextBesideIcon, 24, true, true, true},
             {Qt::ToolButtonTextBesideIcon, 24, true, false, true},
             {Qt::ToolButtonTextBesideIcon, 24, true, false, false},
+            // Keep the tool names when Text pushes the compact labeled row
+            // just past its width budget on platforms with wider lettering.
+            {Qt::ToolButtonTextBesideIcon, 20, true, false, false},
             {Qt::ToolButtonIconOnly, 28, true, true, true},
             {Qt::ToolButtonIconOnly, 24, true, false, false},
+            // Text adds one tool. Try the existing smallest icon size while
+            // keeping Notation before falling back to hiding that control.
+            {Qt::ToolButtonIconOnly, 20, true, false, false},
             {Qt::ToolButtonIconOnly, 24, false, false, false},
             {Qt::ToolButtonIconOnly, 20, false, false, false},
         }};
@@ -6657,7 +6698,10 @@ namespace erdflow::desktop
             // stays the name.
             const bool marked = tool == active && locked;
             action->setText(plain);
-            action->setToolTip(marked ? plain + " is locked. Keep placing; choose another tool or press Escape to stop."
+            if (tool == Tool::Text) {
+                action->setToolTip(marked ? "Text is locked. Keep placing; choose another tool or press Escape to stop."
+                                         : "Place plain text on the Conceptual diagram. Click to place, then type.");
+            } else action->setToolTip(marked ? plain + " is locked. Keep placing; choose another tool or press Escape to stop."
                                       : "Double-click to lock " + plain.toLower() + " for placing several.");
             if (action->property("toolLocked").toBool() != marked)
             {
