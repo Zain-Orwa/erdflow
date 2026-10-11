@@ -1497,7 +1497,7 @@ to build in Part 1* at the end. The state of the test suites is under
   join setting, so each slides round its shapes as they move, until it is
   locked by hand. Every other connection Connect makes is unchanged.
 - Weak entities and identifying relationships: an entity's **Kind** in
-  Properties is Regular or Weak, and a relationship's is Regular, Identifying
+  Properties is Strong or Weak, and a relationship's is Regular, Identifying
   or Associative. A weak entity is drawn with a double border and its key
   attribute as a partial key with a dashed underline; an identifying
   relationship as a double diamond. A weak entity without an identifying
@@ -3099,8 +3099,8 @@ building:
   it has the same File, Home and Settings tabs, keeps its tools in its
   header, and its rows leave out what acts on the diagram alone.
 - The gesture for reordering columns.
-- *Strong* or *Regular* for an entity that is not weak. Today an entity is
-  *Regular* or *Weak*, and a relationship *Regular* or *Identifying*.
+- ~~The name for an entity that is not weak~~ -- **decided**: an entity's Kind
+  is *Strong* or *Weak*. Relationship *Regular* terminology remains unchanged.
 - What optimization is to cover.
 - What icon and information polish is to cover. Known: the Outline icons'
   "on" drawing is hard to see on the Conceptual Explorer's open group rows.

@@ -3687,6 +3687,9 @@ void document_export_tests() {
     const auto building = std::get<domain::EntityId>(*owner.created);
     const auto room = std::get<domain::EntityId>(*weak.created);
     require(editor.set_entity_weak(room, true), "A weak entity to list");
+    require(!editor.project().entities.at(building).weak && editor.project().entities.at(room).weak,
+            "Strong and Weak listing values retain the existing boolean semantics");
+    require(editor.create_relationship("Visits", {200, 400, 190, 110}), "A regular relationship to list");
     const auto contains = editor.create_relationship("Contains", {200, 200, 190, 110});
     const auto relationship = std::get<domain::RelationshipId>(*contains.created);
     require(editor.set_relationship_kind(relationship, domain::RelationshipKind::Identifying),
@@ -3722,6 +3725,9 @@ void document_export_tests() {
     require(markdown.contains("Partial key"), "Calling a weak entity's key what it is");
     require(markdown.contains("Derived"), "And naming the attribute nobody stores");
     require(markdown.contains("Weak"), "Saying which entity has no key of its own");
+    require(markdown.contains("| Building | Strong |") && markdown.contains("| Room | Weak |"),
+            "Markdown entity Kind rows say Strong and Weak");
+    require(markdown.contains("| Visits | Regular |"), "Markdown relationship Kind remains Regular");
     require(markdown.contains("Identifying"), "And which relationship it is identified through");
     require(markdown.contains("as owner"), "A role on a side is part of what the side says");
     require(markdown.contains("(one, mandatory)") && markdown.contains("(many, optional)"),
@@ -3737,6 +3743,9 @@ void document_export_tests() {
     require(desktop::draw_document(view, editor.project(), desktop::DocumentFormat::Csv, csv).ok, "A CSV listing");
     require(csv.startsWith("Element,Name,Belongs to,Kind,Detail,Description\n"), "With a header row");
     require(csv.contains("\"Entity\",\"Building\""), "And one row per element, quoted");
+    require(csv.contains("\"Entity\",\"Building\",\"\",\"Strong\"")
+            && csv.contains("\"Entity\",\"Room\",\"\",\"Weak\""), "CSV entity Kind rows say Strong and Weak");
+    require(csv.contains("\"Relationship\",\"Visits\",\"(not connected)\",\"Regular\""), "CSV relationship Kind remains Regular");
     require(csv.count('\n') >= 5, "Covering entities, attributes and relationships alike");
 
     QByteArray html;

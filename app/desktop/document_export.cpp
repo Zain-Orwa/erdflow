@@ -146,7 +146,7 @@ void in_reading_order(const Map& map, Fn&& append) {
                 owned.push_back(shown(text(attribute.name)));
         });
         listing.entities.push_back({QStringLiteral("Entity"), shown(text(entity.name)), {},
-                                    entity.weak ? QStringLiteral("Weak") : QStringLiteral("Regular"),
+                                    entity.weak ? QStringLiteral("Weak") : QStringLiteral("Strong"),
                                     owned.empty() ? QStringLiteral("—")
                                                   : QStringList(QList<QString>(owned.begin(), owned.end())).join(", "),
                                     text(entity.description)});
