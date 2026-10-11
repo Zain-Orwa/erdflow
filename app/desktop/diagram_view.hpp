@@ -57,19 +57,25 @@ enum class JoinMode { Automatic, WhereClicked };
 // associative relationship adopts the entity size, because that is what it
 // behaves as on the diagram.
 //
-// THESE ARE THE DEFAULTS AND ARE NOT TO BE CHANGED. They are the size an
-// element is *created* at, not a limit on it: every element is resized freely
-// by its corners and edges on the canvas, or by typing a width and a height
-// into the Properties panel, and a size given by hand is kept for that element
-// and stored with the document. So this decides what somebody meets when they
-// draw one, and nothing more.
+// THESE ARE THE DEFAULTS AND ARE NOT TO BE CHANGED without Zain. They are the
+// size an element is *created* at, not a limit on it: every element is resized
+// freely by its corners and edges on the canvas, or by typing a width and a
+// height into the Properties panel, and a size given by hand is kept for that
+// element and stored with the document. So this decides what somebody meets
+// when they draw one, and nothing more.
 //
-// The entity's figures are the ones Zain settled on by drawing one and sizing
-// it until it looked right; everything else is proportioned to sit beside it.
+// The entity's figures were first the ones Zain settled on by drawing one and
+// sizing it until it looked right, 148 x 86, with the attribute at 150 x 60 and
+// the relationship at 190 x 110. Zain then made all three smaller and let each
+// grow only as wide as its name needs (2026-10-11): these are the least an
+// element is made at, and an entity, an attribute or a relationship whose name
+// would be cut short is made wider, or widened when it is renamed, by
+// width_for_name below. A name made shorter never narrows it, and a diagram
+// opened is drawn at exactly the sizes it was saved with.
 struct BodySize { double width, height; };
-inline constexpr BodySize entity_body{148, 86};
-inline constexpr BodySize attribute_body{150, 60};
-inline constexpr BodySize relationship_body{190, 110};
+inline constexpr BodySize entity_body{133, 77};
+inline constexpr BodySize attribute_body{135, 54};
+inline constexpr BodySize relationship_body{171, 99};
 inline constexpr BodySize isa_body{96, 74};
 inline constexpr BodySize note_body{200, 120};
 
@@ -107,12 +113,19 @@ inline constexpr double symbol_step = 1.25;
 
 // How wide a new entity, attribute or relationship has to be for its name to
 // be written whole on the canvas, at the lettering the canvas uses: the
-// default above where that is wide enough, and more where it is not. The
-// defaults are unchanged by it; it is for a diagram drawn from something else
-// -- a schema converted into one -- so it does not open on names cut short,
-// as the template's wider diamond does not (Zain, 2026-09-27).
+// default above where that is wide enough, and more where it is not. It was
+// first for a diagram drawn from something else -- a schema converted into one
+// -- so it does not open on names cut short, as the template's wider diamond
+// does not (Zain, 2026-09-27); a name given on the canvas is now fitted by it
+// too (2026-10-11).
 enum class NamedShape { Entity, Attribute, Relationship };
 [[nodiscard]] double width_for_name(NamedShape shape, const QString& name, const QFont& base);
+// The least width a shape of that kind and height needs for the name to be
+// written whole, with its lettering drawn at that factor of ordinary, measured
+// as it is painted: the room a box, an oval or a diamond leaves the name, and
+// for an oval its curve as well. No default is put under it.
+[[nodiscard]] double name_room_width(NamedShape shape, const QString& name, const QFont& base, double lettering,
+                                     double height);
 
 // What a search is looking for. Everything is the ordinary state, and the rest
 // narrow it to one kind, so "only the entities" is asked for by choosing a kind
@@ -147,6 +160,11 @@ public:
     explicit DiagramView(application::Editor& editor, QWidget* parent = nullptr);
     ~DiagramView() override;
     void synchronize();
+    // Renames an element as Editor::rename does, and an entity, attribute or
+    // relationship whose box is too narrow for the new name to be written whole
+    // is widened just enough, in the same step of history. A shorter name never
+    // narrows it. Every rename made on the diagram or its panels comes here.
+    application::EditResult rename(const domain::ElementRef& ref, const std::string& name);
     // A tool used once returns to Select; a locked tool stays until changed, so
     // several elements can be placed without reaching for the toolbar each time.
     void set_tool(Tool tool, bool locked = false);

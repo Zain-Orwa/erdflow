@@ -2064,6 +2064,40 @@ void comments_persist() {
 
 // The size an element's name is drawn for is kept once it has been resized by
 // hand, travels through a file, and is refused where it does not belong.
+// The defaults an element is made at were made smaller, and a name now widens
+// its shape when it is given (2026-10-11). A project saved before, or with
+// shapes narrower than their names, keeps every size it was saved with: at the
+// old defaults, at sizes given by hand, and too narrow for its own name.
+void saved_sizes_open_as_saved() {
+    QtIdGenerator ids;
+    Editor editor{ids};
+    const auto student = std::get<EntityId>(*editor.create_entity("Student", {0, 0, 148, 86}).created);
+    const auto enrolled = std::get<RelationshipId>(*editor.create_relationship("Enrolled", {300, 0, 190, 110}).created);
+    const auto born = std::get<AttributeId>(
+        *editor.create_attribute("Born", {0, -120, 150, 60}, AttributeOwner{ElementRef{student}}).created);
+    const auto narrow =
+        std::get<EntityId>(*editor.create_entity("A Name Far Longer Than Its Box", {0, 300, 90, 50}).created);
+    const auto diamond =
+        std::get<RelationshipId>(*editor.create_relationship("Is Responsible For", {300, 300, 120, 60}).created);
+    const auto oval = std::get<AttributeId>(*editor.create_attribute("Date Of Registration", {0, 500, 80, 44}).created);
+    CHECK(editor.resize_attributes({{ElementRef{oval}, {0, 500, 70, 44}}}));
+    const auto layout = editor.project().layout;
+    const auto lettering = editor.project().lettering;
+    ErdxProjectStore store;
+    QTemporaryDir directory;
+    CHECK(directory.isValid());
+    const auto path = directory.filePath("sizes.erdx").toStdString();
+    CHECK(store.save(path, editor.project()));
+    const auto opened = store.load(path);
+    CHECK(opened && opened.project->layout == layout && opened.project->lettering == lettering);
+    CHECK((opened.project->layout.at(ElementRef{student}) == Rect{0, 0, 148, 86}));
+    CHECK((opened.project->layout.at(ElementRef{enrolled}) == Rect{300, 0, 190, 110}));
+    CHECK((opened.project->layout.at(ElementRef{born}) == Rect{0, -120, 150, 60}));
+    CHECK((opened.project->layout.at(ElementRef{narrow}) == Rect{0, 300, 90, 50}));
+    CHECK((opened.project->layout.at(ElementRef{diamond}) == Rect{300, 300, 120, 60}));
+    CHECK((opened.project->layout.at(ElementRef{oval}) == Rect{0, 500, 70, 44}));
+}
+
 void lettering_persists() {
     Fixture fixture;
     const ElementRef address{fixture.address};
@@ -2798,6 +2832,7 @@ int main() {
         {"UUIDv7 and exact graph roundtrip", uuid_generation_and_roundtrip},
         {"relationship sizes survive open and resize", relationship_sizes_survive_open_and_resize},
         {"lettering persists", lettering_persists},
+        {"saved sizes open as saved", saved_sizes_open_as_saved},
         {"incomplete draft save/open", incomplete_models_save_and_open},
         {"project description across the version boundary", project_description_persists_across_the_version_boundary},
         {"malformed JSON and Unicode", malformed_json_and_text},

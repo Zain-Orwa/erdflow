@@ -1104,7 +1104,7 @@ EditResult Editor::merge_project(const Project& other, double dx, double dy) {
 // it is given another, the attribute has no name of its own yet.
 constexpr std::string_view placed_attribute_name = "Attribute";
 
-EditResult Editor::rename(ElementRef ref, std::string name) {
+EditResult Editor::rename(ElementRef ref, std::string name, double least_width) {
     return impl_->edit("Rename element", [&](Delta& delta) {
         const auto characters = character_count(name);
         // Attributes are placed first and named afterwards, several at a time,
@@ -1126,6 +1126,16 @@ EditResult Editor::rename(ElementRef ref, std::string name) {
                 if (named_now) value.creation_order = *named_now;
         });
         if (result) hold_anchors(project(), delta, ref, TextField::Name, characters);
+        if (result && (std::holds_alternative<EntityId>(ref) || std::holds_alternative<RelationshipId>(ref)
+                       || std::holds_alternative<AttributeId>(ref)))
+            if (const auto found = project().layout.find(ref);
+                found != project().layout.end() && found->second.width < least_width) {
+                auto widened = found->second;
+                widened.width = std::min(least_width, max_entity_width);
+                widened.x = std::clamp(found->second.x - (widened.width - found->second.width) / 2, -max_coordinate,
+                                       max_coordinate - widened.width);
+                if (widened != found->second) delta.layout.put(ref, widened);
+            }
         return result;
     });
 }

@@ -158,7 +158,11 @@ public:
     // clear of what is already drawn. The paper and the project's own name are
     // left alone: what is imported is the work, not the document around it.
     EditResult merge_project(const domain::Project& other, double dx, double dy);
-    EditResult rename(domain::ElementRef ref, std::string name);
+    // An entity, attribute or relationship narrower than least_width is widened
+    // to it about its centre in the same edit, for a name that would otherwise
+    // be cut short (2026-10-11); its height, and the size its name is lettered
+    // for, are left as they are. Nothing is ever narrowed by a rename.
+    EditResult rename(domain::ElementRef ref, std::string name, double least_width = 0);
     EditResult describe(domain::ElementRef ref, std::string description);
     // What this becomes in the schema's own words, for the three things that
     // become tables and columns. Refused for anything else, so a note or a

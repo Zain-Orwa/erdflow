@@ -5872,8 +5872,10 @@ int main(int argc, char **argv)
                 for (const auto &[id, entity] : project.entities)
                 {
                     const auto &at = project.layout.at(domain::ElementRef{id});
-                    require(at.width == desktop::entity_body.width && at.height == desktop::entity_body.height,
-                            "Entities at the size the canvas makes them");
+                    // The card's picture is a composition of its own, at the
+                    // figures it was drawn at (ADR-022 9.21): it kept them when
+                    // the canvas's defaults were made smaller (2026-10-11).
+                    require(at.width == 148 && at.height == 86, "Entities at the size the card was composed at");
                 }
             }
 
@@ -6772,6 +6774,15 @@ int main(int argc, char **argv)
         window.canvas()->setFocus();
         settle();
         require(window.editor().project().entities.at(student).name == "UniversityStudent", "Name commits through properties on focus loss");
+        {
+            // Too long for the box it had, the entity is widened just for it,
+            // in the same edit, and no taller (2026-10-11).
+            const auto &was = original.layout.at(domain::ElementRef{student});
+            const auto &now = window.editor().project().layout.at(domain::ElementRef{student});
+            require(now.width > was.width && now.height == was.height &&
+                        std::abs(now.x + now.width / 2 - (was.x + was.width / 2)) < 0.01,
+                    "A name too long for its entity widens it about its centre");
+        }
         require(window.editor().dirty() && window.isWindowModified(), "Applied field edit marks project dirty");
         auto *undo = child<QAction>(window, "undoCommand");
         require(undo->isEnabled(), "Undo action reflects history");
