@@ -27,6 +27,7 @@
 #include <QTimer>
 #include <QPainter>
 #include <QPainterPathStroker>
+#include <QStaticText>
 #include <QPointingDevice>
 #include <QWheelEvent>
 #include <QSvgRenderer>
@@ -1270,7 +1271,7 @@ void weak_and_identifying_drawing_tests() {
 // A total participation is drawn as a double line in every notation (Zain,
 // 2026-10-03): two lines of one weight, a narrow gap apart, either side of
 // where the single line runs. A partial one stays the single line it was.
-void total_participation_drawing_tests() {
+void total_participation_drawing_tests(desktop::MinMaxDisplayMode mode = desktop::MinMaxDisplayMode::CardinalityAndOrdinality) {
     SequentialIds ids;
     application::Editor editor(ids);
     const auto student = std::get<domain::EntityId>(*editor.create_entity("Student", {-520, -43, 148, 86}).created);
@@ -1283,6 +1284,7 @@ void total_participation_drawing_tests() {
 
     desktop::DiagramView view(editor);
     view.resize(1200, 500);
+    view.set_minmax_display_mode(mode);
     view.show();
     view.set_grid_visible(false);
     view.actual_size();
@@ -1437,7 +1439,7 @@ void cardinality_labels_sit_at_the_entity_end_tests() {
 // Inspect the existing hit shape's label subpath; no production test API or
 // font-dependent expected width is needed. Check whole stroked runs, rather
 // than individual antialiased pixels, at all three rendered weights.
-void routed_entity_end_label_tests() {
+void routed_entity_end_label_tests(desktop::MinMaxDisplayMode mode = desktop::MinMaxDisplayMode::CardinalityAndOrdinality) {
     const auto label_rect = [](QGraphicsItem* item, bool role = false) {
         const auto polygons = item->shape().toSubpathPolygons();
         return polygons[polygons.size() - (role ? 2 : 1)].boundingRect();
@@ -1490,6 +1492,7 @@ void routed_entity_end_label_tests() {
             desktop::DiagramView view(editor);
             view.set_notation(notation);
             view.set_line_style(desktop::LineStyle::Elbow);
+            view.set_minmax_display_mode(mode);
             auto* edge = find_edge(view);
             const auto label = label_rect(edge);
             near_end(label, {300, 143});
@@ -1522,6 +1525,7 @@ void routed_entity_end_label_tests() {
                 require(editor.route_connector(participant, route), "Public API accepts coincident final waypoints");
                 desktop::DiagramView view(editor);
                 view.set_notation(notation);
+                view.set_minmax_display_mode(mode);
                 const auto label = label_rect(find_edge(view)).translated(-translation);
                 near_end(label, {100, 0});
                 require(std::abs(label.right() - 98) < 0.001 && std::abs(label.bottom() + 8.2) < 0.001,
@@ -1549,6 +1553,7 @@ void routed_entity_end_label_tests() {
             require(editor.update_participant(rel, participant, domain::Cardinality::One, domain::Participation::Total, ""), "Total coincident endpoint");
             desktop::DiagramView view(editor);
             view.set_notation(notation);
+            view.set_minmax_display_mode(mode);
             const auto label = label_rect(find_edge(view));
             require(std::abs(label.right() - 98) < 0.001 && std::abs(label.bottom() + 8.2) < 0.001,
                     "Coincident endpoint walks back to the real horizontal segment");
@@ -1568,6 +1573,7 @@ void routed_entity_end_label_tests() {
             desktop::DiagramView view(editor);
             view.set_notation(notation);
             view.set_line_style(desktop::LineStyle::Elbow);
+            view.set_minmax_display_mode(mode);
             std::vector<QRectF> labels;
             for (auto* edge : view.scene()->items()) {
                 if (edge->zValue() >= 0 || !edge->toolTip().startsWith("Participant")) continue;
@@ -2498,6 +2504,124 @@ void notation_tests() {
             for (std::size_t b = a + 1; b < combinations.size(); ++b)
                 require(combinations[a] != combinations[b], "Every minimum/maximum pair is drawn distinctly");
     }
+}
+
+void minmax_display_mode_tests() {
+    using desktop::MinMaxDisplayMode;
+    SequentialIds ids;
+    application::Editor editor(ids);
+    const auto entity = std::get<domain::EntityId>(*editor.create_entity("Entity", {300, -43, 148, 86}).created);
+    const auto rel = std::get<domain::RelationshipId>(*editor.create_relationship("Link", {-95, -55, 190, 110}).created);
+    const auto side = *editor.connect(rel, entity).participant;
+    desktop::DiagramView view(editor);
+    view.set_line_style(desktop::LineStyle::Straight);
+    view.set_notation(desktop::Notation::MinMax);
+    require(view.minmax_display_mode() == MinMaxDisplayMode::CardinalityAndOrdinality, "Fresh canvas retains combined Min-max default");
+    const auto render = [&] {
+        QImage image(700, 250, QImage::Format_ARGB32_Premultiplied);
+        image.fill(view.canvas_colour());
+        QPainter painter(&image);
+        view.render_diagram(painter, QRectF(0, 0, 700, 250), QRectF(-150, -125, 700, 250));
+        return image;
+    };
+    // Compare the actual painted label with independently supplied expected
+    // text, using the same platform font. This checks characters, not just width.
+    const auto expect_label = [&](const QString& text, QGraphicsItem* edge = nullptr) {
+        if (!edge) edge = find_edge(view);
+        const auto box = edge->shape().toSubpathPolygons().back().boundingRect();
+        QFont font;
+        font.setFamilies({"Inter", "Source Sans 3", "IBM Plex Sans", "Segoe UI Variable",
+                          "Segoe UI", "SF Pro Text", "Helvetica Neue", "Arial"});
+        font.setStyleHint(QFont::SansSerif, QFont::PreferAntialias);
+        font.setPointSizeF(10 * desktop::lettering_scale);
+        require(std::abs(box.width() - QFontMetricsF(font).horizontalAdvance(text) - 10) < 0.001,
+                "Label width follows the actual selected text");
+        const QSize size(static_cast<int>(std::ceil(box.width())) + 8, 37);
+        QImage actual(size, QImage::Format_ARGB32_Premultiplied);
+        actual.fill(view.canvas_colour());
+        QImage expected = actual;
+        const auto paint = [&](QImage& image, bool reference) {
+            QPainter painter(&image);
+            painter.setRenderHint(QPainter::Antialiasing);
+            painter.translate(QPointF(4, 4) - box.topLeft());
+            painter.setClipRect(box);
+            if (!reference) { edge->paint(&painter, nullptr, nullptr); return; }
+            painter.setFont(font);
+            painter.setPen(desktop::theme(view.theme_id()).node_text);
+            QStaticText written(text);
+            written.prepare(QTransform(), font);
+            const auto extent = written.size();
+            painter.drawStaticText(box.center() - QPointF(extent.width() / 2, extent.height() / 2), written);
+        };
+        paint(actual, false); paint(expected, true);
+        require(actual == expected, "Painted Min-max label matches the exact expected string");
+    };
+    for (const auto maximum : {domain::Cardinality::One, domain::Cardinality::Many}) {
+        for (const auto participation : {domain::Participation::Partial, domain::Participation::Total}) {
+            require(editor.update_participant(rel, side, maximum, participation, ""), "Min-max mapping state");
+            view.synchronize();
+            editor.mark_saved(editor.revision());
+            const auto project = editor.project();
+            const auto revision = editor.revision();
+            const auto history = editor.history_bytes();
+            const auto undo = editor.undo_label(), redo = editor.redo_label();
+            view.set_minmax_display_mode(MinMaxDisplayMode::CardinalityAndOrdinality);
+            const auto pair = QString("(%1,%2)").arg(participation == domain::Participation::Total ? "1" : "0",
+                                                     maximum == domain::Cardinality::Many ? "M" : "1");
+            expect_label(pair);
+            const auto combined = render();
+            view.set_minmax_display_mode(MinMaxDisplayMode::CardinalityOnly);
+            expect_label(maximum == domain::Cardinality::Many ? "M" : "1");
+            require(render() != combined, "Runtime mode switch immediately changes the rendered label");
+            view.set_minmax_display_mode(MinMaxDisplayMode::CardinalityAndOrdinality);
+            require(render() == combined, "Switching back exactly restores combined rendering");
+            require(editor.project() == project && editor.revision() == revision && !editor.dirty()
+                    && editor.history_bytes() == history && editor.undo_label() == undo && editor.redo_label() == redo,
+                    "Display switching preserves project, IDs, routes, revision, dirty state and history");
+        }
+    }
+    for (const auto notation : {desktop::Notation::Chen, desktop::Notation::CrowsFoot, desktop::Notation::Bachman}) {
+        view.set_notation(notation);
+        const auto before = render();
+        const auto preview = view.notation_preview(notation, {72, 24}).toImage();
+        view.set_minmax_display_mode(MinMaxDisplayMode::CardinalityOnly);
+        require(render() == before && view.notation_preview(notation, {72, 24}).toImage() == preview,
+                "Other notation diagrams and samples are unchanged by Min-max mode");
+        view.set_minmax_display_mode(MinMaxDisplayMode::CardinalityAndOrdinality);
+    }
+    view.set_notation(desktop::Notation::MinMax);
+    const auto recursive = *editor.connect(rel, entity).participant;
+    require(editor.update_participant(rel, recursive, domain::Cardinality::One, domain::Participation::Total, ""), "Add recursive side after presentation setup");
+    view.synchronize();
+    view.set_minmax_display_mode(MinMaxDisplayMode::CardinalityOnly);
+    for (auto* edge : view.scene()->items())
+        if (edge->zValue() < 0 && edge->toolTip().startsWith("Participant"))
+            expect_label(edge->toolTip().startsWith("Participant: One") ? "1" : "M", edge);
+    view.set_minmax_display_mode(MinMaxDisplayMode::CardinalityAndOrdinality);
+    for (auto* edge : view.scene()->items())
+        if (edge->zValue() < 0 && edge->toolTip().startsWith("Participant"))
+            expect_label(edge->toolTip().startsWith("Participant: One") ? "(1,1)" : "(1,M)", edge);
+    const auto sample = view.notation_preview(desktop::Notation::MinMax, {72, 24}).toImage();
+    const auto exported = [&] {
+        desktop::PictureOptions options;
+        options.format = desktop::PictureFormat::Png;
+        options.background = desktop::PictureBackground::ThemeColour;
+        QByteArray bytes;
+        require(desktop::draw_picture(view, options, {}, bytes).ok, "Export Min-max diagram");
+        return QImage::fromData(bytes, "PNG");
+    };
+    const auto combined_export = exported();
+    view.set_minmax_display_mode(MinMaxDisplayMode::CardinalityOnly);
+    require(view.notation_preview(desktop::Notation::MinMax, {72, 24}).toImage() != sample,
+            "Min-max preview reflects the current text mode");
+    require(exported() != combined_export, "Export follows the live cardinality-only canvas");
+    view.set_notation(desktop::Notation::Chen);
+    view.set_notation(desktop::Notation::MinMax);
+    require(view.minmax_display_mode() == MinMaxDisplayMode::CardinalityOnly, "Notation switching retains session choice");
+    view.set_minmax_display_mode(MinMaxDisplayMode::CardinalityAndOrdinality);
+    require(exported() == combined_export, "Export restores the exact combined form");
+    desktop::DiagramView fresh(editor);
+    require(fresh.minmax_display_mode() == MinMaxDisplayMode::CardinalityAndOrdinality, "An independent canvas has no persisted display choice");
 }
 
 // A tool used once returns to Select; a locked tool stays, so several elements
@@ -4851,14 +4975,17 @@ int main(int argc, char** argv) {
         element_shape_preview_tests();
         weak_and_identifying_drawing_tests();
         total_participation_drawing_tests();
+        total_participation_drawing_tests(desktop::MinMaxDisplayMode::CardinalityOnly);
         cardinality_labels_sit_at_the_entity_end_tests();
         routed_entity_end_label_tests();
+        routed_entity_end_label_tests(desktop::MinMaxDisplayMode::CardinalityOnly);
         element_colour_tests();
         extend_selection_tests();
         picker_sample_tests();
         participant_menu_tests();
         inline_rename_tests();
         notation_tests();
+        minmax_display_mode_tests();
         attribute_trunk_and_line_style_tests();
         selection_highlight_tests();
         tool_locking_tests();

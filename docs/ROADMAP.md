@@ -36,7 +36,7 @@ Do not redesign cardinality.
 
 ### 2. Conceptual Min–max display mode
 
-Status: PENDING
+Status: DONE
 
 The underlying cardinality and ordinality system already exists.
 

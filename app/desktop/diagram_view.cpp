@@ -202,6 +202,12 @@ QPainterPath alongside(const QPainterPath& path, qreal distance) {
     return moved;
 }
 
+QString minmax_label(bool many, bool mandatory, MinMaxDisplayMode mode) {
+    if (mode == MinMaxDisplayMode::CardinalityOnly)
+        return many ? QStringLiteral("M") : QStringLiteral("1");
+    return QStringLiteral("(%1,%2)").arg(mandatory ? "1" : "0", many ? "M" : "1");
+}
+
 // The face the diagram is lettered in, at a size given in the units everything
 // else on the diagram is measured in.
 //
@@ -1106,6 +1112,7 @@ public:
     // the notation the work is done in, so it is the one a diagram should be
     // in before anyone has been asked.
     Notation notation = Notation::CrowsFoot;
+    MinMaxDisplayMode minmax_display_mode = MinMaxDisplayMode::CardinalityAndOrdinality;
     LineStyle style = LineStyle::Elbow;
 
     // Every notation reads the same two values: the minimum from participation
@@ -1127,7 +1134,7 @@ public:
         if (!descriptor.relationship) return {};
         if (notation == Notation::Chen) return many() ? QStringLiteral("M") : QStringLiteral("1");
         if (notation == Notation::MinMax)
-            return QStringLiteral("(%1,%2)").arg(mandatory() ? "1" : "0", many() ? "M" : "1");
+            return minmax_label(many(), mandatory(), minmax_display_mode);
         return {};
     }
 
@@ -1826,6 +1833,7 @@ struct DiagramView::Impl {
     Tool active_tool = Tool::Select;
     ThemeId theme_id = ThemeId::OfficeLight;
     Notation notation = Notation::CrowsFoot;
+    MinMaxDisplayMode minmax_display_mode = MinMaxDisplayMode::CardinalityAndOrdinality;
     LineStyle style = LineStyle::Elbow;
     JoinMode join_mode = JoinMode::Automatic;
     bool tool_locked = false;
@@ -3122,6 +3130,7 @@ void DiagramView::synchronize() {
         if (found == impl_->edges.end()) {
             auto* edge = new EdgeItem(description, impl_->nodes.at(description.from), impl_->nodes.at(description.to), theme(impl_->theme_id));
             edge->notation = impl_->notation;
+            edge->minmax_display_mode = impl_->minmax_display_mode;
             impl_->edges.emplace(key, edge);
             edge->style = impl_->style;
             impl_->incident[description.from].insert(edge);
@@ -3317,6 +3326,18 @@ void DiagramView::set_notation(Notation notation) {
 }
 Notation DiagramView::notation() const { return impl_->notation; }
 
+void DiagramView::set_minmax_display_mode(MinMaxDisplayMode mode) {
+    if (impl_->minmax_display_mode == mode) return;
+    impl_->minmax_display_mode = mode;
+    for (auto& [key, edge] : impl_->edges) {
+        (void)key;
+        edge->minmax_display_mode = mode;
+        edge->refresh();
+    }
+    viewport()->update();
+}
+MinMaxDisplayMode DiagramView::minmax_display_mode() const { return impl_->minmax_display_mode; }
+
 void DiagramView::preview_background(std::optional<domain::BackgroundStyle> style) {
     if (impl_->background_preview == style) return;
     impl_->background_preview = style;
@@ -3403,7 +3424,7 @@ QPixmap DiagramView::notation_preview(Notation notation, QSize size, std::option
     // for it at the right and the line stops short, so the line never runs
     // through the very characters the reader is being shown.
     const auto reading = notation == Notation::Chen ? QStringLiteral("M")
-                       : notation == Notation::MinMax ? QStringLiteral("(1,M)") : QString();
+                       : notation == Notation::MinMax ? minmax_label(true, true, impl_->minmax_display_mode) : QString();
     const qreal written = reading.isEmpty()
         ? 0.0 : QFontMetricsF(font).horizontalAdvance(reading) + 5;
     // A mandatory "many" end exercises both symbols in every notation.

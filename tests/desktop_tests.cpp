@@ -66,6 +66,7 @@
 #include <QInputDialog>
 #include <QRegularExpression>
 #include <QAbstractButton>
+#include <QActionGroup>
 #include <QSettings>
 #include <QSlider>
 #include <QWidgetAction>
@@ -5223,6 +5224,92 @@ void navigation_foldout_tests()
     require(window.menuBar()->isNativeMenuBar() || !window.menuBar()->isVisible(), "The old non-native seven-item menu row stays hidden");
 }
 
+void minmax_display_menu_tests()
+{
+    using desktop::MinMaxDisplayMode;
+    infrastructure::QtIdGenerator ids;
+    application::Editor editor(ids);
+    infrastructure::ErdxProjectStore store;
+    desktop::MainWindow window(editor, store, ids);
+    window.resize(1440, 900);
+    window.show();
+    window.load_example();
+    settle();
+    auto *picker = child<QComboBox>(window, "notationPicker");
+    auto *notation = child<QMenu>(window, "notationMenu");
+    auto *menu = child<QMenu>(window, "minmaxDisplayMenu");
+    auto *only = child<QAction>(window, "minmaxCardinalityOnly");
+    auto *combined = child<QAction>(window, "minmaxCardinalityOrdinality");
+    auto *group = window.findChild<QActionGroup *>("minmaxDisplayGroup");
+    require(group && group->isExclusive() && only->actionGroup() == group && combined->actionGroup() == group,
+            "Min-max display uses one exclusive action group");
+    require(menu->actions() == QList<QAction *>{only, combined}
+            && only->text() == "Cardinality only" && combined->text() == "Cardinality + ordinality",
+            "Display submenu has exactly the two approved choices");
+    require(only->isCheckable() && combined->isCheckable() && !only->isChecked() && combined->isChecked(),
+            "Combined mode is the checked default");
+    require(picker->count() == 4 && notation->actions().size() == 5
+            && notation->actions().back() == menu->menuAction(), "Four notations remain, followed by one real submenu");
+    for (const char *name : {"notationChen", "notationMinmax", "notationCrowsfoot", "notationBachman"})
+        require(notation->actions().contains(child<QAction>(window, name)), "Existing notation actions stay intact");
+    require(!menu->menuAction()->isVisible() && !only->isEnabled() && !combined->isEnabled(),
+            "Display choices are hidden and disabled outside Min-max");
+    require(child<QMenu>(window, "settingsMenu")->actions().contains(notation->menuAction())
+            && window.findChildren<QMenu *>("minmaxDisplayMenu").size() == 1
+            && window.findChildren<QAction *>("minmaxCardinalityOnly").size() == 1,
+            "Home Settings reuses the one actual Notation submenu and its actions");
+    picker->setCurrentIndex(static_cast<int>(desktop::Notation::MinMax));
+    settle();
+    require(menu->menuAction()->isVisible() && only->isEnabled() && combined->isEnabled(), "Picker enables Min-max display choices");
+    const auto preview = picker->itemIcon(static_cast<int>(desktop::Notation::MinMax)).pixmap(58, 22).toImage();
+    const auto settings = QSettings().allKeys();
+    editor.mark_saved(editor.revision());
+    const auto project = editor.project();
+    const auto bytes = infrastructure::ErdxProjectStore::encode(project);
+    const auto revision = editor.revision();
+    const auto undo = editor.undo_label(), redo = editor.redo_label();
+    const auto history = editor.history_bytes();
+    only->trigger(); settle();
+    require(only->isChecked() && !combined->isChecked() && window.canvas()->minmax_display_mode() == MinMaxDisplayMode::CardinalityOnly,
+            "Only action updates the primary canvas and exclusive checks");
+    require(picker->itemIcon(static_cast<int>(desktop::Notation::MinMax)).pixmap(58, 22).toImage() != preview,
+            "Mode controller updates the picker Min-max icon");
+    auto *secondary = dynamic_cast<desktop::DiagramView *>(window.findChild<QWidget *>("conceptualPreview"));
+    require(secondary && secondary->minmax_display_mode() == MinMaxDisplayMode::CardinalityOnly,
+            "Secondary Conceptual view receives the primary canvas mode");
+    child<QAction>(window, "notationChen")->trigger(); settle();
+    require(!menu->menuAction()->isVisible() && !only->isEnabled() && only->isChecked(), "Leaving Min-max hides choices and retains mode");
+    child<QAction>(window, "notationMinmax")->trigger(); settle();
+    require(menu->menuAction()->isVisible() && only->isEnabled() && only->isChecked()
+            && window.canvas()->minmax_display_mode() == MinMaxDisplayMode::CardinalityOnly,
+            "Returning through notation action retains the session choice");
+    window.open_schema(true); settle();
+    const auto schema = window.schema()->grab().toImage();
+    combined->trigger(); settle();
+    require(combined->isChecked() && !only->isChecked()
+            && secondary->minmax_display_mode() == MinMaxDisplayMode::CardinalityAndOrdinality,
+            "Combined action synchronizes both Conceptual views");
+    require(window.schema()->grab().toImage() == schema, "Conceptual display choice leaves Schema rendering unchanged");
+    require(editor.project() == project && infrastructure::ErdxProjectStore::encode(editor.project()) == bytes
+            && editor.revision() == revision && !editor.dirty() && editor.history_bytes() == history
+            && editor.undo_label() == undo && editor.redo_label() == redo,
+            "Mode changes preserve domain, project bytes, revision, dirty and Undo/Redo history");
+    require(QSettings().allKeys() == settings, "No persistent preference is added for Min-max display");
+    only->trigger();
+    application::Editor fresh_editor(ids);
+    desktop::MainWindow fresh(fresh_editor, store, ids);
+    require(fresh.canvas()->minmax_display_mode() == MinMaxDisplayMode::CardinalityAndOrdinality
+            && child<QAction>(fresh, "minmaxCardinalityOrdinality")->isChecked(),
+            "A fresh independent window always defaults to combined mode");
+    const auto loaded = infrastructure::ErdxProjectStore::decode(bytes);
+    require(loaded && loaded.project, "Current format project still reopens without a display field");
+    require(fresh_editor.replace_project(*loaded.project).ok, "Open saved project in the fresh session");
+    fresh.canvas()->synchronize();
+    fresh.set_notation(desktop::Notation::MinMax);
+    require(fresh.canvas()->minmax_display_mode() == MinMaxDisplayMode::CardinalityAndOrdinality,
+            "Opening a project without display state preserves the existing combined default");
+}
+
 int main(int argc, char **argv)
 {
     QApplication app(argc, argv);
@@ -5256,7 +5343,7 @@ int main(int argc, char **argv)
     {
         if (appearance_only || whole || window_part) appearance_hover_tests();
         if (appearance_only) { std::cout << "Appearance hover tests passed\n"; return 0; }
-        if (navigation_only || whole || window_part) navigation_foldout_tests();
+        if (navigation_only || whole || window_part) { navigation_foldout_tests(); minmax_display_menu_tests(); }
         if (navigation_only) {
             infrastructure::QtIdGenerator ids;
             menu_bar_shortcut_tests(ids);
