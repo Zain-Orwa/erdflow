@@ -2081,6 +2081,17 @@ void saved_sizes_open_as_saved() {
         std::get<RelationshipId>(*editor.create_relationship("Is Responsible For", {300, 300, 120, 60}).created);
     const auto oval = std::get<AttributeId>(*editor.create_attribute("Date Of Registration", {0, 500, 80, 44}).created);
     CHECK(editor.resize_attributes({{ElementRef{oval}, {0, 500, 70, 44}}}));
+    const auto wide = std::get<EntityId>(*editor.create_entity(
+        "Department Of International Computer Science", {0, 700, 133, 77}).created);
+    CHECK(editor.resize_entities({{ElementRef{wide}, {0, 700, 1200, 77}}}));
+    for (const auto direction : {Inheritance::Generalization, Inheritance::Specialization}) {
+        const auto hierarchy = *editor.create_specialization("Department Of International Computer Science",
+            {500, 700, 96, 74}, direction).created;
+        CHECK(editor.move({{hierarchy, {500, 700, 1200, 74}}}));
+        const auto narrow_hierarchy = *editor.create_specialization("Department Of Mathematics",
+            {500, 900, 96, 74}, direction).created;
+        CHECK(editor.move({{narrow_hierarchy, {500, 900, 70, 74}}}));
+    }
     const auto layout = editor.project().layout;
     const auto lettering = editor.project().lettering;
     ErdxProjectStore store;
@@ -2096,6 +2107,8 @@ void saved_sizes_open_as_saved() {
     CHECK((opened.project->layout.at(ElementRef{narrow}) == Rect{0, 300, 90, 50}));
     CHECK((opened.project->layout.at(ElementRef{diamond}) == Rect{300, 300, 120, 60}));
     CHECK((opened.project->layout.at(ElementRef{oval}) == Rect{0, 500, 70, 44}));
+    CHECK((opened.project->layout.at(ElementRef{wide}) == Rect{0, 700, 1200, 77}));
+    CHECK(opened.project->entities.at(wide).name == "Department Of International Computer Science");
 }
 
 void lettering_persists() {

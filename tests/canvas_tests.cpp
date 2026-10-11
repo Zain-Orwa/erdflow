@@ -73,7 +73,7 @@ QPoint device_point(const QImage& image, const QPoint& widget_point) {
 }
 QGraphicsItem* find_node(desktop::DiagramView& view, const QString& name) {
     for (auto* item : view.scene()->items())
-        if (item->zValue() > 0 && item->toolTip() == name) return item;
+        if (item->zValue() > 0 && item->data(Qt::DisplayRole).toString() == name) return item;
     throw std::runtime_error("Missing node");
 }
 QGraphicsItem* find_edge(desktop::DiagramView& view, const QString& text = QStringLiteral("Participant:")) {
@@ -3934,7 +3934,7 @@ void wheel_zoom_tests() {
 } // namespace
 
 // A new entity, attribute or relationship is placed at its default and, named,
-// made just wide enough for its name (Zain, 2026-10-11). The width is measured
+// made wide enough up to the Relationship budget (Zain, 2026-10-11). Width is measured
 // as the name is painted, from fonts that differ from machine to machine, so
 // what is checked is what is painted -- the whole name, inside its shape --
 // rather than any width in figures.
@@ -4081,17 +4081,25 @@ void content_aware_size_tests() {
             require(std::abs(at.x + at.width / 2 - (box.x + box.width / 2)) < 0.01 && at.y == box.y,
                     "Widened about its centre, where it was put");
             require(editor.project().lettering.empty(), "Its name is lettered as it was: nothing is kept for it");
-            written_whole_inside(ref, named.name);
+            const auto required = desktop::name_room_width(kind == 0 ? desktop::NamedShape::Entity
+                : kind == 1 ? desktop::NamedShape::Relationship : desktop::NamedShape::Attribute,
+                named.name, view.font(), 1.0, box.height);
+            const auto reference = desktop::name_room_width(kind == 0 ? desktop::NamedShape::Entity
+                : kind == 1 ? desktop::NamedShape::Relationship : desktop::NamedShape::Attribute,
+                QStringLiteral("Relationship"), view.font(), 1.0, box.height);
+            require(at.width == std::max(box.width, std::min(required, reference)), "Automatic growth respects the reference budget");
+            if (required <= reference || required <= box.width) written_whole_inside(ref, named.name);
         }
 
     // A longer name widens it again; a shorter one leaves it as wide as it
     // is; and Undo takes the name and its width back together.
     {
         const auto ref = *editor.create_entity("User", {600, 0, 133, 77}).created;
-        require(view.rename(ref, "CustomerAccount"), "A longer name");
+        require(view.rename(ref, "Professor"), "A longer name");
         const auto grown = editor.project().layout.at(ref);
-        require(grown.width > 133, "Too long for the default, it is widened");
-        written_whole_inside(ref, "CustomerAccount");
+        require(grown.width == desktop::width_for_name(desktop::NamedShape::Entity, "Professor", view.font()),
+                "It is widened only if the reference needs more room");
+        written_whole_inside(ref, "Professor");
         require(view.rename(ref, "User"), "A shorter name again");
         require(editor.project().layout.at(ref) == grown, "Which does not narrow it");
         require(editor.undo(), "Undo the shorter name");
@@ -4106,21 +4114,21 @@ void content_aware_size_tests() {
         view.begin_rename(ref);
         auto* field = view.findChild<QLineEdit*>("inlineName");
         require(view.renaming() && field != nullptr, "The name box is open");
-        field->setText("Department");
+        field->setText("Student");
         key_to(field, Qt::Key_Return);
-        require(domain::name(editor.project(), ref) == "Department", "Named in the box");
+        require(domain::name(editor.project(), ref) == "Student", "Named in the box");
         require(editor.project().layout.at(ref).width >= 133, "Never narrower than its default");
-        written_whole_inside(ref, "Department");
+        written_whole_inside(ref, "Student");
 
         // Resized by hand, it keeps the size it was given, however long its
         // name: nothing puts a name's width under a hand.
         require(editor.resize_entities({{ref, {600, 0, 90, 77}}}), "Pulled narrower than its name");
         view.synchronize();
         require(editor.project().layout.at(ref).width == 90, "It keeps the width it was given");
-        require(view.rename(ref, "Departments"), "Renamed longer after that");
-        require(editor.project().layout.at(ref).width > 90 && editor.project().layout.at(ref).height == 77,
-                "Which widens it again, only as far as the new name needs");
-        written_whole_inside(ref, "Departments");
+        require(view.rename(ref, "Professor"), "Renamed longer after that");
+        require(editor.project().layout.at(ref).width >= 90 && editor.project().layout.at(ref).height == 77,
+                "Which widens it only if the new name needs more room");
+        written_whole_inside(ref, "Professor");
         require(editor.resize_entities({{ref, {600, 0, 80, 60}}}), "And it can still be pulled smaller by hand");
         require(editor.project().layout.at(ref) == (domain::Rect{600, 0, 80, 60}), "To exactly what it was given");
     }
@@ -4129,7 +4137,7 @@ void content_aware_size_tests() {
     {
         const auto first = *editor.create_entity("Left", {-1400, 900, 133, 77}).created;
         const auto second = *editor.create_entity("Right", {-800, 1100, 133, 77}).created;
-        const auto made = editor.create_relationship("Has", {-1100, 1000, 171, 99});
+        const auto made = editor.create_relationship("Has", {-1100, 1000, 120, 99});
         const auto id = std::get<domain::RelationshipId>(*made.created);
         require(editor.connect(id, std::get<domain::EntityId>(first)), "Connect the first entity");
         const auto pinned = editor.connect(id, std::get<domain::EntityId>(second));
@@ -4139,7 +4147,7 @@ void content_aware_size_tests() {
         QApplication::processEvents();
         auto* node = find_node(view, "Is Qualified In");
         const auto box = node->sceneBoundingRect().adjusted(4, 4, -4, -4);
-        require(box.width() > 171 - 8 + 1, "The diamond was widened");
+        require(box.width() > 120 - 8 + 1, "The narrow diamond was widened");
         const auto target = find_node(view, "Left")->sceneBoundingRect().center();
         auto automatic = target - box.center();
         if (view.line_style() == desktop::LineStyle::Elbow)
@@ -4188,6 +4196,297 @@ void content_aware_size_tests() {
     editor.mark_saved(editor.revision());
 }
 
+// Regression: Relationship fits without ellipsis, but an unlimited name does not
+// demand an unlimited box. Compare the actual NodeItem paint against the full
+// reference text, using the settled typography rather than fixed pixel widths.
+void relationship_fits_without_ellipsis_tests() {
+    SequentialIds ids;
+    application::Editor editor(ids);
+    desktop::DiagramView view(editor);
+    const QString professor = QStringLiteral("Professor");
+    const QString reference_name = QStringLiteral("Relationship");
+    const QString long_name = QStringLiteral("Department Of International Computer Science And Applied Mathematics");
+    const auto font_for = [&](double factor = 1.0) {
+        QFont font = view.font();
+        font.setFamilies({"Inter", "Source Sans 3", "IBM Plex Sans", "Segoe UI Variable",
+                          "Segoe UI", "SF Pro Text", "Helvetica Neue", "Arial"});
+        font.setStyleHint(QFont::SansSerif, QFont::PreferAntialias);
+        font.setPointSizeF(9.0 * desktop::lettering_scale * factor);
+        font.setWeight(QFont::Bold);
+        return font;
+    };
+    const auto text_ink = [&](const QImage& image) {
+        std::vector<QPoint> ink;
+        const auto colour = desktop::theme(view.theme_id()).node_text;
+        for (int y = 0; y < image.height(); ++y)
+            for (int x = 0; x < image.width(); ++x)
+                if (image.pixelColor(x, y) == colour) ink.emplace_back(x, y);
+        return ink;
+    };
+    const auto available_room = [](desktop::NamedShape shape, double width, double height, const QFont& font) {
+        if (shape == desktop::NamedShape::Relationship) return width * (1 - 2 * 0.22);
+        auto room = width - 30;
+        if (shape == desktop::NamedShape::Attribute) {
+            const QFontMetricsF metrics(font);
+            const auto baseline = (metrics.ascent() - metrics.descent()) / 2;
+            const auto reach = std::max(std::abs(baseline), std::abs(baseline - metrics.capHeight()));
+            const auto ring = height / 2 - 5;
+            if (ring > reach) room = std::min(room, (width - 10) * std::sqrt(1 - reach * reach / (ring * ring)));
+        }
+        return std::max(0.0, room);
+    };
+    const auto painted_as = [&](const domain::ElementRef& ref, desktop::NamedShape shape,
+                                const QString& expected) {
+        view.synchronize();
+        auto* node = find_node(view, QString::fromStdString(domain::name(editor.project(), ref)));
+        const auto box = editor.project().layout.at(ref);
+        const auto base = editor.project().lettering.find(ref);
+        const auto factor = base == editor.project().lettering.end() ? 1.0
+            : domain::lettering_factor(base->second, box.width, box.height);
+        const auto font = font_for(factor);
+        // Supersample so even manually reduced thin strokes have solid ink;
+        // this avoids depending on a platform's small-font antialiasing.
+        QImage actual((node->boundingRect().size().toSize() + QSize(8, 8)) * 4, QImage::Format_ARGB32);
+        actual.setDevicePixelRatio(4);
+        actual.fill(Qt::transparent);
+        QPainter painter(&actual);
+        painter.setFont(view.font());
+        node->paint(&painter, nullptr, nullptr);
+        painter.end();
+        QImage reference(actual.size(), QImage::Format_ARGB32);
+        reference.setDevicePixelRatio(4);
+        reference.fill(Qt::transparent);
+        QPainter writer(&reference);
+        writer.setRenderHint(QPainter::Antialiasing);
+        writer.setFont(font);
+        writer.setPen(desktop::theme(view.theme_id()).node_text);
+        const auto room = available_room(shape, box.width, box.height, font);
+        const auto inset = (box.width - room) / 2;
+        writer.drawText(QRectF(0, 0, box.width, box.height).adjusted(inset, 8, -inset, -8), Qt::AlignCenter, expected);
+        writer.end();
+        require(expected.isEmpty() || !text_ink(reference).empty(), "Reference text has visible ink");
+        if (text_ink(actual) != text_ink(reference))
+            throw std::runtime_error("Actual painted text differs from: " + expected.toStdString()
+                + "; shape=" + std::to_string(static_cast<int>(shape))
+                + "; width=" + std::to_string(box.width) + "; factor=" + std::to_string(factor));
+    };
+
+    // Explicit geometry stays authoritative. At the new 9 bold lettering,
+    // Professor also fits this compact box without needing automatic growth.
+    const auto legacy = *editor.create_entity("Professor", {0, 0, 133, 77}).created;
+    const auto old_text = QFontMetricsF(font_for()).elidedText(professor, Qt::ElideRight, 103);
+    std::cout << "Professor in an unfitted 133x77 entity: " << old_text.toStdString()
+              << "; rendered width=" << QFontMetricsF(font_for()).horizontalAdvance(professor)
+              << "; text room=103; lettering=1\n";
+    painted_as(legacy, desktop::NamedShape::Entity, old_text);
+
+    for (const auto shape : {desktop::NamedShape::Entity, desktop::NamedShape::Relationship, desktop::NamedShape::Attribute}) {
+        const auto body = shape == desktop::NamedShape::Entity ? desktop::entity_body
+                        : shape == desktop::NamedShape::Relationship ? desktop::relationship_body : desktop::attribute_body;
+        const auto make = [&](const QString& name) {
+            const domain::Rect box{0, 200, desktop::width_for_name(shape, name, view.font()), body.height};
+            return *(shape == desktop::NamedShape::Entity ? editor.create_entity(name.toStdString(), box)
+                   : shape == desktop::NamedShape::Relationship ? editor.create_relationship(name.toStdString(), box)
+                                                               : editor.create_attribute(name.toStdString(), box)).created;
+        };
+        const auto resize = [&](const domain::ElementRef& ref, double width, double height) {
+            const std::map<domain::ElementRef, domain::Rect> boxes{{ref, {0, 200, width, height}}};
+            return shape == desktop::NamedShape::Entity ? editor.resize_entities(boxes)
+                 : shape == desktop::NamedShape::Relationship ? editor.resize_relationships(boxes) : editor.resize_attributes(boxes);
+        };
+        const auto short_ref = make("ID");
+        require(editor.project().layout.at(short_ref).width == body.width, "Short names keep compact defaults");
+        const auto ref = make(reference_name);
+        painted_as(ref, shape, reference_name);
+        require(QFontMetricsF(font_for()).elidedText(reference_name, Qt::ElideRight,
+                    available_room(shape, editor.project().layout.at(ref).width, body.height, font_for())) == reference_name,
+                shape == desktop::NamedShape::Relationship
+                    ? "Relationship fits in the relationship diamond without ellipsis"
+                    : "Relationship fits without ellipsis");
+        require(find_node(view, reference_name)->toolTip().isEmpty(), "A name that fits has no redundant name hover");
+        auto* fitted_node = find_node(view, reference_name);
+        require(editor.create_comment("Keep a remark on a fully visible name", {domain::CommentTarget{ref}}),
+                "A fitted shape can still have meaningful hover content");
+        view.synchronize();
+        require(fitted_node->toolTip().contains(reference_name) && fitted_node->toolTip().contains("Keep a remark"),
+                "Fitted names keep comment hover with the full-name heading");
+        view.set_comments_visible(false);
+        require(fitted_node->toolTip().isEmpty(), "Hidden remarks do not restore redundant fitted-name hover");
+        view.set_comments_visible(true);
+        require(editor.undo(), "Remove the fitted shape comment");
+        view.synchronize();
+        const auto cap = std::max(body.width, desktop::name_room_width(shape, reference_name, view.font(), 1.0, body.height));
+        require(editor.project().layout.at(ref).width == cap, "Reference needs only its shape-specific compact width");
+        for (const auto& sample : {QStringLiteral("User"), QStringLiteral("Student"), QStringLiteral("Department"),
+                                  QStringLiteral("Enrolled In"), QStringLiteral("Works On"), QStringLiteral("Employee ID"),
+                                  QStringLiteral("iiiiiiiiiiiiiiii")}) {
+            const QFontMetricsF metrics(font_for());
+            if (metrics.horizontalAdvance(sample) <= metrics.horizontalAdvance(reference_name))
+                painted_as(make(sample), shape, sample);
+        }
+        const auto long_ref = make(long_name);
+        require(editor.project().layout.at(long_ref).width == cap, "An over-budget name never creates an enormous shape");
+        view.synchronize();
+        auto* long_node = find_node(view, long_name);
+        require(long_node->toolTip() == long_name, "Hover exposes the full original name");
+        require(QString::fromStdString(domain::name(editor.project(), long_ref)) == long_name, "Model name remains complete");
+        const auto font = font_for();
+        const auto room = available_room(shape, cap, body.height, font);
+        const auto elided = QFontMetricsF(font).elidedText(long_name, Qt::ElideRight, room);
+        require(elided != long_name, "The deliberately long name is elided");
+        painted_as(long_ref, shape, elided);
+        require(editor.create_comment("Keep this contextual remark", {domain::CommentTarget{long_ref}}),
+                "A meaningful existing tooltip");
+        view.synchronize();
+        require(long_node->toolTip().contains(long_name) && long_node->toolTip().contains("Keep this contextual remark"),
+                "Full-name hover preserves contextual comments");
+        view.set_comments_visible(false);
+        require(long_node->toolTip() == long_name, "Full-name hover survives hidden comments");
+        view.set_comments_visible(true);
+        require(editor.undo(), "Remove the test comment");
+        view.synchronize();
+        require(resize(long_ref, 1900, body.height), "Manual widening beyond the automatic cap is allowed");
+        painted_as(long_ref, shape, long_name);
+        require(find_node(view, long_name)->toolTip().isEmpty(), "Manual widening removes name hover when the full name fits");
+        require(resize(long_ref, domain::min_entity_width, body.height), "Manual narrowing is allowed");
+        require(editor.project().layout.at(long_ref).width == domain::min_entity_width, "Exact manual width is retained");
+        view.synchronize();
+        require(find_node(view, long_name)->toolTip() == long_name, "Narrowed shapes still expose the full name");
+        const auto base = editor.project().lettering.at(long_ref);
+        const auto factor = domain::lettering_factor(base, domain::min_entity_width, body.height);
+        const auto narrow_font = font_for(factor);
+        const auto narrow_text = QFontMetricsF(narrow_font).elidedText(long_name, Qt::ElideRight,
+            available_room(shape, domain::min_entity_width, body.height, narrow_font));
+        require(narrow_text != long_name, "A manually narrowed shape can elide");
+        painted_as(long_ref, shape, narrow_text);
+
+        // After proportional manual resizing, both actual and reference names
+        // must use that same font, including its change during automatic growth.
+        require(resize(long_ref, body.width * 2, body.height * 2), "Manual lettering scaled with the box");
+        const auto lettering_before = editor.project().lettering;
+        require(view.rename(long_ref, "Relationship"), "Reference fitted using manual lettering metadata");
+        painted_as(long_ref, shape, reference_name);
+        const auto measured_box = editor.project().layout.at(long_ref);
+        const auto measured_factor = domain::lettering_factor(base, measured_box.width, measured_box.height);
+        const auto measured_cap = desktop::name_room_width(shape, reference_name, view.font(), measured_factor, measured_box.height);
+        require(measured_box.width <= std::max(body.width * 2, measured_cap) + 1,
+                "Manual lettering uses its own reference cap");
+        require(editor.project().lettering == lettering_before, "Automatic fitting never rewrites manual lettering metadata");
+        require(view.rename(long_ref, long_name.toStdString()), "Long rename at the same effective lettering");
+        require(editor.project().layout.at(long_ref).width <= std::max(body.width * 2, measured_cap) + 1,
+                "An over-budget name remains capped with manual lettering");
+        require(resize(long_ref, 1900, body.height * 2), "Manually enlarged beyond the cap again");
+        const auto wide_box = editor.project().layout.at(long_ref);
+        require(view.rename(long_ref, "Relationship"), "Rename a manually wide shape");
+        require(editor.project().layout.at(long_ref) == wide_box, "A manual width above the cap is never reduced");
+
+        const auto rename_ref = make("ID");
+        const auto before = editor.project().layout.at(rename_ref);
+        require(view.rename(rename_ref, "Relationship"), "Rename within the reference budget");
+        painted_as(rename_ref, shape, reference_name);
+        require(editor.project().layout.at(rename_ref).width == cap, "Rename grows only enough for Relationship");
+        require(editor.undo(), "Rename and growth undo in one step");
+        require(editor.project().layout.at(rename_ref) == before && domain::name(editor.project(), rename_ref) == "ID",
+                "One undo restores name and geometry");
+        require(view.rename(rename_ref, long_name.toStdString()), "Rename beyond the reference budget");
+        require(editor.project().layout.at(rename_ref).width == cap, "Long rename stops at the cap");
+        const auto grown = editor.project().layout.at(rename_ref);
+        require(view.rename(rename_ref, "ID"), "Rename shorter");
+        require(editor.project().layout.at(rename_ref) == grown, "No automatic shrinking");
+    }
+}
+
+// Generalization and specialization use the same smaller bold name font;
+// drawing a canvas label must never alter the application's interface font.
+void hierarchy_names_use_nine_bold_tests() {
+    const auto application_font = QApplication::font();
+    SequentialIds ids;
+    application::Editor editor(ids);
+    desktop::DiagramView view(editor);
+    const auto interface_font = view.font();
+    QFont expected_font = interface_font;
+    expected_font.setFamilies({"Inter", "Source Sans 3", "IBM Plex Sans", "Segoe UI Variable",
+                               "Segoe UI", "SF Pro Text", "Helvetica Neue", "Arial"});
+    expected_font.setStyleHint(QFont::SansSerif, QFont::PreferAntialias);
+    expected_font.setPointSizeF(9.0 * desktop::lettering_scale);
+    expected_font.setWeight(QFont::Bold);
+    for (const auto direction : {domain::Inheritance::Generalization, domain::Inheritance::Specialization}) {
+        require(editor.create_specialization("IS A", {0, 0, 96, 74}, direction), "A hierarchy to label");
+        view.synchronize();
+        auto* node = find_node(view, "IS A");
+        QImage actual(QSize(416, 328), QImage::Format_ARGB32);
+        actual.setDevicePixelRatio(4);
+        actual.fill(Qt::transparent);
+        QPainter painter(&actual);
+        painter.setFont(interface_font);
+        node->paint(&painter, nullptr, nullptr);
+        painter.end();
+        QImage expected(actual.size(), QImage::Format_ARGB32);
+        expected.setDevicePixelRatio(4);
+        expected.fill(Qt::transparent);
+        const QRectF room(6, direction == domain::Inheritance::Generalization ? 37 : 4, 84, 33);
+        QPainter writer(&expected);
+        writer.setRenderHint(QPainter::Antialiasing);
+        writer.setFont(expected_font);
+        const auto ink = desktop::theme(view.theme_id()).node_text;
+        writer.setPen(ink);
+        writer.drawText(room, Qt::AlignCenter, "IS A");
+        writer.end();
+        // Restrict to the name band, excluding the separate d/o constraint.
+        int count = 0;
+        for (int y = static_cast<int>(room.top() * 4); y < room.bottom() * 4; ++y)
+            for (int x = static_cast<int>(room.left() * 4); x < room.right() * 4; ++x) {
+                require((actual.pixelColor(x, y) == ink) == (expected.pixelColor(x, y) == ink),
+                        "Actual hierarchy name is painted at 9 before scaling, bold");
+                if (expected.pixelColor(x, y) == ink) ++count;
+            }
+        require(count > 0, "The complete hierarchy name has visible ink");
+        const auto shape = direction == domain::Inheritance::Generalization
+            ? desktop::NamedShape::Generalization : desktop::NamedShape::Specialization;
+        const auto ref = *editor.create_specialization("ID", {200, 200, 96, 74}, direction).created;
+        const auto before = editor.project().layout.at(ref);
+        require(desktop::width_for_name(shape, "ID", interface_font) == 96, "Short hierarchy names keep their default width");
+        const auto cap = desktop::width_for_name(shape, "Relationship", interface_font);
+        require(view.rename(ref, "Relationship"), "Fit the hierarchy reference name");
+        view.synchronize();
+        require(editor.project().layout.at(ref).width == cap, "Hierarchy grows only to its Relationship budget");
+        require(find_node(view, "Relationship")->toolTip().isEmpty(), "A fitting hierarchy name needs no name hover");
+        require(QFontMetricsF(expected_font).elidedText("Relationship", Qt::ElideRight, cap - 12) == "Relationship",
+                "Relationship fits without ellipsis");
+        require(editor.undo(), "Undo hierarchy name and width together");
+        require(editor.project().layout.at(ref) == before && domain::name(editor.project(), ref) == "ID",
+                "One undo restores the hierarchy name and geometry");
+        const std::string long_name = "Department Of International Computer Science";
+        require(view.rename(ref, long_name), "Fit a long hierarchy name");
+        view.synchronize();
+        require(editor.project().layout.at(ref).width == cap, "A long hierarchy name stops at Relationship");
+        require(find_node(view, QString::fromStdString(long_name))->toolTip().contains(QString::fromStdString(long_name)),
+                "A shortened hierarchy name reveals its complete name on hover");
+        require(domain::name(editor.project(), ref) == long_name, "Hierarchy model name remains complete");
+        require(QFontMetricsF(expected_font).elidedText(QString::fromStdString(long_name), Qt::ElideRight, cap - 12)
+                    != QString::fromStdString(long_name), "An over-budget hierarchy name is elided");
+        require(editor.move({{ref, {200, 200, 70, 74}}}), "Manually narrow a hierarchy below its automatic cap");
+        view.synchronize();
+        require(editor.project().layout.at(ref).width == 70, "Exact manual hierarchy width is retained");
+        require(find_node(view, QString::fromStdString(long_name))->toolTip().contains(QString::fromStdString(long_name)),
+                "A narrowed hierarchy exposes the full stored name");
+        require(editor.move({{ref, {200, 200, 1200, 74}}}), "Manually widen a hierarchy beyond its automatic cap");
+        view.synchronize();
+        require(QFontMetricsF(expected_font).elidedText(QString::fromStdString(long_name), Qt::ElideRight, 1200 - 12)
+                    == QString::fromStdString(long_name), "A manually wide hierarchy displays its full long name");
+        require(find_node(view, QString::fromStdString(long_name))->toolTip().isEmpty(),
+                "A manually wide hierarchy needs no name-only hover");
+        const auto grown = editor.project().layout.at(ref);
+        require(view.rename(ref, "ID"), "Shorten a hierarchy name");
+        view.synchronize();
+        require(editor.project().layout.at(ref) == grown, "Shortening a hierarchy name never shrinks its shape");
+        require(find_node(view, "ID")->toolTip().isEmpty(), "A fitting short hierarchy name removes redundant hover");
+
+    }
+    require(QApplication::font() == application_font && view.font() == interface_font,
+            "The real application and interface font sizes remain unchanged");
+}
+
 // A diagram is drawn at the sizes it was saved with: one whose names are too
 // long for their shapes is not fitted to them when it is opened.
 void saved_sizes_are_kept_tests() {
@@ -4216,6 +4515,14 @@ void saved_sizes_are_kept_tests() {
 int main(int argc, char** argv) {
     QApplication app(argc, argv);
     try {
+        if (argc > 1 && std::string_view(argv[1]) == "--name-fitting") {
+            relationship_fits_without_ellipsis_tests();
+            hierarchy_names_use_nine_bold_tests();
+            content_aware_size_tests();
+            saved_sizes_are_kept_tests();
+            std::cout << "Name fitting tests passed\n";
+            return 0;
+        }
         SequentialIds ids;
         application::Editor editor(ids);
         const auto entity_result = editor.create_entity("Person", {400, 15, 160, 80});
@@ -4407,6 +4714,8 @@ int main(int argc, char** argv) {
         wheel_zoom_tests();
         entity_resize_tests();
         relationship_resize_tests();
+        relationship_fits_without_ellipsis_tests();
+        hierarchy_names_use_nine_bold_tests();
         content_aware_size_tests();
         saved_sizes_are_kept_tests();
         attribute_resize_tests();

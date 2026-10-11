@@ -67,9 +67,10 @@ enum class JoinMode { Automatic, WhereClicked };
 // The entity's figures were first the ones Zain settled on by drawing one and
 // sizing it until it looked right, 148 x 86, with the attribute at 150 x 60 and
 // the relationship at 190 x 110. Zain then made all three smaller and let each
-// grow only as wide as its name needs (2026-10-11): these are the least an
-// element is made at, and an entity, an attribute or a relationship whose name
-// would be cut short is made wider, or widened when it is renamed, by
+// grow to fit normal names (2026-10-11): these are the least an
+// element is made at, and any of the five conceptual shapes whose name
+// would be cut short is made wider up to the rendered Relationship reference
+// budget, or widened when it is renamed, by
 // width_for_name below. A name made shorter never narrows it, and a diagram
 // opened is drawn at exactly the sizes it was saved with.
 struct BodySize { double width, height; };
@@ -111,14 +112,10 @@ inline constexpr double scaled_whole(double measure) {
 inline constexpr BodySize symbol_body{scaled_whole(56), scaled_whole(56)};
 inline constexpr double symbol_step = 1.25;
 
-// How wide a new entity, attribute or relationship has to be for its name to
-// be written whole on the canvas, at the lettering the canvas uses: the
-// default above where that is wide enough, and more where it is not. It was
-// first for a diagram drawn from something else -- a schema converted into one
-// -- so it does not open on names cut short, as the template's wider diamond
-// does not (Zain, 2026-09-27); a name given on the canvas is now fitted by it
-// too (2026-10-11).
-enum class NamedShape { Entity, Attribute, Relationship };
+// Automatic width for a new named shape, using its default height and font.
+// Fits names only up to the rendered Relationship budget; longer labels elide.
+// This cap never limits a manual size or changes saved geometry.
+enum class NamedShape { Entity, Attribute, Relationship, Generalization, Specialization };
 [[nodiscard]] double width_for_name(NamedShape shape, const QString& name, const QFont& base);
 // The least width a shape of that kind and height needs for the name to be
 // written whole, with its lettering drawn at that factor of ordinary, measured

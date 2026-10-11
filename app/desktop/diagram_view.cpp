@@ -235,6 +235,69 @@ constexpr double name_side_room = 15.0;
 constexpr double diamond_point_room = 0.22;
 constexpr double oval_ring_inset = 5.0;
 
+QFont name_font(const QFont& base, double lettering) {
+    auto font = lettered(base, 9.0 * lettering);
+    font.setWeight(QFont::Bold);
+    return font;
+}
+
+// The same horizontal room drives painting and its inverse, automatic sizing.
+// The oval's curve is checked at the top and bottom of the centred capitals,
+// inside the second ring a multivalued attribute can carry.
+struct NameRoom {
+    double fraction = 1.0;
+    double inset = name_side_room;
+    double oval_fraction = 1.0;
+    bool oval = false;
+
+    double available(double width) const {
+        const auto band = width * fraction - 2 * inset;
+        return std::max(0.0, oval ? std::min(band, (width - 2 * oval_ring_inset) * oval_fraction) : band);
+    }
+    double required(double words) const {
+        const auto band = (words + 2 * inset) / fraction;
+        return oval ? std::max(band, words / oval_fraction + 2 * oval_ring_inset) : band;
+    }
+};
+NameRoom name_room(NamedShape shape, const QFont& font, double height) {
+    if (shape == NamedShape::Relationship) return {1 - 2 * diamond_point_room, 0};
+    if (shape == NamedShape::Generalization || shape == NamedShape::Specialization) return {1, 6};
+    NameRoom room;
+    if (shape == NamedShape::Attribute) {
+        const QFontMetricsF metrics(font);
+        const auto line = (metrics.ascent() - metrics.descent()) / 2;
+        const auto reach = std::max(std::abs(line), std::abs(line - metrics.capHeight()));
+        const auto ring = height / 2 - oval_ring_inset;
+        if (ring > reach) {
+            room.oval = true;
+            room.oval_fraction = std::sqrt(1 - reach * reach / (ring * ring));
+        }
+    }
+    return room;
+}
+
+struct NameLabel {
+    QRectF rect;
+    QString text;
+};
+NameLabel name_label(NamedShape shape, const QString& label, const QFont& font, const QRectF& bounds) {
+    const auto room = name_room(shape, font, bounds.height()).available(bounds.width());
+    const auto inset = (bounds.width() - room) / 2;
+    const auto rect = shape == NamedShape::Generalization || shape == NamedShape::Specialization
+        ? QRectF(bounds.left() + inset, shape == NamedShape::Generalization ? bounds.center().y() : bounds.top() + 4,
+                 room, bounds.height() / 2 - 4)
+        : bounds.adjusted(inset, 8, -inset, -8);
+    return {rect, QFontMetricsF(font).elidedText(label, Qt::ElideRight, rect.width())};
+}
+
+// The cap belongs only to automatic growth. Both names are measured at the
+// same effective lettering, including the metadata of a hand-resized shape.
+double automatic_name_width(NamedShape shape, const QString& name, const QFont& base,
+                            double lettering, double height) {
+    return std::min(name_room_width(shape, name, base, lettering, height),
+                    name_room_width(shape, QStringLiteral("Relationship"), base, lettering, height));
+}
+
 // The marks at the end of a line, in the units the bodies are sized in. They
 // grew with the bodies: a foot that stayed the size it was would read as
 // smaller beside a larger entity, and "a bigger diagram" means the whole of it
@@ -392,6 +455,16 @@ public:
         update();
     }
     [[nodiscard]] qreal lettering() const { return lettering_; }
+
+    [[nodiscard]] bool name_is_elided(const QFont& base) const {
+        const auto shape = std::holds_alternative<EntityId>(ref) ? std::optional{NamedShape::Entity}
+                         : std::holds_alternative<RelationshipId>(ref) ? std::optional{NamedShape::Relationship}
+                         : std::holds_alternative<AttributeId>(ref) ? std::optional{NamedShape::Attribute}
+                         : std::holds_alternative<SpecializationId>(ref) ? std::optional{generalising ? NamedShape::Generalization : NamedShape::Specialization}
+                         : std::nullopt;
+        if (!shape) return false;
+        return name_label(*shape, label, name_font(base, lettering_), bounds_).text != label;
+    }
 
     // A picture's own pixels, decoded once from the bytes the model holds.
     void set_image(const std::vector<std::uint8_t>& bytes) {
@@ -857,20 +930,17 @@ public:
         // Names on the canvas are read at a glance and often at less than full
         // zoom, so they sit a step above the interface's own type and never
         // below medium weight.
-        auto font = painter->font();
-        font = lettered(font, 12.5 * lettering_);
-        font.setWeight(std::holds_alternative<EntityId>(ref) ? QFont::Bold : QFont::Medium);
+        const auto shape = std::holds_alternative<EntityId>(ref) ? NamedShape::Entity
+                         : std::holds_alternative<AttributeId>(ref) ? NamedShape::Attribute
+                         : std::holds_alternative<SpecializationId>(ref) ? (generalising ? NamedShape::Generalization : NamedShape::Specialization)
+                         : NamedShape::Relationship;
+        auto font = name_font(painter->font(), lettering_);
         font.setUnderline(std::holds_alternative<AttributeId>(ref) && attribute_kind == AttributeKind::Key && !partial_key);
         painter->setFont(font);
         painter->setPen(text_);
-        const auto inset =
-            std::holds_alternative<RelationshipId>(ref) ? bounds_.width() * diamond_point_room : name_side_room;
-        auto text_rect = bounds_.adjusted(inset, 8, -inset, -8);
-        // A triangle only has room for text across its base.
-        if (std::holds_alternative<SpecializationId>(ref))
-            text_rect = QRectF(bounds_.left() + 6, generalising ? bounds_.center().y() : bounds_.top() + 4,
-                               bounds_.width() - 12, bounds_.height() / 2 - 4);
-        const auto text = QFontMetricsF(font).elidedText(label, Qt::ElideRight, text_rect.width());
+        const auto shown_name = name_label(shape, label, font, bounds_);
+        auto text_rect = shown_name.rect;
+        const auto text = shown_name.text;
         painter->drawText(text_rect, Qt::AlignCenter, text);
         if (partial_key) {
             // A partial key is underlined in dashes: it identifies the weak
@@ -1668,35 +1738,16 @@ private:
 // Measured the way a name is drawn: the same lettering and weight, and the
 // same room left inside the shape (name_side_room, diamond_point_room).
 double name_room_width(NamedShape shape, const QString& name, const QFont& base, double lettering, double height) {
-    auto font = lettered(base, 12.5 * lettering);
-    font.setWeight(shape == NamedShape::Entity ? QFont::Bold : QFont::Medium);
-    const QFontMetricsF metrics(font);
-    const auto words = metrics.horizontalAdvance(name) + 6;
-    switch (shape) {
-    case NamedShape::Entity: return std::ceil(words + 2 * name_side_room);
-    case NamedShape::Relationship: return std::ceil(words / (1 - 2 * diamond_point_room));
-    case NamedShape::Attribute: {
-        // An oval narrows away from its middle, so the ends of a long name --
-        // from the tops of its capitals down to the line it stands on -- have
-        // to be inside the ring as well. A name is centred on its line, so the
-        // line is (ascent - descent) / 2 below the middle; and a ring of half
-        // height b is a * sqrt(1 - y * y / (b * b)) wide either side at y.
-        const auto line = (metrics.ascent() - metrics.descent()) / 2;
-        const auto reach = std::max(std::abs(line), std::abs(line - metrics.capHeight()));
-        const auto ring = height / 2 - oval_ring_inset;
-        auto width = words + 2 * name_side_room;
-        if (ring > reach)
-            width = std::max(width, 2 * (oval_ring_inset + words / 2 / std::sqrt(1 - reach * reach / (ring * ring))));
-        return std::ceil(width);
-    }
-    }
-    return std::ceil(words);
+    const auto font = name_font(base, lettering);
+    const auto words = QFontMetricsF(font).horizontalAdvance(name) + 6;
+    return std::ceil(name_room(shape, font, height).required(words));
 }
 
 double width_for_name(NamedShape shape, const QString& name, const QFont& base) {
     const auto body = shape == NamedShape::Entity ? entity_body
-                    : shape == NamedShape::Attribute ? attribute_body : relationship_body;
-    return std::max(body.width, name_room_width(shape, name, base, 1.0, body.height));
+                    : shape == NamedShape::Attribute ? attribute_body
+                    : shape == NamedShape::Relationship ? relationship_body : isa_body;
+    return std::max(body.width, automatic_name_width(shape, name, base, 1.0, body.height));
 }
 
 struct DiagramView::Impl {
@@ -1933,7 +1984,15 @@ struct DiagramView::Impl {
                 node->comments_to_show = shown;
                 node->update();
             }
-            node->setToolTip(comment_tooltip(project, pinned, node->label, comments_shown));
+            // Only a shortened conceptual name needs a name-only hover. Keep
+            // existing remarks (and their full-name heading) even when it fits.
+            // Painting and this check use the very same font, room and elision.
+            const bool conceptual_name = std::holds_alternative<EntityId>(ref)
+                || std::holds_alternative<RelationshipId>(ref) || std::holds_alternative<AttributeId>(ref)
+                || std::holds_alternative<SpecializationId>(ref);
+            const auto about = !conceptual_name || node->name_is_elided(view.font()) || shown > 0
+                ? node->label : QString{};
+            node->setToolTip(comment_tooltip(project, pinned, about, comments_shown));
         }
         // An inheritance link carries none: it is anchored to its triangle
         // rather than being a connector, so a remark about one goes on the
@@ -2763,6 +2822,9 @@ application::EditResult DiagramView::rename(const domain::ElementRef& ref, const
     const auto shape = std::holds_alternative<EntityId>(ref) ? std::optional{NamedShape::Entity}
                      : std::holds_alternative<RelationshipId>(ref) ? std::optional{NamedShape::Relationship}
                      : std::holds_alternative<AttributeId>(ref) ? std::optional{NamedShape::Attribute}
+                     : std::holds_alternative<SpecializationId>(ref) && project.specializations.contains(std::get<SpecializationId>(ref)) ? std::optional{
+                         project.specializations.at(std::get<SpecializationId>(ref)).direction == Inheritance::Generalization
+                             ? NamedShape::Generalization : NamedShape::Specialization}
                      : std::nullopt;
     double least_width = 0;
     if (const auto found = project.layout.find(ref); shape && found != project.layout.end()) {
@@ -2771,14 +2833,13 @@ application::EditResult DiagramView::rename(const domain::ElementRef& ref, const
         const auto needed_at = [&](double width) {
             const auto lettering = base == project.lettering.end()
                 ? 1.0 : domain::lettering_factor(base->second, width, box.height);
-            return name_room_width(*shape, QString::fromStdString(name), font(), lettering, box.height);
+            return automatic_name_width(*shape, QString::fromStdString(name), font(), lettering, box.height);
         };
         if (needed_at(box.width) > box.width) {
-            // A name never resized by hand is lettered the same at any width.
-            // One that has been is lettered with its box, so a wider box can
-            // letter it larger: the least width that holds it is found between
-            // where it is now and what it needs lettered as large as its height
-            // lets it be, which always holds it.
+            // With manual lettering metadata a wider box may also enlarge the
+            // font. Solve for the lesser of the actual name and the Relationship
+            // reference at that resulting font, just as both will be painted.
+            // Existing widths (including manually wide ones) never shrink.
             auto narrow = box.width;
             auto wide = std::max(narrow, needed_at(domain::max_entity_width));
             if (base != project.lettering.end())
@@ -2965,7 +3026,9 @@ void DiagramView::synchronize() {
             node->set_associative(associative);
             node->update();
         }
-        node->setToolTip(label);
+        // Scene inspection uses the complete label, independently of whether
+        // its canvas presentation needs a tooltip.
+        node->setData(Qt::DisplayRole, label);
         const auto chosen = project.colours.find(ref);
         node->set_chosen_colour(chosen == project.colours.end()
             ? std::optional<QColor>{}
