@@ -32,6 +32,8 @@ enum class Tool { Select, Entity, Attribute, Relationship, Specialization, Gener
 // participation supplies the minimum (0 or 1) and cardinality the maximum
 // (1 or M), so every notation reads the same two values off each participant.
 enum class Notation { Chen, MinMax, CrowsFoot, Bachman };
+// Session-only text choice for Conceptual Min-max; the model keeps both bounds.
+enum class MinMaxDisplayMode { CardinalityOnly, CardinalityAndOrdinality };
 
 // The surface colours a hand may put on an element, and one of them drawn as
 // an icon for a menu. Given out rather than kept to the canvas: the Relational
@@ -192,6 +194,8 @@ public:
     void set_join_mode(JoinMode mode);
     [[nodiscard]] JoinMode join_mode() const;
     void set_notation(Notation notation);
+    void set_minmax_display_mode(MinMaxDisplayMode mode);
+    [[nodiscard]] MinMaxDisplayMode minmax_display_mode() const;
     // A sample of how a notation draws one participant end, for the picker.
     // It uses the same drawing code as the canvas, so it cannot misrepresent it.
     //

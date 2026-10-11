@@ -3249,6 +3249,7 @@ namespace erdflow::desktop
         // draws it into the project.
         conceptual_editor_ = std::make_unique<application::Editor>(ids_);
         conceptual_ = new DiagramView(*conceptual_editor_, conceptual_panel_);
+        conceptual_->set_minmax_display_mode(canvas_->minmax_display_mode());
         conceptual_->setObjectName("conceptualPreview");
         conceptual_->setAccessibleName("Conceptual Design preview");
         // A preview is looked around rather than drawn on, so the hand pans it.
@@ -4542,6 +4543,24 @@ namespace erdflow::desktop
             connect(action, &QAction::triggered, this, [this, style]
                     { choose_notation(style); });
         }
+        minmax_display_menu_ = notations->addMenu("Conceptual Min–max display");
+        minmax_display_menu_->setObjectName("minmaxDisplayMenu");
+        auto *minmax_group = new QActionGroup(this);
+        minmax_group->setObjectName("minmaxDisplayGroup");
+        minmax_group->setExclusive(true);
+        for (const auto &[mode, label, name] : std::initializer_list<std::tuple<MinMaxDisplayMode, const char *, const char *>>{
+                 {MinMaxDisplayMode::CardinalityOnly, "Cardinality only", "minmaxCardinalityOnly"},
+                 {MinMaxDisplayMode::CardinalityAndOrdinality, "Cardinality + ordinality", "minmaxCardinalityOrdinality"}}) {
+            auto *action = minmax_display_menu_->addAction(QString::fromLatin1(label));
+            action->setObjectName(name);
+            action->setCheckable(true);
+            action->setActionGroup(minmax_group);
+            action->setChecked(mode == canvas_->minmax_display_mode());
+            action->setEnabled(canvas_->notation() == Notation::MinMax);
+            minmax_display_actions_[mode] = action;
+            connect(action, &QAction::triggered, this, [this, mode] { choose_minmax_display_mode(mode); });
+        }
+        minmax_display_menu_->menuAction()->setVisible(canvas_->notation() == Notation::MinMax);
         full_view_->setToolTip("Full view — put the panels away and give the whole window to the diagram.");
         // Every action now exists, so give them their first icons. The window must
         // look right on its own, not only once a theme is chosen from outside it.
@@ -5792,7 +5811,26 @@ namespace erdflow::desktop
             found->second->setChecked(true);
         if (notation_box_)
             notation_box_->setCurrentIndex(static_cast<int>(notation));
+        if (minmax_display_menu_)
+            minmax_display_menu_->menuAction()->setVisible(notation == Notation::MinMax);
+        for (const auto &[mode, action] : minmax_display_actions_) {
+            (void)mode;
+            action->setEnabled(notation == Notation::MinMax);
+        }
         refreshing_ = previous;
+    }
+
+    void MainWindow::choose_minmax_display_mode(MinMaxDisplayMode mode)
+    {
+        canvas_->set_minmax_display_mode(mode);
+        if (conceptual_) conceptual_->set_minmax_display_mode(mode);
+        for (const auto &[candidate, action] : minmax_display_actions_)
+            action->setChecked(candidate == mode);
+        if (notation_box_) {
+            const auto row = static_cast<int>(Notation::MinMax);
+            notation_box_->setItemIcon(row, notation_icon(Notation::MinMax));
+            notation_box_->view()->viewport()->update();
+        }
     }
 
     // Choosing a tool and reporting the choice happen in one place, so the button
@@ -9588,6 +9626,7 @@ namespace erdflow::desktop
         {
             conceptual_->set_theme(theme_);
             conceptual_->set_notation(canvas_->notation());
+            conceptual_->set_minmax_display_mode(canvas_->minmax_display_mode());
             conceptual_->set_line_style(canvas_->line_style());
             if (auto *grid = findChild<QAction *>("viewShowGrid"))
                 conceptual_->set_grid_visible(grid->isChecked());

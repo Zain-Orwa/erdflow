@@ -487,6 +487,8 @@ namespace erdflow::desktop
         QAction *shrink_ = nullptr;
         std::map<Tool, QAction *> tool_actions_;
         std::map<Notation, QAction *> notation_actions_;
+        QMenu *minmax_display_menu_ = nullptr;
+        std::map<MinMaxDisplayMode, QAction *> minmax_display_actions_;
         std::map<ThemeId, QAction *> theme_actions_;
         std::map<QAction *, Glyph> action_glyphs_;
         // The ribbon's tabs, whose icons are drawn small and follow the tab's own
@@ -711,6 +713,7 @@ namespace erdflow::desktop
         [[nodiscard]] QIcon line_style_icon(LineStyle style) const;
         [[nodiscard]] QWidget *toolbar_widget(QAction *action) const;
         void choose_notation(Notation notation);
+        void choose_minmax_display_mode(MinMaxDisplayMode mode);
         void refresh();
         void refresh_explorer();
         void highlight_explorer();
