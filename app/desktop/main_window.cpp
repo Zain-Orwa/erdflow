@@ -4973,12 +4973,12 @@ namespace erdflow::desktop
         }
         if (const auto *entity_id = std::get_if<EntityId>(&ref))
         {
-            // Regular or weak. A weak entity is identified through an identifying
+            // Strong or weak. A weak entity is identified through an identifying
             // relationship rather than by a key of its own.
             const auto &entity = project.entities.at(*entity_id);
             auto *kind = narrowable(new QComboBox(panel));
             kind->setObjectName("entityKind");
-            kind->addItem("Regular — identified by its own key");
+            kind->addItem("Strong — identified by its own key");
             kind->addItem("Weak — identified through a relationship");
             kind->setCurrentIndex(entity.weak ? 1 : 0);
             connect(kind, &QComboBox::activated, this, [this, id = *entity_id](int index)

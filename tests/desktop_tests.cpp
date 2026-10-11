@@ -5310,6 +5310,59 @@ void minmax_display_menu_tests()
             "Opening a project without display state preserves the existing combined default");
 }
 
+void entity_kind_terminology_tests()
+{
+    infrastructure::QtIdGenerator ids;
+    application::Editor editor(ids);
+    infrastructure::ErdxProjectStore store;
+    desktop::MainWindow window(editor, store, ids);
+    window.resize(1440, 900);
+    window.show_home(false);
+    window.show();
+    require(child<QAction>(window, "toolEntity")->text() == "Entity", "Creation tool stays Entity");
+    const auto made = editor.create_entity("Owner", {0, 0, 133, 77});
+    require(made.ok && made.created, "Create an ordinary entity");
+    const auto id = std::get<domain::EntityId>(*made.created);
+    window.canvas()->synchronize();
+    window.canvas()->select_elements({id});
+    settle();
+    const auto expect_kind = [&](int index) {
+        auto *kind = child<QComboBox>(window, "entityKind");
+        require(kind->count() == 2 && kind->itemText(0) == "Strong — identified by its own key"
+                && kind->itemText(1) == "Weak — identified through a relationship",
+                "Entity Kind uses exactly the approved Strong and Weak wording");
+        require(kind->currentIndex() == index && editor.project().entities.at(id).weak == (index == 1),
+                "Displayed kind follows the existing weak boolean");
+        return kind;
+    };
+    expect_kind(0);
+    auto *kind = expect_kind(0);
+    kind->setCurrentIndex(1);
+    QMetaObject::invokeMethod(kind, "activated", Q_ARG(int, 1));
+    settle();
+    expect_kind(1);
+    child<QAction>(window, "undoCommand")->trigger();
+    settle();
+    expect_kind(0);
+    kind = expect_kind(0);
+    kind->setCurrentIndex(1);
+    QMetaObject::invokeMethod(kind, "activated", Q_ARG(int, 1));
+    settle();
+    kind = expect_kind(1);
+    kind->setCurrentIndex(0);
+    QMetaObject::invokeMethod(kind, "activated", Q_ARG(int, 0));
+    settle();
+    expect_kind(0);
+    const auto relationship = editor.create_relationship("Link", {220, 0, 171, 99});
+    require(relationship.ok && relationship.created, "Create a regular relationship");
+    window.canvas()->synchronize();
+    window.canvas()->select_elements({*relationship.created});
+    settle();
+    auto *relationship_kind = child<QComboBox>(window, "relationshipKind");
+    require(relationship_kind->currentIndex() == 0 && relationship_kind->itemText(0) == "Regular",
+            "Relationship Kind retains Regular terminology");
+}
+
 int main(int argc, char **argv)
 {
     QApplication app(argc, argv);
@@ -5323,6 +5376,7 @@ int main(int argc, char **argv)
     const auto arguments = QCoreApplication::arguments();
     const bool appearance_only = arguments.contains("--appearance-hover-only");
     const bool navigation_only = arguments.contains("--navigation-only");
+    const bool entity_kind_only = arguments.contains("--entity-kind-only");
     const bool export_part = arguments.contains("--export-state");
     const bool relational_part = arguments.contains("--relational-part");
     const bool window_part = arguments.contains("--window-part");
@@ -5341,6 +5395,8 @@ int main(int argc, char **argv)
     QSettings().clear();
     try
     {
+        if (entity_kind_only || whole || window_part) entity_kind_terminology_tests();
+        if (entity_kind_only) { std::cout << "Entity Kind terminology tests passed\n"; return 0; }
         if (appearance_only || whole || window_part) appearance_hover_tests();
         if (appearance_only) { std::cout << "Appearance hover tests passed\n"; return 0; }
         if (navigation_only || whole || window_part) { navigation_foldout_tests(); minmax_display_menu_tests(); }
@@ -8784,7 +8840,10 @@ int main(int argc, char **argv)
             window.canvas()->select_elements({entity_id});
             settle();
             auto *entity_kind = child<QComboBox>(window, "entityKind");
-            require(entity_kind->count() == 2 && entity_kind->currentIndex() == 0, "An entity starts regular");
+            require(entity_kind->count() == 2 && entity_kind->currentIndex() == 0
+                        && entity_kind->itemText(0) == "Strong — identified by its own key"
+                        && entity_kind->itemText(1) == "Weak — identified through a relationship",
+                    "An entity starts Strong with the approved Kind labels");
             entity_kind->setCurrentIndex(1);
             QMetaObject::invokeMethod(entity_kind, "activated", Q_ARG(int, 1));
             settle();

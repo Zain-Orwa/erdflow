@@ -58,7 +58,7 @@ It must not change the relationship model.
 
 ### 3. Rename Regular Entity to Strong Entity
 
-Status: PENDING
+Status: DONE
 
 Change the user-facing Conceptual terminology:
 
