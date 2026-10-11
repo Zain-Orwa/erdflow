@@ -62,6 +62,11 @@ add is destroying decisions whose reasons are not in front of it. Ask.
 
 These have been decided and are not open unless Zain reopens them.
 
+- **The permanent in-window top navigation is File / Home / Settings only.**
+  Settings unfolds Design (Background, Icons, Lines), View (Grid, Align Grid,
+  On-canvas Controls), and direct Help. File's existing Open & Save, Export,
+  and Import controls stay on its tool row. The non-native old menu row stays
+  hidden; native menus and the shared actions/shortcuts remain intact.
 - **Crow's Foot is the default notation.** Not Chen. Four notations are offered;
   Crow's Foot is what a diagram is drawn in before anybody chooses.
 - **Element defaults are starting sizes, not rulings.** A new entity is 133×77,
