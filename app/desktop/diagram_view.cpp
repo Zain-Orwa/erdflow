@@ -18,6 +18,8 @@
 #include <QKeyEvent>
 #include <QKeySequence>
 #include <QLineEdit>
+#include <QPlainTextEdit>
+#include <QFocusEvent>
 #include <QMouseEvent>
 #include <QNativeGestureEvent>
 #include <QPainter>
@@ -232,6 +234,30 @@ QFont lettered(const QFont& base, double points) {
     return face;
 }
 
+QFont prose_font(const QFont& base) {
+    auto font = lettered(base, 11);
+    font.setWeight(QFont::Normal);
+    font.setUnderline(false);
+    return font;
+}
+BodySize prose_size(const QString& text, const QFont& base) {
+    const QFontMetricsF metrics(prose_font(base));
+    qreal width = 0;
+    const auto lines = text.split('\n');
+    for (const auto& line : lines) width = std::max(width, metrics.horizontalAdvance(line));
+    return {std::max(24.0, std::ceil(width) + 8), std::ceil(metrics.lineSpacing() * lines.size()) + 8};
+}
+class InlineTextEdit final : public QPlainTextEdit {
+public:
+    using QPlainTextEdit::QPlainTextEdit;
+    std::function<void()> commit;
+protected:
+    void focusOutEvent(QFocusEvent* event) override {
+        QPlainTextEdit::focusOutEvent(event);
+        if (commit) commit();
+    }
+};
+
 // The room a name is written in inside its shape, read both where the name is
 // painted and where a shape is sized to its name (width_for_name), so the two
 // cannot come apart: 15 at either side of a box or an oval, and a fifth and
@@ -412,6 +438,7 @@ public:
     // A plain note is one character standing on its own, drawn as the
     // character alone: no card, no border, no title.
     bool plain = false;
+    bool free_text = false;
     AttributeKind attribute_kind = AttributeKind::Normal;
     // An associative relationship is drawn as its diamond inside a rectangle,
     // because it takes part in further relationships as an entity would.
@@ -813,7 +840,23 @@ public:
                                   bounds_.center().y() - ink.center().y()),
                           label);
     }
+    void paint_text(QPainter* painter) {
+        if (isSelected()) {
+            painter->setPen(QPen(selection_, 1.2, Qt::DashLine));
+            painter->setBrush(Qt::NoBrush);
+            painter->drawRect(bounds_);
+        }
+        painter->setFont(prose_font(painter->font()));
+        painter->setPen(colors_->node_text);
+        const QFontMetricsF metrics(painter->font());
+        qreal y = bounds_.top() + 4 + metrics.ascent();
+        for (const auto& line : body.split('\n')) {
+            painter->drawText(QPointF(bounds_.left() + 4, y), line);
+            y += metrics.lineSpacing();
+        }
+    }
     void paint_note(QPainter* painter) {
+        if (free_text) { paint_text(painter); return; }
         if (plain) { paint_plain_note(painter); return; }
         painter->setPen(QPen(isSelected() ? selection_ : border_, isSelected() ? 2.4 : 1.6));
         painter->setBrush(fill_);
@@ -862,6 +905,13 @@ public:
             painter->setRenderHint(QPainter::SmoothPixmapTransform);
             painter->drawPixmap(QRectF(room.center() - QPointF(fitted.width() / 2, fitted.height() / 2), fitted),
                                 image_, QRectF(QPointF(0, 0), QSizeF(image_.size())));
+            painter->restore();
+            return;
+        }
+        if (free_text) {
+            painter->setFont(prose_font(painter->font()));
+            painter->setPen(colors_->node_text);
+            painter->drawText(into, Qt::AlignLeft | Qt::AlignTop, body);
             painter->restore();
             return;
         }
@@ -2096,6 +2146,9 @@ struct DiagramView::Impl {
     // rather than a scene item so it keeps ordinary text-field behaviour, and
     // it is repositioned whenever the view scrolls or zooms.
     QLineEdit* inline_editor = nullptr;
+    InlineTextEdit* inline_text = nullptr;
+    std::optional<NoteId> text_editing;
+    std::optional<std::uint64_t> text_creation_revision;
     // Where the pointer last was over the canvas, in scene coordinates.
     std::optional<QPointF> pointer_place;
     std::optional<ElementRef> renaming;
@@ -2321,11 +2374,26 @@ struct DiagramView::Impl {
             begin_inline_edit(*result.created);
         }
     }
+    void place_text(QPointF at) {
+        if (snap_enabled()) at = {std::round(at.x() / grid_spacing) * grid_spacing,
+                                 std::round(at.y() / grid_spacing) * grid_spacing};
+        const auto size = prose_size({}, view.font());
+        const auto result = editor.create_free_text({}, {at.x(), at.y(), size.width, size.height});
+        publish(result);
+        if (result && result.created) {
+            view.select_elements({*result.created});
+            begin_text_edit(std::get<NoteId>(*result.created));
+            text_creation_revision = editor.revision();
+        }
+    }
     [[nodiscard]] bool snap_enabled() const { return align_to_grid; }
     // The Insert entries a right-click menu offers, placing at the point clicked.
     void add_insert_menu(QMenu& menu, const QPointF& at) {
         auto* insert = menu.addMenu("Insert");
         insert->setObjectName("contextInsert");
+        auto* text = insert->addAction("Text");
+        text->setObjectName("contextInsertText");
+        QObject::connect(text, &QAction::triggered, &view, [this, at] { place_text(at); });
         auto* picture = insert->addAction("Picture…");
         picture->setObjectName("contextInsertPicture");
         QObject::connect(picture, &QAction::triggered, &view, [this, at] { if (view.on_insert_picture) view.on_insert_picture(at); });
@@ -2474,7 +2542,62 @@ struct DiagramView::Impl {
         }
         return nullptr;
     }
+    void place_text_editor() {
+        if (!text_editing || !inline_text) return;
+        const auto found = nodes.find(ElementRef{*text_editing});
+        if (found == nodes.end()) return;
+        const auto box = found->second->sceneBoundingRect();
+        const auto at = view.mapFromScene(box.topLeft());
+        const auto size = prose_size(inline_text->toPlainText(), view.font());
+        inline_text->setGeometry(at.x(), at.y(), std::clamp(int(size.width * view.zoom_factor()) + 30, 260, 650),
+                                std::clamp(int(size.height * view.zoom_factor()) + 30, 90, 360));
+    }
+    void begin_text_edit(NoteId id) {
+        commit_inline_edit();
+        if (!editor.project().notes.contains(id)) return;
+        if (!inline_text) {
+            inline_text = new InlineTextEdit(view.viewport());
+            inline_text->setObjectName("inlineText");
+            inline_text->setPlaceholderText("Text");
+            inline_text->setLineWrapMode(QPlainTextEdit::NoWrap);
+            inline_text->installEventFilter(&view);
+            inline_text->commit = [this] { finish_text_edit(false); };
+            QObject::connect(inline_text, &QPlainTextEdit::textChanged, &view, [this] { place_text_editor(); });
+        }
+        text_editing = id;
+        text_creation_revision.reset();
+        inline_text->setPlainText(QString::fromStdString(editor.project().notes.at(id).description));
+        auto font = prose_font(view.font());
+        font.setPointSizeF(font.pointSizeF() * view.zoom_factor());
+        inline_text->setFont(font);
+        place_text_editor();
+        inline_text->show();
+        inline_text->selectAll();
+        inline_text->setFocus(Qt::MouseFocusReason);
+        status(QStringLiteral("Type text. Ctrl+Return finishes; Escape cancels. Return adds a line."));
+    }
+    void finish_text_edit(bool cancel) {
+        if (!text_editing || !inline_text) return;
+        const auto id = *text_editing;
+        const auto creation = text_creation_revision;
+        const auto words = inline_text->toPlainText();
+        text_editing.reset();
+        text_creation_revision.reset();
+        const bool holding = view.window()->focusWidget() == inline_text;
+        inline_text->hide();
+        if (holding) view.setFocus(Qt::OtherFocusReason);
+        if (!editor.project().notes.contains(id)) return;
+        if (creation && (cancel || words.trimmed().isEmpty())) {
+            if (editor.revision() == *creation) {
+                editor.undo();
+                publish(application::EditResult{});
+            } else publish(editor.erase({ElementRef{id}}));
+            return;
+        }
+        if (!cancel) publish(view.edit_free_text(id, words));
+    }
     void place_inline_editor() {
+        place_text_editor();
         if (!renaming || !inline_editor) return;
         const auto found = nodes.find(*renaming);
         if (found == nodes.end()) return;
@@ -2493,6 +2616,10 @@ struct DiagramView::Impl {
     }
     void begin_inline_edit(const ElementRef& element) {
         if (!exists(editor.project(), element)) return;
+        if (const auto* id = std::get_if<NoteId>(&element); id && editor.project().notes.at(*id).free_text) {
+            begin_text_edit(*id);
+            return;
+        }
         commit_inline_edit();
         if (!inline_editor) {
             inline_editor = new QLineEdit(view.viewport());
@@ -2514,6 +2641,7 @@ struct DiagramView::Impl {
         status(QStringLiteral("Type a name, then press Return. Escape keeps the previous name."));
     }
     void commit_inline_edit() {
+        finish_text_edit(false);
         if (!renaming || !inline_editor) return;
         const auto element = *renaming;
         const auto value = inline_editor->text().toStdString();
@@ -2534,6 +2662,7 @@ struct DiagramView::Impl {
         publish(view.rename(element, value));
     }
     void cancel_inline_edit() {
+        finish_text_edit(true);
         if (!renaming) return;
         renaming.reset();
         if (!inline_editor) return;
@@ -2888,9 +3017,24 @@ DiagramView::DiagramView(application::Editor& editor, QWidget* parent)
 }
 
 DiagramView::~DiagramView() {
+    if (impl_->inline_text) {
+        impl_->inline_text->commit = {};
+        impl_->inline_text->removeEventFilter(this);
+    }
     // Scene items have callbacks into Impl. Destroy them before Impl itself.
     impl_->synchronizing = true;
     impl_->scene->clear();
+}
+
+application::EditResult DiagramView::edit_free_text(domain::NoteId id, const QString& text) {
+    const auto& project = impl_->editor.project();
+    const auto found = project.layout.find(ElementRef{id});
+    if (found == project.layout.end()) return {false, "The text annotation no longer exists.", {}, {}};
+    auto rect = found->second;
+    const auto size = prose_size(text, font());
+    rect.width = size.width;
+    rect.height = size.height;
+    return impl_->editor.edit_free_text(id, text.toUtf8().toStdString(), rect);
 }
 
 application::EditResult DiagramView::rename(const domain::ElementRef& ref, const std::string& name) {
@@ -3074,15 +3218,17 @@ void DiagramView::synchronize() {
         }
         QString body;
         bool plain = false;
+        bool free_text = false;
         if (const auto* note_id = std::get_if<NoteId>(&ref)) {
             body = QString::fromStdString(project.notes.at(*note_id).description);
             plain = project.notes.at(*note_id).plain;
+            free_text = project.notes.at(*note_id).free_text;
         }
         // A picture's bytes never change once it is placed, so they are decoded
         // once, when its node is first built.
         if (const auto* picture_id = std::get_if<PictureId>(&ref); picture_id && !node->has_image())
             node->set_image(project.pictures.at(*picture_id).image);
-        if (node->label != label || node->body != body || node->plain != plain || node->attribute_kind != kind
+        if (node->label != label || node->body != body || node->plain != plain || node->free_text != free_text || node->attribute_kind != kind
             || node->associative != associative
             || node->generalising != generalising || node->weak != weak || node->identifying != identifying
             || node->partial_key != partial_key || node->disjoint != disjoint) {
@@ -3093,6 +3239,7 @@ void DiagramView::synchronize() {
             node->label = label;
             node->body = body;
             node->plain = plain;
+            node->free_text = free_text;
             node->attribute_kind = kind;
             node->generalising = generalising;
             node->weak = weak;
@@ -3174,6 +3321,7 @@ void DiagramView::synchronize() {
     }
     // An element can disappear under an open editor through undo or a reload.
     if (impl_->renaming && !exists(project, *impl_->renaming)) impl_->cancel_inline_edit();
+    if (impl_->text_editing && !project.notes.contains(*impl_->text_editing)) impl_->finish_text_edit(true);
     impl_->refresh_owner_lock();
     impl_->place_inline_editor();
     // Also reapplies the highlight to whatever items this projection rebuilt.
@@ -3219,6 +3367,7 @@ void DiagramView::set_tool(Tool tool, bool locked) {
             : QStringLiteral("Select an entity and relationship, an attribute and its owner, or a subtype and its triangle."));
         break;
     case Tool::Pan: impl_->status(QStringLiteral("Drag to pan. The middle mouse button pans in every tool.")); break;
+    case Tool::Text: impl_->status(QStringLiteral("Place plain text on the Conceptual diagram. Click to place, then type.")); break;
     case Tool::Note: impl_->status(QStringLiteral("Click the canvas to place a note, then type its title. Its text is written in Properties.")); break;
     }
 }
@@ -3730,6 +3879,11 @@ void DiagramView::contextMenuEvent(QContextMenuEvent* event) {
     menu.addSeparator();
     auto* colours = menu.addMenu(several ? "Colour selection" : "Colour");
     colours->setObjectName("contextColour");
+    const bool includes_text = std::any_of(chosen.begin(), chosen.end(), [&](const ElementRef& ref) {
+        const auto* id = std::get_if<NoteId>(&ref);
+        return id && impl_->editor.project().notes.at(*id).free_text;
+    });
+    colours->menuAction()->setVisible(!includes_text);
     for (const auto& [name, colour] : swatches()) {
         auto* entry = colours->addAction(swatch_icon(colour), QString::fromLatin1(name));
         entry->setData(colour);
@@ -3768,6 +3922,7 @@ void DiagramView::contextMenuEvent(QContextMenuEvent* event) {
     transparency->setObjectName("contextTransparencyRow");
     transparency->setDefaultWidget(row);
     menu.addAction(transparency);
+    transparency->setVisible(!includes_text);
     connect(slider, &QSlider::valueChanged, &menu, [this, chosen, percent](int value) {
         percent->setText(QString("%1%").arg(value));
         preview_transparency(chosen, value);
@@ -4008,7 +4163,7 @@ void DiagramView::mousePressEvent(QMouseEvent* event) {
         return;
     }
     if (impl_->active_tool == Tool::Entity || impl_->active_tool == Tool::Attribute
-        || impl_->active_tool == Tool::Relationship || impl_->active_tool == Tool::Note) {
+        || impl_->active_tool == Tool::Relationship || impl_->active_tool == Tool::Note || impl_->active_tool == Tool::Text) {
         auto center = mapToScene(event->position().toPoint());
         if (impl_->align_to_grid) center = {std::round(center.x() / grid_spacing) * grid_spacing, std::round(center.y() / grid_spacing) * grid_spacing};
         application::EditResult result;
@@ -4016,6 +4171,11 @@ void DiagramView::mousePressEvent(QMouseEvent* event) {
             result = impl_->editor.create_entity("Entity", centred(center, entity_body));
         } else if (impl_->active_tool == Tool::Relationship) {
             result = impl_->editor.create_relationship("Relationship", centred(center, relationship_body));
+        } else if (impl_->active_tool == Tool::Text) {
+            if (!impl_->tool_locked) set_tool(Tool::Select);
+            impl_->place_text(center);
+            event->accept();
+            return;
         } else if (impl_->active_tool == Tool::Note) {
             // The tool hands back first, as the others do, and the note is
             // then placed through the same path the menus use: handing back
@@ -4213,7 +4373,7 @@ void DiagramView::drawForeground(QPainter* painter, const QRectF& rect) {
     }
 }
 void DiagramView::begin_rename(const ElementRef& element) { impl_->begin_inline_edit(element); }
-bool DiagramView::renaming() const { return impl_->renaming.has_value(); }
+bool DiagramView::renaming() const { return impl_->renaming.has_value() || impl_->text_editing.has_value(); }
 void DiagramView::commit_rename() { impl_->commit_inline_edit(); }
 
 void DiagramView::scrollContentsBy(int dx, int dy) {
@@ -4226,6 +4386,19 @@ void DiagramView::scrollContentsBy(int dx, int dy) {
 }
 
 bool DiagramView::eventFilter(QObject* watched, QEvent* event) {
+    if (watched == impl_->inline_text && event->type() == QEvent::KeyPress) {
+        auto* key = static_cast<QKeyEvent*>(event);
+        if (key->key() == Qt::Key_Escape) {
+            impl_->finish_text_edit(true);
+            set_tool(Tool::Select);
+            return true;
+        }
+        if ((key->key() == Qt::Key_Return || key->key() == Qt::Key_Enter)
+            && key->modifiers().testFlag(Qt::ControlModifier)) {
+            impl_->finish_text_edit(false);
+            return true;
+        }
+    }
     if (impl_->inline_editor && watched == static_cast<QObject*>(impl_->inline_editor)
         && event->type() == QEvent::KeyPress
         && static_cast<QKeyEvent*>(event)->key() == Qt::Key_Escape) {

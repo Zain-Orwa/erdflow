@@ -66,7 +66,8 @@ namespace {
 // in its table's primary key, so a key of several columns no longer follows
 // the order the table lists them in; version 33 keeps the order somebody gave
 // the columns of a table worked out from the diagram.
-constexpr int current_format_version = 34;
+// Version 35 distinguishes borderless free text from card notes and symbols.
+constexpr int current_format_version = 35;
 QString text(const std::string& value) { return QString::fromUtf8(value.data(), static_cast<qsizetype>(value.size())); }
 Uuid bytes_of(const QUuid& value) {
     Uuid result;
@@ -964,7 +965,7 @@ QByteArray ErdxProjectStore::encode(const Project& project) {
             {"description", text(picture.description)}, {"image", image_text(picture.image)}});
     for (const auto& [id, note] : project.notes)
         notes.append(QJsonObject{{"id", uuid_text(id.value)}, {"name", text(note.name)},
-            {"description", text(note.description)}, {"plain", note.plain}});
+            {"description", text(note.description)}, {"plain", note.plain}, {"free_text", note.free_text}});
     QJsonArray connectors;
     for (const auto& [ref, connector] : project.connectors) {
         // Both anchors are always written, null when the join is not pinned, so
@@ -1362,12 +1363,17 @@ application::LoadResult ErdxProjectStore::decode(const QByteArray& input) {
                 if (!project.pictures.emplace(picture.id, std::move(picture)).second) invalid("Duplicate picture identifier.");
             }
             for (const auto& value : array(data["notes"])) {
-                const auto o = plain_notes ? object(value, {"id", "name", "description", "plain"})
+                const auto o = number_version >= 35 ? object(value, {"id", "name", "description", "plain", "free_text"})
+                              : plain_notes ? object(value, {"id", "name", "description", "plain"})
                                            : object(value, {"id", "name", "description"});
                 Note note{NoteId{parse_id(o["id"])}, string(o["name"]), string(o["description"], max_description_bytes)};
                 if (plain_notes) {
                     if (!o["plain"].isBool()) invalid("A note's plain flag must be true or false.");
                     note.plain = o["plain"].toBool();
+                }
+                if (number_version >= 35) {
+                    if (!o["free_text"].isBool()) invalid("A note's free-text flag must be true or false.");
+                    note.free_text = o["free_text"].toBool();
                 }
                 if (!project.notes.emplace(note.id, std::move(note)).second) invalid("Duplicate note identifier.");
             }

@@ -1379,6 +1379,64 @@ void lettering_follows_resizing_by_hand() {
     CHECK(has_issue(project, "lettering.invalid"));
 }
 
+void free_text_lifecycle() {
+    TestIds ids;
+    Editor editor(ids);
+    const auto owner = entity(editor, "Owner");
+    const auto key = attribute(editor, "ID");
+    CHECK(editor.set_attribute_owner(key, AttributeOwner{owner}));
+    CHECK(editor.set_attribute_kind(key, AttributeKind::Key));
+    editor.mark_saved(editor.revision());
+    CHECK(!editor.dirty());
+    static_assert(!std::is_constructible_v<ParticipantTarget, NoteId>);
+    const auto before = editor.project();
+    const auto schema_before = schema_preview(before);
+    CHECK(validate(before).empty() && !schema_before.tables.empty());
+    const auto made = editor.create_free_text("Customer data imported from CRM\nChecked weekly", {20, 40, 320, 55});
+    CHECK(made && made.created);
+    const auto ref = *made.created;
+    const auto id = std::get<NoteId>(ref);
+    CHECK(editor.project().notes.at(id).free_text && !editor.project().notes.at(id).plain);
+    CHECK(editor.project().notes.at(id).name.empty());
+    CHECK(editor.dirty());
+    const auto findings = validate(editor.project());
+    const auto previous_findings = validate(before);
+    CHECK(findings.size() == previous_findings.size());
+    CHECK(std::equal(findings.begin(), findings.end(), previous_findings.begin(), [](const Issue& a, const Issue& b) {
+        return a.severity == b.severity && a.code == b.code && a.message == b.message
+            && a.element == b.element && a.blocks_save == b.blocks_save;
+    }));
+    CHECK(schema_preview(editor.project()) == schema_before);
+    const auto created = editor.project();
+    CHECK(editor.undo() && editor.project() == before && !editor.dirty());
+    CHECK(editor.redo() && editor.project() == created);
+    const auto revision = editor.revision();
+    CHECK(editor.edit_free_text(id, "Updated\nSecond line", {20, 40, 180, 55}));
+    CHECK(editor.revision() > revision);
+    CHECK(editor.project().notes.at(id).description == "Updated\nSecond line");
+    const auto edited = editor.project();
+    CHECK(editor.undo() && editor.project() == created);
+    CHECK(editor.redo() && editor.project() == edited);
+    CHECK(editor.move({{ref, {80, 90, 180, 55}}}));
+    const auto moved = editor.project();
+    CHECK(editor.undo() && editor.project() == edited);
+    CHECK(editor.redo() && editor.project() == moved);
+    const auto copy = editor.duplicate({ref});
+    CHECK(copy && copy.created && *copy.created != ref);
+    CHECK(editor.project().notes.at(std::get<NoteId>(*copy.created)).free_text);
+    CHECK(editor.project().notes.at(std::get<NoteId>(*copy.created)).description == "Updated\nSecond line");
+    CHECK(editor.undo() && editor.project() == moved);
+    CHECK(editor.redo());
+    const auto attribute_id = attribute(editor, "Code");
+    CHECK(!editor.set_attribute_owner(attribute_id, AttributeOwner{ref}));
+    const auto with_attribute = editor.project();
+    CHECK(editor.erase({ref, *copy.created}));
+    CHECK(editor.project().notes.empty());
+    CHECK(editor.undo() && editor.project() == with_attribute);
+    CHECK(editor.redo() && editor.project().notes.empty());
+    (void)owner;
+}
+
 void pictures_and_notes_are_placed_like_elements() {
     TestIds ids;
     Editor editor(ids);
@@ -4999,6 +5057,7 @@ int main() {
         {"limits, deep ownership and compact history", limits_deep_ownership_and_compact_history},
         {"connector shapes follow their link", connector_shapes_follow_their_link},
         {"connections can be pinned as they are made", connections_can_be_pinned_as_they_are_made},
+        {"free text lifecycle", free_text_lifecycle},
         {"pictures and notes are placed like elements", pictures_and_notes_are_placed_like_elements},
         {"lettering follows resizing by hand", lettering_follows_resizing_by_hand},
         {"a rename widens but never narrows", a_rename_widens_but_never_narrows},

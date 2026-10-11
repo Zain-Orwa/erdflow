@@ -28,6 +28,8 @@
 #include <QPainter>
 #include <QPainterPathStroker>
 #include <QStaticText>
+#include <QPlainTextEdit>
+#include <QFocusEvent>
 #include <QPointingDevice>
 #include <QWheelEvent>
 #include <QSvgRenderer>
@@ -965,6 +967,161 @@ void join_where_clicked_tests() {
 // big the character is. That makes it the one element on the diagram with a
 // size of its own to choose: by its corners, or by the two commands that do
 // the same thing without the hand.
+void free_text_canvas_tests() {
+    SequentialIds ids;
+    application::Editor editor(ids);
+    desktop::DiagramView view(editor);
+    view.resize(1000, 700); view.show(); view.actual_size(); view.centerOn(0, 0);
+    view.set_grid_visible(false);
+    QApplication::processEvents();
+    view.set_tool(desktop::Tool::Text);
+    click(view, {-250, -100});
+    require(editor.project().notes.size() == 1 && view.tool() == desktop::Tool::Select, "Text placement is one use");
+    auto* field = view.findChild<QPlainTextEdit*>("inlineText");
+    require(field && field->isVisible() && field->toPlainText().isEmpty(), "Placement opens empty multiline editor immediately");
+    const auto id = editor.project().notes.begin()->first;
+    field->setPlainText("Customer data imported from CRM\nChecked weekly");
+    view.commit_rename();
+    QApplication::processEvents();
+    require(editor.project().notes.at(id).description == "Customer data imported from CRM\nChecked weekly", "Inline edit stores prose");
+    require(editor.project().notes.at(id).name.empty(), "Text has no title");
+    const auto box = editor.project().layout.at(id);
+    require(box.x == -250 && box.y == -100 && box.width > 200 && box.height > 30, "Natural multiline bounds preserve origin");
+    view.select_elements({id});
+    auto* item = view.scene()->selectedItems().front();
+    require(item->shape().contains(QPointF(4, 4)), "Padded text hit area is selectable");
+    view.select_elements({});
+    const auto image = [&](bool selected) {
+        item->setSelected(selected);
+        QImage shot(int(std::ceil(box.width)) + 8, int(std::ceil(box.height)) + 8, QImage::Format_ARGB32_Premultiplied);
+        shot.fill(Qt::transparent);
+        QPainter painter(&shot); painter.setRenderHint(QPainter::Antialiasing); painter.translate(4, 4);
+        item->paint(&painter, nullptr, nullptr);
+        return shot;
+    };
+    for (const auto theme : {desktop::ThemeId::OfficeLight, desktop::ThemeId::Midnight}) {
+        view.set_theme(theme);
+        auto expected = image(false); expected.fill(Qt::transparent);
+        QPainter painter(&expected); painter.setRenderHint(QPainter::Antialiasing); painter.translate(4, 4);
+        QFont font = view.font();
+        font.setFamilies({"Inter", "Source Sans 3", "IBM Plex Sans", "Segoe UI Variable", "Segoe UI", "SF Pro Text", "Helvetica Neue", "Arial"});
+        font.setStyleHint(QFont::SansSerif, QFont::PreferAntialias); font.setPointSizeF(11 * desktop::lettering_scale);
+        font.setWeight(QFont::Normal); font.setUnderline(false);
+        painter.setFont(font); painter.setPen(desktop::theme(theme).node_text);
+        const QFontMetricsF metrics(font); qreal y = 4 + metrics.ascent();
+        for (const auto& line : QString::fromStdString(editor.project().notes.at(id).description).split('\n')) {
+            painter.drawText(QPointF(4, y), line); y += metrics.lineSpacing();
+        }
+        painter.end();
+        require(image(false) == expected, "Unselected Text paints only the exact prose, without fill, border, icon or badge");
+        require(image(true) != expected, "Selected Text has a temporary indication");
+        item->setSelected(false);
+    }
+    mouse(view, QEvent::MouseButtonDblClick, view.mapFromScene(QPointF(box.x + 20, box.y + 10)), Qt::LeftButton, Qt::LeftButton);
+    require(field->isVisible(), "Double-click opens the multiline Text editor");
+    field->setPlainText("Discarded"); key_to(field, Qt::Key_Escape);
+    require(editor.project().notes.at(id).description.find("Customer") == 0, "Escape restores existing prose");
+    view.begin_rename(id); field->setPlainText("Edited\nMultiline"); view.commit_rename();
+    require(editor.undo(), "Undo text edit"); view.synchronize();
+    require(editor.project().notes.at(id).description.find("Customer") == 0, "Undo restores text and bounds");
+    require(editor.redo(), "Redo text edit"); view.synchronize();
+    view.begin_rename(id); field->setPlainText("Focus loss\nMultiline");
+    QFocusEvent leave(QEvent::FocusOut); QApplication::sendEvent(field, &leave);
+    require(editor.project().notes.at(id).description == "Focus loss\nMultiline" && !field->isVisible(), "Focus loss commits multiline prose");
+    require(editor.undo(), "Undo focus-loss edit"); view.synchronize();
+    view.select_elements({id});
+    const auto start = view.mapFromScene(QPointF(box.x + 20, box.y + 10));
+    mouse(view, QEvent::MouseButtonPress, start, Qt::LeftButton, Qt::LeftButton);
+    mouse(view, QEvent::MouseMove, start + QPoint(35, 25), Qt::NoButton, Qt::LeftButton);
+    mouse(view, QEvent::MouseButtonRelease, start + QPoint(35, 25), Qt::LeftButton, Qt::NoButton);
+    require(editor.project().layout.at(id).x != box.x, "Text drag persists movement");
+    require(editor.undo() && editor.redo(), "Movement undo/redo"); view.synchronize();
+    desktop::PictureOptions options; options.format = desktop::PictureFormat::Png;
+    QByteArray png; require(desktop::draw_picture(view, options, {}, png).ok && !png.isEmpty(), "Annotation-only visual export works");
+    options.background = desktop::PictureBackground::Transparent;
+    require(desktop::draw_picture(view, options, {}, png).ok, "Transparent Text export");
+    const auto pixels = QImage::fromData(png);
+    bool ink = false, paper = false;
+    for (int y = 0; y < pixels.height(); ++y) for (int x = 0; x < pixels.width(); ++x) {
+        ink |= qAlpha(pixels.pixel(x, y)) > 0;
+        paper |= qAlpha(pixels.pixel(x, y)) == 0;
+    }
+    require(ink && paper, "Visual export includes glyphs and transparent surrounding paper");
+    for (const auto format : {desktop::PictureFormat::Svg, desktop::PictureFormat::Jpeg,
+                             desktop::PictureFormat::Tiff, desktop::PictureFormat::Pdf}) {
+        if (!desktop::picture_format_available(format)) continue;
+        options.format = format;
+        QByteArray bytes;
+        require(desktop::draw_picture(view, options, {}, bytes).ok && !bytes.isEmpty(), "Text exports through shared visual formats");
+        if (format == desktop::PictureFormat::Svg) require(bytes.contains("Edited") && bytes.contains("Multiline"), "SVG contains Text prose");
+    }
+    const auto entity = editor.create_entity("Customer", {100, 100, 133, 77});
+    const auto entity_ref = *entity.created;
+    view.synchronize(); view.select_elements({id, entity_ref}); view.set_align_to_grid(true);
+    const auto text_start = editor.project().layout.at(id), entity_start = editor.project().layout.at(entity_ref);
+    const auto group_start = view.mapFromScene(QPointF(text_start.x + 20, text_start.y + 10));
+    mouse(view, QEvent::MouseButtonPress, group_start, Qt::LeftButton, Qt::LeftButton);
+    mouse(view, QEvent::MouseMove, group_start + QPoint(47, 32), Qt::NoButton, Qt::LeftButton);
+    mouse(view, QEvent::MouseButtonRelease, group_start + QPoint(47, 32), Qt::LeftButton, Qt::NoButton);
+    const auto text_moved = editor.project().layout.at(id), entity_moved = editor.project().layout.at(entity_ref);
+    require(text_moved.x != text_start.x && text_moved.x - text_start.x == entity_moved.x - entity_start.x
+            && text_moved.y - text_start.y == entity_moved.y - entity_start.y, "Text participates in group movement");
+    require(std::fmod(text_moved.x, 20) == 0 && std::fmod(text_moved.y, 20) == 0, "Text movement follows grid alignment");
+    require(editor.undo() && editor.project().layout.at(id) == text_start
+            && editor.project().layout.at(entity_ref) == entity_start, "One undo restores the whole group");
+    require(editor.redo(), "Redo Text group move"); view.synchronize(); view.set_align_to_grid(false);
+    const auto duplicate = editor.duplicate({id}); require(duplicate && duplicate.created, "Duplicate Text"); view.synchronize();
+    const auto copy = std::get<domain::NoteId>(*duplicate.created);
+    require(copy != id && editor.project().notes.at(copy).free_text
+            && editor.project().notes.at(copy).description == editor.project().notes.at(id).description, "Duplicate preserves subtype and prose with fresh ID");
+    view.select_elements({copy}); view.delete_selection();
+    require(!editor.project().notes.contains(copy), "Delete selected Text");
+    require(editor.undo() && editor.project().notes.contains(copy), "Undo Text deletion");
+    require(editor.redo() && !editor.project().notes.contains(copy), "Redo Text deletion"); view.synchronize();
+    view.synchronize(); view.set_tool(desktop::Tool::Connect);
+    const auto revision = editor.revision();
+    click(view, {editor.project().layout.at(id).x + 20, editor.project().layout.at(id).y + 10});
+    const auto customer = editor.project().layout.at(entity_ref);
+    click(view, {customer.x + customer.width / 2, customer.y + customer.height / 2});
+    require(editor.revision() == revision && editor.project().relationships.empty(), "Connect cannot attach Text to entities");
+    const auto identifying = editor.create_relationship("Has", {300, -150, 171, 99});
+    const auto relationship = std::get<domain::RelationshipId>(*identifying.created);
+    require(editor.set_relationship_kind(relationship, domain::RelationshipKind::Identifying), "Identifying relationship fixture");
+    view.synchronize(); view.set_tool(desktop::Tool::Connect);
+    const auto identifying_revision = editor.revision();
+    click(view, {385, -100});
+    click(view, {editor.project().layout.at(id).x + 20, editor.project().layout.at(id).y + 10});
+    require(editor.revision() == identifying_revision && editor.project().relationships.at(relationship).participants.empty(),
+            "Text cannot be an identifying relationship participant");
+    const auto attribute = editor.create_attribute("Code", {200, -300, 135, 54});
+    const auto attribute_id = std::get<domain::AttributeId>(*attribute.created);
+    view.synchronize(); view.set_tool(desktop::Tool::Connect);
+    const auto ownership_revision = editor.revision();
+    click(view, {267, -273});
+    click(view, {editor.project().layout.at(id).x + 20, editor.project().layout.at(id).y + 10});
+    require(editor.revision() == ownership_revision && !editor.project().attributes.at(attribute_id).owner,
+            "Text cannot own attributes through Connect");
+    QByteArray before, after, csv_before, csv_after;
+    require(desktop::draw_document(view, editor.project(), desktop::DocumentFormat::Markdown, before).ok, "Model listing with Text");
+    require(desktop::draw_document(view, editor.project(), desktop::DocumentFormat::Csv, csv_before).ok, "CSV listing with Text");
+    require(editor.erase({id}), "Delete Text"); view.synchronize();
+    require(desktop::draw_document(view, editor.project(), desktop::DocumentFormat::Markdown, after).ok && before == after,
+            "Structured listing ignores Text");
+    require(desktop::draw_document(view, editor.project(), desktop::DocumentFormat::Csv, csv_after).ok && csv_before == csv_after,
+            "Structured CSV ignores Text");
+    require(editor.undo(), "Restore Text"); view.synchronize();
+    view.set_tool(desktop::Tool::Text); click(view, {-350, 180});
+    require(editor.project().notes.size() == 2, "Second placement begins");
+    key_to(field, Qt::Key_Escape);
+    require(editor.project().notes.size() == 1, "Cancelled placement leaves no placeholder object");
+    view.set_tool(desktop::Tool::Text, true); click(view, {-350, 180});
+    field->setPlainText("Locked placement"); view.commit_rename();
+    require(view.tool() == desktop::Tool::Text && view.tool_locked(), "Locked Text placement keeps its existing repeat mode");
+    key_to(view.viewport(), Qt::Key_Escape);
+    require(view.tool() == desktop::Tool::Select && !view.tool_locked(), "Escape releases locked Text placement");
+    (void)entity;
+}
+
 void symbol_resize_tests() {
     SequentialIds ids;
     application::Editor editor(ids);
@@ -4975,6 +5132,7 @@ int main(int argc, char** argv) {
         lock_participant_tests();
         join_where_clicked_tests();
         figure_tests();
+        free_text_canvas_tests();
         symbol_resize_tests();
         recursive_loop_tests();
         alignment_tests();

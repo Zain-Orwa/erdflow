@@ -24,9 +24,9 @@ namespace erdflow::desktop {
 // in direction. Specialization works top-down: name the supertype and attach
 // subtypes afterwards. Generalization works bottom-up: select the subtypes
 // first, then name the entity that generalises them.
-// Note places a note, the one visual aid put down by a click; a picture comes
+// Note places a card and Text places prose; a picture comes
 // from a file, so it is an action of the window rather than a tool.
-enum class Tool { Select, Entity, Attribute, Relationship, Specialization, Generalization, Connect, Pan, Note };
+enum class Tool { Select, Entity, Attribute, Relationship, Specialization, Generalization, Connect, Pan, Note, Text };
 
 // How each participant end is drawn. The model is the same in every notation:
 // participation supplies the minimum (0 or 1) and cardinality the maximum
@@ -276,6 +276,7 @@ public:
     // Editing a name on the canvas itself, as an alternative to the properties
     // panel. Commit writes the pending text through the normal command path.
     void begin_rename(const domain::ElementRef& element);
+    application::EditResult edit_free_text(domain::NoteId id, const QString& text);
     [[nodiscard]] bool renaming() const;
     void commit_rename();
     [[nodiscard]] double zoom_factor() const;

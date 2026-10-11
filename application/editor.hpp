@@ -130,6 +130,8 @@ public:
     // underneath, so everything that can be done to a note can be done to it;
     // it is a separate command only so that the history says "symbol".
     EditResult create_symbol(std::string character, domain::Rect rect);
+    EditResult create_free_text(std::string text, domain::Rect rect);
+    EditResult edit_free_text(domain::NoteId id, std::string text, domain::Rect rect);
     EditResult set_supertype(domain::SpecializationId specialization, std::optional<domain::EntityId> supertype);
     EditResult set_inheritance_direction(domain::SpecializationId specialization, domain::Inheritance direction);
     EditResult attach_subtype(domain::SpecializationId specialization, domain::EntityId subtype);
