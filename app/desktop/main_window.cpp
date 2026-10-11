@@ -3986,6 +3986,20 @@ namespace erdflow::desktop
             connect(entry, &QAction::triggered, this, [this, style]
                     { choose_line_style(style); });
         }
+        // Each opening captures the committed choice. Hover only paints;
+        // dismissal restores it, while activation updates that choice below.
+        connect(line_menu, &QMenu::aboutToShow, this, [this] {
+            line_preview_original_ = canvas_->line_style();
+        });
+        connect(line_menu, &QMenu::hovered, this, [this](QAction *hovered) {
+            if (!line_preview_original_) return;
+            for (const auto &[style, action] : line_actions_)
+                if (action == hovered) { canvas_->set_line_style(style); return; }
+        });
+        connect(line_menu, &QMenu::aboutToHide, this, [this] {
+            if (line_preview_original_) canvas_->set_line_style(*line_preview_original_);
+            line_preview_original_.reset();
+        });
         // A line Connect draws is never pinned to where it was clicked (Zain,
         // 2026-09-26). "Join where I click" pinned both ends there, and was the
         // default: a join pinned on a side facing away from its other end hooked
@@ -4401,6 +4415,20 @@ namespace erdflow::desktop
         own_picture->setObjectName("backgroundImage");
         background_actions_[domain::BackgroundStyle::Image] = own_picture;
         connect(own_picture, &QAction::triggered, this, &MainWindow::choose_background_image);
+        // The stored paper remains the committed choice throughout hover.
+        // Clearing the paint-only override on dismissal reveals that choice,
+        // including a new choice committed by activation.
+        connect(backgrounds, &QMenu::hovered, this, [this](QAction *hovered) {
+            for (const auto &[style, action] : background_actions_)
+                if (action == hovered && (style != domain::BackgroundStyle::Image || editor_.project().background.style == domain::BackgroundStyle::Image)) {
+                    canvas_->preview_background(style);
+                    return;
+                }
+            canvas_->preview_background(std::nullopt);
+        });
+        connect(backgrounds, &QMenu::aboutToHide, this, [this] {
+            canvas_->preview_background(std::nullopt);
+        });
         // How strongly a picture shows through, which is what keeps it behind the
         // diagram rather than in front of it. A ruling needs no such thing: it is
         // drawn as the ruling it is, so the bar is offered only for a picture.
@@ -5771,6 +5799,7 @@ namespace erdflow::desktop
     // label can never disagree with what the canvas will actually do.
     void MainWindow::choose_line_style(LineStyle style)
     {
+        if (line_preview_original_) line_preview_original_ = style;
         canvas_->set_line_style(style);
         for (const auto &[candidate, action] : line_actions_)
             action->setChecked(candidate == style);
@@ -7250,6 +7279,7 @@ namespace erdflow::desktop
 
     void MainWindow::choose_background(domain::BackgroundStyle style)
     {
+        canvas_->preview_background(std::nullopt);
         auto paper = editor_.project().background;
         paper.style = style;
         show_result(editor_.set_background(std::move(paper)));

@@ -1858,6 +1858,7 @@ struct DiagramView::Impl {
     // rather than on every repaint.
     domain::Background background;
     QPixmap paper;
+    std::optional<domain::BackgroundStyle> background_preview;
     bool align_to_grid = false;
     bool synchronizing = false;
     // Whether remarks are being shown. Not part of the document.
@@ -2168,10 +2169,11 @@ struct DiagramView::Impl {
     // ruling is drawn in the theme's own grid colour, so it belongs to
     // whatever palette is on rather than to one of them.
     void paint_paper(QPainter* painter, const QRectF& rect, const Theme& colors) const {
-        if (background.style == domain::BackgroundStyle::Theme || background.strength == 0) return;
+        const auto style = background_preview.value_or(background.style);
+        if (style == domain::BackgroundStyle::Theme || background.strength == 0) return;
         painter->save();
         painter->setOpacity(background.strength / 100.0);
-        if (background.style == domain::BackgroundStyle::Image) {
+        if (style == domain::BackgroundStyle::Image) {
             // One picture behind everything, covering the view and cropped to
             // it rather than repeated across it. It is drawn in the view's own
             // coordinates rather than the diagram's, so it is never magnified
@@ -2193,7 +2195,7 @@ struct DiagramView::Impl {
         QPen pen(colors.grid);
         pen.setCosmetic(true);
         painter->setPen(pen);
-        if (background.style == domain::BackgroundStyle::Dots) {
+        if (style == domain::BackgroundStyle::Dots) {
             // Rounder, darker and wider apart than the editing grid's own
             // marks, which are meant to be barely there: this is paper, and
             // has to read as paper rather than as the faint aid it replaces.
@@ -2210,7 +2212,7 @@ struct DiagramView::Impl {
             painter->restore();
             return;
         }
-        if (background.style == domain::BackgroundStyle::Lines) {
+        if (style == domain::BackgroundStyle::Lines) {
             // Ruled like a notebook: across only, at a line's height apart.
             constexpr qreal ruling = 26;
             for (qreal y = std::floor(rect.top() / ruling) * ruling; y <= rect.bottom(); y += ruling)
@@ -3249,6 +3251,12 @@ void DiagramView::set_notation(Notation notation) {
 }
 Notation DiagramView::notation() const { return impl_->notation; }
 
+void DiagramView::preview_background(std::optional<domain::BackgroundStyle> style) {
+    if (impl_->background_preview == style) return;
+    impl_->background_preview = style;
+    viewport()->update();
+}
+
 void DiagramView::set_line_style(LineStyle style) {
     if (impl_->style == style) return;
     impl_->style = style;
@@ -3580,7 +3588,7 @@ void DiagramView::drawBackground(QPainter* painter, const QRectF& rect) {
     impl_->paint_paper(painter, rect, colors);
     // The dots are an editing aid rather than decoration, so they give way to
     // a paper that rules the canvas itself.
-    if (!impl_->grid || impl_->background.style != domain::BackgroundStyle::Theme) return;
+    if (!impl_->grid || impl_->background_preview.value_or(impl_->background.style) != domain::BackgroundStyle::Theme) return;
     // Keep the grid sparse when zoomed out; its iteration cost stays viewport-bound.
     const qreal step = zoom_factor() < 0.4 ? 100 : grid_spacing;
     const auto left = std::floor(rect.left() / step) * step;

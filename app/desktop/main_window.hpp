@@ -566,6 +566,7 @@ namespace erdflow::desktop
         Tool isa_mode_ = Tool::Specialization;
         QAction *isa_action_ = nullptr;
         std::map<LineStyle, QAction *> line_actions_;
+        std::optional<LineStyle> line_preview_original_;
         QComboBox *notation_box_ = nullptr;
         QWidget *canvas_controls_ = nullptr;
         QAction *notation_action_ = nullptr;

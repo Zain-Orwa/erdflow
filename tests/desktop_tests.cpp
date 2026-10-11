@@ -1434,8 +1434,8 @@ namespace
                 // One theme, wherever it is chosen.
                 auto *themes = child<QMenu>(relational, "themeMenu");
                 require(corner_theme->menu() == themes &&
-                            child<QToolBar>(relational, "designTools")->actions().contains(themes->menuAction()),
-                        "The corner's Theme and Settings' Design row drop the same theme menu");
+                            child<QMenu>(relational, "settingsMenu")->actions().contains(themes->menuAction()),
+                        "The corner and Home Settings retain the same theme menu");
                 const auto worn = relational.canvas()->theme_id();
                 child<QAction>(relational, "thememidnight")->trigger();
                 settle();
@@ -5022,6 +5022,207 @@ namespace
     }
 }
 
+void appearance_hover_tests()
+{
+    infrastructure::QtIdGenerator ids;
+    application::Editor editor(ids);
+    infrastructure::ErdxProjectStore store;
+    desktop::MainWindow window(editor, store, ids);
+    window.resize(1200, 800);
+    window.show(); window.load_example(); settle();
+    editor.mark_saved(editor.revision());
+    const auto revision = editor.revision();
+    const auto project = editor.project();
+    const auto undo_label = editor.undo_label();
+    const bool visual = QCoreApplication::arguments().contains("--appearance-preview");
+    const auto capture = [&](const char *name) {
+        if (visual) window.grab().save(QString("/tmp/erdflow-hover-%1.png").arg(name));
+    };
+    const auto before = window.canvas()->viewport()->grab().toImage();
+    auto *background = child<QMenu>(window, "backgroundMenu");
+    background->popup(window.mapToGlobal(QPoint(200, 100))); settle();
+    child<QAction>(window, "backgroundSquares")->activate(QAction::Hover); settle();
+    require(window.canvas()->viewport()->grab().toImage() != before, "Background hover visibly previews the paper");
+    require(editor.project() == project && editor.revision() == revision, "Background preview never edits or dirties the project");
+    require(!child<QAction>(window, "backgroundSquares")->isChecked(), "Hover does not select the paper choice");
+    const auto squares = window.canvas()->viewport()->grab().toImage();
+    capture("background-squares");
+    child<QAction>(window, "backgroundLines")->activate(QAction::Hover); settle();
+    const auto ruled = window.canvas()->viewport()->grab().toImage();
+    require(ruled != squares && ruled != before, "Moving to Lines immediately previews its different paper");
+    capture("background-lines");
+    child<QAction>(window, "backgroundDots")->activate(QAction::Hover); settle();
+    require(window.canvas()->viewport()->grab().toImage() != ruled, "Moving again to Dots replaces the previous preview");
+    capture("background-dots");
+    require(!editor.dirty() && editor.undo_label() == undo_label && editor.revision() == revision,
+            "Several paper previews leave dirty state and Undo history unchanged");
+    background->hide(); settle();
+    require(window.canvas()->viewport()->grab().toImage() == before, "Leaving Background restores the exact previous appearance");
+    capture("background-canceled");
+    background->popup(window.mapToGlobal(QPoint(200, 100))); settle();
+    child<QAction>(window, "backgroundSquares")->activate(QAction::Hover);
+    QTest::keyClick(background, Qt::Key_Escape); settle();
+    require(!background->isVisible() && window.canvas()->viewport()->grab().toImage() == before && !editor.dirty(),
+            "Escape dismisses paper preview and restores the committed background without edits");
+    background->popup(window.mapToGlobal(QPoint(200, 100))); settle();
+    child<QAction>(window, "backgroundSquares")->activate(QAction::Hover);
+    child<QAction>(window, "backgroundSquares")->trigger(); background->hide(); settle();
+    require(editor.project().background.style == domain::BackgroundStyle::Squares && editor.revision() == revision + 1,
+            "Clicking Background commits exactly one project edit");
+    const auto committed_paper = window.canvas()->viewport()->grab().toImage();
+    capture("background-committed");
+    editor.mark_saved(editor.revision());
+    background->popup(window.mapToGlobal(QPoint(200, 100))); settle();
+    child<QAction>(window, "backgroundDots")->activate(QAction::Hover); settle();
+    background->hide(); settle();
+    require(window.canvas()->viewport()->grab().toImage() == committed_paper && !editor.dirty() &&
+                editor.project().background.style == domain::BackgroundStyle::Squares && editor.revision() == revision + 1,
+            "Reopened paper preview cancels to the latest committed background without history");
+    auto *lines = child<QToolButton>(window, "connectButton")->menu();
+    const auto original = window.canvas()->line_style();
+    const auto line_revision = editor.revision();
+    lines->popup(window.mapToGlobal(QPoint(200, 100))); settle();
+    child<QAction>(window, "lineStraight")->activate(QAction::Hover);
+    require(window.canvas()->line_style() == desktop::LineStyle::Straight && editor.revision() == line_revision,
+            "Line hover previews without project edits");
+    require(child<QAction>(window, "lineElbow")->isChecked(), "Hover preserves the committed line choice");
+    settle(); capture("lines-straight");
+    require(window.canvas()->viewport()->grab().toImage() != committed_paper, "Line hover visibly redraws existing connectors");
+    child<QAction>(window, "lineCurved")->activate(QAction::Hover); settle();
+    require(window.canvas()->line_style() == desktop::LineStyle::Curved, "Moving between Lines options updates the preview");
+    capture("lines-curved");
+    lines->hide();
+    require(window.canvas()->line_style() == original, "Leaving Lines restores the chosen connector style");
+    require(editor.project().background.style == domain::BackgroundStyle::Squares && !editor.dirty() && editor.revision() == line_revision,
+            "Canceling Lines keeps the independently committed Background and creates no project edit");
+    lines->popup(window.mapToGlobal(QPoint(200, 100))); settle();
+    child<QAction>(window, "lineStraight")->activate(QAction::Hover);
+    QTest::keyClick(lines, Qt::Key_Escape); settle();
+    require(!lines->isVisible() && window.canvas()->line_style() == original, "Escape restores committed Lines");
+    lines->popup(window.mapToGlobal(QPoint(200, 100))); settle();
+    child<QAction>(window, "lineStraight")->activate(QAction::Hover);
+    child<QAction>(window, "lineStraight")->trigger(); lines->hide();
+    require(window.canvas()->line_style() == desktop::LineStyle::Straight && child<QAction>(window, "lineStraight")->isChecked(),
+            "Clicking Lines keeps the selected style after the menu closes");
+    settle(); capture("lines-committed");
+    lines->popup(window.mapToGlobal(QPoint(200, 100))); settle();
+    child<QAction>(window, "lineCurved")->activate(QAction::Hover); lines->hide();
+    require(window.canvas()->line_style() == desktop::LineStyle::Straight, "A later canceled preview restores the newly committed style");
+    background->popup(window.mapToGlobal(QPoint(200, 100))); settle();
+    child<QAction>(window, "backgroundDots")->activate(QAction::Hover); background->hide(); settle();
+    require(window.canvas()->line_style() == desktop::LineStyle::Straight && editor.project().background.style == domain::BackgroundStyle::Squares,
+            "Canceling Background keeps the independently committed Lines choice");
+    require(!editor.dirty() && editor.revision() == line_revision, "Line previews and selections preserve existing project history behavior");
+    require(editor.undo().ok, "The chosen paper has one Undo step"); window.canvas()->synchronize();
+    require(editor.project() == project && editor.undo_label() == undo_label, "One Undo restores the original stored paper and history");
+}
+
+void navigation_foldout_tests()
+{
+    infrastructure::QtIdGenerator ids;
+    application::Editor editor(ids);
+    infrastructure::ErdxProjectStore store;
+    desktop::MainWindow window(editor, store, ids);
+    window.resize(1440, 900);
+    window.show();
+    window.show_home(false);
+    window.activateWindow();
+    settle();
+    auto *tabs = child<QToolBar>(window, "ribbonTabs");
+    const auto top_names = [&] {
+        QStringList names;
+        for (auto *action : tabs->actions())
+            if (action->isVisible() && !action->isSeparator()) names << action->text();
+        return names;
+    };
+    require(top_names() == QStringList{"File", "Home", "Settings"}, "Permanent navigation is exactly File / Home / Settings");
+    for (const char *name : {"tabFile", "tabHome", "tabSettings"})
+        require(!child<QAction>(window, name)->icon().isNull(), "Each permanent navigation icon remains");
+    for (const char *name : {"tabDesign", "tabView", "tabHelp"})
+        require(!window.findChild<QAction*>(name), "Design, View and Help are no longer top-level tabs");
+    auto *settings = child<QMenu>(window, "navigationSettingsMenu");
+    auto *settings_button = qobject_cast<QToolButton*>(tabs->widgetForAction(child<QAction>(window, "tabSettings")));
+    require(settings_button && settings_button->menu() == settings &&
+                settings_button->popupMode() == QToolButton::InstantPopup && !settings_button->icon().isNull() &&
+                settings_button->toolButtonStyle() == Qt::ToolButtonTextBesideIcon,
+            "Settings keeps its visible icon and opens its menu directly");
+    const auto labels = [](QMenu *menu) {
+        QStringList names;
+        for (auto *action : menu->actions()) if (action->isVisible()) names << action->text();
+        return names;
+    };
+    require(labels(settings) == QStringList{"Design", "View", "Help"}, "Settings contains only Design, View, Help");
+    auto *design = settings->actions()[0]->menu();
+    auto *view = settings->actions()[1]->menu();
+    require(design && view && !settings->actions()[2]->menu(), "Design and View have real submenus; Help is direct");
+    require(labels(design) == QStringList{"Background", "Icons", "Lines"}, "Design contains exactly Background, Icons, Lines");
+    require(labels(view) == QStringList{"Grid", "Align Grid", "On-canvas Controls"}, "View contains exactly Grid, Align Grid, On-canvas Controls");
+    require(design->actions()[0] == child<QMenu>(window, "backgroundMenu")->menuAction() &&
+                design->actions()[1] == child<QMenu>(window, "iconMenu")->menuAction() &&
+                design->actions()[2]->menu() == child<QToolButton>(window, "connectButton")->menu(),
+            "Design reuses existing menus and line actions");
+    const auto before = editor.revision();
+    auto *home = child<QToolBar>(window, "modelTools");
+    child<QAction>(window, "tabSettings")->trigger();
+    settle();
+    require(settings->isVisible() && home->isVisible() && editor.revision() == before, "Settings unfolds without changing Home or the project");
+    if (QCoreApplication::arguments().contains("--navigation-preview")) {
+        window.grab().save("/tmp/erdflow-navigation-window.png");
+        settings->grab().save("/tmp/erdflow-navigation-settings.png");
+        design->popup(settings->mapToGlobal(QPoint(settings->width(), 0)));
+        settle(); design->grab().save("/tmp/erdflow-navigation-design.png"); design->hide();
+        view->popup(settings->mapToGlobal(QPoint(settings->width(), 0)));
+        settle(); view->grab().save("/tmp/erdflow-navigation-view.png"); view->hide();
+    }
+    settings->hide();
+    child<QAction>(window, "backgroundSquares")->trigger();
+    require(editor.project().background.style == domain::BackgroundStyle::Squares, "Background still changes the project paper");
+    child<QAction>(window, "iconsoutline")->trigger();
+    require(child<QAction>(window, "iconsoutline")->isChecked(), "Icons still updates its shared state");
+    child<QAction>(window, "lineStraight")->trigger();
+    require(window.canvas()->line_style() == desktop::LineStyle::Straight, "Lines still changes the canvas style");
+    for (const char *name : {"viewShowGrid", "viewAlignToGrid", "viewCanvasControls"}) {
+        auto *action = child<QAction>(window, name);
+        require(view->actions().contains(action), "View uses the existing toggle action");
+        const auto checked = action->isChecked(); action->trigger();
+        require(action->isChecked() != checked, "The shared View toggle still works"); action->trigger();
+    }
+    require(child<QWidget>(window, "canvasControls")->isVisible(), "On-canvas Controls can be restored");
+    for (const char *name : {"viewFullView", "viewFit", "viewActualSize", "viewZoomIn", "viewZoomOut"})
+        require(!view->actions().contains(child<QAction>(window, name)), "Duplicate framing actions remain outside Settings View");
+    require(!design->actions().contains(child<QMenu>(window, "themeMenu")->menuAction()) &&
+                !design->actions().contains(child<QMenu>(window, "notationMenu")->menuAction()), "Theme and Notation remain outside Settings Design");
+    for (const char *name : {"themeMenu", "notationMenu"})
+        require(child<QMenu>(window, "settingsMenu")->actions().contains(child<QMenu>(window, name)->menuAction()), "Home Settings keeps Theme and Notation access");
+    auto *actual_size = child<QAction>(window, "viewActualSize");
+    require(actual_size->shortcut() == QKeySequence("Ctrl+1"), "The removed Actual size exposure keeps Ctrl+1 registered");
+    require(actual_size->isEnabled() && actual_size->isVisible(), "The shared Actual size action remains available");
+    window.canvas()->zoom_in();
+    require(std::abs(window.canvas()->zoom_factor() - 1) > 0.001, "Actual size is tested from a different zoom");
+    actual_size->trigger();
+    settle();
+    require(std::abs(window.canvas()->zoom_factor() - 1) < 0.001, "The removed Actual size action still restores 100% zoom");
+    bool help_opened = false;
+    QTimer close_help;
+    close_help.setInterval(20);
+    QObject::connect(&close_help, &QTimer::timeout, [&] {
+        for (auto *widget : QApplication::topLevelWidgets())
+            if (auto *box = qobject_cast<QMessageBox*>(widget); box && box->isVisible()) {
+                help_opened = true; close_help.stop(); box->accept();
+            }
+    });
+    close_help.start();
+    require(settings->actions()[2] == child<QAction>(window, "quickGuide"), "Settings reuses the existing Help action");
+    settings->actions()[2]->trigger();
+    require(help_opened, "Help still opens the existing quick guide");
+    for (const char *name : {"tabFile", "tabImport", "tabExport", "tabHome"}) {
+        child<QAction>(window, name)->trigger(); settle();
+        require(top_names() == QStringList{"File", "Home", "Settings"}, "File and Home never add top-level items");
+    }
+    require(child<QToolButton>(window, "fileMenuButton")->menu() == child<QMenu>(window, "fileMenu"), "File retains the original Open and Save menu");
+    require(window.menuBar()->isNativeMenuBar() || !window.menuBar()->isVisible(), "The old non-native seven-item menu row stays hidden");
+}
+
 int main(int argc, char **argv)
 {
     QApplication app(argc, argv);
@@ -5033,6 +5234,8 @@ int main(int argc, char **argv)
     // Run with none of them asked for, it runs whole, in the order it always
     // has, the new projects in the same window as the rest.
     const auto arguments = QCoreApplication::arguments();
+    const bool appearance_only = arguments.contains("--appearance-hover-only");
+    const bool navigation_only = arguments.contains("--navigation-only");
     const bool export_part = arguments.contains("--export-state");
     const bool relational_part = arguments.contains("--relational-part");
     const bool window_part = arguments.contains("--window-part");
@@ -5042,7 +5245,7 @@ int main(int argc, char **argv)
     // running the tests cannot disturb the real preferences -- a domain for
     // each part, so that parts run side by side cannot disturb each other's.
     QCoreApplication::setOrganizationName("ERDFlowTests");
-    QCoreApplication::setApplicationName(relational_part     ? "ERDFlowTests-Relational"
+    QCoreApplication::setApplicationName(appearance_only ? "ERDFlowTests-AppearanceHover" : navigation_only ? "ERDFlowTests-Navigation" : relational_part     ? "ERDFlowTests-Relational"
                                          : window_part       ? "ERDFlowTests-Window"
                                          : new_projects_part ? "ERDFlowTests-NewProjects"
                                                              : "ERDFlowTests");
@@ -5051,6 +5254,16 @@ int main(int argc, char **argv)
     QSettings().clear();
     try
     {
+        if (appearance_only || whole || window_part) appearance_hover_tests();
+        if (appearance_only) { std::cout << "Appearance hover tests passed\n"; return 0; }
+        if (navigation_only || whole || window_part) navigation_foldout_tests();
+        if (navigation_only) {
+            infrastructure::QtIdGenerator ids;
+            menu_bar_shortcut_tests(ids);
+            tool_lock_mark_tests(ids);
+            std::cout << "Navigation foldout tests passed\n";
+            return 0;
+        }
         if (whole || export_part)
         {
             export_state_tests();
@@ -7884,8 +8097,8 @@ int main(int argc, char **argv)
                         !bar->actions().contains(child<QAction>(window, "checkModel")),
                     "Check model is not on Home: it is offered from the header's Model menu (Zain, 2026-10-07)");
             require(!child<QToolButton>(window, "themeButton")->isVisible() &&
-                        child<QToolBar>(window, "designTools")->actions().contains(child<QMenu>(window, "themeMenu")->menuAction()),
-                    "The theme is chosen from Settings' Design row, not from Home (Zain, 2026-10-06)");
+                        child<QMenu>(window, "settingsMenu")->actions().contains(child<QMenu>(window, "themeMenu")->menuAction()),
+                    "The Home Settings menu retains Theme while the hidden toolbar button stays hidden");
             const auto wide = bar->iconSize().width();
 
             // Compact labels before dropping Notation to accommodate the
@@ -8594,7 +8807,7 @@ int main(int argc, char **argv)
         {
             auto *tabs = child<QToolBar>(window, "ribbonTabs");
             auto *home = child<QToolBar>(window, "modelTools");
-            require(window.toolBarArea(tabs) == Qt::TopToolBarArea && window.toolBarBreak(home),
+            require(window.toolBarArea(tabs) == Qt::TopToolBarArea && window.toolBarBreak(child<QToolBar>(window, "fileSections")),
                     "The tabs are at the top, and the tools start a line of their own beneath them");
             require(tabs->isVisible() && tabs->y() + tabs->height() <= home->y(), "The tabs are above the tools");
             auto *file_tab = child<QAction>(window, "tabFile");
@@ -8663,73 +8876,23 @@ int main(int argc, char **argv)
             child<QAction>(window, "undoCommand")->trigger();
             require(window.editor().project().notes.size() == count, "Both placings undo");
 
-            // Settings gathers Design, View and Help, and opens on Design.
-            auto *design = child<QToolBar>(window, "designTools");
+            auto *settings_menu = child<QMenu>(window, "navigationSettingsMenu");
             settings_tab->trigger();
             settle();
-            require(design->isVisible() && !home->isVisible(), "Settings brings up Design in place of Home");
-            require(settings_tab->isChecked() && !home_tab->isChecked() && child<QAction>(window, "tabDesign")->isChecked(),
-                    "Settings is marked chosen, and Design with it");
-            require(showing_tabs() == QStringList{"tabFile", "tabHome", "tabSettings", "tabDesign", "tabView", "tabHelp"},
-                    "Its rows' own tabs stand beside the three while it is chosen");
-            require(design->height() == row_height, "The rows are one height, so nothing beneath them moves");
-            auto *theme_menu = child<QMenu>(window, "themeMenu");
-            require(design->actions().contains(theme_menu->menuAction()), "Design offers the theme menu the View menu has");
-            auto *theme_on_design = qobject_cast<QToolButton *>(design->widgetForAction(theme_menu->menuAction()));
-            require(theme_on_design && theme_on_design->popupMode() == QToolButton::InstantPopup,
-                    "A click on it opens the menu rather than doing nothing");
-            require(child<QToolButton>(window, "designLinesButton")->menu() == child<QToolButton>(window, "connectButton")->menu(),
-                    "Lines is Connect's own line-style menu");
-
-            // Fitting the window resizes Home's icons, and the rows follow,
-            // whichever of them is showing at the time.
-            window.resize(700, 620);
-            settle();
-            require(design->iconSize() == home->iconSize(), "The Design row follows Home as the window narrows");
-            window.resize(1920, 820);
-            settle();
-            require(design->height() == row_height, "And comes back to Home's height with it");
-
-            auto *view = child<QToolBar>(window, "viewTools");
-            child<QAction>(window, "tabView")->trigger();
-            settle();
-            require(view->isVisible() && !design->isVisible() && view->height() == row_height, "View has a row of the same height");
-            require(settings_tab->isChecked() && child<QAction>(window, "tabView")->isChecked() && !child<QAction>(window, "tabDesign")->isChecked(),
-                    "Under Settings still");
-            require(view->actions().contains(child<QAction>(window, "viewFit")), "With the View menu's commands on it");
-            require(!view->actions().contains(theme_menu->menuAction()), "The View menu's submenus are on Design, not here");
-            require(!view->actions().contains(child<QAction>(window, "viewSidePanels")),
-                    "The side panels' one button stays on the diagram's raft here");
-
-            // File gathers Export and Import, with the File menu beside them.
+            require(settings_menu->isVisible() && home->isVisible(), "Settings unfolds without replacing Home tools");
+            require(showing_tabs() == QStringList{"tabFile", "tabHome", "tabSettings"}, "Settings adds no top-level tabs");
+            settings_menu->hide();
             file_tab->trigger();
             settle();
-            auto *exporting = child<QToolBar>(window, "exportTools");
-            require(exporting->isVisible() && !view->isVisible() && file_tab->isChecked() && !settings_tab->isChecked(),
-                    "File brings up Export");
-            require(showing_tabs() == QStringList{"tabFile", "tabHome", "tabSettings", "fileMenuButton", "tabExport", "tabImport"},
-                    "With the File menu, Export and Import beside the three");
-            auto *file_menu = child<QToolButton>(window, "fileMenuButton");
-            require(file_menu->menu() == child<QMenu>(window, "fileMenu") && file_menu->popupMode() == QToolButton::InstantPopup,
-                    "The File menu drops from beside them");
-            require(file_menu->menu()->actions().contains(child<QAction>(window, "saveProject")), "With Save in it");
-            settings_tab->trigger();
+            require(child<QToolBar>(window, "exportTools")->isVisible() && file_tab->isChecked(), "File still opens Export");
+            require(showing_tabs() == QStringList{"tabFile", "tabHome", "tabSettings"}, "File also keeps only the three top items");
+            require(child<QToolBar>(window, "fileSections")->isVisible(), "File retains its existing section controls on its row");
+            child<QAction>(window, "tabImport")->trigger();
             settle();
-            require(view->isVisible() && child<QAction>(window, "tabView")->isChecked(),
-                    "Settings comes back on the row last chosen under it");
-            child<QAction>(window, "tabHelp")->trigger();
-            settle();
-            require(child<QToolBar>(window, "helpTools")->isVisible(), "Help has a row of its own");
-            settings_tab->trigger();
-            settle();
-            require(child<QToolBar>(window, "helpTools")->isVisible() && settings_tab->isChecked(),
-                    "A second press on a chosen tab leaves it chosen, on the same row");
-
+            require(child<QToolBar>(window, "importTools")->isVisible(), "File Import still opens its existing row");
             home_tab->trigger();
             settle();
-            require(home->isVisible() && !view->isVisible() && !child<QToolBar>(window, "helpTools")->isVisible(),
-                    "Home brings the tool row back");
-            require(showing_tabs() == QStringList{"tabFile", "tabHome", "tabSettings"}, "And the three stand alone again");
+            require(home->isVisible() && !child<QToolBar>(window, "fileSections")->isVisible(), "Home restores its unchanged tools");
             require(home->height() == row_height, "At the height it had");
         }
 
@@ -9281,32 +9444,21 @@ int main(int argc, char **argv)
             // the other rows keep to what can act on the schema.
             {
                 auto *tabs = child<QToolBar>(window, "ribbonTabs");
-                auto *view_row = child<QToolBar>(window, "viewTools");
+                auto *view_menu = child<QMenu>(window, "settingsViewMenu");
                 require(tabs->isVisible() && child<QAction>(window, "tabHome")->isChecked(),
                         "File, Home and Settings stand above the schema too");
                 child<QAction>(window, "tabHome")->trigger();
                 settle();
                 require(!child<QToolBar>(window, "modelTools")->isVisible(), "Home brings up no drawing tools here");
-                child<QAction>(window, "tabView")->trigger();
-                settle();
-                require(view_row->isVisible() && child<QAction>(window, "tabSettings")->isChecked(),
-                        "Settings brings up View");
-                require(view_row->actions().contains(child<QDockWidget>(window, "explorerDock")->toggleViewAction()) &&
-                            view_row->actions().contains(child<QDockWidget>(window, "propertiesDock")->toggleViewAction()) &&
-                            view_row->actions().contains(child<QAction>(window, "viewSidePanels")),
-                        "With the panels' switches, and the panels' one button the diagram's raft carries");
-                for (const char *conceptual : {"viewFit", "viewZoomIn", "viewShowGrid", "viewAlignToGrid", "viewFullView",
-                                               "viewCanvasControls", "viewShowComments"})
-                    require(!view_row->actions().contains(child<QAction>(window, conceptual)),
-                            "And without what frames or marks up the hidden diagram");
+                require(view_menu->actions() == QList<QAction*>{child<QAction>(window, "viewShowGrid"),
+                            child<QAction>(window, "viewAlignToGrid"), child<QAction>(window, "viewCanvasControls")},
+                        "The same three Settings View entries remain in the schema workspace");
                 require(child<QMenu>(window, "viewMenu")->actions().contains(child<QAction>(window, "viewFit")),
-                        "The View menu is left as it was");
-                require(!child<QToolBar>(window, "designTools")->actions().contains(child<QMenu>(window, "backgroundMenu")->menuAction()),
-                        "Design keeps to the theme, the icons and the notation");
+                        "Underlying native View actions remain intact");
                 const auto both = [&]
                 { return child<QDockWidget>(window, "explorerDock")->isVisible() && child<QDockWidget>(window, "propertiesDock")->isVisible(); };
                 require(both(), "Both of the schema's panels are out");
-                qobject_cast<QToolButton *>(view_row->widgetForAction(child<QAction>(window, "viewSidePanels")))->click();
+                child<QAction>(window, "viewSidePanels")->trigger();
                 settle();
                 require(!child<QDockWidget>(window, "explorerDock")->isVisible() && child<QDockWidget>(window, "propertiesDock")->isVisible(),
                         "Panels puts the Explorer away beside the schema");
@@ -9323,9 +9475,8 @@ int main(int argc, char **argv)
             settle();
             require(child<QPushButton>(window, "previewSchema")->text() == "Convert to Schema",
                     "And from the diagram it converts to the schema");
-            require(child<QToolBar>(window, "viewTools")->actions().contains(child<QAction>(window, "viewFit")) &&
-                        !child<QToolBar>(window, "viewTools")->actions().contains(child<QAction>(window, "viewSidePanels")),
-                    "The View row has the diagram's commands back, each where it stood");
+            require(child<QMenu>(window, "settingsViewMenu")->actions().contains(child<QAction>(window, "viewShowGrid")),
+                    "The same Settings View menu remains after returning to Conceptual");
             require(child<QLabel>(window, "workspaceBadge")->text() == "CONCEPTUAL",
                     "Leaving it names the conceptual workspace again");
             require(child<QAction>(window, "insertPicture")->isVisible(), "And gives Insert its picture back");
@@ -11543,7 +11694,7 @@ int main(int argc, char **argv)
                     "Home is not, being the drawing tools, which their icons already tell apart");
             require(window.findChild<QToolBar *>("insertTools") == nullptr,
                     "Insert has no row of its own any more: what it carried is on Home");
-            for (const char *row : {"designTools", "exportTools", "importTools", "viewTools", "helpTools"})
+            for (const char *row : {"exportTools", "importTools"})
                 require(child<QToolBar>(window, row)->property("ribbonRow").toBool(), row);
             // The menu's group headings are entries that cannot be chosen,
             // which reads well in a menu and would be a button nobody can
@@ -11871,7 +12022,7 @@ int main(int argc, char **argv)
                 {
                     QStringList showing;
                     for (auto *row : window.findChildren<QToolBar *>())
-                        if (row->isVisible() && row->objectName() != "ribbonTabs")
+                        if (row->isVisible() && row->objectName() != "ribbonTabs" && row->objectName() != "fileSections")
                             showing << row->objectName();
                     return showing;
                 };
@@ -11894,8 +12045,7 @@ int main(int argc, char **argv)
                         "Under Home the header's working tools show, and no other row");
                 for (const auto &[tab, row] : std::vector<std::pair<const char *, const char *>>{
                          {"tabFile", "exportTools"}, {"tabImport", "importTools"}, {"tabExport", "exportTools"},
-                         {"tabSettings", nullptr}, {"tabView", "viewTools"}, {"tabHelp", "helpTools"},
-                         {"tabDesign", "designTools"}})
+                         })
                 {
                     child<QAction>(window, tab)->trigger();
                     settle();

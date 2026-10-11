@@ -45,13 +45,24 @@ Ribbon::Ribbon(QMainWindow& window) : QObject(&window), window_(window) {
     // picture from a file, and symbols -- is on it too, behind one button of
     // the window's own, so the tab is no longer needed.
     rows_.emplace_back(home, home_);
-    // Then a line, and the chosen tab's own row tabs beyond it.
-    rule_ = tabs_->addSeparator();
+    // File's existing section controls belong beside its tool row, leaving
+    // the permanent top navigation at exactly File / Home / Settings.
+    file_sections_ = new QToolBar("File sections", &window);
+    file_sections_->setObjectName("fileSections");
+    file_sections_->setMovable(false);
+    file_sections_->setFloatable(false);
+    file_sections_->setIconSize(tabs_->iconSize());
+    file_sections_->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    file_sections_->toggleViewAction()->setVisible(false);
+    window.insertToolBar(home_, file_sections_);
+    window.removeToolBarBreak(home_);
+    window.insertToolBarBreak(file_sections_);
+    rule_ = file_sections_->addSeparator();
 
     // File used to drop its menu from its tab: New, Open, Save and the rest
     // of what is done with the whole project. The tab now brings up Export
     // and Import, so the menu stands beside them, the first thing there.
-    file_menu_button_ = new QToolButton(tabs_);
+    file_menu_button_ = new QToolButton(file_sections_);
     file_menu_button_->setObjectName("fileMenuButton");
     file_menu_button_->setText("Open && Save");
     file_menu_button_->setToolTip("The File menu: a new project, Open, Save, Save as, the examples and templates.");
@@ -59,7 +70,7 @@ Ribbon::Ribbon(QMainWindow& window) : QObject(&window), window_(window) {
     file_menu_button_->setPopupMode(QToolButton::InstantPopup);
     file_menu_button_->setToolButtonStyle(Qt::ToolButtonTextOnly);
     file_menu_button_->setFocusPolicy(Qt::NoFocus);
-    auto* beside_file = tabs_->addWidget(file_menu_button_);
+    auto* beside_file = file_sections_->addWidget(file_menu_button_);
 
     // Export is how work leaves ERDFlow. It waited until there was something
     // to hand on, which there now is. Convert is still waiting, because there
@@ -100,42 +111,51 @@ Ribbon::Ribbon(QMainWindow& window) : QObject(&window), window_(window) {
         }
     auto* import_tab = rows_.back().first;
 
-    // Design is how the diagram looks: the choices the View menu keeps in its
-    // submenus, and the line style Connect keeps on its arrow.
-    auto* view_menu = window.findChild<QMenu*>("viewMenu");
-    auto* design = add_row("Design", "tabDesign", "designTools");
-    if (view_menu)
-        for (auto* action : view_menu->actions())
-            if (action->menu()) {
-                design->addAction(action);
-                // A click on the button is a request for the menu, not for
-                // the action that merely names it.
-                dress_button(design, action);
-            }
-    if (auto* connect_button = window.findChild<QToolButton*>("connectButton"))
-        add_menu_button(design, "Lines", "designLinesButton", connect_button->menu())
-            ->setToolTip("How connectors are drawn.");
-    auto* design_tab = rows_.back().first;
+    for (auto* section : {export_tab, import_tab}) {
+        tabs_->removeAction(section);
+        file_sections_->addAction(section);
+        dress_button(file_sections_, section);
+    }
 
-    // View is what the window shows and how much of it: the panels, the
-    // framing and the grid, which is the rest of the View menu.
-    auto* view = add_row("View", "tabView", "viewTools");
-    if (view_menu)
-        for (auto* action : view_menu->actions())
-            if (!action->menu()) view->addAction(action);
-    auto* view_tab = rows_.back().first;
+    // Reuse the window's actions and menus; only their redundant ribbon
+    // exposure changes. Native menus and window-owned shortcuts remain intact.
+    auto* settings_menu = new QMenu("Settings", &window);
+    settings_menu->setObjectName("navigationSettingsMenu");
+    auto* design = settings_menu->addMenu("Design");
+    design->setObjectName("settingsDesignMenu");
+    for (const char* name : {"backgroundMenu", "iconMenu"})
+        if (auto* menu = window.findChild<QMenu*>(name)) design->addMenu(menu);
+    if (auto* button = window.findChild<QToolButton*>("connectButton")) {
+        auto* lines = button->menu();
+        lines->setTitle("Lines");
+        design->addMenu(lines);
+    }
+    auto* view = settings_menu->addMenu("View");
+    view->setObjectName("settingsViewMenu");
+    for (const auto& [name, label] : std::initializer_list<std::pair<const char*, const char*>>{
+            {"viewShowGrid", "Grid"}, {"viewAlignToGrid", "Align Grid"},
+            {"viewCanvasControls", "On-canvas Controls"}})
+        if (auto* action = window.findChild<QAction*>(name)) {
+            action->setText(label);
+            view->addAction(action);
+        }
+    if (auto* help = window.findChild<QAction*>("quickGuide")) {
+        help->setText("Help");
+        settings_menu->addAction(help);
+    }
+    settings->setCheckable(false);
+    if (auto* button = qobject_cast<QToolButton*>(tabs_->widgetForAction(settings))) {
+        button->setMenu(settings_menu);
+        button->setPopupMode(QToolButton::InstantPopup);
+        connect(settings, &QAction::triggered, this, [button, settings_menu] {
+            settings_menu->popup(button->mapToGlobal(QPoint(0, button->height())));
+        });
+    }
 
-    auto* help = add_row("Help", "tabHelp", "helpTools");
-    if (auto* help_menu = window.findChild<QMenu*>("helpMenu"))
-        for (auto* action : help_menu->actions()) help->addAction(action);
-    auto* help_tab = rows_.back().first;
-
-    // File gathers what goes in and out of the project, Settings how the
-    // window looks, what it shows, and help. Each opens on its first row and
-    // after that on whichever was last chosen.
+    // File retains Export/Import selection and remembers its last row.
+    // Home retains the existing modelling row; Settings only opens a menu.
     groups_.push_back({file, {export_tab, import_tab}, export_tab, beside_file});
     groups_.push_back({home, {}, home, nullptr});
-    groups_.push_back({settings, {design_tab, view_tab, help_tab}, design_tab, nullptr});
     for (const auto& group : groups_) {
         connect(group.tab, &QAction::triggered, this, [this, tab = group.tab] {
             for (const auto& candidate : groups_)
@@ -262,6 +282,7 @@ void Ribbon::show_row(QAction* tab) {
 void Ribbon::settle() {
     if (!tabs_) return;
     tabs_->setVisible(!away_);
+    file_sections_->setVisible(!away_ && current_ != rows_.front().first);
     for (const auto& [tab, row] : rows_) row->setVisible(!away_ && tab == current_ && !(schema_ && row == home_));
     if (on_row_changed) on_row_changed();
 }
@@ -403,6 +424,10 @@ bool Ribbon::eventFilter(QObject* watched, QEvent* event) {
 }
 
 void Ribbon::show_tab(const QString& name) {
+    if (name == "tabSettings") {
+        if (auto* settings = window_.findChild<QAction*>("tabSettings")) settings->trigger();
+        return;
+    }
     for (const auto& group : groups_) {
         if (group.tab->objectName() == name) { show_row(group.chosen); return; }
         for (auto* section : group.sections)

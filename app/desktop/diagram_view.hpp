@@ -241,6 +241,8 @@ public:
     // element is not magnified to fill the window: being found should move the
     // diagram, not change how close it is being looked at beyond reason.
     void frame_found();
+    // Try a paper style without changing the stored project or Undo history.
+    void preview_background(std::optional<domain::BackgroundStyle> style);
     void set_grid_visible(bool enabled);
     // Aligning to the grid rounds a dragged or placed element's position to
     // the nearest grid point, so elements put down near each other line up.
