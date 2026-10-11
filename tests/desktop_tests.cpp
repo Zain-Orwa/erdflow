@@ -5312,6 +5312,46 @@ void minmax_display_menu_tests()
             "Opening a project without display state preserves the existing combined default");
 }
 
+void toolbar_fitting_tests() {
+    infrastructure::QtIdGenerator ids;
+    application::Editor editor(ids);
+    infrastructure::ErdxProjectStore store;
+    desktop::MainWindow window(editor, store, ids);
+    window.resize(1920, 820); window.show(); window.show_home(false); settle();
+    auto* bar = child<QToolBar>(window, "modelTools");
+    auto* picker = child<QComboBox>(window, "notationPicker");
+    const auto actions = bar->actions();
+    const auto text = actions.indexOf(child<QAction>(window, "toolText"));
+    require(text > 0 && text + 1 < actions.size()
+            && actions[text - 1] == child<QAction>(window, "toolNote")
+            && bar->widgetForAction(actions[text + 1]) == child<QToolButton>(window, "insertButton"),
+            "Toolbar fitting preserves Note, Text, Insert order");
+    require(bar->toolButtonStyle() == Qt::ToolButtonTextBesideIcon, "A wide window shows the names");
+    require(picker->isVisible(), "A wide window keeps Notation");
+    // Find the actual compact boundary rather than assume a platform's font
+    // metrics. The smallest labeled row must be tried before names are lost.
+    int last_labeled_icon = bar->iconSize().width();
+    bool icon_only = false;
+    for (int width = 1916; width >= 1280; width -= 4) {
+        window.resize(width, 820); settle();
+        require(bar->actions() == actions, "Compact fitting loses no toolbar actions");
+        if (bar->toolButtonStyle() == Qt::ToolButtonIconOnly) { icon_only = true; break; }
+        last_labeled_icon = bar->iconSize().width();
+        require(picker->isVisible(), "Labeled tools keep Notation");
+    }
+    require(icon_only && last_labeled_icon == 20, "Compact labeled tools fit before falling back to icon-only");
+    window.resize(1280, 820); settle();
+    require(picker->isVisible(), "A tighter one keeps Notation beside the corner controls");
+    require(bar->actions() == actions, "1280 fitting loses no toolbar actions");
+    window.resize(700, 620); settle();
+    require(bar->toolButtonStyle() == Qt::ToolButtonIconOnly && !picker->isVisible(),
+            "Small windows use icon-only tools and put Notation away");
+    require(bar->actions() == actions, "Small fitting loses no toolbar actions");
+    window.resize(1920, 820); settle();
+    require(bar->toolButtonStyle() == Qt::ToolButtonTextBesideIcon && picker->isVisible(),
+            "Widening restores the names and Notation");
+}
+
 void free_text_desktop_tests() {
     infrastructure::QtIdGenerator ids;
     application::Editor editor(ids);
@@ -5429,6 +5469,7 @@ int main(int argc, char **argv)
     const bool appearance_only = arguments.contains("--appearance-hover-only");
     const bool navigation_only = arguments.contains("--navigation-only");
     const bool text_only = arguments.contains("--free-text-only");
+    const bool toolbar_fit_only = arguments.contains("--toolbar-fit-only");
     const bool entity_kind_only = arguments.contains("--entity-kind-only");
     const bool export_part = arguments.contains("--export-state");
     const bool relational_part = arguments.contains("--relational-part");
@@ -5448,6 +5489,8 @@ int main(int argc, char **argv)
     QSettings().clear();
     try
     {
+        if (toolbar_fit_only || whole || window_part) toolbar_fitting_tests();
+        if (toolbar_fit_only) { std::cout << "Toolbar fitting tests passed\n"; return 0; }
         if (text_only || whole || window_part) free_text_desktop_tests();
         if (text_only) { std::cout << "Free Text desktop tests passed\n"; return 0; }
         if (entity_kind_only || whole || window_part) entity_kind_terminology_tests();
@@ -8306,6 +8349,7 @@ int main(int argc, char **argv)
             window.resize(1280, 820);
             settle();
             require(picker->isVisible(), "A tighter one keeps Notation beside the corner controls");
+            require(bar->actions().size() == tools, "1280 keeps every toolbar action");
             require(bar->iconSize().width() <= wide, "Compact tools use no larger icons than the wide row");
 
             window.resize(700, 620);

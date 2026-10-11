@@ -6226,12 +6226,15 @@ namespace erdflow::desktop
             bool notation_named;
             bool corner_named;
         };
-        static constexpr std::array<Step, 10> steps{{
+        static constexpr std::array<Step, 11> steps{{
             {Qt::ToolButtonTextBesideIcon, 34, true, true, true},
             {Qt::ToolButtonTextBesideIcon, 28, true, true, true},
             {Qt::ToolButtonTextBesideIcon, 24, true, true, true},
             {Qt::ToolButtonTextBesideIcon, 24, true, false, true},
             {Qt::ToolButtonTextBesideIcon, 24, true, false, false},
+            // Keep the tool names when Text pushes the compact labeled row
+            // just past its width budget on platforms with wider lettering.
+            {Qt::ToolButtonTextBesideIcon, 20, true, false, false},
             {Qt::ToolButtonIconOnly, 28, true, true, true},
             {Qt::ToolButtonIconOnly, 24, true, false, false},
             // Text adds one tool. Try the existing smallest icon size while
