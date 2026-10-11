@@ -39,6 +39,7 @@
 #include <map>
 #include <numbers>
 #include <set>
+#include <tuple>
 #include <utility>
 
 namespace erdflow::desktop {
@@ -1539,25 +1540,45 @@ public:
         // has one. Crow's foot and Bachman, which write no number, keep the
         // box they had.
         if (descriptor.relationship && (notation == Notation::Chen || notation == Notation::MinMax)) {
-            const auto along = outward_;
-            auto side = entity_normal;
+            // Read back from this participant's endpoint. A corner at (0,0)
+            // is a real corner, and coincident trailing points carry no direction.
+            auto along = QPointF(-1, 0);
+            int terminal_corner = -1;
+            for (int i = path_.elementCount() - 2; i >= 0; --i) {
+                const auto point = path_.elementAt(i);
+                const auto delta = QPointF(point.x, point.y) - end;
+                const auto length = std::hypot(delta.x(), delta.y());
+                if (length > 0.01) {
+                    along = delta / length;
+                    terminal_corner = i;
+                    break;
+                }
+            }
+            // Only a wholly coincident path uses the existing safe leftward
+            // fallback. Keep this local: the other notations' markers are unchanged.
+            auto side = normal(along);
             if (descriptor.role.isEmpty()) {
                 if (std::abs(along.x()) >= std::abs(along.y())) {
                     if (side.y() > 0) side = -side;
                 } else {
                     // The path runs from the far shape to this entity, so the
                     // corner before the last run is where the line turns next.
-                    QPointF turn;
-                    if (const auto count = path_.elementCount(); count >= 3) {
-                        const auto corner = path_.elementAt(count - 2);
-                        const auto beyond = path_.elementAt(count - 3);
-                        turn = QPointF(beyond.x - corner.x, beyond.y - corner.y);
-                        // Straight on is no turn.
-                        if (std::abs(turn.x() * along.y() - turn.y() * along.x()) < 0.01 * std::hypot(turn.x(), turn.y()))
-                            turn = QPointF();
+                    std::optional<QPointF> turn;
+                    if (terminal_corner >= 0) {
+                        const auto corner = path_.elementAt(terminal_corner);
+                        for (int i = terminal_corner - 1; i >= 0; --i) {
+                            const auto beyond = path_.elementAt(i);
+                            const QPointF delta(beyond.x - corner.x, beyond.y - corner.y);
+                            const auto length = std::hypot(delta.x(), delta.y());
+                            if (length <= 0.01) continue;
+                            // Straight on is no turn.
+                            if (std::abs(delta.x() * along.y() - delta.y() * along.x()) >= 0.01 * length)
+                                turn = delta;
+                            break;
+                        }
                     }
-                    if (!turn.isNull()) {
-                        if (QPointF::dotProduct(side, turn) > 0) side = -side;
+                    if (turn) {
+                        if (QPointF::dotProduct(side, *turn) > 0) side = -side;
                     } else if (side.x() < 0) {
                         side = -side;
                     }
@@ -1583,6 +1604,51 @@ public:
             };
             const auto entity = distance_to(body_of(target)) <= distance_to(body_of(source)) ? body_of(target) : body_of(source);
             for (int step = 0; step < 120 && box.intersects(entity); ++step) box.translate(along);
+            // The final run's envelope alone misses a nearby turn or loop.
+            // Use the same paths, caps and joins as paint(), in every stroke
+            // weight it can show, so selection/highlighting never moves a label.
+            QPainterPath strokes;
+            for (const qreal weight : {2.2 * connector_scale, 3.4 * connector_scale, heaviest}) {
+                QPainterPathStroker stroker;
+                stroker.setWidth(weight);
+                stroker.setCapStyle(Qt::SquareCap);
+                stroker.setJoinStyle(Qt::BevelJoin);
+                if (mandatory()) {
+                    const auto apart = (weight + 1.0 * connector_scale) / 2;
+                    strokes = strokes.united(stroker.createStroke(alongside(path_, apart)));
+                    strokes = strokes.united(stroker.createStroke(alongside(path_, -apart)));
+                } else {
+                    strokes = strokes.united(stroker.createStroke(path_));
+                }
+            }
+            const auto clear = [&](const QRectF& candidate) {
+                return !candidate.intersects(entity) && !strokes.intersects(candidate)
+                    && (descriptor.role.isEmpty() || !candidate.intersects(role_rect_));
+            };
+            if (!clear(box)) {
+                // A bounded two-unit grid, nearest displacement first. Ties
+                // prefer moving farther onto the chosen side, then staying
+                // near the endpoint. Ordinary clear candidates are untouched.
+                std::vector<std::pair<int, int>> offsets;
+                constexpr int radius = 48;
+                for (int a = -radius; a <= radius; ++a)
+                    for (int s = -radius; s <= radius; ++s)
+                        if (a * a + s * s <= radius * radius) offsets.emplace_back(a, s);
+                std::sort(offsets.begin(), offsets.end(), [](const auto& lhs, const auto& rhs) {
+                    const auto rank = [](const auto& offset) {
+                        const auto [a, s] = offset;
+                        return std::tuple(a * a + s * s, s < 0, std::abs(a), a, s);
+                    };
+                    return rank(lhs) < rank(rhs);
+                });
+                for (const auto& [a, s] : offsets) {
+                    const auto candidate = box.translated(2 * (a * along + s * side));
+                    if (clear(candidate)) {
+                        box = candidate;
+                        break;
+                    }
+                }
+            }
             cardinality_rect_ = box;
         }
         bounds_ = path_.boundingRect().adjusted(-14, -14, 14, 14);

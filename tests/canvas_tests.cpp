@@ -26,6 +26,7 @@
 #include <QSlider>
 #include <QTimer>
 #include <QPainter>
+#include <QPainterPathStroker>
 #include <QPointingDevice>
 #include <QWheelEvent>
 #include <QSvgRenderer>
@@ -1429,6 +1430,164 @@ void cardinality_labels_sit_at_the_entity_end_tests() {
                     "Beside a standing line, the number is to its right, just below the entity above");
             require(dark_in(view, image, QRectF(6, 280, wide, 31)) > 0 && dark_in(view, image, QRectF(-6 - wide, 280, wide, 31)) == 0,
                     "And just above the entity below");
+        }
+    }
+}
+
+// Inspect the existing hit shape's label subpath; no production test API or
+// font-dependent expected width is needed. Check whole stroked runs, rather
+// than individual antialiased pixels, at all three rendered weights.
+void routed_entity_end_label_tests() {
+    const auto label_rect = [](QGraphicsItem* item, bool role = false) {
+        const auto polygons = item->shape().toSubpathPolygons();
+        return polygons[polygons.size() - (role ? 2 : 1)].boundingRect();
+    };
+    const auto clear_runs = [](const QRectF& label, QPointF end, QPointF corner,
+                               std::optional<QPointF> preceding, bool total) {
+        for (const auto weight : {3.52, 5.44, 6.4}) {
+            const auto apart = total ? (weight + 1.6) / 2 : 0.0;
+            for (const auto offset : {-apart, apart}) {
+                // These fixtures have right-angle turns. Their known parallel
+                // paths meet at the intersection of the two offset runs.
+                const auto unit_normal = [](QPointF delta) {
+                    return QPointF(-delta.y(), delta.x()) / std::hypot(delta.x(), delta.y());
+                };
+                const auto terminal_normal = unit_normal(end - corner);
+                QPainterPath path;
+                if (preceding) {
+                    const auto before_normal = unit_normal(corner - *preceding);
+                    path.moveTo(*preceding + before_normal * offset);
+                    path.lineTo(corner + (before_normal + terminal_normal) * offset);
+                } else {
+                    path.moveTo(corner + terminal_normal * offset);
+                }
+                path.lineTo(end + terminal_normal * offset);
+                QPainterPathStroker stroker;
+                stroker.setWidth(weight);
+                stroker.setCapStyle(Qt::SquareCap);
+                stroker.setJoinStyle(Qt::BevelJoin);
+                require(!stroker.createStroke(path).intersects(label),
+                        "The filled cardinality box clears every visible terminal/preceding stroke and join");
+            }
+        }
+    };
+    const auto near_end = [](const QRectF& label, QPointF end) {
+        const auto delta = label.center() - end;
+        require(std::hypot(delta.x(), delta.y()) < label.width() + 48,
+                "A cleared label stays close to its own entity end");
+        require(std::abs(label.height() - 29) < 0.001, "The existing rendered label height is preserved");
+    };
+    for (const auto notation : {desktop::Notation::Chen, desktop::Notation::MinMax}) {
+        // Short automatic elbow: the wide (1,M) box used to erase the
+        // preceding vertical run even though it cleared the final horizontal one.
+        {
+            SequentialIds ids;
+            application::Editor editor(ids);
+            const auto entity = std::get<domain::EntityId>(*editor.create_entity("Entity", {300, 100, 148, 86}).created);
+            const auto rel = std::get<domain::RelationshipId>(*editor.create_relationship("Link", {0, -55, 190, 110}).created);
+            const auto participant = *editor.connect(rel, entity).participant;
+            require(editor.update_participant(rel, participant, domain::Cardinality::Many, domain::Participation::Total, ""), "Total short elbow");
+            desktop::DiagramView view(editor);
+            view.set_notation(notation);
+            view.set_line_style(desktop::LineStyle::Elbow);
+            auto* edge = find_edge(view);
+            const auto label = label_rect(edge);
+            near_end(label, {300, 143});
+            clear_runs(label, {300, 143}, {245, 143}, QPointF(245, 0), true);
+            require(label.center().x() < 300 && !label.intersects(QRectF(300, 100, 148, 86)),
+                    "Short elbow label stays on the terminal approach side and outside its entity");
+            const auto label_index = edge->shape().toSubpathPolygons().size() - 1;
+            edge->setSelected(true);
+            view.synchronize();
+            require(edge->shape().toSubpathPolygons()[label_index].boundingRect() == label,
+                    "Selection and refresh do not move the cardinality box");
+            require(editor.project().connectors.empty(), "Automatic clearance does not persist a route");
+        }
+        // The centres point diagonally upward, but the last run is horizontal.
+        // Repeat at the origin and away from it, with and without repeated
+        // final waypoints accepted by the public Editor API.
+        QRectF origin_label;
+        for (const bool repeated : {false, true}) {
+            for (const auto translation : {QPointF(), QPointF(200, 100)}) {
+                SequentialIds ids;
+                application::Editor editor(ids);
+                const auto entity = std::get<domain::EntityId>(*editor.create_entity("Entity", {100 + translation.x(), -43 + translation.y(), 148, 86}).created);
+                const auto rel = std::get<domain::RelationshipId>(*editor.create_relationship("Link", {500 + translation.x(), -1000 + translation.y(), 190, 110}).created);
+                const auto participant = *editor.connect(rel, entity).participant;
+                require(editor.update_participant(rel, participant, domain::Cardinality::Many, domain::Participation::Total, ""), "Total origin route");
+                std::vector<domain::Point> route{{600 + translation.x(), -900 + translation.y()},
+                                                {translation.x(), -900 + translation.y()},
+                                                {translation.x(), translation.y()}};
+                if (repeated) route.push_back(route.back());
+                require(editor.route_connector(participant, route), "Public API accepts coincident final waypoints");
+                desktop::DiagramView view(editor);
+                view.set_notation(notation);
+                const auto label = label_rect(find_edge(view)).translated(-translation);
+                near_end(label, {100, 0});
+                require(std::abs(label.right() - 98) < 0.001 && std::abs(label.bottom() + 8.2) < 0.001,
+                        "Origin route follows its real horizontal terminal run, with the existing end and normal gaps");
+                clear_runs(label, {100, 0}, {0, 0}, QPointF(0, -900), true);
+                if (!repeated && translation == QPointF()) origin_label = label;
+                else require(QLineF(label.topLeft(), origin_label.topLeft()).length() < 0.001
+                             && QLineF(label.bottomRight(), origin_label.bottomRight()).length() < 0.001,
+                             "Whole-diagram translation and coincident corners preserve relative label geometry");
+                require(editor.project().connectors.at(participant).waypoints == route,
+                        "Label layout never changes the stored route");
+            }
+        }
+        // A last waypoint can also coincide with the pinned endpoint itself.
+        // The renderer must skip that zero-length final run, not use its fallback.
+        {
+            SequentialIds ids;
+            application::Editor editor(ids);
+            const auto entity = std::get<domain::EntityId>(*editor.create_entity("Entity", {100, -43, 148, 86}).created);
+            const auto rel = std::get<domain::RelationshipId>(*editor.create_relationship("Link", {-300, -55, 190, 110}).created);
+            domain::Connector route;
+            route.child_anchor = std::numbers::pi; // midpoint of the rectangle's left face
+            route.waypoints = {{0, 0}, {100, 0}, {100, 0}};
+            const auto participant = *editor.connect(rel, entity, route).participant;
+            require(editor.update_participant(rel, participant, domain::Cardinality::One, domain::Participation::Total, ""), "Total coincident endpoint");
+            desktop::DiagramView view(editor);
+            view.set_notation(notation);
+            const auto label = label_rect(find_edge(view));
+            require(std::abs(label.right() - 98) < 0.001 && std::abs(label.bottom() + 8.2) < 0.001,
+                    "Coincident endpoint walks back to the real horizontal segment");
+            clear_runs(label, {100, 0}, {0, 0}, std::nullopt, true);
+        }
+        // Each recursive participant keeps its own end. Roles previously held
+        // the short return's label over both strokes of the preceding run.
+        for (const bool roles : {false, true}) {
+            SequentialIds ids;
+            application::Editor editor(ids);
+            const auto entity = std::get<domain::EntityId>(*editor.create_entity("Entity", {300, 100, 148, 86}).created);
+            const auto rel = std::get<domain::RelationshipId>(*editor.create_relationship("Link", {0, 40, 190, 110}).created);
+            const auto first = *editor.connect(rel, entity).participant;
+            const auto second = *editor.connect(rel, entity).participant;
+            require(editor.update_participant(rel, first, domain::Cardinality::Many, domain::Participation::Total, roles ? "First" : ""), "First recursive side");
+            require(editor.update_participant(rel, second, domain::Cardinality::One, domain::Participation::Total, roles ? "Second" : ""), "Second recursive side");
+            desktop::DiagramView view(editor);
+            view.set_notation(notation);
+            view.set_line_style(desktop::LineStyle::Elbow);
+            std::vector<QRectF> labels;
+            for (auto* edge : view.scene()->items()) {
+                if (edge->zValue() >= 0 || !edge->toolTip().startsWith("Participant")) continue;
+                const auto label = label_rect(edge, roles);
+                labels.push_back(label);
+                const bool loop = edge->toolTip().startsWith("Participant: One");
+                const auto end = loop ? QPointF(374, 186) : QPointF(300, 143);
+                near_end(label, end);
+                if (loop) clear_runs(label, end, {374, 212}, QPointF(-26, 212), true);
+                else clear_runs(label, end, {245, 143}, QPointF(245, 95), true);
+                if (roles) {
+                    const auto role = edge->shape().toSubpathPolygons().back().boundingRect();
+                    require(!role.intersects(label), "Cleared cardinality does not collide with its existing role");
+                    require(loop ? role.left() > 374 : role.top() > 143,
+                            "Recursive roles retain their original side of the terminal run");
+                }
+            }
+            require(labels.size() == 2 && labels[0] != labels[1] && !labels[0].intersects(labels[1]),
+                    "Recursive ParticipantIds retain independent, distinct entity-end label rectangles");
+            require(editor.project().connectors.empty(), "Recursive clearance does not store automatic geometry");
         }
     }
 }
@@ -4693,6 +4852,7 @@ int main(int argc, char** argv) {
         weak_and_identifying_drawing_tests();
         total_participation_drawing_tests();
         cardinality_labels_sit_at_the_entity_end_tests();
+        routed_entity_end_label_tests();
         element_colour_tests();
         extend_selection_tests();
         picker_sample_tests();

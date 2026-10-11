@@ -14,7 +14,7 @@ Optimization is intentionally last.
 
 ### 1. Chen / Min–max entity-end label positioning
 
-Status: PENDING / VERIFY IMPLEMENTATION
+Status: DONE
 
 Make sure Chen and Min–max cardinality/ordinality labels are positioned close to the entity end of the relationship connector.
 
