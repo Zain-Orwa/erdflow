@@ -4949,11 +4949,43 @@ namespace
             else
                 require(inked(locked) >= 40, "The padlock is gold");
             // On the icon: in its lower half, and short of the name where the
-            // name follows it.
+            // name follows it. Where the icon and the name are is found from
+            // what the button draws, not from fractions of its width: how much
+            // room the style puts round them, and how wide a name's letters
+            // are, differ between platforms (2026-10-11: on Windows "Note" left
+            // the icon reaching past half its button).
             const auto icon = button->iconSize().width() * 2;
             require(where.top() >= locked.height() / 2 - icon / 4, "The padlock sits on the lower part of the icon");
-            if (button->toolButtonStyle() == Qt::ToolButtonTextBesideIcon)
-                require(where.right() < locked.width() / 2, "Beside the name, on the icon, not over the name");
+            const bool named = button->toolButtonStyle() == Qt::ToolButtonTextBesideIcon;
+            QRect name_at;
+            if (named)
+            {
+                // The name is what drawing the button without it takes away.
+                auto *action = button->defaultAction();
+                action->setText(QString());
+                const auto nameless = drawn(button);
+                action->setText(QString::fromLatin1(name));
+                require(nameless.size() == locked.size(), "Drawn without its name at the same size");
+                name_at = changed(locked, nameless).second;
+                require(!name_at.isEmpty(), "Its name is drawn beside its icon");
+            }
+            // The icon is what the button draws, before its name, on its own
+            // background, away from its frame.
+            const auto ground = once.pixelColor(6, once.height() / 2);
+            QRect icon_at;
+            for (int y = 6; y < once.height() - 6; ++y)
+                for (int x = 6; x < (named ? name_at.left() : once.width() - 6); ++x)
+                {
+                    const auto a = once.pixelColor(x, y);
+                    if (std::max({std::abs(a.red() - ground.red()), std::abs(a.green() - ground.green()),
+                                  std::abs(a.blue() - ground.blue())}) > 48)
+                        icon_at |= QRect(x, y, 1, 1);
+                }
+            require(!icon_at.isEmpty(), "The tool's icon is drawn");
+            require(where.left() >= icon_at.left() && where.left() < icon_at.right() && where.intersects(icon_at),
+                    "The padlock is on the icon");
+            if (named)
+                require(where.right() < name_at.left(), "Beside the name, on the icon, not over the name");
             press(select, 0);
             require(window.canvas()->tool() == desktop::Tool::Select && !window.canvas()->tool_locked() && !marked(button),
                     "Select pressed, the tool is put down and unlocked");
