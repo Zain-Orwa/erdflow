@@ -1127,7 +1127,7 @@ EditResult Editor::rename(ElementRef ref, std::string name, double least_width) 
         });
         if (result) hold_anchors(project(), delta, ref, TextField::Name, characters);
         if (result && (std::holds_alternative<EntityId>(ref) || std::holds_alternative<RelationshipId>(ref)
-                       || std::holds_alternative<AttributeId>(ref)))
+                       || std::holds_alternative<AttributeId>(ref) || std::holds_alternative<SpecializationId>(ref)))
             if (const auto found = project().layout.find(ref);
                 found != project().layout.end() && found->second.width < least_width) {
                 auto widened = found->second;

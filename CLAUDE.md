@@ -67,10 +67,14 @@ These have been decided and are not open unless Zain reopens them.
 - **Element defaults are starting sizes, not rulings.** A new entity is 133×77,
   a new relationship 171×99 and a new attribute 135×54 (Zain, 2026-10-11; they
   were 148×86, 190×110 and 150×60). These are the least each is made at: one
-  whose name would be cut short is made, or on being renamed made, just wide
-  enough for it, measured as the name is painted; a shorter name never narrows
-  it. They decide what somebody meets when they draw an element; every element
-  is then resized by hand, a size given by hand is kept and saved, and a diagram
+  whose name would be cut short is made, or on being renamed made, wider up
+  to the rendered width budget of "Relationship", measured with its own font and
+  shape's text room. This budget also applies to generalization and specialization
+  names. Longer names may elide; only shortened names need a
+  full-name hover. Existing remark tooltips remain available. A shorter name
+  never narrows it. They decide what somebody meets when they draw an element;
+  every element is then resized by hand, a size given by hand is kept and saved,
+  and a diagram
   opens at exactly the sizes it was saved with. The figures themselves are not
   to be changed.
 - **The conceptual canvas and the Relational Schema are sized separately.** The

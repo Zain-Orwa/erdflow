@@ -6775,13 +6775,21 @@ int main(int argc, char **argv)
         settle();
         require(window.editor().project().entities.at(student).name == "UniversityStudent", "Name commits through properties on focus loss");
         {
-            // Too long for the box it had, the entity is widened just for it,
-            // in the same edit, and no taller (2026-10-11).
+            // Properties rename uses the same compact Relationship budget as
+            // inline rename. An example already wider than it stays that wide.
             const auto &was = original.layout.at(domain::ElementRef{student});
             const auto &now = window.editor().project().layout.at(domain::ElementRef{student});
-            require(now.width > was.width && now.height == was.height &&
+            const auto base = original.lettering.find(domain::ElementRef{student});
+            const auto factor = base == original.lettering.end() ? 1.0
+                : domain::lettering_factor(base->second, now.width, now.height);
+            const auto required = desktop::name_room_width(desktop::NamedShape::Entity,
+                "UniversityStudent", window.canvas()->font(), factor, now.height);
+            const auto cap = desktop::name_room_width(desktop::NamedShape::Entity,
+                "Relationship", window.canvas()->font(), factor, now.height);
+            require(std::abs(now.width - std::max(was.width, std::min(required, cap))) <= 1
+                        && now.height == was.height &&
                         std::abs(now.x + now.width / 2 - (was.x + was.width / 2)) < 0.01,
-                    "A name too long for its entity widens it about its centre");
+                    "Properties rename respects the Relationship cap, preserving centre and height");
         }
         require(window.editor().dirty() && window.isWindowModified(), "Applied field edit marks project dirty");
         auto *undo = child<QAction>(window, "undoCommand");
