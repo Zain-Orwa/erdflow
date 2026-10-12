@@ -21,6 +21,9 @@
 #include "infrastructure/project_store.hpp"
 
 #include <QAbstractAnimation>
+#include <QAnimationGroup>
+#include <QSequentialAnimationGroup>
+#include <QVariantAnimation>
 #include <QAction>
 #include <QFocusEvent>
 #include <cmath>
@@ -81,6 +84,7 @@
 #include <QTreeView>
 
 #include <algorithm>
+#include <optional>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
@@ -140,22 +144,100 @@ namespace
     // (2026-10-09). Only for a move with nothing timed to follow it: opening
     // the schema full, raising the Conceptual preview and converting each do
     // something more a little after their panel lands.
+    //
+    // A move is carried to its end rather than watched (2026-10-12): its last
+    // frame is the one it would have reached, through Qt's own setCurrentTime,
+    // so it lands, finishes and does whatever it does on finishing exactly as
+    // it does when left to run. Watching cost the window part about 280 ms a
+    // move, twenty times over, spent walking the window for animations between
+    // frames.
     void settle_motion(const QWidget &window)
     {
         QElapsedTimer clock;
         clock.start();
-        const auto moving = [&]
+        const auto carry_to_rest = [&]
         {
-            const auto animations = window.findChildren<QAbstractAnimation *>();
-            return std::any_of(animations.begin(), animations.end(), [](const QAbstractAnimation *animation)
-                               { return animation->state() == QAbstractAnimation::Running; });
+            bool moved = false;
+            for (const QPointer<QAbstractAnimation> animation : window.findChildren<QAbstractAnimation *>())
+            {
+                if (!animation || animation->state() != QAbstractAnimation::Running)
+                    continue;
+                moved = true;
+                // One in a running group is carried along by its group.
+                if (animation->group() && animation->group()->state() == QAbstractAnimation::Running)
+                    continue;
+                // One that never ends is left to be caught below.
+                if (animation->totalDuration() < 0)
+                    continue;
+                animation->setCurrentTime(animation->direction() == QAbstractAnimation::Forward
+                                              ? animation->totalDuration()
+                                              : 0);
+            }
+            return moved;
         };
-        while (moving())
+        while (carry_to_rest())
         {
             require(clock.elapsed() < 10000, "What moves in the window comes to rest");
             QApplication::processEvents(QEventLoop::AllEvents, 5);
         }
         settle();
+    }
+    // While the checks run, a window is not repainted of its own accord
+    // (2026-10-12): Qt's request to bring a window's picture up to date is set
+    // aside, so nothing is drawn that no check looks at -- on the macOS Intel
+    // runner that drawing was a third of the main window's part. Every
+    // check that looks at pixels asks for them: grab() and render() draw the
+    // widget there and then, through the same paint code. Every other event
+    // -- layout, resizing, style, input, focus, timers -- is delivered exactly
+    // as before. Taken away, it hands each window the request it was owed,
+    // so painting resumes where it left off.
+    class PaintingOnRequest final : public QObject
+    {
+    public:
+        PaintingOnRequest() { qApp->installEventFilter(this); }
+        ~PaintingOnRequest() override
+        {
+            qApp->removeEventFilter(this);
+            for (const auto &window : owed_)
+                if (window)
+                    QCoreApplication::postEvent(window, new QEvent(QEvent::UpdateRequest), Qt::LowEventPriority);
+        }
+        PaintingOnRequest(const PaintingOnRequest &) = delete;
+        PaintingOnRequest &operator=(const PaintingOnRequest &) = delete;
+
+    protected:
+        bool eventFilter(QObject *watched, QEvent *event) override
+        {
+            if (event->type() != QEvent::UpdateRequest)
+                return false;
+            auto *window = qobject_cast<QWidget *>(watched);
+            if (!window || !window->isWindow())
+                return false;
+            if (std::find(owed_.begin(), owed_.end(), window) == owed_.end())
+                owed_.emplace_back(window);
+            return true;
+        }
+
+    private:
+        std::vector<QPointer<QWidget>> owed_;
+    };
+    // Lets the event loop run until what the next check is about has come
+    // about: work the window leaves to its next pass, or to a timer of its own.
+    // A fixed wait for it is longer than it needs to be on a quick machine and
+    // may be too short on a slow one (2026-10-12). Not for checks of timing
+    // itself -- a fade, a clock, a hover that must settle -- which keep theirs.
+    template <class Done>
+    void settle_until(Done done, const char *what)
+    {
+        QElapsedTimer clock;
+        clock.start();
+        settle();
+        while (!done())
+        {
+            require(clock.elapsed() < 10000, what);
+            QApplication::processEvents(QEventLoop::AllEvents, 5);
+            settle();
+        }
     }
     template <class T>
     T *child(desktop::MainWindow &window, const char *name)
@@ -164,6 +246,18 @@ namespace
         auto *value = window.findChild<T *>(QString::fromLatin1(name));
         require(value != nullptr, name);
         return value;
+    }
+    // A schema opened to the whole window gets there a moment after its panel
+    // has risen (MainWindow::open_schema, 320 ms), as a project that starts
+    // from its schema always does. This waits until it is there, however long
+    // the machine takes, where a fixed wait was longer than that on a quick
+    // machine and, at 300 ms, could end just before it (2026-10-12).
+    void settle_schema_full(desktop::MainWindow &window)
+    {
+        settle_motion(window);
+        settle_until([&] { return child<QPushButton>(window, "schemaFull")->isChecked(); },
+                     "The schema opens to the whole window");
+        settle_motion(window);
     }
     void dismiss(QMessageBox::StandardButton choice)
     {
@@ -943,7 +1037,7 @@ namespace
             require(other_tools->isVisible() && !other_tools->isEnabled(), "Other tools' formats stay as they were");
             // Relational Design in front: they go with the diagram.
             placed.open_schema(true);
-            settle_for(450);
+            settle_schema_full(placed);
             require(offered(placed, false), "With Relational Design in front, the Conceptual ones are put away");
             require(other_tools->isVisible() && !other_tools->isEnabled() && !other_tools->toolTip().isEmpty(),
                     "And its Import keeps the entry that says why other tools' formats cannot be read yet");
@@ -960,7 +1054,7 @@ namespace
             schema_first.resize(1440, 920);
             schema_first.show();
             schema_first.show_home(false);
-            settle_for(450);
+            settle_schema_full(schema_first);
             require(offered(schema_first, false), "A schema drawn by hand is not offered the Conceptual ones");
             require(child<QAction>(schema_first, "importFromOtherTools")->isVisible(),
                     "Only the entry for other tools' formats");
@@ -1450,7 +1544,7 @@ namespace
             // A diagram's schema given the whole window is Relational Design in
             // front, and back again.
             relational.open_schema(true);
-            settle_for(450);
+            settle_schema_full(relational);
             require(offered(true) && conceptual_offered(false) &&
                         !child<QPushButton>(relational, "openExample")->isVisible(),
                     "With Relational Design in front, its own are offered and the Conceptual ones are put away");
@@ -1467,12 +1561,12 @@ namespace
             require(offered(false) && conceptual_offered(true), "Back on the diagram, they are put away again");
             check_corner_placement(true);
             child<QAction>(relational, "modelToConceptual")->trigger();
-            settle_for(450);
+            settle_motion(relational);
             require(child<QLabel>(relational, "workspaceBadge")->text() == "CONCEPTUAL" &&
                         entries().front() == "designRelational",
                     "Model's Convert to Conceptual puts the schema away and the diagram is in front again");
             relational.open_schema(true);
-            settle_for(450);
+            settle_schema_full(relational);
 
             // Each opens from its entry as a project that starts from its schema:
             // no diagram made first, untitled on disk and clean, Relational
@@ -1496,7 +1590,7 @@ namespace
             {
                 require(opening.entry->isVisible() && opening.entry->isEnabled(), "The entry can be chosen");
                 opening.entry->trigger();
-                settle_for(450);
+                settle_motion(relational);
                 const auto &project = relational.editor().project();
                 require(project.name == opening.name && sound(project) &&
                             table_names(project) == table_names(*opening.built) &&
@@ -1555,7 +1649,7 @@ namespace
                                           "fileTemplateRelational"})
                 {
                     child<QAction>(relational, entry)->trigger();
-                    settle_for(300);
+                    settle_motion(relational);
                     const auto boxes = view->table_boxes();
                     require(boxes.size() == relational.editor().project().schema.relations.size(),
                             "Lettered larger, every table is drawn");
@@ -2169,7 +2263,7 @@ namespace
             // to it and typed, and a foreign key connected to Employee's key, each
             // one step, undone back to the example exactly and redone.
             child<QAction>(relational, "fileExampleCompanyRelational")->trigger();
-            settle_for(300);
+            settle_motion(relational);
             const auto as_opened = opened.project();
             const auto audit = opened.create_relation("Audit", domain::Point{100, 2400});
             require(audit.ok, "A table is made on the example");
@@ -2211,7 +2305,7 @@ namespace
             // A Conceptual example opened from Relational Design is a diagram
             // again, and whichever workspace is then in front offers only its own.
             relational.load_company_database();
-            settle_for(450);
+            settle_motion(relational);
             require(!opened.project().schema.standalone && opened.project().entities.size() == 14 &&
                         child<QAction>(relational, "fileExampleCompany")->isVisible() !=
                             child<QAction>(relational, "fileExampleCompanyRelational")->isVisible(),
@@ -2704,7 +2798,7 @@ namespace
             tree_window.show_home(false);
             settle();
             tree_window.open_schema();
-            settle_for(300);
+            settle_motion(tree_window);
             auto *tree = child<QTreeView>(tree_window, "schemaExplorer");
             auto *view = tree_window.schema();
             require(child<QDockWidget>(tree_window, "explorerDock")->widget() == tree && tree->isVisible(),
@@ -3436,7 +3530,7 @@ namespace
             connect_window.resize(1440, 920);
             connect_window.show();
             connect_window.show_home(false);
-            settle_for(300);
+            settle_schema_full(connect_window);
             auto *view = connect_window.schema();
             require(view && view->isVisible(), "The hand-drawn schema is in front");
             auto *properties_dock = child<QDockWidget>(connect_window, "propertiesDock");
@@ -3691,7 +3785,7 @@ namespace
             pk_window.resize(1440, 920);
             pk_window.show();
             pk_window.show_home(false);
-            settle_for(300);
+            settle_schema_full(pk_window);
             auto *view = pk_window.schema();
             require(view && view->isVisible(), "The hand-drawn schema is in front");
             auto *properties_dock = child<QDockWidget>(pk_window, "propertiesDock");
@@ -4112,7 +4206,7 @@ namespace
             tool_window.resize(1440, 920);
             tool_window.show();
             tool_window.show_home(false);
-            settle_for(300);
+            settle_schema_full(tool_window);
             auto *view = tool_window.schema();
             require(view && view->isVisible(), "The hand-drawn schema is in front");
             auto *select = child<QAction>(tool_window, "schemaSelectTool");
@@ -4401,7 +4495,7 @@ namespace
             lit_window.resize(1440, 920);
             lit_window.show();
             lit_window.show_home(false);
-            settle_for(300);
+            settle_schema_full(lit_window);
             auto *view = lit_window.schema();
             auto *select = child<QAction>(lit_window, "schemaSelectTool");
             auto *connecting = child<QAction>(lit_window, "schemaConnectTool");
@@ -4858,7 +4952,13 @@ namespace
         window.show();
         window.activateWindow();
         window.show_home(false);
-        settle_for(300);
+        settle_until([&]
+                     {
+            auto *row = window.findChild<QToolBar *>("modelTools");
+            auto *entity = window.findChild<QAction *>("toolEntity");
+            auto *button = row && entity ? qobject_cast<QToolButton *>(row->widgetForAction(entity)) : nullptr;
+            return button && button->isVisible() && button->toolButtonStyle() == Qt::ToolButtonIconOnly; },
+                     "Away from Home the diagram's tools are laid out in their row");
         const auto drawn = [](QWidget *button)
         {
             QImage image(button->size() * 2, QImage::Format_ARGB32_Premultiplied);
@@ -5010,7 +5110,10 @@ namespace
         }
         // With room for names, the same padlock on the same icon.
         window.resize(2400, 920);
-        settle_for(200);
+        settle_until([&]
+                     { return std::all_of(tools.begin(), tools.end(), [](const auto &tool)
+                                          { return std::get<2>(tool)->toolButtonStyle() == Qt::ToolButtonTextBesideIcon; }); },
+                     "Widened, the row makes room for the tools' names");
         for (const auto theme : {desktop::ThemeId::Azure, desktop::ThemeId::Plain})
         {
             window.set_theme(theme);
@@ -5312,6 +5415,67 @@ void minmax_display_menu_tests()
             "Opening a project without display state preserves the existing combined default");
 }
 
+// The waits the window's checks are paced by (2026-10-12). A move is carried
+// to its end rather than waited out: each here is far longer than
+// settle_motion's own ten-second limit, so waiting one out would fail. Each
+// lands where it would have landed and finishes as it would have finished,
+// whichever way it runs, alone or in a group, and a move begun as another
+// finishes is carried to rest as well. What a timer brings about is waited
+// for until it has come about.
+void settling_tests()
+{
+    QWidget stage;
+    stage.resize(400, 300);
+    QWidget panel(&stage);
+    panel.setGeometry(0, 300, 400, 260);
+    const auto move = [&stage](int from, int to)
+    {
+        auto *animation = new QVariantAnimation(&stage);
+        animation->setDuration(30000);
+        animation->setStartValue(from);
+        animation->setEndValue(to);
+        return animation;
+    };
+    auto *rise = move(300, 40);
+    QObject::connect(rise, &QVariantAnimation::valueChanged, &panel, [&panel](const QVariant &at)
+                     { panel.move(0, at.toInt()); });
+    auto *after = move(0, 100);
+    bool landed = false;
+    QObject::connect(rise, &QVariantAnimation::finished, &stage, [&]
+                     { landed = true; after->start(); });
+    auto *back = move(0, 100);
+    back->setDirection(QAbstractAnimation::Backward);
+    auto *group = new QSequentialAnimationGroup(&stage);
+    auto *first = new QVariantAnimation(group);
+    first->setDuration(30000);
+    first->setStartValue(0);
+    first->setEndValue(10);
+    auto *second = new QVariantAnimation(group);
+    second->setDuration(30000);
+    second->setStartValue(0);
+    second->setEndValue(20);
+    group->addAnimation(first);
+    group->addAnimation(second);
+    rise->start();
+    back->start();
+    group->start();
+    settle_motion(stage);
+    require(panel.y() == 40 && landed && rise->state() == QAbstractAnimation::Stopped,
+            "A move is carried to where it lands, and finishes as it would have");
+    require(after->state() == QAbstractAnimation::Stopped && after->currentValue().toInt() == 100,
+            "A move begun as another finishes comes to rest as well");
+    require(back->state() == QAbstractAnimation::Stopped && back->currentValue().toInt() == 0,
+            "A move run backwards is carried back to its start");
+    require(group->state() == QAbstractAnimation::Stopped && first->currentValue().toInt() == 10 &&
+                second->currentValue().toInt() == 20,
+            "A group's moves are carried through to its last");
+
+    bool told = false;
+    QTimer::singleShot(50, &stage, [&told]
+                       { told = true; });
+    settle_until([&told] { return told; }, "What a timer brings about is waited for");
+}
+
 void toolbar_fitting_tests() {
     infrastructure::QtIdGenerator ids;
     application::Editor editor(ids);
@@ -5398,7 +5562,9 @@ void free_text_desktop_tests() {
     window.canvas()->synchronize(); window.canvas()->select_elements({*symbol.created}); settle();
     require(child<QLabel>(window, "propertyHeading")->text() == "Symbol" && window.findChild<QSpinBox*>("symbolSize"),
             "Existing Symbol retains its size Properties");
-    window.open_schema(true); settle_for(450);
+    window.open_schema(true);
+    settle_until([&] { return child<QPushButton>(window, "schemaFull")->isChecked(); },
+                 "The schema opens full once its panel has risen");
     require(!toolbar->widgetForAction(tool)->isVisible(), "Schema workspace does not show Conceptual Text tool");
 }
 
@@ -5458,13 +5624,16 @@ void entity_kind_terminology_tests()
 int main(int argc, char **argv)
 {
     QApplication app(argc, argv);
-    // CTest runs the suite in four parts, each a process of its own with a
+    // CTest runs the suite in five parts, each a process of its own with a
     // timeout of its own (2026-10-09): Export's commands; Relational Design's
-    // checks, which each make their own window; the main window's, which carry
-    // one window through both workspaces; and the new projects', each started
-    // afresh -- from the schema, from the Editor, or in a window of its own.
-    // Run with none of them asked for, it runs whole, in the order it always
-    // has, the new projects in the same window as the rest.
+    // checks, which each make their own window; the main window's tools --
+    // fitting, Free Text, terminology, hover, navigation, the menu bar and the
+    // tool lock -- which each make their own window too (split off 2026-10-12);
+    // the main window's, which carry one window through both workspaces; and
+    // the new projects', each started afresh -- from the schema, from the
+    // Editor, or in a window of its own. Run with none of them asked for, it
+    // runs whole, in the order it always has, the new projects in the same
+    // window as the rest.
     const auto arguments = QCoreApplication::arguments();
     const bool appearance_only = arguments.contains("--appearance-hover-only");
     const bool navigation_only = arguments.contains("--navigation-only");
@@ -5473,31 +5642,36 @@ int main(int argc, char **argv)
     const bool entity_kind_only = arguments.contains("--entity-kind-only");
     const bool export_part = arguments.contains("--export-state");
     const bool relational_part = arguments.contains("--relational-part");
+    const bool window_tools_part = arguments.contains("--window-tools-part");
     const bool window_part = arguments.contains("--window-part");
     const bool new_projects_part = arguments.contains("--new-projects-part");
-    const bool whole = !export_part && !relational_part && !window_part && !new_projects_part;
+    const bool whole = !export_part && !relational_part && !window_tools_part && !window_part && !new_projects_part;
     // The window remembers the chosen theme. Point that at a throwaway domain so
     // running the tests cannot disturb the real preferences -- a domain for
     // each part, so that parts run side by side cannot disturb each other's.
     QCoreApplication::setOrganizationName("ERDFlowTests");
     QCoreApplication::setApplicationName(appearance_only ? "ERDFlowTests-AppearanceHover" : navigation_only ? "ERDFlowTests-Navigation" : relational_part     ? "ERDFlowTests-Relational"
+                                         : window_tools_part ? "ERDFlowTests-WindowTools"
                                          : window_part       ? "ERDFlowTests-Window"
                                          : new_projects_part ? "ERDFlowTests-NewProjects"
                                                              : "ERDFlowTests");
     // Start from nothing, so a remembered value has to be written by this run
     // rather than left behind by the last one.
     QSettings().clear();
+    // Every part draws only what its checks ask to see.
+    std::optional<PaintingOnRequest> painting_on_request(std::in_place);
     try
     {
-        if (toolbar_fit_only || whole || window_part) toolbar_fitting_tests();
+        if (whole || window_tools_part) settling_tests();
+        if (toolbar_fit_only || whole || window_tools_part) toolbar_fitting_tests();
         if (toolbar_fit_only) { std::cout << "Toolbar fitting tests passed\n"; return 0; }
-        if (text_only || whole || window_part) free_text_desktop_tests();
+        if (text_only || whole || window_tools_part) free_text_desktop_tests();
         if (text_only) { std::cout << "Free Text desktop tests passed\n"; return 0; }
-        if (entity_kind_only || whole || window_part) entity_kind_terminology_tests();
+        if (entity_kind_only || whole || window_tools_part) entity_kind_terminology_tests();
         if (entity_kind_only) { std::cout << "Entity Kind terminology tests passed\n"; return 0; }
-        if (appearance_only || whole || window_part) appearance_hover_tests();
+        if (appearance_only || whole || window_tools_part) appearance_hover_tests();
         if (appearance_only) { std::cout << "Appearance hover tests passed\n"; return 0; }
-        if (navigation_only || whole || window_part) { navigation_foldout_tests(); minmax_display_menu_tests(); }
+        if (navigation_only || whole || window_tools_part) { navigation_foldout_tests(); minmax_display_menu_tests(); }
         if (navigation_only) {
             infrastructure::QtIdGenerator ids;
             menu_bar_shortcut_tests(ids);
@@ -5514,7 +5688,11 @@ int main(int argc, char **argv)
         infrastructure::QtIdGenerator ids;
         if (whole || relational_part)
         {
+            // Relational Design's own checks look at what the schema really
+            // paints on screen as it is scrolled, so they are drawn as usual.
+            painting_on_request.reset();
             relational_design_tests(ids);
+            painting_on_request.emplace();
             if (arguments.contains("--schema-connections-only"))
             {
                 std::cout << "PASS schema row connections and manual endpoint overrides\n";
@@ -5528,10 +5706,15 @@ int main(int argc, char **argv)
             std::cout << "Relational Design desktop tests passed\n";
             return 0;
         }
-        if (whole || window_part)
+        if (whole || window_tools_part)
         {
             menu_bar_shortcut_tests(ids);
             tool_lock_mark_tests(ids);
+        }
+        if (window_tools_part)
+        {
+            std::cout << "Main window tool tests passed\n";
+            return 0;
         }
         application::Editor editor(ids);
         infrastructure::ErdxProjectStore project_store;
@@ -9386,7 +9569,8 @@ int main(int argc, char **argv)
             // settles, and Escape puts everything back and clears the field.
             field->setFocus();
             field->setText("Course");
-            settle_for(400);
+            settle_until([&] { return window.canvas()->search().text == "Course"; },
+                         "The diagram is searched once the typing settles");
             require(bar->isVisible() && window.canvas()->search().text == "Course" &&
                         window.canvas()->found_elements().size() == 1 && !window.editor().dirty(),
                     "Typing in the field opens the bar and narrows the diagram to what carries the name");
@@ -9652,7 +9836,9 @@ int main(int argc, char **argv)
             settle();
             require(explorer_dock->isVisible() && explorer_dock->widget() == child<QWidget>(window, "schemaExplorer") && child<QDockWidget>(window, "propertiesDock")->isVisible() && child<QDockWidget>(window, "propertiesDock")->widget() == child<QWidget>(window, "schemaProperties"),
                     "Full keeps the schema's own Explorer and Properties either side of it");
-            settle_for(200);
+            settle_until([&]
+                         { return panel->x() == 0 && panel->width() == child<QWidget>(window, "workspaceStage")->width(); },
+                         "Full lays the panel out across the stage");
             require(panel->x() == 0 && panel->width() == child<QWidget>(window, "workspaceStage")->width(),
                     "And the panel fills the stage between them");
             require(!child<QLabel>(window, "canvasInstructions")->isVisible(),
@@ -10387,14 +10573,16 @@ int main(int argc, char **argv)
             {
                 const auto wearing = window.canvas()->theme_id();
                 window.set_theme(desktop::ThemeId::Plain);
-                settle_for(200);
+                settle_until([&] { return window.canvas()->theme_id() == desktop::ThemeId::Plain; },
+                             "Plain is put on the window");
                 // Photographed with its lettering smoothed in greys, as the
                 // whole window is: names, types and keys are written in grey,
                 // which subpixel smoothing would fringe with colour of its own.
                 require(coloured_pixels(grab_without_subpixel_text(*schema)) == 0,
                         "Under Plain the schema's lines, keys and tables have no colour");
                 window.set_theme(wearing);
-                settle_for(200);
+                settle_until([&] { return window.canvas()->theme_id() == wearing; },
+                             "The theme worn before is put back");
             }
             require(schema->shaped_lines() == 0, "None of them has been shaped by hand yet");
 
@@ -12168,7 +12356,7 @@ int main(int argc, char **argv)
             auto *relational = home->cards()[1];
             require(relational->isEnabled(), "The Relational Schema card can be taken");
             relational->create_button()->click();
-            settle_for(700);
+            settle_schema_full(window);
             require(!window.showing_home(), "Its + Create leaves Home");
             require(editor.project().schema.standalone && editor.project().schema.relations.empty(),
                     "For an empty project that starts from its schema");
@@ -14314,7 +14502,7 @@ int main(int argc, char **argv)
                                     editor.project().relationships.size() == relationships_before + 2,
                                 "Converted, both foreign keys are relationships on the diagram");
                         undo_once();
-                        settle_for(700);
+                        settle_schema_full(window);
                         require(editor.project().schema.standalone && card("Department", 1) == "PK, FK, NOT NULL",
                                 "Undone, the schema drawn by hand is back as it was");
                     }
@@ -14394,7 +14582,7 @@ int main(int argc, char **argv)
             // One step: undone it is the schema drawn by hand again, and redone
             // the diagram once more.
             child<QAction>(window, "undoCommand")->trigger();
-            settle_for(700);
+            settle_schema_full(window);
             require(editor.project().schema.standalone && !convert->isHidden() && child<QAction>(window, "designConvert")->isVisible(),
                     "Undo takes it back to the schema drawn by hand");
             require(header_tools->isVisible() && child<QWidget>(window, "schemaBar")->isHidden(),
@@ -14707,7 +14895,7 @@ int main(int argc, char **argv)
                 converting_window.show_home(false);
                 settle();
                 converting_window.open_schema();
-                settle_for(300);
+                settle_motion(converting_window);
                 const auto &project = converting.project();
                 const auto &tables = converting_window.schema()->preview().tables;
                 const auto table_for = [&](domain::ElementRef origin)
@@ -14750,7 +14938,7 @@ int main(int argc, char **argv)
             sided_window.load_example();
             settle();
             sided_window.open_schema();
-            settle_for(300);
+            settle_motion(sided_window);
             auto *view = sided_window.schema();
             auto *dock = child<QDockWidget>(sided_window, "propertiesDock");
             const auto panel = [&]() -> const QWidget &

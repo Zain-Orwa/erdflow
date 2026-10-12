@@ -96,6 +96,27 @@ read as still to do.
   was removed and no timeout was raised; `desktop_tests` with no flag still
   runs the complete historical sequence in one window. The split is for CI
   runtime reliability only; the application's behaviour is unchanged.
+- **The main window's desktop tests made faster, and their tools run apart**
+  (2026-10-12): `desktop_window` had grown back to 23.5 s locally and reached
+  60 s on the macOS Intel CI runner. Measurement found no hang: half the time
+  was the tests' own waiting. `settle_motion` now carries a running panel move
+  to its end through Qt's `setCurrentTime` instead of watching it for 280 ms;
+  seven fixed waits that only covered the window's next pass or a timed
+  follow-up now wait for the state the next check reads (`settle_until`);
+  waits that check timing itself are kept. The main window's tool checks,
+  each in a window of its own, now run as `desktop_window_tools`
+  (`desktop_tests --window-tools-part`). The five desktop entries keep their
+  60 s TIMEOUT; no assertion was removed and production code was not changed.
+  Measured on the macOS Intel runner, a third of what remained was repainting
+  windows no check looks at, so the desktop tests now paint on request: a
+  window's UpdateRequest is set aside while the checks run, and every pixel
+  check draws what it reads through `grab()` or `render()`. Relational
+  Design's own checks (`relational_design_tests`) read what the schema really
+  paints as it is scrolled, so they paint as usual. Fixed waits in the
+  relational and new-project parts that covered only padding or a panel's
+  rise now use `settle_motion`; those that covered the 320 ms step to a
+  full-window schema wait for it (`settle_schema_full`), which also removes a
+  race where a 300 ms wait could end just before that step.
 
 **Column reordering is not built.** Task 4A is complete. Task 4B is
 complete as a foundation: a derived table can be listed in a stored order,
@@ -2905,6 +2926,38 @@ Not built yet, though some of it is on screen:
 | Usable | Focused property editing, named undo actions, usable example, warnings that permit unfinished drafts, protected open/save. | Screen-reader support, broader keyboard/high-DPI/device checks, and production polish remain unverified. |
 
 ## Verification
+
+**2026-10-12**, at `fix/desktop-window-timeout`, after painting on request
+and the relational and new-project waits: executed assertions are identical
+to the run before them in every desktop part and in the no-flag run (15,551),
+and grabs taken with and without painting on request are byte-identical
+where the picture is deterministic. Local Release: `desktop_relational`
+13.5 s to 8.3 s, `desktop_new_projects` 12.3 s to 8.8 s, `desktop_window`
+10.6 s, `desktop_window_tools` 3.0 s, no-flag `desktop_tests` 40.2 s to
+31.1 s; each part passed ten times in Release and five in Debug. Desktop CI
+(run 38222393199) passed on all four platforms. `desktop_window`: Linux
+11.1 s, Apple Silicon 15.6 s, Windows 22.0 s, macOS Intel 30.5 s (on a runner
+whose untouched suites ran 1.3-2x slower than usual; four Intel runs with
+painting on request took 21.9-35.5 s, where the entry had taken 35-60 s).
+`desktop_relational` 8.8 / 12.3 / 15.2 / 27.3 s and `desktop_new_projects`
+9.1 / 11.7 / 14.8 / 33.6 s in the same order. No timeout was raised and no
+visual reference was retaken.
+
+**2026-10-12**, on `fix/desktop-window-timeout` from `3888aba`: the desktop
+entries are five -- `desktop_export`, `desktop_relational`,
+`desktop_window_tools --window-tools-part`, `desktop_window --window-part`
+and `desktop_new_projects` -- each with a 60 s TIMEOUT. In equivalent local
+Release builds `desktop_window` went from 24.1 s to 14.1 s and the new
+`desktop_window_tools` takes 3.5 s; `desktop_relational` 14.5 s to 13.7 s,
+`desktop_new_projects` 13.0 s to 12.4 s, and `desktop_tests` with no flag
+53.2 s to 45.1 s. `require(` 2,183 before, 2,188 after (five new checks of the
+waits themselves, which fail against the old `settle_motion`); `must(` 31 and
+`require_table_properties(` 15 unchanged. The assertions executed by the two
+window parts together are exactly those the old `desktop_window` executed,
+and the no-flag run executes the same assertions as before. All functional
+suites pass in Debug and Release, ten repeats of each window part pass, and
+the desktop parts pass side by side (`ctest -j4`). `visual` differs on the
+same six reference pictures as before; none was retaken.
 
 **2026-10-09**, after `656599a` (*Make Plain rendering checks
 platform-neutral*): `desktop_window` is split in two over the same
