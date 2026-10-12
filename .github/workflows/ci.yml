@@ -6,14 +6,6 @@ on:
     branches:
       - main
   workflow_dispatch:
-    inputs:
-      intel_window_timings:
-        # Temporary (2026-10-12): instead of the usual matrix, run the main
-        # window's checks on macOS Intel only, with their timings printed and
-        # a sample of where the time goes. Off by default.
-        description: Diagnose window-test timings on macOS Intel only
-        type: boolean
-        default: false
 
 concurrency:
   group: desktop-ci-${{ github.workflow }}-${{ github.ref }}
@@ -25,7 +17,6 @@ permissions:
 jobs:
   build-and-test:
     name: ${{ matrix.name }}
-    if: ${{ !inputs.intel_window_timings }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     strategy:
@@ -69,50 +60,3 @@ jobs:
 
       - name: Test
         run: ctest --test-dir build/ci --build-config Release --output-on-failure --timeout 120
-
-  intel-window-timings:
-    name: macOS Intel window timings
-    if: ${{ inputs.intel_window_timings }}
-    runs-on: macos-15-intel
-    timeout-minutes: 45
-    steps:
-      - name: Check out the source
-        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
-
-      - name: Install Qt
-        uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730 # v4.3.1
-        with:
-          version: 6.11.2
-          arch: clang_64
-          cache: true
-
-      - name: Configure
-        run: >-
-          cmake -S . -B build/ci
-          -DCMAKE_BUILD_TYPE=Release
-          -DBUILD_TESTING=ON
-
-      - name: Build
-        run: cmake --build build/ci --config Release --parallel --target desktop_tests
-
-      # The two window parts as CTest runs them, with their 60 s limit, and
-      # their timings written to the log.
-      - name: Time the window parts
-        env:
-          ERDFLOW_TEST_TIMINGS: '1'
-        run: ctest --test-dir build/ci --build-config Release --verbose --timeout 120 -R '^desktop_window(_tools)?$'
-
-      # A separate run of the main window's part under macOS's sampler, for
-      # which functions the time goes to. Sampling slows it, so its own
-      # duration is not the part's.
-      - name: Sample the main window part
-        continue-on-error: true
-        env:
-          QT_QPA_PLATFORM: offscreen
-        run: |
-          build/ci/desktop_tests --window-part > window-part.log 2>&1 &
-          pid=$!
-          sample "$pid" 180 1 -mayDie -file window-sample.txt > /dev/null || echo "sample could not attach"
-          wait "$pid" && echo "window part passed under the sampler" || echo "window part exited $?"
-          tail -1 window-part.log
-          python3 tools/ci/sample_summary.py window-sample.txt

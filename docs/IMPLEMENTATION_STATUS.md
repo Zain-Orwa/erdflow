@@ -107,6 +107,16 @@ read as still to do.
   each in a window of its own, now run as `desktop_window_tools`
   (`desktop_tests --window-tools-part`). The five desktop entries keep their
   60 s TIMEOUT; no assertion was removed and production code was not changed.
+  Measured on the macOS Intel runner, a third of what remained was repainting
+  windows no check looks at, so the desktop tests now paint on request: a
+  window's UpdateRequest is set aside while the checks run, and every pixel
+  check draws what it reads through `grab()` or `render()`. Relational
+  Design's own checks (`relational_design_tests`) read what the schema really
+  paints as it is scrolled, so they paint as usual. Fixed waits in the
+  relational and new-project parts that covered only padding or a panel's
+  rise now use `settle_motion`; those that covered the 320 ms step to a
+  full-window schema wait for it (`settle_schema_full`), which also removes a
+  race where a 300 ms wait could end just before that step.
 
 **Column reordering is not built.** Task 4A is complete. Task 4B is
 complete as a foundation: a derived table can be listed in a stored order,
@@ -2916,6 +2926,22 @@ Not built yet, though some of it is on screen:
 | Usable | Focused property editing, named undo actions, usable example, warnings that permit unfinished drafts, protected open/save. | Screen-reader support, broader keyboard/high-DPI/device checks, and production polish remain unverified. |
 
 ## Verification
+
+**2026-10-12**, at `fix/desktop-window-timeout`, after painting on request
+and the relational and new-project waits: executed assertions are identical
+to the run before them in every desktop part and in the no-flag run (15,551),
+and grabs taken with and without painting on request are byte-identical
+where the picture is deterministic. Local Release: `desktop_relational`
+13.5 s to 8.3 s, `desktop_new_projects` 12.3 s to 8.8 s, `desktop_window`
+10.6 s, `desktop_window_tools` 3.0 s, no-flag `desktop_tests` 40.2 s to
+31.1 s; each part passed ten times in Release and five in Debug. Desktop CI
+(run 38222393199) passed on all four platforms. `desktop_window`: Linux
+11.1 s, Apple Silicon 15.6 s, Windows 22.0 s, macOS Intel 30.5 s (on a runner
+whose untouched suites ran 1.3-2x slower than usual; four Intel runs with
+painting on request took 21.9-35.5 s, where the entry had taken 35-60 s).
+`desktop_relational` 8.8 / 12.3 / 15.2 / 27.3 s and `desktop_new_projects`
+9.1 / 11.7 / 14.8 / 33.6 s in the same order. No timeout was raised and no
+visual reference was retaken.
 
 **2026-10-12**, on `fix/desktop-window-timeout` from `3888aba`: the desktop
 entries are five -- `desktop_export`, `desktop_relational`,

@@ -36,7 +36,6 @@
 #include <QStatusBar>
 #include <QStyle>
 #include <QElapsedTimer>
-#include <QMetaEnum>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QContextMenuEvent>
@@ -85,280 +84,15 @@
 #include <QTreeView>
 
 #include <algorithm>
-#include <array>
-#include <chrono>
 #include <optional>
-#include <vector>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
-#include <memory>
 #include <limits>
 #include <functional>
 #include <map>
 #include <set>
 #include <stdexcept>
-
-// Where a run's time goes, asked for with ERDFLOW_TEST_TIMINGS=1 and silent
-// otherwise (2026-10-12, temporary, for finding what makes the main window's
-// checks slow on the macOS Intel runner). Wall-clock time, from a monotonic
-// clock: per block of the checks, in the waits, and in Qt's delivery of each
-// kind of event -- painting, styling, layout, timers, input -- counting only
-// the time an event's own handling took, not events sent from within it. It
-// changes no check and no step; it only reads the clock around them.
-namespace timing
-{
-    using Clock = std::chrono::steady_clock;
-    bool enabled()
-    {
-        static const bool on = qEnvironmentVariable("ERDFLOW_TEST_TIMINGS") == QStringLiteral("1");
-        return on;
-    }
-    double seconds(Clock::duration spent) { return std::chrono::duration<double>(spent).count(); }
-
-    // Events are counted by type; every user type shares the last slot.
-    constexpr std::size_t event_slots = QEvent::User + 1;
-    enum Wait { Settle, SettleFor, SettleMotion, SettleUntil, Waits };
-    struct Totals
-    {
-        std::array<Clock::duration, event_slots> event_time{};
-        std::array<long long, event_slots> event_count{};
-        std::array<Clock::duration, Waits> wait_time{};
-        std::array<long long, Waits> wait_count{};
-        Clock::duration events_outermost{};
-        Clock::duration events_in_waits{};
-    };
-    struct Block
-    {
-        const char *label;
-        int line;
-        Clock::time_point began;
-        Totals at_start;
-    };
-    struct Record
-    {
-        Clock::time_point started = Clock::now();
-        Totals totals;
-        std::vector<Block> blocks;
-        std::vector<Clock::duration> frames; // time spent in events sent from the one being handled
-        int waiting = 0;
-    };
-    // Kept for the whole process and never destroyed, so the summary printed
-    // at exit can still read it after main's own objects are gone.
-    Record &record()
-    {
-        static auto *kept = new Record;
-        return *kept;
-    }
-    std::size_t slot(QEvent::Type type) { return std::min(static_cast<std::size_t>(type), event_slots - 1); }
-    QString event_name(std::size_t type)
-    {
-        if (type == event_slots - 1)
-            return QStringLiteral("User");
-        const char *key = QMetaEnum::fromType<QEvent::Type>().valueToKey(static_cast<quint64>(type));
-        return key ? QString::fromLatin1(key) : QString::number(type);
-    }
-    // The kinds of event the per-block columns gather.
-    enum Kind { Painting, Styling, Layout, Timers, Queued, Input, OtherEvents, Kinds };
-    Kind kind_of(std::size_t type)
-    {
-        switch (static_cast<QEvent::Type>(type))
-        {
-        case QEvent::Paint:
-        case QEvent::UpdateRequest:
-        case QEvent::UpdateLater:
-            return Painting;
-        case QEvent::Polish:
-        case QEvent::PolishRequest:
-        case QEvent::StyleChange:
-        case QEvent::PaletteChange:
-        case QEvent::ApplicationPaletteChange:
-        case QEvent::FontChange:
-        case QEvent::ApplicationFontChange:
-        case QEvent::ThemeChange:
-            return Styling;
-        case QEvent::LayoutRequest:
-        case QEvent::Resize:
-        case QEvent::Move:
-        case QEvent::Show:
-        case QEvent::Hide:
-        case QEvent::ShowToParent:
-        case QEvent::HideToParent:
-            return Layout;
-        case QEvent::Timer:
-            return Timers;
-        case QEvent::MetaCall:
-            return Queued;
-        case QEvent::MouseButtonPress:
-        case QEvent::MouseButtonRelease:
-        case QEvent::MouseButtonDblClick:
-        case QEvent::MouseMove:
-        case QEvent::KeyPress:
-        case QEvent::KeyRelease:
-        case QEvent::Wheel:
-        case QEvent::Enter:
-        case QEvent::Leave:
-        case QEvent::HoverEnter:
-        case QEvent::HoverLeave:
-        case QEvent::HoverMove:
-        case QEvent::FocusIn:
-        case QEvent::FocusOut:
-        case QEvent::ContextMenu:
-        case QEvent::ShortcutOverride:
-            return Input;
-        default:
-            return OtherEvents;
-        }
-    }
-    std::array<Clock::duration, Kinds> by_kind(const Totals &totals)
-    {
-        std::array<Clock::duration, Kinds> kinds{};
-        for (std::size_t type = 0; type < event_slots; ++type)
-            kinds[kind_of(type)] += totals.event_time[type];
-        return kinds;
-    }
-
-    // The application the tests run in when timings are asked for: Qt's own,
-    // with a clock read either side of each event it delivers.
-    class Application final : public QApplication
-    {
-    public:
-        using QApplication::QApplication;
-        bool notify(QObject *receiver, QEvent *event) override
-        {
-            auto &kept = record();
-            const auto type = slot(event->type());
-            const auto began = Clock::now();
-            kept.frames.push_back({});
-            const bool handled = QApplication::notify(receiver, event);
-            const auto spent = Clock::now() - began;
-            const auto within = kept.frames.back();
-            kept.frames.pop_back();
-            kept.totals.event_time[type] += spent - within;
-            ++kept.totals.event_count[type];
-            if (!kept.frames.empty())
-                kept.frames.back() += spent;
-            else
-            {
-                kept.totals.events_outermost += spent;
-                if (kept.waiting > 0)
-                    kept.totals.events_in_waits += spent;
-            }
-            return handled;
-        }
-    };
-
-    // Held for the length of a wait; only the outermost wait is counted, so a
-    // settle inside settle_for is settle_for's time.
-    class Waiting
-    {
-    public:
-        explicit Waiting(Wait wait) : wait_(wait), began_(Clock::now()) { ++record().waiting; }
-        ~Waiting()
-        {
-            auto &kept = record();
-            if (--kept.waiting == 0)
-            {
-                kept.totals.wait_time[wait_] += Clock::now() - began_;
-                ++kept.totals.wait_count[wait_];
-            }
-        }
-        Waiting(const Waiting &) = delete;
-        Waiting &operator=(const Waiting &) = delete;
-
-    private:
-        Wait wait_;
-        Clock::time_point began_;
-    };
-    std::optional<Waiting> wait(Wait kind)
-    {
-        if (!enabled())
-            return std::nullopt;
-        return std::optional<Waiting>(std::in_place, kind);
-    }
-
-    void print()
-    {
-        auto &kept = record();
-        const auto ended = Clock::now();
-        const auto ms = [](Clock::duration spent) { return QString::number(seconds(spent) * 1000.0, 'f', 0); };
-        const auto line = [](const QString &text) { std::cout << "TIMING " << text.toStdString() << '\n'; };
-        const auto &all = kept.totals;
-        Clock::duration waits{};
-        for (const auto spent : all.wait_time)
-            waits += spent;
-        line(QStringLiteral("whole run %1 ms (process start to exit)").arg(ms(ended - kept.started)));
-        line(QStringLiteral("waits %1 ms: settle %2 ms x%3, settle_for %4 ms x%5, settle_motion %6 ms x%7, settle_until %8 ms x%9")
-                 .arg(ms(waits))
-                 .arg(ms(all.wait_time[Settle])).arg(all.wait_count[Settle])
-                 .arg(ms(all.wait_time[SettleFor])).arg(all.wait_count[SettleFor])
-                 .arg(ms(all.wait_time[SettleMotion])).arg(all.wait_count[SettleMotion])
-                 .arg(ms(all.wait_time[SettleUntil])).arg(all.wait_count[SettleUntil]));
-        line(QStringLiteral("events delivered %1 ms, %2 ms of it inside waits; waits not delivering events %3 ms; "
-                            "outside events and waits %4 ms")
-                 .arg(ms(all.events_outermost))
-                 .arg(ms(all.events_in_waits))
-                 .arg(ms(waits - all.events_in_waits))
-                 .arg(ms((ended - kept.started) - waits - (all.events_outermost - all.events_in_waits))));
-        const auto kinds = by_kind(all);
-        line(QStringLiteral("events by kind: painting %1, styling %2, layout %3, timers %4, queued calls %5, input %6, other %7 (ms)")
-                 .arg(ms(kinds[Painting]), ms(kinds[Styling]), ms(kinds[Layout]), ms(kinds[Timers]), ms(kinds[Queued]),
-                      ms(kinds[Input]), ms(kinds[OtherEvents])));
-        std::vector<std::size_t> types;
-        for (std::size_t type = 0; type < event_slots; ++type)
-            if (all.event_count[type] > 0)
-                types.push_back(type);
-        std::sort(types.begin(), types.end(), [&](std::size_t a, std::size_t b) { return all.event_time[a] > all.event_time[b]; });
-        for (std::size_t i = 0; i < std::min<std::size_t>(types.size(), 15); ++i)
-            line(QStringLiteral("event %1: %2 ms x%3")
-                     .arg(event_name(types[i]))
-                     .arg(ms(all.event_time[types[i]]))
-                     .arg(all.event_count[types[i]]));
-        line(QStringLiteral("block columns (ms): wall | waits | painting styling layout timers queued input other | line | label"));
-        for (std::size_t i = 0; i < kept.blocks.size(); ++i)
-        {
-            const auto &block = kept.blocks[i];
-            const bool last = i + 1 == kept.blocks.size();
-            const auto finished = last ? ended : kept.blocks[i + 1].began;
-            const auto &after = last ? all : kept.blocks[i + 1].at_start;
-            if (finished - block.began < std::chrono::milliseconds(1))
-                continue;
-            Clock::duration block_waits{};
-            for (std::size_t wait = 0; wait < Waits; ++wait)
-                block_waits += after.wait_time[wait] - block.at_start.wait_time[wait];
-            const auto before_kinds = by_kind(block.at_start);
-            const auto after_kinds = by_kind(after);
-            QStringList columns;
-            for (std::size_t kind = 0; kind < Kinds; ++kind)
-                columns << ms(after_kinds[kind] - before_kinds[kind]);
-            line(QStringLiteral("block %1 | %2 | %3 | %4 | %5")
-                     .arg(ms(finished - block.began), ms(block_waits), columns.join(' '))
-                     .arg(block.line)
-                     .arg(QString::fromUtf8(block.label)));
-        }
-        std::cout.flush();
-    }
-    // Marks where a block of checks begins; the block runs to the next mark.
-    // The first mark arranges for the summary to be printed as the process
-    // exits, after the window has been taken down.
-    void block(const char *label, int line)
-    {
-        if (!enabled())
-            return;
-        auto &kept = record();
-        if (kept.blocks.empty())
-            std::atexit(print);
-        kept.blocks.push_back({label, line, Clock::now(), kept.totals});
-    }
-    // Marks, as it goes out of scope, the start of what follows it there: the
-    // main window's teardown, when declared after it.
-    struct BlockAtExit
-    {
-        const char *label;
-        int line;
-        ~BlockAtExit() { block(label, line); }
-    };
-}
 
 namespace
 {
@@ -370,7 +104,6 @@ namespace
     }
     void settle()
     {
-        const auto timed = timing::wait(timing::Settle);
         QApplication::processEvents();
         QApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
     }
@@ -396,7 +129,6 @@ namespace
     // as well as the event loop.
     void settle_for(int milliseconds)
     {
-        const auto timed = timing::wait(timing::SettleFor);
         QElapsedTimer clock;
         clock.start();
         while (clock.elapsed() < milliseconds)
@@ -421,7 +153,6 @@ namespace
     // frames.
     void settle_motion(const QWidget &window)
     {
-        const auto timed = timing::wait(timing::SettleMotion);
         QElapsedTimer clock;
         clock.start();
         const auto carry_to_rest = [&]
@@ -498,7 +229,6 @@ namespace
     template <class Done>
     void settle_until(Done done, const char *what)
     {
-        const auto timed = timing::wait(timing::SettleUntil);
         QElapsedTimer clock;
         clock.start();
         settle();
@@ -5893,12 +5623,7 @@ void entity_kind_terminology_tests()
 
 int main(int argc, char **argv)
 {
-    // Asked for timings, the checks run in an application that reads the
-    // clock around each event it delivers; otherwise in Qt's own.
-    const auto app = timing::enabled()
-                         ? std::unique_ptr<QApplication>(std::make_unique<timing::Application>(argc, argv))
-                         : std::make_unique<QApplication>(argc, argv);
-    timing::block("start-up", __LINE__);
+    QApplication app(argc, argv);
     // CTest runs the suite in five parts, each a process of its own with a
     // timeout of its own (2026-10-09): Export's commands; Relational Design's
     // checks, which each make their own window; the main window's tools --
@@ -5937,21 +5662,15 @@ int main(int argc, char **argv)
     std::optional<PaintingOnRequest> painting_on_request(std::in_place);
     try
     {
-        timing::block("settling", __LINE__);
         if (whole || window_tools_part) settling_tests();
-        timing::block("tools: toolbar fitting", __LINE__);
         if (toolbar_fit_only || whole || window_tools_part) toolbar_fitting_tests();
         if (toolbar_fit_only) { std::cout << "Toolbar fitting tests passed\n"; return 0; }
-        timing::block("tools: Free Text", __LINE__);
         if (text_only || whole || window_tools_part) free_text_desktop_tests();
         if (text_only) { std::cout << "Free Text desktop tests passed\n"; return 0; }
-        timing::block("tools: entity terminology", __LINE__);
         if (entity_kind_only || whole || window_tools_part) entity_kind_terminology_tests();
         if (entity_kind_only) { std::cout << "Entity Kind terminology tests passed\n"; return 0; }
-        timing::block("tools: appearance hover", __LINE__);
         if (appearance_only || whole || window_tools_part) appearance_hover_tests();
         if (appearance_only) { std::cout << "Appearance hover tests passed\n"; return 0; }
-        timing::block("tools: navigation and Min-max menus", __LINE__);
         if (navigation_only || whole || window_tools_part) { navigation_foldout_tests(); minmax_display_menu_tests(); }
         if (navigation_only) {
             infrastructure::QtIdGenerator ids;
@@ -5960,7 +5679,6 @@ int main(int argc, char **argv)
             std::cout << "Navigation foldout tests passed\n";
             return 0;
         }
-        timing::block("export", __LINE__);
         if (whole || export_part)
         {
             export_state_tests();
@@ -5968,7 +5686,6 @@ int main(int argc, char **argv)
                 return 0;
         }
         infrastructure::QtIdGenerator ids;
-        timing::block("relational", __LINE__);
         if (whole || relational_part)
         {
             // Relational Design's own checks look at what the schema really
@@ -5991,9 +5708,7 @@ int main(int argc, char **argv)
         }
         if (whole || window_tools_part)
         {
-            timing::block("tools: menu bar shortcuts", __LINE__);
             menu_bar_shortcut_tests(ids);
-            timing::block("tools: tool lock", __LINE__);
             tool_lock_mark_tests(ids);
         }
         if (window_tools_part)
@@ -6001,12 +5716,9 @@ int main(int argc, char **argv)
             std::cout << "Main window tool tests passed\n";
             return 0;
         }
-        timing::block("main window: construct and show", __LINE__);
-        const timing::BlockAtExit after_teardown{"after the main window is taken down", __LINE__};
         application::Editor editor(ids);
         infrastructure::ErdxProjectStore project_store;
         desktop::MainWindow window(editor, project_store, ids);
-        const timing::BlockAtExit teardown{"main window: teardown", __LINE__};
         window.show();
         window.activateWindow();
         settle();
@@ -6021,7 +5733,6 @@ int main(int argc, char **argv)
         // The application opens on the home screen, with the work's own
         // furniture put away behind it.
         {
-            timing::block("The application opens on the home screen, with the work's own furniture ", __LINE__);
             require(window.showing_home(), "ERDFlow opens on the home screen");
             auto *home = static_cast<desktop::HomePage *>(window.findChild<QWidget *>("homePage"));
             require(home != nullptr, "Which is a page of its own");
@@ -6133,7 +5844,6 @@ int main(int argc, char **argv)
             // pale blue brush, left on, once filled the whole card with it as
             // soon as it had the keyboard, whatever the theme.
             {
-                timing::block("· A card that is clicked is chosen and takes the keyboard, and says so", __LINE__);
                 const auto worn = window.canvas()->theme_id();
                 window.set_theme(desktop::ThemeId::Dracula);
                 settle();
@@ -6162,13 +5872,11 @@ int main(int argc, char **argv)
                 window.set_theme(worn);
                 settle();
             }
-            timing::block("· (continued)", __LINE__);
             // Each card's two actions light up under the pointer, each on its
             // own (Zain, 2026-09-26), and are exactly as they were once it
             // leaves. Create with AI lights up too, though it cannot be
             // pressed yet.
             {
-                timing::block("· Each card's two actions light up under the pointer, each on its own ", __LINE__);
                 // Offered for the purpose, since it is not offered for now.
                 cards.front()->set_ai_offered(true);
                 settle();
@@ -6212,7 +5920,6 @@ int main(int argc, char **argv)
                 cards.front()->set_ai_offered(desktop::create_with_ai_offered);
                 settle();
             }
-            timing::block("· (continued)", __LINE__);
             // Zain's titles (2026-09-24, ADR-022 9.19).
             require(cards[0]->accessibleName() == "Conceptual Design (ERD)" && cards[1]->accessibleName() == "Relational Schema" && cards[2]->accessibleName() == "SQL Script (DDL)",
                     "And carry their exact titles");
@@ -6307,7 +6014,6 @@ int main(int argc, char **argv)
             // card's column -- and never taking anything from the cards. With
             // the demos hidden the cards stand exactly where they stood.
             {
-                timing::block("· A live demo under each card (ADR-022 9.21): three, in the cards' ord", __LINE__);
                 const auto demos = home->demos();
                 require(demos.size() == 3, "Three live demos, one for each card");
                 require(demos[0]->kind() == desktop::HomeDemoKind::Conceptual && demos[1]->kind() == desktop::HomeDemoKind::Relational && demos[2]->kind() == desktop::HomeDemoKind::Sql,
@@ -6385,7 +6091,6 @@ int main(int argc, char **argv)
                 settle();
                 settle();
             }
-            timing::block("· (continued)", __LINE__);
 
             // Stood still, as a picture that must come out the same needs
             // them, the demos show their scenes finished.
@@ -6398,7 +6103,6 @@ int main(int argc, char **argv)
             // the scene rather than of pixels, so nothing here depends on how
             // text happens to fall.
             {
-                timing::block("· The Conceptual demo (ADR-022 9.21, stage 2): Student and Course join", __LINE__);
                 using desktop::DemoShape;
                 const auto kind = desktop::HomeDemoKind::Conceptual;
                 const auto &steps = desktop::demo_steps(kind);
@@ -6535,7 +6239,6 @@ int main(int argc, char **argv)
                 conceptual->set_real_canvas(real);
                 require(empty != whole, "And what it draws is the scene, not only its floor");
             }
-            timing::block("· (continued)", __LINE__);
 
             // The Relational Schema demo (ADR-022 9.21, stage 3): Students,
             // Courses and the Enrollments bridge, filled in a row at a time,
@@ -6543,7 +6246,6 @@ int main(int argc, char **argv)
             // key it references to the exact row that references it. No
             // diamond: in a schema a relationship is its foreign keys.
             {
-                timing::block("· The Relational Schema demo (ADR-022 9.21, stage 3): Students, Course", __LINE__);
                 using desktop::DemoShape;
                 const auto kind = desktop::HomeDemoKind::Relational;
                 const auto &steps = desktop::demo_steps(kind);
@@ -6668,14 +6370,12 @@ int main(int argc, char **argv)
                 relational->render(&whole);
                 require(empty != whole, "And what it draws is the schema, not only its floor");
             }
-            timing::block("· (continued)", __LINE__);
 
             // The SQL demo (ADR-022 9.21, stage 4): an editor comes up and the
             // same three tables are typed into it as SQL, a character at a
             // time at one steady speed, and a line at its foot says what
             // running it made. Nothing is run.
             {
-                timing::block("· The SQL demo (ADR-022 9.21, stage 4): an editor comes up and the sam", __LINE__);
                 using desktop::DemoShape;
                 const auto kind = desktop::HomeDemoKind::Sql;
                 const auto &steps = desktop::demo_steps(kind);
@@ -6766,7 +6466,6 @@ int main(int argc, char **argv)
                 sql->render(&whole);
                 require(empty != whole, "And what it draws is the editor and its script");
             }
-            timing::block("· (continued)", __LINE__);
 
             // Each demo is shown on a small screen raised off its card, and the
             // Conceptual card's is the Conceptual canvas itself, drawn small
@@ -6774,7 +6473,6 @@ int main(int argc, char **argv)
             // commands and drawn by the workspace's own view, at the sizes
             // every element is really made at.
             {
-                timing::block("· Each demo is shown on a small screen raised off its card, and the Co", __LINE__);
                 for (auto *demo : home->demos())
                 {
                     require(QRectF(demo->rect()).contains(demo->screen()) && demo->screen().contains(demo->screen_inside()),
@@ -6817,14 +6515,12 @@ int main(int argc, char **argv)
                     require(at.width == 148 && at.height == 86, "Entities at the size the card was composed at");
                 }
             }
-            timing::block("· (continued)", __LINE__);
 
             // The clock (ADR-022 9.21, stage 5): one clock plays all three,
             // Conceptual first, Relational a second later and SQL a second
             // after that, each going round again at its own length. Looked at
             // by giving the clock moments rather than waiting for them.
             {
-                timing::block("· The clock (ADR-022 9.21, stage 5): one clock plays all three, Concep", __LINE__);
                 auto *clock = home->demo_clock();
                 const auto demos = home->demos();
                 // Each demo's motion is kept, switched off on Home for now
@@ -6881,7 +6577,6 @@ int main(int argc, char **argv)
                             "Stopped, every demo stands finished");
                 home->set_demos_moving(true);
             }
-            timing::block("· (continued)", __LINE__);
 
             // Reduced motion and pausing (ADR-022 9.21, stage 6). Where motion
             // is not welcome -- asked for through the one seam that says so
@@ -6890,7 +6585,6 @@ int main(int argc, char **argv)
             // hidden, it stops; shown again, every demo starts from the
             // beginning, in step with the others.
             {
-                timing::block("· Reduced motion and pausing (ADR-022 9.21, stage 6). Where motion is ", __LINE__);
                 qputenv("ERDFLOW_REDUCED_MOTION", "1");
                 desktop::HomePage still_home(nullptr);
                 qunsetenv("ERDFLOW_REDUCED_MOTION");
@@ -6961,7 +6655,6 @@ int main(int argc, char **argv)
                 require(!clock->running() && demos[1]->step() == desktop::demo_finished_step(demos[1]->kind()),
                         "Switched off again, it is a still picture and the clock stops");
             }
-            timing::block("· (continued)", __LINE__);
             // Shorter still, the page would rather be scrolled than have its
             // cards squashed out of shape (Zain, 2026-09-24).
             window.resize(1280, 720);
@@ -6998,7 +6691,6 @@ int main(int argc, char **argv)
             // The illustration: drawn, not loaded, and told what to say rather
             // than built around one caller.
             {
-                timing::block("· The illustration: drawn, not loaded, and told what to say rather tha", __LINE__);
                 auto *flow = home->hero();
                 require(flow != nullptr, "The home screen carries the illustration");
                 // Four decorative panels around the database -- not to be
@@ -7374,7 +7066,6 @@ int main(int argc, char **argv)
                 desktop::WelcomeFlowIllustration asked_for_nothing(nullptr);
                 require(asked_for_nothing.moving(), "And without that ask, it moves as usual");
             }
-            timing::block("· (continued)", __LINE__);
 
             // Each card carries its own + Create, and only that starts a
             // project. Nothing is asked under the cards: the page ends with
@@ -7436,17 +7127,14 @@ int main(int argc, char **argv)
             // No heading over the cards: each card's + Create says it (Zain,
             // 2026-09-25). Its room is kept, so the cards stand where they did.
             {
-                timing::block("· No heading over the cards: each card's + Create says it (Zain, 2026-", __LINE__);
                 auto *section = home->findChild<QLabel *>("homeSectionTitle");
                 require(section && !section->isVisible(), "Nothing is shown over the cards");
                 require(section->height() > 0 && section->mapTo(home, QPoint(0, section->height())).y() <= cards[0]->mapTo(home, QPoint()).y(),
                         "But its room is kept above them");
             }
-            timing::block("· (continued)", __LINE__);
             // Between each card and the next, the way on and the way back:
             // in their own columns, never over a card, and only a sign.
             {
-                timing::block("· Between each card and the next, the way on and the way back: in thei", __LINE__);
                 const auto bridges = home->bridges();
                 require(bridges.size() == 2, "A way between each card and the next");
                 const QStringList said{"Convert to Schema, Back to ERD", "Generate to SQL, Back to Schema"};
@@ -7462,7 +7150,6 @@ int main(int argc, char **argv)
                             "A sign, which neither the keyboard nor the pointer stops at");
                 }
             }
-            timing::block("· (continued)", __LINE__);
             require(cards[0]->create_button()->accessibleName() == "Create Conceptual Design (ERD)",
                     "It says what it makes to whatever reads the screen");
             require(!cards[2]->create_button()->toolTip().isEmpty(),
@@ -7482,7 +7169,6 @@ int main(int argc, char **argv)
             // The primary key's mark is a golden key held bow up and pointing
             // down, from its own drawing (Zain, 2026-09-26).
             {
-                timing::block("· The primary key's mark is a golden key held bow up and pointing down", __LINE__);
                 const auto key = desktop::primary_key_mark(24, 1.0, false).toImage().convertToFormat(QImage::Format_ARGB32);
                 require(key.size() == QSize(24, 24), "Drawn at the size asked for");
                 int gold = 0;
@@ -7514,13 +7200,11 @@ int main(int argc, char **argv)
                 require(bow.first > 2 * shaft.first, "Its ring is at the top");
                 require(teeth.second > shaft.second + 2, "And its teeth at the foot, so it points down");
             }
-            timing::block("· (continued)", __LINE__);
 
             // Plain shows no colour at all (Zain, 2026-09-24): not in any
             // icon of any set -- the coloured artwork included -- and not in
             // anything the home screen draws for itself.
             {
-                timing::block("· Plain shows no colour at all (Zain, 2026-09-24): not in any icon of ", __LINE__);
                 // The Schema Relationships group has its own small network,
                 // in every theme and icon mode. Conceptual keeps its diamond.
                 require(desktop::icon_name(desktop::Glyph::Relationship) == "relationship" && desktop::icon_name(desktop::Glyph::SchemaRelationships) == "schema-relationships",
@@ -7569,7 +7253,6 @@ int main(int argc, char **argv)
                                             .toImage()) > 0,
                         "While elsewhere the coloured icons keep their colour");
             }
-            timing::block("· (continued)", __LINE__);
 
             window.show_home(false);
             settle();
@@ -7579,7 +7262,6 @@ int main(int argc, char **argv)
         // 2026-09-26): Home is the door every project is come in by, and a
         // change of mind can always go back to choose another card.
         {
-            timing::block("Back to Home is always first in the workspace's own row (Zain, 2026-09-2", __LINE__);
             auto *home = static_cast<desktop::HomePage *>(window.findChild<QWidget *>("homePage"));
             auto *back = child<QPushButton>(window, "backToHome");
             require(!window.showing_home() && back->isVisible(), "The workspace offers the way back to Home");
@@ -7696,7 +7378,6 @@ int main(int argc, char **argv)
         std::size_t on_relationships = 0;
         for (const auto &[id, attribute] : original.attributes)
         {
-            timing::block("++kinds[attribute.kind];", __LINE__);
             ++kinds[attribute.kind];
             if (!attribute.owner)
                 continue;
@@ -7713,7 +7394,6 @@ int main(int argc, char **argv)
         bool partial = false;
         for (const auto &[id, relationship] : original.relationships)
         {
-            timing::block("require(relationship.participants.size() == 2, \"Every relationship on it", __LINE__);
             require(relationship.participants.size() == 2, "Every relationship on it is joined at both ends");
             for (const auto &participant : relationship.participants)
                 (participant.participation == domain::Participation::Total ? total : partial) = true;
@@ -7732,7 +7412,6 @@ int main(int argc, char **argv)
         settle();
         require(window.editor().project().entities.at(student).name == "UniversityStudent", "Name commits through properties on focus loss");
         {
-            timing::block("const auto &was = original.layout.at(domain::ElementRef{student});", __LINE__);
             // Properties rename uses the same compact Relationship budget as
             // inline rename. An example already wider than it stays that wide.
             const auto &was = original.layout.at(domain::ElementRef{student});
@@ -7796,7 +7475,6 @@ int main(int argc, char **argv)
         // gives each thing it asks about a bold hue of its own, so the rows
         // are told apart at a glance rather than read in order.
         {
-            timing::block("A card names its side in the colour that element is drawn in, and gives ", __LINE__);
             auto *first_card = cards.front();
             auto *title = first_card->findChild<QWidget *>("cardTitle");
             require(title != nullptr, "A card names its side");
@@ -7871,7 +7549,6 @@ int main(int argc, char **argv)
         // and in one ink, with the colour kept for the heading, which wears
         // the colour its element is drawn in on the diagram.
         {
-            timing::block("The rest of the panel is named the same way: every field label bold and ", __LINE__);
             auto *properties = child<QDockWidget>(window, "propertiesDock");
             const auto ink_of = [](QLabel *label)
             {
@@ -8058,7 +7735,6 @@ int main(int argc, char **argv)
         // diagram's own controls are part of the diagram, and a button that
         // chooses a tool still chooses it.
         {
-            timing::block("A click anywhere in the window outside the diagram puts the tool down, l", __LINE__);
             const auto press_on = [](QWidget *target, QPoint at)
             {
                 // Delivered to whatever is deepest under the point, as a
@@ -8127,7 +7803,6 @@ int main(int argc, char **argv)
         // Properties locks the attribute owner as the element's own menu does
         // (Zain, 2026-09-26), and says which way it stands.
         {
-            timing::block("Properties locks the attribute owner as the element's own menu does (Zai", __LINE__);
             const domain::ElementRef owner = window.editor().project().entities.begin()->first;
             window.canvas()->select_elements({owner});
             settle();
@@ -8163,7 +7838,6 @@ int main(int argc, char **argv)
         // View, one row for each step Undo could take back, in order and in
         // words; pressing a row goes back or forward to just after it.
         {
-            timing::block("The History (Zain, 2026-09-26): a panel opened from the end of View, one", __LINE__);
             auto *toggle = child<QAction>(window, "viewHistory");
             require(child<QMenu>(window, "viewMenu")->actions().last() == toggle,
                     "History is the last entry in View, after everything already there");
@@ -8307,7 +7981,6 @@ int main(int argc, char **argv)
         const auto outline_grey = qGray(glyph_theme.muted.rgb());
         const auto share_of_fill = [&](desktop::Glyph glyph)
         {
-            timing::block("const auto drawn = desktop::glyph_icon(glyph, glyph_theme, 22)", __LINE__);
             const auto drawn = desktop::glyph_icon(glyph, glyph_theme, 22)
                                    .pixmap(22, 22)
                                    .toImage()
@@ -8335,7 +8008,6 @@ int main(int argc, char **argv)
         // An element given a colour of its own wears it in the properties panel,
         // so the panel and the shape on the canvas read as the same object.
         {
-            timing::block("An element given a colour of its own wears it in the properties panel, s", __LINE__);
             const auto entity = window.editor().project().entities.begin()->first;
             window.canvas()->select_elements({domain::ElementRef{entity}});
             settle();
@@ -8387,7 +8059,6 @@ int main(int argc, char **argv)
         // the palette; each must cover every glyph the window uses, or a
         // button silently falls back and the sets disagree about what is there.
         {
-            timing::block("Three sets, and the window has to be able to wear any of them. The outli", __LINE__);
             require(window.icon_mode() == desktop::IconMode::Outline, "The window wears the line art to begin with");
             const auto lined = child<QAction>(window, "toolEntity")->icon().pixmap(22, 22).toImage();
             for (int index = 0; index <= static_cast<int>(desktop::Glyph::Symbols); ++index)
@@ -8461,7 +8132,6 @@ int main(int argc, char **argv)
         // written in, which means the gallery has to find that field again
         // after a commit has rebuilt the properties panel underneath it.
         {
-            timing::block("Insert offers the characters an ERD wants and a keyboard has not got: th", __LINE__);
             require(child<QMenu>(window, "insertMenu")->actions().contains(child<QAction>(window, "insertSymbols")),
                     "Insert carries the symbol gallery");
             require(child<QToolButton>(window, "insertButton")->menu() == child<QMenu>(window, "insertMenu"),
@@ -8686,7 +8356,6 @@ int main(int argc, char **argv)
         // window offers two commands and a field for it, and offers them only
         // while what is chosen is a symbol.
         {
-            timing::block("A symbol is the one element with a size of its own to choose, so the win", __LINE__);
             window.canvas()->select_elements({});
             settle();
             require(window.insert_symbol(QStringLiteral("\U0001F9D1\u200D\U0001F393")),
@@ -8779,7 +8448,6 @@ int main(int argc, char **argv)
         // A theme can be seen on the window before it is chosen, and looking at
         // one without choosing it must leave nothing behind.
         {
-            timing::block("A theme can be seen on the window before it is chosen, and looking at on", __LINE__);
             const auto chosen = window.canvas()->theme_id();
             auto *dracula = child<QAction>(window, "themedracula");
             emit dracula->hovered();
@@ -8814,7 +8482,6 @@ int main(int argc, char **argv)
         // worth paying for, so what is hovered is remembered and shown once the
         // pointer has settled rather than while it is still travelling.
         {
-            timing::block("Wearing a theme costs the whole window, and a pointer on its way to an e", __LINE__);
             window.set_theme(desktop::ThemeId::OfficeLight);
             settle();
             // Both are looked up first: fetching one settles the loop, which
@@ -8840,7 +8507,6 @@ int main(int argc, char **argv)
         // off the end of the toolbar where they cannot be reached, and it must
         // shed them in order of what can best be done without.
         {
-            timing::block("A narrow window must shed what it can spare rather than let tools run of", __LINE__);
             auto *bar = child<QToolBar>(window, "modelTools");
             auto *picker = child<QComboBox>(window, "notationPicker");
             const auto tools = bar->actions().size();
@@ -8885,7 +8551,6 @@ int main(int argc, char **argv)
         // The paper the diagram is drawn on is chosen under View, so it reaches
         // the Design row as well, and it travels with the document.
         {
-            timing::block("The paper the diagram is drawn on is chosen under View, so it reaches th", __LINE__);
             auto *papers = child<QMenu>(window, "backgroundMenu");
             require(child<QMenu>(window, "viewMenu")->actions().contains(papers->menuAction()),
                     "Background sits with the other choices about how the diagram looks");
@@ -8918,7 +8583,6 @@ int main(int argc, char **argv)
         // over it: these are changed by pressing them and choosing, or by
         // typing, and a wheel is meant for the panel behind them.
         {
-            timing::block("A choice or a number must not change because the pointer passed over it:", __LINE__);
             window.canvas()->select_elements({relationship});
             settle();
             const auto turn = [](QWidget *widget, int notches)
@@ -8963,7 +8627,6 @@ int main(int argc, char **argv)
         // Check model is a switch: it opens the findings and puts them away
         // again, and says which it will do by the mark it wears.
         {
-            timing::block("Check model is a switch: it opens the findings and puts them away again,", __LINE__);
             auto *check = child<QAction>(window, "checkModel");
             auto *checks_dock = child<QDockWidget>(window, "validationDock");
             require(!checks_dock->isVisible() && !check->isChecked(), "The findings start closed");
@@ -8991,7 +8654,6 @@ int main(int argc, char **argv)
         // Full view puts the panels away and gives the whole window to the
         // diagram, and brings back exactly the ones that were showing.
         {
-            timing::block("Full view puts the panels away and gives the whole window to the diagram", __LINE__);
             auto *full_view = child<QAction>(window, "viewFullView");
             auto *explorer_dock = child<QDockWidget>(window, "explorerDock");
             auto *properties_dock = child<QDockWidget>(window, "propertiesDock");
@@ -9041,7 +8703,6 @@ int main(int argc, char **argv)
         // where the next press starts; the Explorer alone goes on to both.
         // None of it reaches the project, the history or what is chosen.
         {
-            timing::block("Below the raft's zoom, after a rule, one button for the side panels (Zai", __LINE__);
             auto *raft = child<QWidget>(window, "canvasControls");
             auto *explorer_dock = child<QDockWidget>(window, "explorerDock");
             auto *properties_dock = child<QDockWidget>(window, "propertiesDock");
@@ -9139,7 +8800,6 @@ int main(int argc, char **argv)
         // The raft's Pan locks on a double-click just as the toolbar's tools do,
         // and a single click uses it once.
         {
-            timing::block("The raft's Pan locks on a double-click just as the toolbar's tools do, a", __LINE__);
             auto *pan = child<QToolButton>(window, "canvasPan");
             const auto centre = QPoint(pan->width() / 2, pan->height() / 2);
             QMouseEvent twice(QEvent::MouseButtonDblClick, QPointF(centre), QPointF(pan->mapToGlobal(centre)),
@@ -9175,7 +8835,6 @@ int main(int argc, char **argv)
         // An entity in the explorer opens to show the attributes that belong
         // to it, while the group of all attributes still counts every one.
         {
-            timing::block("An entity in the explorer opens to show the attributes that belong to it", __LINE__);
             auto *tree = child<QTreeView>(window, "explorer");
             auto *model = qobject_cast<QStandardItemModel *>(tree->model());
             require(model != nullptr, "The explorer is backed by a standard model");
@@ -9323,7 +8982,6 @@ int main(int argc, char **argv)
         // what they hold while folded, and are not opened by choosing an
         // element on the canvas (Zain, 2026-10-07).
         {
-            timing::block("The Conceptual Explorer's three groups start folded in a new project, ke", __LINE__);
             application::Editor fresh(ids);
             infrastructure::ErdxProjectStore fresh_store;
             desktop::MainWindow folding(fresh, fresh_store, ids);
@@ -9398,7 +9056,6 @@ int main(int argc, char **argv)
         // makes them follow it: they have to ask for the icon themselves.
         for (const char *menu_button : {"isaButton", "connectButton"})
         {
-            timing::block("auto *widget = child<QToolButton>(window, menu_button);", __LINE__);
             auto *widget = child<QToolButton>(window, menu_button);
             require(widget->toolButtonStyle() == Qt::ToolButtonTextBesideIcon,
                     "A menu button on the toolbar shows its glyph like every other button");
@@ -9411,7 +9068,6 @@ int main(int argc, char **argv)
         // choice it was one half of, and a choice remembered from before is
         // not taken up. The line styles stay on Connect's arrow.
         {
-            timing::block("A line Connect draws is never pinned where it was clicked (Zain, 2026-09", __LINE__);
             require(window.findChild<QAction *>("joinWhereClicked") == nullptr && window.findChild<QAction *>("joinAutomatic") == nullptr,
                     "Connect's menu no longer offers where a line joins");
             require(window.canvas()->join_mode() == desktop::JoinMode::Automatic,
@@ -9424,7 +9080,6 @@ int main(int argc, char **argv)
         // An entity says in Properties whether it relates to itself, and
         // ticking it draws the relationship that says so.
         {
-            timing::block("An entity says in Properties whether it relates to itself, and ticking i", __LINE__);
             const auto entity_id = window.editor().project().entities.begin()->first;
             window.canvas()->select_elements({entity_id});
             settle();
@@ -9462,7 +9117,6 @@ int main(int argc, char **argv)
         // changing it is one edit; an associative relationship also takes the
         // entity body, as it did.
         {
-            timing::block("Properties names the kind of an entity and of a relationship, and changi", __LINE__);
             const auto &example = window.editor().project();
             const auto entity_id = example.entities.begin()->first;
             window.canvas()->select_elements({entity_id});
@@ -9512,7 +9166,6 @@ int main(int argc, char **argv)
         // the explorer and the properties panel like anything else placed on
         // the canvas.
         {
-            timing::block("Pictures and notes come from Home: a picture from a file, through its In", __LINE__);
             auto *insert = child<QToolButton>(window, "insertButton");
             auto *picture_action = child<QAction>(window, "insertPicture");
             auto *note_tool = child<QAction>(window, "toolNote");
@@ -9580,7 +9233,6 @@ int main(int argc, char **argv)
         // nothing on them can disagree with them, and while one of them is
         // chosen its rows' own tabs stand beside the three.
         {
-            timing::block("A row of tabs sits above the tool row, the way an office application arr", __LINE__);
             auto *tabs = child<QToolBar>(window, "ribbonTabs");
             auto *home = child<QToolBar>(window, "modelTools");
             require(window.toolBarArea(tabs) == Qt::TopToolBarArea && window.toolBarBreak(child<QToolBar>(window, "fileSections")),
@@ -9686,7 +9338,6 @@ int main(int argc, char **argv)
         // The raft of view controls: it can be moved, it can be put away, and
         // there is a way back to it once it has been.
         {
-            timing::block("The raft of view controls: it can be moved, it can be put away, and ther", __LINE__);
             auto *raft = child<QWidget>(window, "canvasControls");
             require(raft->isVisible(), "The raft is there to begin with");
             require(window.findChild<QWidget *>("canvasControlsGrip") != nullptr,
@@ -9746,7 +9397,6 @@ int main(int argc, char **argv)
         // Search: a bar above the diagram that narrows it to what is being
         // looked for, and brings what it finds to the middle of the view.
         {
-            timing::block("Search: a bar above the diagram that narrows it to what is being looked ", __LINE__);
             auto *find = child<QAction>(window, "searchDiagram");
             require(find->shortcut() == QKeySequence::Find, "Search is on the key a document application keeps it on");
 
@@ -9936,7 +9586,6 @@ int main(int argc, char **argv)
         // model. They are pinned to things, one remark may cover several, they
         // are shown when the thing is pointed at, and they can be put away.
         {
-            timing::block("Comments: remarks left on the work, which are not the Note element place", __LINE__);
             auto *show_comments = child<QAction>(window, "viewShowComments");
             require(show_comments->isChecked(), "Remarks are shown to begin with");
 
@@ -10031,7 +9680,6 @@ int main(int argc, char **argv)
         // fields conversion needs are part of every model and are always kept.
         // The fold decides whether they are on screen, and nothing else.
         {
-            timing::block("One model, and a section that folds. There is no mode to switch: the fie", __LINE__);
             require(window.findChild<QToolButton *>("conceptualMode") == nullptr,
                     "There is no mode, so there is nothing in the header saying which one it is in");
             require(window.findChild<QMenu *>("modeMenu") == nullptr, "And no menu for switching between them");
@@ -10140,7 +9788,6 @@ int main(int argc, char **argv)
         }
 
         {
-            timing::block("child<QPushButton>(window, \"previewSchema\")->click();", __LINE__);
             // The schema rises over the diagram, and the panel it rises in can
             // be pulled to any height: half the stage, all of it, or a sliver.
             child<QPushButton>(window, "previewSchema")->click();
@@ -10153,7 +9800,6 @@ int main(int argc, char **argv)
             // diagram's one row (2026-10-08), whose Undo and Redo are the same
             // two actions the header's were.
             {
-                timing::block("· Sharing the stage with the diagram, the schema's work can be undone ", __LINE__);
                 auto *row = child<QToolBar>(window, "modelTools");
                 auto *undo = row->widgetForAction(window.findChild<QAction *>("undoCommand"));
                 auto *redo = row->widgetForAction(window.findChild<QAction *>("redoCommand"));
@@ -10162,7 +9808,6 @@ int main(int argc, char **argv)
                                 window.findChild<QAction *>("undoCommand"),
                         "The open schema offers undo and redo, the same actions the menu has");
             }
-            timing::block("· (continued)", __LINE__);
             // Pulled all the way up, the panel covers the diagram; pushed down,
             // it becomes a sliver and the diagram comes back.
             const auto *panel = child<QWidget>(window, "schemaPanel");
@@ -10231,7 +9876,6 @@ int main(int argc, char **argv)
             // workspaces (Zain, 2026-10-06); Home brings up no row here, and
             // the other rows keep to what can act on the schema.
             {
-                timing::block("· The tabs stay, so the window is found in the same place in both work", __LINE__);
                 auto *tabs = child<QToolBar>(window, "ribbonTabs");
                 auto *view_menu = child<QMenu>(window, "settingsViewMenu");
                 require(tabs->isVisible() && child<QAction>(window, "tabHome")->isChecked(),
@@ -10260,7 +9904,6 @@ int main(int argc, char **argv)
                 child<QAction>(window, "tabHome")->trigger();
                 settle();
             }
-            timing::block("· (continued)", __LINE__);
             full->click();
             settle();
             require(child<QPushButton>(window, "previewSchema")->text() == "Convert to Schema",
@@ -10284,7 +9927,6 @@ int main(int argc, char **argv)
             // one row's own two (2026-10-08); its search and the theme go back,
             // since the diagram's own are showing again.
             {
-                timing::block("· Undo and redo stay beside the schema while it is open, sharing the s", __LINE__);
                 auto *row = child<QToolBar>(window, "modelTools");
                 auto *undo = row->widgetForAction(window.findChild<QAction *>("undoCommand"));
                 auto *redo = row->widgetForAction(window.findChild<QAction *>("redoCommand"));
@@ -10292,7 +9934,6 @@ int main(int argc, char **argv)
                             undo->isVisible() && redo->isVisible(),
                         "Sharing the stage, the schema keeps its undo and redo, in the row, with no header beneath");
             }
-            timing::block("· (continued)", __LINE__);
             require(!child<QLineEdit>(window, "schemaSearch")->isVisible() && !child<QToolButton>(window, "schemaTheme")->isVisible(),
                     "And the header gives back the search and theme it had lent");
             require(child<QLabel>(window, "canvasInstructions")->isVisible(),
@@ -10306,7 +9947,6 @@ int main(int argc, char **argv)
             // and nothing running under the panel beside it. Only the panel
             // is resized: the tables stay the size and place they were.
             {
-                timing::block("· The panel is the stage's width, whatever the side panels leave the s", __LINE__);
                 auto *properties_dock = child<QDockWidget>(window, "propertiesDock");
                 auto *stage = child<QWidget>(window, "workspaceStage");
                 auto *schema = static_cast<desktop::SchemaView *>(child<QWidget>(window, "schemaView"));
@@ -10349,7 +9989,6 @@ int main(int argc, char **argv)
                 require(schema->table_boxes() == tables_before,
                         "The tables are neither moved nor resized by the room the panel is given");
             }
-            timing::block("· (continued)", __LINE__);
 
             // A name typed on the schema is the name on the diagram. Renaming
             // a table renames the entity it came from, so the two never come
@@ -10357,7 +9996,6 @@ int main(int argc, char **argv)
             // conversion invented gives that key a name of its own, since it
             // has nothing behind it to rename.
             {
-                timing::block("· A name typed on the schema is the name on the diagram. Renaming a ta", __LINE__);
                 // Found by name rather than by type: the view is a plain QWidget
                 // subclass with no Q_OBJECT, and its name is its own.
                 auto *schema = static_cast<desktop::SchemaView *>(child<QWidget>(window, "schemaView"));
@@ -10594,13 +10232,11 @@ int main(int argc, char **argv)
                     require(schema->loose_ends() == 0, "And one undo puts it back");
                 }
             }
-            timing::block("· (continued)", __LINE__);
 
             // The list a shared name's type is chosen from is only as wide as
             // its entries (Zain, 2026-09-26), though the box it opens from is
             // stretched across its row, and it is chosen from as before.
             {
-                timing::block("· The list a shared name's type is chosen from is only as wide as its ", __LINE__);
                 auto *head = child<QPushButton>(window, "schemaSharedNamesHead");
                 head->click();
                 settle();
@@ -10669,7 +10305,6 @@ int main(int argc, char **argv)
                     keyboard->setFocus();
                 settle();
             }
-            timing::block("· (continued)", __LINE__);
 
             // Names only (Zain, 2026-09-27): chosen under Appearance, every
             // table shows its key marks and its columns' names alone -- no
@@ -10677,7 +10312,6 @@ int main(int argc, char **argv)
             // wide as its names. Not the default, and turned back, every
             // table is exactly as it was.
             {
-                timing::block("· Names only (Zain, 2026-09-27): chosen under Appearance, every table ", __LINE__);
                 auto *schema = static_cast<desktop::SchemaView *>(child<QWidget>(window, "schemaView"));
                 auto *names = child<QAction>(window, "schemaDetailNames");
                 auto *everything = child<QAction>(window, "schemaDetailFull");
@@ -10714,7 +10348,6 @@ int main(int argc, char **argv)
                 require(schema->table_boxes() == whole, "Every table exactly as it was");
                 require(schema->grab().toImage() == drawn, "And drawn exactly as it was, pixel for pixel");
             }
-            timing::block("· (continued)", __LINE__);
 
             // Closing the panel while it is full does not leave the window
             // stripped with nothing in it.
@@ -10732,7 +10365,6 @@ int main(int argc, char **argv)
         }
 
         {
-            timing::block("auto *explorer_dock = child<QDockWidget>(window, \"explorerDock\");", __LINE__);
             // Stage 1 (Zain, 2026-09-29): the side panels follow the workspace
             // being worked on. With the diagram, the diagram's own Explorer and
             // Properties; with the schema a diagram becomes, the schema's, as
@@ -10925,7 +10557,6 @@ int main(int argc, char **argv)
         }
 
         {
-            timing::block("child<QPushButton>(window, \"previewSchema\")->click();", __LINE__);
             // A line between two tables is not only drawn. Any straight run
             // of it can be pushed sideways, either end can be moved around the
             // table it joins, and a double-click hands the whole line back to
@@ -11167,7 +10798,6 @@ int main(int argc, char **argv)
         }
 
         {
-            timing::block("child<QPushButton>(window, \"previewSchema\")->click();", __LINE__);
             // The schema can be edited away from the diagram it came from, and
             // says so when it has been. The menu that offers this and the
             // question box that follows it both stop and wait for somebody, so
@@ -11247,7 +10877,6 @@ int main(int argc, char **argv)
         }
 
         {
-            timing::block("child<QPushButton>(window, \"previewSchema\")->click();", __LINE__);
             // Pressing a table asks what it is joined to; the chips ask about
             // a whole kind of table; and the questions a conversion cannot
             // settle are answered on the tables they are about.
@@ -11497,7 +11126,6 @@ int main(int argc, char **argv)
             // somebody, so what is wanted from it is asked for before it
             // opens and taken as soon as it is there.
             {
-                timing::block("· The constraints a row carries, all in one column and chosen from the", __LINE__);
                 const auto choose = [&](QPointF where, const char *which)
                 {
                     QTimer::singleShot(0, &window, [&window, which]
@@ -11638,12 +11266,10 @@ int main(int argc, char **argv)
                 require(!window.editor().project().schema.counting_keys.contains(relation_from(*whose)),
                         "And that undoes like anything else");
             }
-            timing::block("· (continued)", __LINE__);
 
             // Narrowing a table folds its columns away from the right, one
             // at a time, and never moves the tables beside it.
             {
-                timing::block("· Narrowing a table folds its columns away from the right, one at a ti", __LINE__);
                 // Held by value: the preview is worked out afresh on every
                 // refresh, so a reference into it would not survive the first
                 // pull.
@@ -11718,14 +11344,12 @@ int main(int argc, char **argv)
                     settle();
                 }
             }
-            timing::block("· (continued)", __LINE__);
 
             // Several tables are gathered by drawing a band round them, and
             // coloured together. The colour goes on the element itself, so a
             // table coloured here and the entity it came from are one thing
             // wearing one colour.
             {
-                timing::block("· Several tables are gathered by drawing a band round them, and colour", __LINE__);
                 const auto boxes = schema->table_boxes();
                 require(boxes.size() >= 2, "The example has tables to gather");
                 const auto drag = [&](QEvent::Type kind, QPointF at, Qt::MouseButton button,
@@ -11928,12 +11552,10 @@ int main(int argc, char **argv)
                 settle();
                 require(schema->selection().empty(), "Pressing the bare canvas gathers nothing");
             }
-            timing::block("· (continued)", __LINE__);
 
             // An attribute is pulled about by its own edges and corners, as an
             // entity is. A default is a starting size, not a ruling.
             {
-                timing::block("· An attribute is pulled about by its own edges and corners, as an ent", __LINE__);
                 const auto named = std::find_if(
                     window.editor().project().attributes.begin(),
                     window.editor().project().attributes.end(),
@@ -11954,7 +11576,6 @@ int main(int argc, char **argv)
                 require(std::abs(window.editor().project().layout.at(ref).width - before.width) < 0.01,
                         "And it undoes like any other edit");
             }
-            timing::block("· (continued)", __LINE__);
 
             // A search of the schema, which is not the diagram's search: it
             // picks out the tables and columns whose names carry the words.
@@ -11980,7 +11601,6 @@ int main(int argc, char **argv)
         }
 
         {
-            timing::block("child<QPushButton>(window, \"previewSchema\")->click();", __LINE__);
             // Everything done on the schema undoes, and redoes. Arranging it
             // is presentation, but it is work somebody did, so it is an edit
             // like any other rather than something the window keeps to itself
@@ -12027,7 +11647,6 @@ int main(int argc, char **argv)
             // simply sits elsewhere: leave a moved table out of the packing
             // and the ones after it shuffle up behind it.
             {
-                timing::block("· Moving one table moves that table. Every other table stays exactly w", __LINE__);
                 const auto settled = schema->table_boxes();
                 require(settled.size() >= 3, "Several tables to leave alone");
                 const auto lift = settled[1].topLeft() + QPointF(60, 8);
@@ -12046,7 +11665,6 @@ int main(int argc, char **argv)
                 undo->trigger();
                 settle();
             }
-            timing::block("· (continued)", __LINE__);
 
             // Pushing a line sideways.
             const auto drawn = schema->line_shapes();
@@ -12118,7 +11736,6 @@ int main(int argc, char **argv)
             // A line shaped by hand holds its shape when a table is moved on
             // top of it, unless it has been asked to get out of the way.
             {
-                timing::block("· A line shaped by hand holds its shape when a table is moved on top o", __LINE__);
                 auto *give_way = child<QAction>(window, "schemaGiveWay");
                 require(!give_way->isChecked(), "Lines hold their shape unless asked otherwise");
                 // A shaped line of its own, since the block before this one
@@ -12196,13 +11813,11 @@ int main(int argc, char **argv)
                 give_way->setChecked(false);
                 settle();
             }
-            timing::block("· (continued)", __LINE__);
 
             // A table is pulled about by any of its four edges and any of its
             // corners, which is an edit like the rest: it undoes, it redoes,
             // and it is saved.
             {
-                timing::block("· A table is pulled about by any of its four edges and any of its corn", __LINE__);
                 require(schema->tables_resizable(), "Tables can be resized unless told otherwise");
                 // A line always answers the pointer before the table it
                 // crosses, so a pull is aimed at a stretch of edge no line is
@@ -12440,7 +12055,6 @@ int main(int argc, char **argv)
                 child<QAction>(window, "schemaTidy")->trigger();
                 settle();
             }
-            timing::block("· (continued)", __LINE__);
 
             // And an arrangement is part of the document, so it is saved.
             QTemporaryDir folder;
@@ -12467,7 +12081,6 @@ int main(int argc, char **argv)
         // listing of the model for the people who want words rather than a
         // drawing.
         {
-            timing::block("Export: how the work leaves. A picture any system can open, with the pro", __LINE__);
             QTemporaryDir pictures;
             require(pictures.isValid(), "Temporary export directory");
 
@@ -12719,7 +12332,6 @@ int main(int argc, char **argv)
         }
         if (window_part)
         {
-            timing::block("main window checks done", __LINE__);
             std::cout << "Main window desktop tests passed\n";
             return 0;
         }
