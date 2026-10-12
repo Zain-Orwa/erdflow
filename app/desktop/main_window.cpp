@@ -5049,9 +5049,9 @@ namespace erdflow::desktop
             // from, so the shape is right the moment it appears.
             const auto found = current.layout.find(ElementRef{id});
             const auto box = found == current.layout.end() ? domain::Rect{} : found->second;
-            const domain::Rect body{box.x + box.width + 130,
-                                    box.y + box.height / 2 - relationship_body.height / 2,
-                                    relationship_body.width, relationship_body.height};
+            const auto size = fitted_body(NamedShape::Relationship, QStringLiteral("Relationship"), canvas_->font());
+            const domain::Rect body{box.x + box.width + 130, box.y + box.height / 2 - size.height / 2,
+                                    size.width, size.height};
             const auto result = editor_.relate(id, id, body, "Relationship");
             show_result(result);
             if (result && result.created) canvas_->select_elements({*result.created}, true); });

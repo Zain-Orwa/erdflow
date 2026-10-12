@@ -369,16 +369,18 @@ void canvas_timings(const std::string& name, desktop::MainWindow& window) {
 // A large diagram made the way a person makes one: entities with keys and
 // attributes, joined one-to-many and many-to-many, so its schema has foreign
 // keys and bridge tables to route.
-void build_large(application::Editor& editor, int entities_wanted) {
+void build_large(application::Editor& editor, int entities_wanted, bool long_names = false) {
     std::vector<domain::EntityId> entities;
     for (int i = 0; i < entities_wanted; ++i) {
         const double x = (i % 10) * 420.0;
         const double y = (i / 10) * 360.0;
-        const auto made = editor.create_entity("Entity " + std::to_string(i), {x, y, 150, 80});
+        const auto made = editor.create_entity((long_names ? "Department Of International Computer Science " : "Entity ")
+                                                   + std::to_string(i), {x, y, 150, 80});
         const auto id = std::get<domain::EntityId>(*made.created);
         entities.push_back(id);
         for (int a = 0; a < 3; ++a) {
-            const auto attribute = editor.create_attribute((a == 0 ? "Entity" + std::to_string(i) + " ID" : "Field " + std::to_string(a)),
+            const auto attribute = editor.create_attribute(long_names ? "Employee Identification Number " + std::to_string(i * 3 + a)
+                                                           : (a == 0 ? "Entity" + std::to_string(i) + " ID" : "Field " + std::to_string(a)),
                                                            {x - 40 + a * 90.0, y + 110, 120, 50}, domain::ElementRef{id});
             if (a == 0 && attribute.created)
                 editor.set_attribute_kind(std::get<domain::AttributeId>(*attribute.created), domain::AttributeKind::Key);
@@ -394,6 +396,26 @@ void build_large(application::Editor& editor, int entities_wanted) {
     }
 }
 
+
+// The size each kind of named shape is made at for a range of names, in this
+// platform's fonts: what a person meets when they draw and name one.
+void sizing_report(const QFont& base) {
+    const std::vector<std::pair<desktop::NamedShape, const char*>> shapes{
+        {desktop::NamedShape::Entity, "entity"}, {desktop::NamedShape::Attribute, "attribute"},
+        {desktop::NamedShape::Relationship, "relationship"}, {desktop::NamedShape::Generalization, "generalization"},
+        {desktop::NamedShape::Specialization, "specialization"}};
+    const std::vector<QString> names{"Id", "Owns", "Entity", "Student", "Relationship", "Department Name",
+                                     "Department Of International Computer Science",
+                                     "SupercalifragilisticexpialidociousEnterpriseResourcePlanningIdentifier"};
+    for (const auto& [shape, label] : shapes) {
+        std::cout << "SIZING " << label << ":";
+        for (const auto& name : names) {
+            const auto size = desktop::fitted_body(shape, name, base);
+            std::cout << " [" << name.left(14).toStdString() << (name.size() > 14 ? "..." : "") << " " << size.width << "x" << size.height << "]";
+        }
+        std::cout << '\n';
+    }
+}
 } // namespace
 
 int main(int argc, char** argv) {
@@ -407,17 +429,26 @@ int main(int argc, char** argv) {
               << " output=" << folder.toStdString() << '\n';
     constexpr double end_reach = 28.0; // schema_view.cpp: minimum_at (21) + 7
     infrastructure::QtIdGenerator ids;
+    {
+        application::Editor editor(ids);
+        desktop::DiagramView probe(editor);
+        sizing_report(probe.font());
+    }
 
     struct Scenario {
         std::string name;
         std::function<void(desktop::MainWindow&)> load;
         std::function<void(application::Editor&)> build;
+        bool schema = true;
     };
     const std::vector<Scenario> scenarios{
         {"university", [](desktop::MainWindow& w) { w.load_example(); }, {}},
         {"company", [](desktop::MainWindow& w) { w.load_company_database(); }, {}},
         {"company-relational", [](desktop::MainWindow& w) { w.load_company_database_relational(); }, {}},
         {"large-80", {}, [](application::Editor& e) { build_large(e, 80); }},
+        // Every name long enough to be written in lines, for what that costs
+        // a canvas being dragged and exported.
+        {"large-80-long-names", {}, [](application::Editor& e) { build_large(e, 80, true); }, false},
     };
     for (const auto& scenario : scenarios) {
         application::Editor editor(ids);
@@ -437,6 +468,12 @@ int main(int argc, char** argv) {
             export_checks(scenario.name + "-conceptual", window, desktop::ThemeId::OfficeLight,
                           desktop::theme(desktop::ThemeId::OfficeLight).canvas, folder, false);
             window.set_theme(desktop::ThemeId::OfficeLight);
+        }
+        if (!scenario.schema) {
+            editor.mark_saved(editor.revision());
+            window.close();
+            settle();
+            continue;
         }
         window.open_schema(true);
         settle_ms(900);

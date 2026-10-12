@@ -1128,6 +1128,28 @@ EditResult Editor::merge_project(const Project& other, double dx, double dy) {
 constexpr std::string_view placed_attribute_name = "Attribute";
 
 EditResult Editor::rename(ElementRef ref, std::string name, double least_width) {
+    return rename_resizing(ref, std::move(name), [least_width](const Rect& was) -> std::optional<Rect> {
+        if (was.width >= least_width) return std::nullopt;
+        auto widened = was;
+        widened.width = std::min(least_width, max_entity_width);
+        widened.x = std::clamp(was.x - (widened.width - was.width) / 2, -max_coordinate, max_coordinate - widened.width);
+        return widened;
+    });
+}
+EditResult Editor::rename_to_fit(ElementRef ref, std::string name, double width, double height) {
+    const bool by_hand = project().lettering.contains(ref);
+    return rename_resizing(ref, std::move(name), [&](const Rect& was) -> std::optional<Rect> {
+        if (by_hand) return std::nullopt;
+        Rect fitted = was;
+        fitted.width = std::clamp(width, min_entity_width, max_entity_width);
+        fitted.height = std::max(height, min_entity_height);
+        fitted.x = std::clamp(was.x + (was.width - fitted.width) / 2, -max_coordinate, max_coordinate - fitted.width);
+        fitted.y = std::clamp(was.y + (was.height - fitted.height) / 2, -max_coordinate, max_coordinate - fitted.height);
+        return fitted;
+    });
+}
+EditResult Editor::rename_resizing(ElementRef ref, std::string name,
+                                   const std::function<std::optional<Rect>(const Rect&)>& resized) {
     return impl_->edit("Rename element", [&](Delta& delta) {
         const auto characters = character_count(name);
         // Attributes are placed first and named afterwards, several at a time,
@@ -1151,14 +1173,8 @@ EditResult Editor::rename(ElementRef ref, std::string name, double least_width) 
         if (result) hold_anchors(project(), delta, ref, TextField::Name, characters);
         if (result && (std::holds_alternative<EntityId>(ref) || std::holds_alternative<RelationshipId>(ref)
                        || std::holds_alternative<AttributeId>(ref) || std::holds_alternative<SpecializationId>(ref)))
-            if (const auto found = project().layout.find(ref);
-                found != project().layout.end() && found->second.width < least_width) {
-                auto widened = found->second;
-                widened.width = std::min(least_width, max_entity_width);
-                widened.x = std::clamp(found->second.x - (widened.width - found->second.width) / 2, -max_coordinate,
-                                       max_coordinate - widened.width);
-                if (widened != found->second) delta.layout.put(ref, widened);
-            }
+            if (const auto found = project().layout.find(ref); found != project().layout.end())
+                if (const auto box = resized(found->second); box && *box != found->second) delta.layout.put(ref, *box);
         return result;
     });
 }

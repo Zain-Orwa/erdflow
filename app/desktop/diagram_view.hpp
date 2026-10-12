@@ -69,12 +69,12 @@ enum class JoinMode { Automatic, WhereClicked };
 // The entity's figures were first the ones Zain settled on by drawing one and
 // sizing it until it looked right, 148 x 86, with the attribute at 150 x 60 and
 // the relationship at 190 x 110. Zain then made all three smaller and let each
-// grow to fit normal names (2026-10-11): these are the least an
-// element is made at, and any of the five conceptual shapes whose name
-// would be cut short is made wider up to the rendered Relationship reference
-// budget, or widened when it is renamed, by
-// width_for_name below. A name made shorter never narrows it, and a diagram
-// opened is drawn at exactly the sizes it was saved with.
+// grow to fit normal names (2026-10-11). Since 2026-10-12 they are the
+// proportions a shape is made in rather than its least size: a new or renamed
+// shape is fitted to its name by fitted_body below -- smaller for a short
+// name, no wider than "Relationship" needs, taller for a name written in more
+// lines. A shape resized by hand keeps its size, and a diagram opened is drawn
+// at exactly the sizes it was saved with.
 struct BodySize { double width, height; };
 inline constexpr BodySize entity_body{133, 77};
 inline constexpr BodySize attribute_body{135, 54};
@@ -114,17 +114,38 @@ inline constexpr double scaled_whole(double measure) {
 inline constexpr BodySize symbol_body{scaled_whole(56), scaled_whole(56)};
 inline constexpr double symbol_step = 1.25;
 
-// Automatic width for a new named shape, using its default height and font.
-// Fits names only up to the rendered Relationship budget; longer labels elide.
-// This cap never limits a manual size or changes saved geometry.
+// Automatic width for a named shape, using its default height and font, never
+// under the default. Fits names only up to the rendered Relationship budget.
+// This cap never limits a manual size or changes saved geometry. Used where a
+// diagram is worked out from a schema.
 enum class NamedShape { Entity, Attribute, Relationship, Generalization, Specialization };
 [[nodiscard]] double width_for_name(NamedShape shape, const QString& name, const QFont& base);
+// The size a shape is made at, and remade at when it is renamed, for its name
+// (Zain, 2026-10-12): as small as the name allows, down to the domain's least
+// and in proportion to the default; no wider than "Relationship" needs, which
+// is always written whole on one line; and a longer name made taller to be
+// written in up to three lines, the third cut short if even that is not
+// enough. Measured with the lettering and the room the name is painted in. A
+// shape resized by hand keeps its size, and a diagram opened is drawn at the
+// sizes it was saved with.
+[[nodiscard]] BodySize fitted_body(NamedShape shape, const QString& name, const QFont& base);
 // The least width a shape of that kind and height needs for the name to be
 // written whole, with its lettering drawn at that factor of ordinary, measured
 // as it is painted: the room a box, an oval or a diamond leaves the name, and
 // for an oval its curve as well. No default is put under it.
 [[nodiscard]] double name_room_width(NamedShape shape, const QString& name, const QFont& base, double lettering,
                                      double height);
+// How a name is written inside a shape of these bounds, its lettering at that
+// factor of ordinary (2026-10-12): the lines, where each stands, and whether
+// the last was cut short because three were not enough. It is what the shape
+// paints, so what is read here is what is drawn.
+struct NameLayout {
+    std::vector<QString> lines;
+    std::vector<QRectF> rects;
+    bool elided = false;
+};
+[[nodiscard]] NameLayout name_layout(NamedShape shape, const QString& name, const QFont& base, double lettering,
+                                     const QRectF& bounds);
 
 // What a search is looking for. Everything is the ordinary state, and the rest
 // narrow it to one kind, so "only the entities" is asked for by choosing a kind

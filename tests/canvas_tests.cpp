@@ -80,6 +80,113 @@ QGraphicsItem* find_node(desktop::DiagramView& view, const QString& name) {
         if (item->zValue() > 0 && item->data(Qt::DisplayRole).toString() == name) return item;
     throw std::runtime_error("Missing node");
 }
+// A name too long for one line is written in up to three (2026-10-12). What a
+// shape paints is the layout it is given, line for line; and the layout keeps
+// to the rules: no more than three lines, each within the room its shape
+// leaves a name and inside the shape's outline, nothing of the name lost
+// unless the last line says so, and the whole name on hover exactly when it is.
+void require_written_in_lines(desktop::DiagramView& view, const application::Editor& editor,
+                              const domain::ElementRef& ref, desktop::NamedShape shape, bool cut_short) {
+    view.synchronize();
+    QApplication::processEvents();
+    const auto name = QString::fromStdString(domain::name(editor.project(), ref));
+    const auto box = editor.project().layout.at(ref);
+    const auto base = editor.project().lettering.find(ref);
+    const auto factor = base == editor.project().lettering.end() ? 1.0
+        : domain::lettering_factor(base->second, box.width, box.height);
+    const QRectF bounds(0, 0, box.width, box.height);
+    const auto laid = desktop::name_layout(shape, name, view.font(), factor, bounds);
+    require(laid.elided == cut_short, cut_short ? "Too long even for three lines, it is cut short on the last"
+                                                : "Written whole, in as many lines as it takes");
+    require(!laid.lines.empty() && laid.lines.size() <= 3 && laid.lines.size() == laid.rects.size(),
+            "In no more than three lines");
+    QFont font = view.font();
+    font.setFamilies({"Inter", "Source Sans 3", "IBM Plex Sans", "Segoe UI Variable",
+                      "Segoe UI", "SF Pro Text", "Helvetica Neue", "Arial"});
+    font.setStyleHint(QFont::SansSerif, QFont::PreferAntialias);
+    font.setPointSizeF(9.0 * desktop::lettering_scale * factor);
+    font.setWeight(QFont::Bold);
+    const QFontMetricsF metrics(font);
+    const bool hierarchy = shape == desktop::NamedShape::Generalization || shape == desktop::NamedShape::Specialization;
+    for (std::size_t i = 0; i < laid.lines.size(); ++i) {
+        const auto& rect = laid.rects[i];
+        const auto wide = metrics.horizontalAdvance(laid.lines[i]);
+        require(wide <= rect.width() + 0.5, "Each line fits the room it is given");
+        require(rect.top() >= -0.5 && rect.bottom() <= box.height + 0.5, "Every line is within the shape");
+        if (shape == desktop::NamedShape::Entity || shape == desktop::NamedShape::Attribute)
+            require(rect.center().x() - wide / 2 >= 15 - 0.5 && rect.center().x() + wide / 2 <= box.width - 15 + 0.5,
+                    "15 in from a box's or an oval's sides");
+        if (shape == desktop::NamedShape::Generalization)
+            require(rect.top() >= box.height / 2 - 0.5, "Under a generalisation's middle, where it is wide");
+        if (shape == desktop::NamedShape::Specialization)
+            require(rect.bottom() <= box.height / 2 + 0.5, "Above a specialisation's middle, where it is wide");
+        if (!hierarchy && laid.lines.size() > 1) {
+            // The letters' corners, from the capitals down to the baseline.
+            const auto baseline = rect.top() + (rect.height() - metrics.height()) / 2 + metrics.ascent();
+            for (const auto y : {baseline, baseline - metrics.capHeight()})
+                for (const auto x : {rect.center().x() - wide / 2, rect.center().x() + wide / 2}) {
+                    const auto dx = std::abs(x - box.width / 2);
+                    const auto dy = std::abs(y - box.height / 2);
+                    if (shape == desktop::NamedShape::Relationship)
+                        require(dx / (box.width / 2) + dy / (box.height / 2) <= 1.0 + 1e-6,
+                                "Every line is inside the diamond");
+                    if (shape == desktop::NamedShape::Attribute)
+                        require((dx * dx) / ((box.width / 2 - 5) * (box.width / 2 - 5))
+                                    + (dy * dy) / ((box.height / 2 - 5) * (box.height / 2 - 5)) <= 1.0 + 1e-6,
+                                "Every line is inside the oval's second ring");
+                }
+        }
+    }
+    QString joined;
+    for (const auto& line : laid.lines) joined += line;
+    joined.remove(QLatin1Char(' '));
+    auto whole = name;
+    whole.remove(QLatin1Char(' '));
+    if (!cut_short) require(joined == whole, "Nothing of the name is lost between its lines");
+    else {
+        require(joined.endsWith(QChar(0x2026)), "The last line says there is more");
+        joined.chop(1);
+        require(whole.startsWith(joined), "What is written is the name's own beginning");
+    }
+    // Painted exactly as laid out.
+    auto* node = find_node(view, name);
+    QImage actual((node->boundingRect().size().toSize() + QSize(8, 8)) * 4, QImage::Format_ARGB32);
+    actual.setDevicePixelRatio(4);
+    actual.fill(Qt::transparent);
+    QPainter painter(&actual);
+    painter.setFont(view.font());
+    node->paint(&painter, nullptr, nullptr);
+    painter.end();
+    QImage reference(actual.size(), QImage::Format_ARGB32);
+    reference.setDevicePixelRatio(4);
+    reference.fill(Qt::transparent);
+    QPainter writer(&reference);
+    writer.setRenderHint(QPainter::Antialiasing);
+    writer.setFont(font);
+    const auto ink = desktop::theme(view.theme_id()).node_text;
+    writer.setPen(ink);
+    for (std::size_t i = 0; i < laid.lines.size(); ++i) writer.drawText(laid.rects[i], Qt::AlignCenter, laid.lines[i]);
+    writer.end();
+    // A hierarchy also writes its d or o in the same ink, in a corner, so
+    // only the name's own lines are compared there.
+    const auto ink_of = [&](const QImage& image) {
+        std::vector<QPoint> dots;
+        for (int y = 0; y < image.height(); ++y)
+            for (int x = 0; x < image.width(); ++x) {
+                if (image.pixelColor(x, y) != ink) continue;
+                const QPointF at((x + 0.5) / 4, (y + 0.5) / 4);
+                if (hierarchy && std::none_of(laid.rects.begin(), laid.rects.end(),
+                                              [&](const QRectF& rect) { return rect.contains(at); })) continue;
+                dots.emplace_back(x, y);
+            }
+        return dots;
+    };
+    const auto painted = ink_of(actual);
+    require(!painted.empty() && painted == ink_of(reference), "The shape paints its name exactly as it is laid out");
+    if (node->toolTip().isEmpty() || node->toolTip() == name)
+        require((node->toolTip() == name) == cut_short, "The whole name is offered on hover exactly when it is cut short");
+}
+
 QGraphicsItem* find_edge(desktop::DiagramView& view, const QString& text = QStringLiteral("Participant:")) {
     for (auto* item : view.scene()->items())
         if (item->zValue() < 0 && item->toolTip().startsWith(text)) return item;
@@ -4072,16 +4179,19 @@ void attribute_resize_tests() {
         QPainter painter(&painted);
         find_node(view, "EnrollmentDate")->paint(&painter, nullptr, nullptr);
         painter.end();
+        // The first line of the name, however many it is written in: the
+        // rows of ink from its top down to the first row without any.
         const auto ink = desktop::theme(view.theme_id()).node_text;
-        int top = painted.height();
-        int bottom = -1;
-        for (int y = 0; y < painted.height(); ++y)
+        const auto inked = [&](int y) {
             for (int x = 0; x < painted.width(); ++x)
-                if (painted.pixelColor(x, y) == ink) {
-                    top = std::min(top, y);
-                    bottom = std::max(bottom, y);
-                }
-        require(bottom >= top, "The name is painted");
+                if (painted.pixelColor(x, y) == ink) return true;
+            return false;
+        };
+        int top = 0;
+        while (top < painted.height() && !inked(top)) ++top;
+        int bottom = top;
+        while (bottom + 1 < painted.height() && inked(bottom + 1)) ++bottom;
+        require(top < painted.height(), "The name is painted");
         return bottom - top + 1;
     };
     const auto ordinary = lettering_height();
@@ -4111,8 +4221,11 @@ void relationship_resize_tests() {
     click(view, {0, 0});
     const domain::ElementRef ref{editor.project().relationships.begin()->first};
     const auto original = editor.project().layout.at(ref);
-    require(original.width == desktop::relationship_body.width && original.height == desktop::relationship_body.height,
-            "Placed at the relationship default");
+    // Placed at the size its own name is fitted to (2026-10-12), which for
+    // "Relationship" is the widest a name makes a diamond on its own.
+    const auto fitted = desktop::fitted_body(desktop::NamedShape::Relationship, "Relationship", view.font());
+    require(original.width == fitted.width && original.height == fitted.height,
+            "Placed at the size its name is fitted to");
     require(editor.rename(ref, "Owns"), "Name the diamond");
     const auto id = std::get<domain::RelationshipId>(ref);
     require(editor.connect(id, std::get<domain::EntityId>(first)), "Connect the first entity");
@@ -4405,7 +4518,9 @@ void content_aware_size_tests() {
              : is_relationship(ref) ? desktop::relationship_body : desktop::attribute_body;
     };
 
-    // Placed with the tools, each is its default, whatever its placeholder.
+    // Placed with the tools, each is the size its placeholder is fitted to
+    // (2026-10-12): Entity and Attribute smaller than their defaults, the
+    // diamond as wide as "Relationship" needs.
     {
         const std::array<std::pair<desktop::Tool, QPointF>, 3> placing{
             {{desktop::Tool::Entity, {-400, 0}},
@@ -4417,9 +4532,15 @@ void content_aware_size_tests() {
             click(view, at);
             require(editor.project().layout.size() == before.size() + 1, "An element placed with its tool");
             for (const auto& [ref, box] : editor.project().layout)
-                if (!before.contains(ref))
-                    require(box.width == body_of(ref).width && box.height == body_of(ref).height,
-                            "Placed at its default: 133 x 77, 171 x 99 or 135 x 54");
+                if (!before.contains(ref)) {
+                    const auto fitted = is_entity(ref) ? desktop::fitted_body(desktop::NamedShape::Entity, "Entity", view.font())
+                        : is_relationship(ref) ? desktop::fitted_body(desktop::NamedShape::Relationship, "Relationship", view.font())
+                                               : desktop::fitted_body(desktop::NamedShape::Attribute, "Attribute", view.font());
+                    require(box.width == fitted.width && box.height == fitted.height,
+                            "Placed at the size its placeholder is fitted to");
+                    if (!is_relationship(ref))
+                        require(box.width < body_of(ref).width, "Smaller than its default for a short placeholder");
+                }
         }
         require(desktop::entity_body.width == 133 && desktop::entity_body.height == 77
                     && desktop::relationship_body.width == 171 && desktop::relationship_body.height == 99
@@ -4498,8 +4619,9 @@ void content_aware_size_tests() {
         }
     };
 
-    // Named on the diagram: a short name keeps the default, a longer one is
-    // made just wide enough, and the height is never touched.
+    // Named on the diagram, each is made the size its name is fitted to
+    // (2026-10-12): a short name smaller than the default, a longer one just
+    // wide enough, about the same centre.
     struct Named { QString name; bool short_name; };
     const std::array<std::pair<int, std::vector<Named>>, 3> naming{{
         {0, {{"User", true}, {"Student", false}, {"Professor", false}, {"Department", false}}},
@@ -4524,35 +4646,42 @@ void content_aware_size_tests() {
             require(editor.revision() == revision + 1 && editor.undo_label() == "Rename element",
                     "Naming it, widened or not, is one step of history");
             const auto& at = editor.project().layout.at(ref);
-            require(at.height == box.height, "Its height is not touched");
-            require(at.width >= box.width, "It is never narrower than its default");
-            if (named.short_name) require(at.width == box.width, "A short name keeps the default width");
-            require(std::abs(at.x + at.width / 2 - (box.x + box.width / 2)) < 0.01 && at.y == box.y,
-                    "Widened about its centre, where it was put");
+            const auto shape = kind == 0 ? desktop::NamedShape::Entity
+                             : kind == 1 ? desktop::NamedShape::Relationship : desktop::NamedShape::Attribute;
+            const auto fitted = desktop::fitted_body(shape, named.name, view.font());
+            require(at.width == fitted.width && at.height == fitted.height, "Made the size its name is fitted to");
+            if (named.short_name)
+                require(at.width < box.width && at.height <= box.height, "A short name makes it smaller than its default");
+            require(at.width >= domain::min_entity_width && at.height >= domain::min_entity_height,
+                    "Never under the domain's least");
+            require(std::abs(at.x + at.width / 2 - (box.x + box.width / 2)) < 0.01
+                        && std::abs(at.y + at.height / 2 - (box.y + box.height / 2)) < 0.01,
+                    "Fitted about its centre, where it was put");
             require(editor.project().lettering.empty(), "Its name is lettered as it was: nothing is kept for it");
-            const auto required = desktop::name_room_width(kind == 0 ? desktop::NamedShape::Entity
-                : kind == 1 ? desktop::NamedShape::Relationship : desktop::NamedShape::Attribute,
-                named.name, view.font(), 1.0, box.height);
-            const auto reference = desktop::name_room_width(kind == 0 ? desktop::NamedShape::Entity
-                : kind == 1 ? desktop::NamedShape::Relationship : desktop::NamedShape::Attribute,
-                QStringLiteral("Relationship"), view.font(), 1.0, box.height);
-            require(at.width == std::max(box.width, std::min(required, reference)), "Automatic growth respects the reference budget");
-            if (required <= reference || required <= box.width) written_whole_inside(ref, named.name);
+            const auto reference = desktop::fitted_body(shape, QStringLiteral("Relationship"), view.font());
+            require(at.width <= reference.width, "No wider than Relationship needs");
+            if (desktop::name_layout(shape, named.name, view.font(), 1.0, QRectF(0, 0, at.width, at.height)).lines.size() == 1)
+                written_whole_inside(ref, named.name);
+            else
+                require_written_in_lines(view, editor, ref, shape, false);
         }
 
-    // A longer name widens it again; a shorter one leaves it as wide as it
-    // is; and Undo takes the name and its width back together.
+    // A longer name widens it; a shorter one narrows it again; and Undo
+    // takes each name and its size back together.
     {
         const auto ref = *editor.create_entity("User", {600, 0, 133, 77}).created;
         require(view.rename(ref, "Professor"), "A longer name");
         const auto grown = editor.project().layout.at(ref);
-        require(grown.width == desktop::width_for_name(desktop::NamedShape::Entity, "Professor", view.font()),
-                "It is widened only if the reference needs more room");
+        const auto professor = desktop::fitted_body(desktop::NamedShape::Entity, "Professor", view.font());
+        require(grown.width == professor.width && grown.height == professor.height, "Made the size Professor is fitted to");
         written_whole_inside(ref, "Professor");
         require(view.rename(ref, "User"), "A shorter name again");
-        require(editor.project().layout.at(ref) == grown, "Which does not narrow it");
+        const auto user = desktop::fitted_body(desktop::NamedShape::Entity, "User", view.font());
+        const auto narrowed = editor.project().layout.at(ref);
+        require(narrowed.width == user.width && narrowed.height == user.height && narrowed.width < grown.width,
+                "Which narrows it again");
         require(editor.undo(), "Undo the shorter name");
-        require(editor.project().layout.at(ref) == grown, "The width stays");
+        require(editor.project().layout.at(ref) == grown, "The size comes back with the name");
         require(editor.undo(), "Undo the longer name");
         require(editor.project().layout.at(ref) == (domain::Rect{600, 0, 133, 77})
                     && domain::name(editor.project(), ref) == "User",
@@ -4566,18 +4695,27 @@ void content_aware_size_tests() {
         field->setText("Student");
         key_to(field, Qt::Key_Return);
         require(domain::name(editor.project(), ref) == "Student", "Named in the box");
-        require(editor.project().layout.at(ref).width >= 133, "Never narrower than its default");
+        const auto student = desktop::fitted_body(desktop::NamedShape::Entity, "Student", view.font());
+        require(editor.project().layout.at(ref).width == student.width
+                    && editor.project().layout.at(ref).height == student.height,
+                "Made the size its name is fitted to");
         written_whole_inside(ref, "Student");
 
         // Resized by hand, it keeps the size it was given, however long its
-        // name: nothing puts a name's width under a hand.
+        // name (2026-10-12): a name too long for it is written in more lines
+        // inside it rather than the hand's size being changed.
         require(editor.resize_entities({{ref, {600, 0, 90, 77}}}), "Pulled narrower than its name");
         view.synchronize();
         require(editor.project().layout.at(ref).width == 90, "It keeps the width it was given");
         require(view.rename(ref, "Professor"), "Renamed longer after that");
-        require(editor.project().layout.at(ref).width >= 90 && editor.project().layout.at(ref).height == 77,
-                "Which widens it only if the new name needs more room");
-        written_whole_inside(ref, "Professor");
+        require(editor.project().layout.at(ref) == (domain::Rect{600, 0, 90, 77}), "Which keeps the size the hand gave it");
+        {
+            const auto lettering = domain::lettering_factor(editor.project().lettering.at(ref), 90, 77);
+            const auto laid = desktop::name_layout(desktop::NamedShape::Entity, "Professor", view.font(), lettering,
+                                                   QRectF(0, 0, 90, 77));
+            if (laid.lines.size() == 1) written_whole_inside(ref, "Professor");
+            else require_written_in_lines(view, editor, ref, desktop::NamedShape::Entity, laid.elided);
+        }
         require(editor.resize_entities({{ref, {600, 0, 80, 60}}}), "And it can still be pulled smaller by hand");
         require(editor.project().layout.at(ref) == (domain::Rect{600, 0, 80, 60}), "To exactly what it was given");
     }
@@ -4779,11 +4917,12 @@ void relationship_fits_without_ellipsis_tests() {
         auto* long_node = find_node(view, long_name);
         require(long_node->toolTip() == long_name, "Hover exposes the full original name");
         require(QString::fromStdString(domain::name(editor.project(), long_ref)) == long_name, "Model name remains complete");
-        const auto font = font_for();
-        const auto room = available_room(shape, cap, body.height, font);
-        const auto elided = QFontMetricsF(font).elidedText(long_name, Qt::ElideRight, room);
-        require(elided != long_name, "The deliberately long name is elided");
-        painted_as(long_ref, shape, elided);
+        // Made at the cap with its default height, the deliberately long name
+        // is written in as many lines as the shape has room for, the last cut
+        // short (2026-10-12).
+        require(QFontMetricsF(font_for()).horizontalAdvance(long_name) > available_room(shape, cap, body.height, font_for()),
+                "The deliberately long name is too long for one line");
+        require_written_in_lines(view, editor, long_ref, shape, true);
         require(editor.create_comment("Keep this contextual remark", {domain::CommentTarget{long_ref}}),
                 "A meaningful existing tooltip");
         view.synchronize();
@@ -4804,17 +4943,24 @@ void relationship_fits_without_ellipsis_tests() {
         const auto base = editor.project().lettering.at(long_ref);
         const auto factor = domain::lettering_factor(base, domain::min_entity_width, body.height);
         const auto narrow_font = font_for(factor);
-        const auto narrow_text = QFontMetricsF(narrow_font).elidedText(long_name, Qt::ElideRight,
-            available_room(shape, domain::min_entity_width, body.height, narrow_font));
-        require(narrow_text != long_name, "A manually narrowed shape can elide");
-        painted_as(long_ref, shape, narrow_text);
+        require(QFontMetricsF(narrow_font).horizontalAdvance(long_name)
+                    > available_room(shape, domain::min_entity_width, body.height, narrow_font),
+                "Too long for a manually narrowed shape's one line");
+        require_written_in_lines(view, editor, long_ref, shape, true);
 
         // After proportional manual resizing, both actual and reference names
         // must use that same font, including its change during automatic growth.
         require(resize(long_ref, body.width * 2, body.height * 2), "Manual lettering scaled with the box");
         const auto lettering_before = editor.project().lettering;
-        require(view.rename(long_ref, "Relationship"), "Reference fitted using manual lettering metadata");
-        painted_as(long_ref, shape, reference_name);
+        const auto hand_box = editor.project().layout.at(long_ref);
+        require(view.rename(long_ref, "Relationship"), "Renamed after being resized by hand");
+        require(editor.project().layout.at(long_ref) == hand_box, "A hand's size is kept by a rename");
+        {
+            const auto laid = desktop::name_layout(shape, reference_name, view.font(),
+                domain::lettering_factor(base, hand_box.width, hand_box.height), QRectF(0, 0, hand_box.width, hand_box.height));
+            if (laid.lines.size() == 1) painted_as(long_ref, shape, reference_name);
+            else require_written_in_lines(view, editor, long_ref, shape, false);
+        }
         const auto measured_box = editor.project().layout.at(long_ref);
         const auto measured_factor = domain::lettering_factor(base, measured_box.width, measured_box.height);
         const auto measured_cap = desktop::name_room_width(shape, reference_name, view.font(), measured_factor, measured_box.height);
@@ -4839,9 +4985,13 @@ void relationship_fits_without_ellipsis_tests() {
                 "One undo restores name and geometry");
         require(view.rename(rename_ref, long_name.toStdString()), "Rename beyond the reference budget");
         require(editor.project().layout.at(rename_ref).width == cap, "Long rename stops at the cap");
-        const auto grown = editor.project().layout.at(rename_ref);
+        require(editor.project().layout.at(rename_ref).height >= body.height, "And is made as tall as its lines need");
+        require_written_in_lines(view, editor, rename_ref, shape, true);
         require(view.rename(rename_ref, "ID"), "Rename shorter");
-        require(editor.project().layout.at(rename_ref) == grown, "No automatic shrinking");
+        const auto id = desktop::fitted_body(shape, "ID", view.font());
+        require(editor.project().layout.at(rename_ref).width == id.width
+                    && editor.project().layout.at(rename_ref).height == id.height,
+                "Which makes it the size ID is fitted to again");
     }
 }
 
@@ -4961,6 +5111,152 @@ void saved_sizes_are_kept_tests() {
             "However short that is for its name");
 }
 
+// Every named shape made for its name (Zain, 2026-10-12): a short name the
+// narrowest shape, in proportion to its default; "Relationship" the widest a
+// name makes it, written whole on one line; a longer name as wide as that and
+// taller, in two or three lines, cut short only after three. Placed with its
+// tool, renamed, undone, joined by its lines and saved, it stays so.
+void fitted_shapes_tests() {
+    SequentialIds ids;
+    application::Editor editor(ids);
+    desktop::DiagramView view(editor);
+    view.resize(1400, 900);
+    view.show();
+    view.actual_size();
+    view.centerOn(0, 0);
+    QApplication::processEvents();
+    const auto font = view.font();
+    const auto laid = [&](desktop::NamedShape shape, const QString& name, const desktop::BodySize& size) {
+        return desktop::name_layout(shape, name, font, 1.0, QRectF(0, 0, size.width, size.height));
+    };
+    const std::array<std::pair<desktop::NamedShape, desktop::BodySize>, 5> kinds{{
+        {desktop::NamedShape::Entity, desktop::entity_body},
+        {desktop::NamedShape::Attribute, desktop::attribute_body},
+        {desktop::NamedShape::Relationship, desktop::relationship_body},
+        {desktop::NamedShape::Generalization, desktop::isa_body},
+        {desktop::NamedShape::Specialization, desktop::isa_body},
+    }};
+    const QString two_lines = QStringLiteral("Department Name Registry");
+    const QString too_long = QStringLiteral("Supercalifragilistic Expialidocious Enterprise Resource Planning "
+                                            "Identifier For Every Department Of The Whole University");
+    for (const auto& [shape, body] : kinds) {
+        const auto least_height = std::max(domain::min_entity_height,
+                                           std::ceil(body.height * domain::min_entity_width / body.width));
+        const auto small = desktop::fitted_body(shape, "Id", font);
+        require(small.width == domain::min_entity_width, "A short name makes the narrowest shape the domain allows");
+        require(small.height == std::clamp(std::round(body.height * small.width / body.width), least_height, body.height),
+                "In proportion to its default, and never squatter than that allows");
+        require(small.width < body.width && small.height <= body.height, "Smaller than the default");
+        const auto reference = desktop::fitted_body(shape, "Relationship", font);
+        const auto written = laid(shape, "Relationship", reference);
+        require(written.lines.size() == 1 && !written.elided && written.lines.front() == "Relationship",
+                "Relationship is written whole on one line, never cut short");
+        const QFontMetricsF metrics(font);
+        for (const auto& name : {QStringLiteral("Owns"), QStringLiteral("Student"), QStringLiteral("Professor")}) {
+            const auto size = desktop::fitted_body(shape, name, font);
+            require(size.width <= reference.width, "No name shorter than Relationship makes it wider");
+            const auto one = laid(shape, name, size);
+            require(one.lines.size() == 1 && !one.elided, "And it is written whole on one line");
+        }
+        const auto two = desktop::fitted_body(shape, two_lines, font);
+        const auto in_two = laid(shape, two_lines, two);
+        require(two.width == reference.width && two.height >= reference.height,
+                "A longer name makes it as wide as Relationship, and taller");
+        require(in_two.lines.size() >= 2 && in_two.lines.size() <= 3 && !in_two.elided,
+                "Written whole in two or three lines");
+        const auto most = desktop::fitted_body(shape, too_long, font);
+        const auto in_three = laid(shape, too_long, most);
+        require(most.width == reference.width, "However long the name, no wider than Relationship");
+        require(in_three.lines.size() == 3 && in_three.elided, "Too long for three lines, it is cut short on the third");
+    }
+
+    // Placed with each tool, each is the size its placeholder is fitted to.
+    const std::array<std::tuple<desktop::Tool, desktop::NamedShape, QString>, 5> placing{{
+        {desktop::Tool::Entity, desktop::NamedShape::Entity, QStringLiteral("Entity")},
+        {desktop::Tool::Attribute, desktop::NamedShape::Attribute, QStringLiteral("Attribute")},
+        {desktop::Tool::Relationship, desktop::NamedShape::Relationship, QStringLiteral("Relationship")},
+        {desktop::Tool::Generalization, desktop::NamedShape::Generalization, QStringLiteral("IS A")},
+        {desktop::Tool::Specialization, desktop::NamedShape::Specialization, QStringLiteral("IS A")},
+    }};
+    double across = -500;
+    std::optional<domain::ElementRef> placed_entity;
+    std::optional<domain::ElementRef> placed_relationship;
+    for (const auto& [tool, shape, placeholder] : placing) {
+        const auto before = editor.project().layout;
+        view.set_tool(tool);
+        click(view, {across, 0});
+        across += 250;
+        require(editor.project().layout.size() == before.size() + 1, "Placed with its tool");
+        for (const auto& [ref, box] : editor.project().layout)
+            if (!before.contains(ref)) {
+                const auto fitted = desktop::fitted_body(shape, placeholder, font);
+                require(box.width == fitted.width && box.height == fitted.height, "At the size its placeholder is fitted to");
+                if (shape == desktop::NamedShape::Entity) placed_entity = ref;
+                if (shape == desktop::NamedShape::Relationship) placed_relationship = ref;
+            }
+    }
+    require(placed_entity && placed_relationship, "An entity and a diamond to work with");
+
+    // Renamed longer and shorter, about its centre, each one step undone and
+    // redone with its size.
+    const auto start = editor.project().layout.at(*placed_entity);
+    const auto centre = [](const domain::Rect& box) { return QPointF(box.x + box.width / 2, box.y + box.height / 2); };
+    require(view.rename(*placed_entity, two_lines.toStdString()), "Renamed longer");
+    const auto longer = editor.project().layout.at(*placed_entity);
+    const auto fitted_longer = desktop::fitted_body(desktop::NamedShape::Entity, two_lines, font);
+    require(longer.width == fitted_longer.width && longer.height == fitted_longer.height
+                && QLineF(centre(longer), centre(start)).length() < 0.01,
+            "Made the size its longer name is fitted to, about the same centre");
+    require_written_in_lines(view, editor, *placed_entity, desktop::NamedShape::Entity, false);
+    require(editor.undo() && editor.project().layout.at(*placed_entity) == start
+                && domain::name(editor.project(), *placed_entity) == "Entity",
+            "One undo takes the name and the size back");
+    require(editor.redo() && editor.project().layout.at(*placed_entity) == longer, "And redo brings both again");
+
+    // Joined to the diamond, then renamed short: the line meets the smaller
+    // entity's outline, not where the old one was.
+    require(editor.connect(std::get<domain::RelationshipId>(*placed_relationship), std::get<domain::EntityId>(*placed_entity)),
+            "Join the entity to the diamond");
+    require(view.rename(*placed_entity, "Id"), "Renamed short");
+    view.synchronize();
+    QApplication::processEvents();
+    const auto shrunk = editor.project().layout.at(*placed_entity);
+    require(shrunk.width == domain::min_entity_width, "Made the narrowest shape");
+    {
+        const auto box = find_node(view, "Id")->sceneBoundingRect().adjusted(4, 4, -4, -4);
+        require(std::abs(box.width() - shrunk.width) < 1.0, "Drawn at its new size");
+        const auto target = find_node(view, "Relationship")->sceneBoundingRect().center();
+        auto direction = target - box.center();
+        if (view.line_style() == desktop::LineStyle::Elbow)
+            direction = std::abs(direction.x()) / box.width() >= std::abs(direction.y()) / box.height()
+                ? QPointF(direction.x(), 0) : QPointF(0, direction.y());
+        const auto scale = std::min(direction.x() != 0 ? (box.width() / 2) / std::abs(direction.x()) : 1e9,
+                                    direction.y() != 0 ? (box.height() / 2) / std::abs(direction.y()) : 1e9);
+        const auto join = box.center() + direction * scale;
+        bool attached = false;
+        for (auto* item : view.scene()->items())
+            if (item->zValue() < 0 && item->shape().contains(item->mapFromScene(join))) attached = true;
+        require(attached, "Its line meets the smaller entity's outline");
+    }
+
+    // A fitted size is an ordinary size: nothing else is kept for it, and a
+    // diagram opened on the same project again draws every shape at exactly
+    // that size without changing anything (the file keeps sizes as it always
+    // has: persistence_tests).
+    require(editor.project().lettering.empty(), "Fitting keeps nothing of its own in the project");
+    const auto layout = editor.project().layout;
+    const auto revision = editor.revision();
+    {
+        desktop::DiagramView again(editor);
+        again.resize(800, 600);
+        again.show();
+        again.synchronize();
+        QApplication::processEvents();
+    }
+    require(editor.revision() == revision && editor.project().layout == layout,
+            "Opened again, every fitted shape is the size it was");
+}
+
 int main(int argc, char** argv) {
     QApplication app(argc, argv);
     try {
@@ -4969,6 +5265,7 @@ int main(int argc, char** argv) {
             hierarchy_names_use_nine_bold_tests();
             content_aware_size_tests();
             saved_sizes_are_kept_tests();
+            fitted_shapes_tests();
             std::cout << "Name fitting tests passed\n";
             return 0;
         }
@@ -5172,6 +5469,7 @@ int main(int argc, char** argv) {
         hierarchy_names_use_nine_bold_tests();
         content_aware_size_tests();
         saved_sizes_are_kept_tests();
+        fitted_shapes_tests();
         attribute_resize_tests();
         std::cout << "Canvas tests passed\n";
     } catch (const std::exception& exception) {
