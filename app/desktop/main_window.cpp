@@ -9504,9 +9504,12 @@ namespace erdflow::desktop
         const auto boxes = schema_->table_boxes();
         for (std::size_t i = 0; i < tables.size() && i < boxes.size(); ++i)
             places.emplace(tables[i].id, domain::Point{boxes[i].x(), boxes[i].y()});
+        // Every field named, the six ways of measuring a name empty until they
+        // are given below.
         domain::DiagramSizes sizes{entity_body.width, entity_body.height,
                                    attribute_body.width, attribute_body.height,
-                                   relationship_body.width, relationship_body.height};
+                                   relationship_body.width, relationship_body.height,
+                                   {}, {}, {}, {}, {}, {}};
         // Wider only where a name would otherwise be cut short.
         const auto base = canvas_->font();
         sizes.entity_fit = [base](const std::string &name)
