@@ -15,6 +15,7 @@
 #include "application/editor.hpp"
 #include "infrastructure/project_store.hpp"
 
+#include <QAction>
 #include <QApplication>
 #include <QDir>
 #include <QElapsedTimer>
@@ -416,6 +417,61 @@ void sizing_report(const QFont& base) {
         std::cout << '\n';
     }
 }
+
+// The diagram a schema is converted to: whether any two of its shapes
+// overlap, how close any two come, how much room it takes, the sizes its
+// shapes were made at, and how many names had to be cut short.
+void conversion_audit(const std::string& name, desktop::MainWindow& window, const application::Editor& editor) {
+    QElapsedTimer clock;
+    clock.start();
+    // Converted as a person converts it: Design's Convert.
+    if (auto* convert = window.findChild<QAction*>("designConvert")) convert->trigger();
+    settle_ms(500);
+    const auto took = since(clock);
+    const auto& project = editor.project();
+    struct Shape { QRectF box; desktop::NamedShape kind; QString name; };
+    std::vector<Shape> shapes;
+    const auto add = [&](const domain::ElementRef& ref, desktop::NamedShape kind) {
+        const auto found = project.layout.find(ref);
+        if (found == project.layout.end()) return;
+        const auto& r = found->second;
+        shapes.push_back({QRectF(r.x, r.y, r.width, r.height), kind, QString::fromStdString(domain::name(project, ref))});
+    };
+    for (const auto& [id, value] : project.entities) { (void)value; add(id, desktop::NamedShape::Entity); }
+    for (const auto& [id, value] : project.attributes) { (void)value; add(id, desktop::NamedShape::Attribute); }
+    for (const auto& [id, value] : project.relationships) { (void)value; add(id, desktop::NamedShape::Relationship); }
+    int overlaps = 0;
+    double closest = 1e9;
+    QRectF bounds;
+    for (std::size_t i = 0; i < shapes.size(); ++i) {
+        bounds = bounds.united(shapes[i].box);
+        for (std::size_t j = i + 1; j < shapes.size(); ++j) {
+            const auto& a = shapes[i].box;
+            const auto& b = shapes[j].box;
+            if (a.adjusted(0.5, 0.5, -0.5, -0.5).intersects(b.adjusted(0.5, 0.5, -0.5, -0.5))) { ++overlaps; closest = 0; continue; }
+            const auto dx = std::max({0.0, b.left() - a.right(), a.left() - b.right()});
+            const auto dy = std::max({0.0, b.top() - a.bottom(), a.top() - b.bottom()});
+            closest = std::min(closest, std::max(dx, dy));
+        }
+    }
+    const auto font = window.canvas()->font();
+    int cut_short = 0;
+    std::map<int, std::pair<QSizeF, QSizeF>> range;
+    for (const auto& shape : shapes) {
+        if (desktop::name_layout(shape.kind, shape.name, font, 1.0, QRectF(QPointF(0, 0), shape.box.size())).elided) ++cut_short;
+        auto& [least, most] = range.try_emplace(static_cast<int>(shape.kind), QSizeF(1e9, 1e9), QSizeF(0, 0)).first->second;
+        least = QSizeF(std::min(least.width(), shape.box.width()), std::min(least.height(), shape.box.height()));
+        most = QSizeF(std::max(most.width(), shape.box.width()), std::max(most.height(), shape.box.height()));
+    }
+    std::cout << "CONVERT " << name << ": ms=" << took << " shapes=" << shapes.size() << " overlaps=" << overlaps
+              << " closest_gap=" << closest << " bounds=" << bounds.width() << "x" << bounds.height()
+              << " names_cut_short=" << cut_short;
+    const char* kinds[] = {"entity", "attribute", "relationship"};
+    for (const auto& [kind, sizes] : range)
+        std::cout << " " << kinds[kind == static_cast<int>(desktop::NamedShape::Entity) ? 0 : kind == static_cast<int>(desktop::NamedShape::Attribute) ? 1 : 2]
+                  << "=" << sizes.first.width() << "x" << sizes.first.height() << ".." << sizes.second.width() << "x" << sizes.second.height();
+    std::cout << '\n';
+}
 } // namespace
 
 int main(int argc, char** argv) {
@@ -496,6 +552,39 @@ int main(int argc, char** argv) {
             selection_ring(scenario.name + (theme == desktop::ThemeId::OfficeLight ? "-light" : "-dark"), window, *schema);
             export_checks(scenario.name + "-schema", window, theme, desktop::theme(theme).canvas, folder, true);
         }
+        editor.mark_saved(editor.revision());
+        window.close();
+        settle();
+    }
+    // Schemas converted to diagrams: the two relational examples, and the
+    // first with every table and column given a long name.
+    for (const auto& [name, load, lengthen] : std::vector<std::tuple<std::string, std::function<void(desktop::MainWindow&)>, bool>>{
+             {"company-relational", [](desktop::MainWindow& w) { w.load_company_database_relational(); }, false},
+             {"university-relational", [](desktop::MainWindow& w) { w.load_university_database_relational(); }, false},
+             {"company-relational-long-names", [](desktop::MainWindow& w) { w.load_company_database_relational(); }, true}}) {
+        application::Editor editor(ids);
+        infrastructure::ErdxProjectStore store;
+        desktop::MainWindow window(editor, store, ids);
+        window.resize(1440, 920);
+        window.show();
+        settle();
+        window.show_home(false);
+        load(window);
+        settle_ms(700);
+        if (lengthen) {
+            std::vector<std::pair<domain::RelationId, std::string>> tables;
+            std::vector<std::pair<domain::SchemaColumnId, std::string>> columns;
+            for (const auto& [id, relation] : editor.project().schema.relations)
+                tables.emplace_back(id, "Department Of International " + relation.name);
+            for (const auto& [table, added] : editor.project().schema.added) {
+                (void)table;
+                for (const auto& column : added) columns.emplace_back(column.id, column.name + " Of The Whole University");
+            }
+            for (const auto& [id, renamed] : tables) editor.rename(domain::ElementRef{id}, renamed);
+            for (const auto& [id, renamed] : columns) editor.rename_schema_column(id, renamed);
+            settle();
+        }
+        conversion_audit(name, window, editor);
         editor.mark_saved(editor.revision());
         window.close();
         settle();

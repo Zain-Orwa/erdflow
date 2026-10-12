@@ -1130,9 +1130,9 @@ public:
         painter->setPen(text_);
         // Laid out without the underline a key wears, which changes no
         // measure, so painting and the hover's question share one layout.
-        auto plain = font;
-        plain.setUnderline(false);
-        const auto& written = laid_name(shape, plain);
+        auto measured = font;
+        measured.setUnderline(false);
+        const auto& written = laid_name(shape, measured);
         for (std::size_t i = 0; i < written.lines.size(); ++i)
             painter->drawText(written.rects[i], Qt::AlignCenter, written.lines[i]);
         if (partial_key) {
@@ -2035,7 +2035,8 @@ NameLayout name_layout(NamedShape shape, const QString& name, const QFont& base,
     return name_lines(shape, name, name_font(base, lettering), bounds);
 }
 
-BodySize fitted_body(NamedShape shape, const QString& name, const QFont& base) {
+namespace {
+BodySize measure_fitted_body(NamedShape shape, const QString& name, const QFont& base) {
     const auto body = shape == NamedShape::Entity ? entity_body
                     : shape == NamedShape::Attribute ? attribute_body
                     : shape == NamedShape::Relationship ? relationship_body : isa_body;
@@ -2053,33 +2054,65 @@ BodySize fitted_body(NamedShape shape, const QString& name, const QFont& base) {
         return !laid.elided && laid.lines.size() == 1;
     };
     // The narrowest width a name is written whole in on one line, measured as
-    // it is painted. Each pass settles the height the width implies, which is
-    // what an oval's room depends on.
-    const auto narrowest = [&](const QString& text) {
+    // it is painted, looked for no further than `limit`. Each pass settles the
+    // height the width implies, which is what an oval's room depends on.
+    const auto narrowest = [&](const QString& text, double limit) {
         auto width = std::max(least_width, name_room_width(shape, text, base, 1.0, body.height));
-        for (int pass = 0; pass < 3; ++pass)
+        for (int pass = 0; pass < 3 && width <= limit; ++pass)
             width = std::max(least_width, name_room_width(shape, text, base, 1.0, height_for(width)));
         width = std::ceil(width);
-        for (int step = 0; step < 400 && !one_line(text, width); ++step) width += 1;
+        while (width <= limit && !one_line(text, width)) width += 1;
         return width;
     };
     // The widest a name makes a shape on its own: wide enough for
-    // "Relationship" on one line, which is therefore never cut short.
-    const auto cap = narrowest(QStringLiteral("Relationship"));
-    const auto width = narrowest(name);
+    // "Relationship" on one line, which is therefore never cut short. The same
+    // for every name in the same lettering, so it is worked out once for each.
+    static std::map<std::pair<int, QString>, double> caps;
+    const auto key = std::make_pair(static_cast<int>(shape), font.key());
+    auto found = caps.find(key);
+    if (found == caps.end())
+        found = caps.emplace(key, narrowest(QStringLiteral("Relationship"), domain::max_entity_width)).first;
+    const auto cap = found->second;
+    const auto width = narrowest(name, cap);
     if (width <= cap) return {width, height_for(width)};
     // Longer than that: as wide as "Relationship" and as tall as three lines
     // of it need. What still does not fit is cut short on the third line.
-    const auto whole = [&](double height) {
-        return !name_lines(shape, name, font, QRectF(0, 0, cap, height)).elided;
+    // Halved towards the least height that does, then checked a pixel at a
+    // time below it, so the height is the same a pixel-by-pixel search finds.
+    const auto lowest = [&](const std::function<bool(double)>& enough, double from, double to) {
+        if (!enough(to)) return std::optional<double>{};
+        auto low = from;
+        auto high = to;
+        if (enough(low)) return std::optional<double>{low};
+        while (high - low > 1) {
+            const auto middle = std::floor((low + high) / 2);
+            (enough(middle) ? high : low) = middle;
+        }
+        while (high - 1 >= from && enough(high - 1)) high -= 1;
+        return std::optional<double>{high};
     };
     const auto tallest = body.height * 4;
-    for (auto height = height_for(cap); height <= tallest; height += 1)
-        if (whole(height)) return {cap, height};
+    const auto start = height_for(cap);
+    if (const auto height = lowest([&](double h) { return !name_lines(shape, name, font, QRectF(0, 0, cap, h)).elided; },
+                                   start, tallest))
+        return {cap, *height};
     const auto most = name_lines(shape, name, font, QRectF(0, 0, cap, tallest)).lines;
-    for (auto height = height_for(cap); height < tallest; height += 1)
-        if (name_lines(shape, name, font, QRectF(0, 0, cap, height)).lines == most) return {cap, height};
+    if (const auto height = lowest([&](double h) { return name_lines(shape, name, font, QRectF(0, 0, cap, h)).lines == most; },
+                                   start, tallest))
+        return {cap, *height};
     return {cap, tallest};
+}
+} // namespace
+
+// Remembered for each shape, lettering and name, since the same names are
+// fitted again and again: a schema's diagram is worked out afresh after each
+// edit while its preview is open, and a long name takes a moment to measure.
+BodySize fitted_body(NamedShape shape, const QString& name, const QFont& base) {
+    static std::map<std::tuple<int, QString, QString>, BodySize> fitted;
+    const auto key = std::make_tuple(static_cast<int>(shape), base.key(), name);
+    if (const auto found = fitted.find(key); found != fitted.end()) return found->second;
+    if (fitted.size() >= 4096) fitted.clear();
+    return fitted.emplace(key, measure_fitted_body(shape, name, base)).first->second;
 }
 
 struct DiagramView::Impl {

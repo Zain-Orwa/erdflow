@@ -5621,6 +5621,97 @@ void entity_kind_terminology_tests()
             "Relationship Kind retains Regular terminology");
 }
 
+
+// A schema converted to its diagram makes each element for its name, as one
+// drawn on the diagram is (Zain, 2026-10-12): short names smaller, long ones
+// taller in lines. The diagram stays laid out as it was -- nothing overlaps,
+// every table still one entity -- and Undo, Redo and a file keep it exactly.
+void converted_shapes_fit_their_names_tests(infrastructure::QtIdGenerator &ids)
+{
+    for (const bool lengthen : {false, true})
+    {
+        application::Editor editor(ids);
+        infrastructure::ErdxProjectStore store;
+        desktop::MainWindow window(editor, store, ids);
+        window.resize(1440, 920);
+        window.show();
+        settle();
+        window.show_home(false);
+        window.load_company_database_relational();
+        settle_motion(window);
+        require(editor.project().schema.standalone, "A schema drawn by hand, to convert");
+        if (lengthen)
+        {
+            std::vector<std::pair<domain::RelationId, std::string>> tables;
+            std::vector<std::pair<domain::SchemaColumnId, std::string>> columns;
+            for (const auto &[id, relation] : editor.project().schema.relations)
+                tables.emplace_back(id, "Department Of International " + relation.name);
+            for (const auto &[table, added] : editor.project().schema.added)
+            {
+                (void)table;
+                for (const auto &column : added)
+                    columns.emplace_back(column.id, column.name + " Of The Whole University");
+            }
+            for (const auto &[id, renamed] : tables)
+                require(bool(editor.rename(domain::ElementRef{id}, renamed)), "A table given a long name");
+            for (const auto &[id, renamed] : columns)
+                require(bool(editor.rename_schema_column(id, renamed)), "A column given a long name");
+            settle();
+        }
+        const auto tables = editor.project().schema.relations.size();
+        const auto before = editor.project();
+        child<QAction>(window, "designConvert")->trigger();
+        settle_motion(window);
+        const auto &project = editor.project();
+        // A bridge table becomes a relationship rather than an entity, as it
+        // always has; which is which is the conversion's own business.
+        require(!project.schema.standalone && !project.entities.empty() && project.entities.size() <= tables,
+                "Converted to the diagram of its tables");
+        const auto font = window.canvas()->font();
+        struct Placed
+        {
+            QRectF box;
+            desktop::NamedShape shape;
+            QString name;
+        };
+        std::vector<Placed> placed;
+        const auto add = [&](const domain::ElementRef &ref, desktop::NamedShape shape)
+        {
+            const auto &rect = project.layout.at(ref);
+            const auto name = QString::fromStdString(domain::name(project, ref));
+            const auto fitted = desktop::fitted_body(shape, name, font);
+            require(rect.width == fitted.width && rect.height == fitted.height,
+                    "Each element is made the size its name is fitted to");
+            placed.push_back({QRectF(rect.x, rect.y, rect.width, rect.height), shape, name});
+        };
+        for (const auto &[id, entity] : project.entities) { (void)entity; add(id, desktop::NamedShape::Entity); }
+        for (const auto &[id, attribute] : project.attributes) { (void)attribute; add(id, desktop::NamedShape::Attribute); }
+        for (const auto &[id, relationship] : project.relationships) { (void)relationship; add(id, desktop::NamedShape::Relationship); }
+        for (std::size_t i = 0; i < placed.size(); ++i)
+            for (std::size_t j = i + 1; j < placed.size(); ++j)
+                require(!placed[i].box.adjusted(0.5, 0.5, -0.5, -0.5).intersects(placed[j].box.adjusted(0.5, 0.5, -0.5, -0.5)),
+                        "Nothing in the converted diagram overlaps anything else");
+        for (const auto &one : placed)
+        {
+            const auto laid = desktop::name_layout(one.shape, one.name, font, 1.0, QRectF(QPointF(0, 0), one.box.size()));
+            if (!lengthen)
+                require(!laid.elided, "Every name of the example is written whole");
+            else if (laid.elided)
+                require(laid.lines.size() == 3, "A name is cut short only after three lines");
+        }
+        const auto converted = editor.project();
+        require(editor.undo() && editor.project() == before, "Undo puts the schema drawn by hand back exactly");
+        require(editor.redo() && editor.project() == converted, "Redo makes the same diagram again");
+        const auto bytes = infrastructure::ErdxProjectStore::encode(editor.project());
+        const auto reopened = infrastructure::ErdxProjectStore::decode(bytes);
+        require(reopened && reopened.project->layout == editor.project().layout,
+                "A file keeps every converted element at its size");
+        editor.mark_saved(editor.revision());
+        window.close();
+        settle();
+    }
+}
+
 int main(int argc, char **argv)
 {
     QApplication app(argc, argv);
@@ -5716,6 +5807,8 @@ int main(int argc, char **argv)
             std::cout << "Main window tool tests passed\n";
             return 0;
         }
+        if (whole || new_projects_part)
+            converted_shapes_fit_their_names_tests(ids);
         application::Editor editor(ids);
         infrastructure::ErdxProjectStore project_store;
         desktop::MainWindow window(editor, project_store, ids);

@@ -9521,6 +9521,19 @@ namespace erdflow::desktop
         {
             return width_for_name(NamedShape::Relationship, text(name), base);
         };
+        // Made for their names, as a shape drawn on the diagram is (Zain,
+        // 2026-10-12): smaller for a short name, taller for a long one.
+        const auto fitted = [base](NamedShape shape)
+        {
+            return [base, shape](const std::string &name)
+            {
+                const auto size = fitted_body(shape, text(name), base);
+                return domain::DiagramBox{size.width, size.height};
+            };
+        };
+        sizes.entity_size = fitted(NamedShape::Entity);
+        sizes.attribute_size = fitted(NamedShape::Attribute);
+        sizes.relationship_size = fitted(NamedShape::Relationship);
         return {std::move(places), std::move(sizes)};
     }
 
