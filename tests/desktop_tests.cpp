@@ -451,6 +451,45 @@ namespace
         }
         settle();
     }
+    // While the main window's checks run, a window is not repainted of its
+    // own accord (2026-10-12): Qt's request to bring a window's picture up to
+    // date is set aside, so nothing is drawn that no check looks at -- on the
+    // macOS Intel runner that drawing was a third of the part's time. Every
+    // check that looks at pixels asks for them: grab() and render() draw the
+    // widget there and then, through the same paint code. Every other event
+    // -- layout, resizing, style, input, focus, timers -- is delivered exactly
+    // as before. Taken away, it hands each window the request it was owed,
+    // so painting resumes where it left off.
+    class PaintingOnRequest final : public QObject
+    {
+    public:
+        PaintingOnRequest() { qApp->installEventFilter(this); }
+        ~PaintingOnRequest() override
+        {
+            qApp->removeEventFilter(this);
+            for (const auto &window : owed_)
+                if (window)
+                    QCoreApplication::postEvent(window, new QEvent(QEvent::UpdateRequest), Qt::LowEventPriority);
+        }
+        PaintingOnRequest(const PaintingOnRequest &) = delete;
+        PaintingOnRequest &operator=(const PaintingOnRequest &) = delete;
+
+    protected:
+        bool eventFilter(QObject *watched, QEvent *event) override
+        {
+            if (event->type() != QEvent::UpdateRequest)
+                return false;
+            auto *window = qobject_cast<QWidget *>(watched);
+            if (!window || !window->isWindow())
+                return false;
+            if (std::find(owed_.begin(), owed_.end(), window) == owed_.end())
+                owed_.emplace_back(window);
+            return true;
+        }
+
+    private:
+        std::vector<QPointer<QWidget>> owed_;
+    };
     // Lets the event loop run until what the next check is about has come
     // about: work the window leaves to its next pass, or to a timer of its own.
     // A fixed wait for it is longer than it needs to be on a quick machine and
@@ -5959,6 +5998,7 @@ int main(int argc, char **argv)
         // the depth it was written at.)
         if (!new_projects_part)
         {
+        const PaintingOnRequest painting_on_request;
         require(window.editor().project().entities.empty(), "New window is an empty project");
 
         // The application opens on the home screen, with the work's own
