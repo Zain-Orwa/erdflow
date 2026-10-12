@@ -192,12 +192,15 @@ if(BUILD_TESTING)
     find_package(Qt6 REQUIRED COMPONENTS Test)
     add_executable(desktop_tests tests/desktop_tests.cpp)
     target_link_libraries(desktop_tests PRIVATE erdflow_desktop erdflow_infrastructure erdflow_warnings Qt6::Test)
-    # The desktop suite runs as four parts, each a process with its own
+    # The desktop suite runs as five parts, each a process with its own
     # timeout, rather than as one that had grown to within a few seconds of
-    # its limit in Debug (2026-10-09). Together they are the whole suite;
+    # its limit in Debug (2026-10-09). The main window's tools, each checked
+    # in a window of its own, have run apart from the window carried through
+    # both workspaces since 2026-10-12. Together they are the whole suite;
     # run with no part named, desktop_tests still runs all of it.
     add_test(NAME desktop_export COMMAND desktop_tests --export-state)
     add_test(NAME desktop_relational COMMAND desktop_tests --relational-part)
+    add_test(NAME desktop_window_tools COMMAND desktop_tests --window-tools-part)
     add_test(NAME desktop_window COMMAND desktop_tests --window-part)
     add_test(NAME desktop_new_projects COMMAND desktop_tests --new-projects-part)
     add_test(NAME desktop_smoke COMMAND erdflow --example --smoke-test)
@@ -217,12 +220,12 @@ if(BUILD_TESTING)
     if(WIN32)
         list(APPEND erdflow_offscreen_test_environment "QT_QPA_FONTDIR=C:/Windows/Fonts")
     endif()
-    set_tests_properties(canvas theme desktop_export desktop_relational desktop_window desktop_new_projects
-                         desktop_smoke visual
+    set_tests_properties(canvas theme desktop_export desktop_relational desktop_window_tools desktop_window
+                         desktop_new_projects desktop_smoke visual
                          PROPERTIES ENVIRONMENT "${erdflow_offscreen_test_environment}" TIMEOUT 30)
     # The desktop suite drives the whole window through both workspaces and
     # outgrew 30 s in Debug with the Schema Explorer's tests (Zain, 2026-09-29).
     # Each of its parts keeps the limit the whole suite had.
-    set_tests_properties(desktop_export desktop_relational desktop_window desktop_new_projects
-                         PROPERTIES TIMEOUT 60)
+    set_tests_properties(desktop_export desktop_relational desktop_window_tools desktop_window
+                         desktop_new_projects PROPERTIES TIMEOUT 60)
 endif()
