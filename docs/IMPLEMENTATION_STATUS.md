@@ -1552,7 +1552,23 @@ to build in Part 1* at the end. The state of the test suites is under
   they decide what somebody meets when they draw an element and nothing more,
   since every element is then pulled about by its corners and edges or given
   a width and a height in the Properties panel, and a size given by hand is
-  kept for that element and stored with the document.
+  kept for that element and stored with the document. (Superseded on
+  2026-10-12 by the entry below.)
+- **Shapes are made for their names** (Zain, 2026-10-12; committed in
+  `974230b`). A new or renamed entity, attribute, relationship,
+  generalization or specialization is made the size its name needs
+  (`fitted_body`): smaller for a short name, never under 70 by 44 and in
+  proportion to its default; no wider than the narrowest width that writes
+  "Relationship" whole on one line; taller for a longer name, written in up to
+  three lines inside the shape's outline, the third ending in an ellipsis with
+  the full name on hover if even three are not enough. The placing tools put
+  each down at the size its placeholder is fitted to. A rename refits about
+  the centre in one step of history (`Editor::rename_to_fit`); a shape resized
+  by hand keeps its size and its name wraps inside it; a diagram opens at the
+  sizes it was saved with, a long name in an older shape now written in the
+  lines it has room for rather than cut to one. Each shape keeps its name's
+  layout until the name, size or lettering changes, so a diagram of long
+  names paints as fast as before.
 - **An attribute is sized by hand, as an entity is.** Both hold a name, and
   how wide and how tall each is are two separate questions — a long name
   wants width where a second line wants height — so both answer to each of
