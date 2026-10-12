@@ -170,6 +170,10 @@ target_link_libraries(erdflow PRIVATE erdflow_desktop erdflow_infrastructure erd
 if(BUILD_TESTING)
     add_executable(editor_benchmark tests/editor_benchmark.cpp)
     target_link_libraries(editor_benchmark PRIVATE erdflow_canvas erdflow_infrastructure erdflow_warnings)
+    # Measurements for the pre-release milestone, run by hand before and after
+    # each change rather than as a suite (2026-10-12).
+    add_executable(prerelease_baseline tests/prerelease_baseline.cpp)
+    target_link_libraries(prerelease_baseline PRIVATE erdflow_desktop erdflow_infrastructure erdflow_warnings)
 
     add_executable(core_tests tests/core_tests.cpp)
     target_link_libraries(core_tests PRIVATE erdflow_application erdflow_warnings)
