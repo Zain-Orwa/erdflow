@@ -451,10 +451,10 @@ namespace
         }
         settle();
     }
-    // While the main window's checks run, a window is not repainted of its
-    // own accord (2026-10-12): Qt's request to bring a window's picture up to
-    // date is set aside, so nothing is drawn that no check looks at -- on the
-    // macOS Intel runner that drawing was a third of the part's time. Every
+    // While the checks run, a window is not repainted of its own accord
+    // (2026-10-12): Qt's request to bring a window's picture up to date is set
+    // aside, so nothing is drawn that no check looks at -- on the macOS Intel
+    // runner that drawing was a third of the main window's part. Every
     // check that looks at pixels asks for them: grab() and render() draw the
     // widget there and then, through the same paint code. Every other event
     // -- layout, resizing, style, input, focus, timers -- is delivered exactly
@@ -516,6 +516,18 @@ namespace
         auto *value = window.findChild<T *>(QString::fromLatin1(name));
         require(value != nullptr, name);
         return value;
+    }
+    // A schema opened to the whole window gets there a moment after its panel
+    // has risen (MainWindow::open_schema, 320 ms), as a project that starts
+    // from its schema always does. This waits until it is there, however long
+    // the machine takes, where a fixed wait was longer than that on a quick
+    // machine and, at 300 ms, could end just before it (2026-10-12).
+    void settle_schema_full(desktop::MainWindow &window)
+    {
+        settle_motion(window);
+        settle_until([&] { return child<QPushButton>(window, "schemaFull")->isChecked(); },
+                     "The schema opens to the whole window");
+        settle_motion(window);
     }
     void dismiss(QMessageBox::StandardButton choice)
     {
@@ -1295,7 +1307,7 @@ namespace
             require(other_tools->isVisible() && !other_tools->isEnabled(), "Other tools' formats stay as they were");
             // Relational Design in front: they go with the diagram.
             placed.open_schema(true);
-            settle_for(450);
+            settle_schema_full(placed);
             require(offered(placed, false), "With Relational Design in front, the Conceptual ones are put away");
             require(other_tools->isVisible() && !other_tools->isEnabled() && !other_tools->toolTip().isEmpty(),
                     "And its Import keeps the entry that says why other tools' formats cannot be read yet");
@@ -1312,7 +1324,7 @@ namespace
             schema_first.resize(1440, 920);
             schema_first.show();
             schema_first.show_home(false);
-            settle_for(450);
+            settle_schema_full(schema_first);
             require(offered(schema_first, false), "A schema drawn by hand is not offered the Conceptual ones");
             require(child<QAction>(schema_first, "importFromOtherTools")->isVisible(),
                     "Only the entry for other tools' formats");
@@ -1802,7 +1814,7 @@ namespace
             // A diagram's schema given the whole window is Relational Design in
             // front, and back again.
             relational.open_schema(true);
-            settle_for(450);
+            settle_schema_full(relational);
             require(offered(true) && conceptual_offered(false) &&
                         !child<QPushButton>(relational, "openExample")->isVisible(),
                     "With Relational Design in front, its own are offered and the Conceptual ones are put away");
@@ -1819,12 +1831,12 @@ namespace
             require(offered(false) && conceptual_offered(true), "Back on the diagram, they are put away again");
             check_corner_placement(true);
             child<QAction>(relational, "modelToConceptual")->trigger();
-            settle_for(450);
+            settle_motion(relational);
             require(child<QLabel>(relational, "workspaceBadge")->text() == "CONCEPTUAL" &&
                         entries().front() == "designRelational",
                     "Model's Convert to Conceptual puts the schema away and the diagram is in front again");
             relational.open_schema(true);
-            settle_for(450);
+            settle_schema_full(relational);
 
             // Each opens from its entry as a project that starts from its schema:
             // no diagram made first, untitled on disk and clean, Relational
@@ -1848,7 +1860,7 @@ namespace
             {
                 require(opening.entry->isVisible() && opening.entry->isEnabled(), "The entry can be chosen");
                 opening.entry->trigger();
-                settle_for(450);
+                settle_motion(relational);
                 const auto &project = relational.editor().project();
                 require(project.name == opening.name && sound(project) &&
                             table_names(project) == table_names(*opening.built) &&
@@ -1907,7 +1919,7 @@ namespace
                                           "fileTemplateRelational"})
                 {
                     child<QAction>(relational, entry)->trigger();
-                    settle_for(300);
+                    settle_motion(relational);
                     const auto boxes = view->table_boxes();
                     require(boxes.size() == relational.editor().project().schema.relations.size(),
                             "Lettered larger, every table is drawn");
@@ -2521,7 +2533,7 @@ namespace
             // to it and typed, and a foreign key connected to Employee's key, each
             // one step, undone back to the example exactly and redone.
             child<QAction>(relational, "fileExampleCompanyRelational")->trigger();
-            settle_for(300);
+            settle_motion(relational);
             const auto as_opened = opened.project();
             const auto audit = opened.create_relation("Audit", domain::Point{100, 2400});
             require(audit.ok, "A table is made on the example");
@@ -2563,7 +2575,7 @@ namespace
             // A Conceptual example opened from Relational Design is a diagram
             // again, and whichever workspace is then in front offers only its own.
             relational.load_company_database();
-            settle_for(450);
+            settle_motion(relational);
             require(!opened.project().schema.standalone && opened.project().entities.size() == 14 &&
                         child<QAction>(relational, "fileExampleCompany")->isVisible() !=
                             child<QAction>(relational, "fileExampleCompanyRelational")->isVisible(),
@@ -3056,7 +3068,7 @@ namespace
             tree_window.show_home(false);
             settle();
             tree_window.open_schema();
-            settle_for(300);
+            settle_motion(tree_window);
             auto *tree = child<QTreeView>(tree_window, "schemaExplorer");
             auto *view = tree_window.schema();
             require(child<QDockWidget>(tree_window, "explorerDock")->widget() == tree && tree->isVisible(),
@@ -3788,7 +3800,7 @@ namespace
             connect_window.resize(1440, 920);
             connect_window.show();
             connect_window.show_home(false);
-            settle_for(300);
+            settle_schema_full(connect_window);
             auto *view = connect_window.schema();
             require(view && view->isVisible(), "The hand-drawn schema is in front");
             auto *properties_dock = child<QDockWidget>(connect_window, "propertiesDock");
@@ -4043,7 +4055,7 @@ namespace
             pk_window.resize(1440, 920);
             pk_window.show();
             pk_window.show_home(false);
-            settle_for(300);
+            settle_schema_full(pk_window);
             auto *view = pk_window.schema();
             require(view && view->isVisible(), "The hand-drawn schema is in front");
             auto *properties_dock = child<QDockWidget>(pk_window, "propertiesDock");
@@ -4464,7 +4476,7 @@ namespace
             tool_window.resize(1440, 920);
             tool_window.show();
             tool_window.show_home(false);
-            settle_for(300);
+            settle_schema_full(tool_window);
             auto *view = tool_window.schema();
             require(view && view->isVisible(), "The hand-drawn schema is in front");
             auto *select = child<QAction>(tool_window, "schemaSelectTool");
@@ -4753,7 +4765,7 @@ namespace
             lit_window.resize(1440, 920);
             lit_window.show();
             lit_window.show_home(false);
-            settle_for(300);
+            settle_schema_full(lit_window);
             auto *view = lit_window.schema();
             auto *select = child<QAction>(lit_window, "schemaSelectTool");
             auto *connecting = child<QAction>(lit_window, "schemaConnectTool");
@@ -5921,6 +5933,8 @@ int main(int argc, char **argv)
     // Start from nothing, so a remembered value has to be written by this run
     // rather than left behind by the last one.
     QSettings().clear();
+    // Every part draws only what its checks ask to see.
+    std::optional<PaintingOnRequest> painting_on_request(std::in_place);
     try
     {
         timing::block("settling", __LINE__);
@@ -5957,7 +5971,11 @@ int main(int argc, char **argv)
         timing::block("relational", __LINE__);
         if (whole || relational_part)
         {
+            // Relational Design's own checks look at what the schema really
+            // paints on screen as it is scrolled, so they are drawn as usual.
+            painting_on_request.reset();
             relational_design_tests(ids);
+            painting_on_request.emplace();
             if (arguments.contains("--schema-connections-only"))
             {
                 std::cout << "PASS schema row connections and manual endpoint overrides\n";
@@ -5998,7 +6016,6 @@ int main(int argc, char **argv)
         // the depth it was written at.)
         if (!new_projects_part)
         {
-        const PaintingOnRequest painting_on_request;
         require(window.editor().project().entities.empty(), "New window is an empty project");
 
         // The application opens on the home screen, with the work's own
@@ -12727,7 +12744,7 @@ int main(int argc, char **argv)
             auto *relational = home->cards()[1];
             require(relational->isEnabled(), "The Relational Schema card can be taken");
             relational->create_button()->click();
-            settle_for(700);
+            settle_schema_full(window);
             require(!window.showing_home(), "Its + Create leaves Home");
             require(editor.project().schema.standalone && editor.project().schema.relations.empty(),
                     "For an empty project that starts from its schema");
@@ -14873,7 +14890,7 @@ int main(int argc, char **argv)
                                     editor.project().relationships.size() == relationships_before + 2,
                                 "Converted, both foreign keys are relationships on the diagram");
                         undo_once();
-                        settle_for(700);
+                        settle_schema_full(window);
                         require(editor.project().schema.standalone && card("Department", 1) == "PK, FK, NOT NULL",
                                 "Undone, the schema drawn by hand is back as it was");
                     }
@@ -14953,7 +14970,7 @@ int main(int argc, char **argv)
             // One step: undone it is the schema drawn by hand again, and redone
             // the diagram once more.
             child<QAction>(window, "undoCommand")->trigger();
-            settle_for(700);
+            settle_schema_full(window);
             require(editor.project().schema.standalone && !convert->isHidden() && child<QAction>(window, "designConvert")->isVisible(),
                     "Undo takes it back to the schema drawn by hand");
             require(header_tools->isVisible() && child<QWidget>(window, "schemaBar")->isHidden(),
@@ -15266,7 +15283,7 @@ int main(int argc, char **argv)
                 converting_window.show_home(false);
                 settle();
                 converting_window.open_schema();
-                settle_for(300);
+                settle_motion(converting_window);
                 const auto &project = converting.project();
                 const auto &tables = converting_window.schema()->preview().tables;
                 const auto table_for = [&](domain::ElementRef origin)
@@ -15309,7 +15326,7 @@ int main(int argc, char **argv)
             sided_window.load_example();
             settle();
             sided_window.open_schema();
-            settle_for(300);
+            settle_motion(sided_window);
             auto *view = sided_window.schema();
             auto *dock = child<QDockWidget>(sided_window, "propertiesDock");
             const auto panel = [&]() -> const QWidget &
