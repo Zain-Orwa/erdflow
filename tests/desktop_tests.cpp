@@ -2175,12 +2175,33 @@ namespace
                                : way.sign.x() > 0 ? here.x() > beyond->left() + 2
                                                   : here.x() < beyond->right() - 2;
                     };
-                    for (int waited = 0; waited < 4000 && !reaches(); waited += 20)
+                    // Waited for until the band has reached that table and the
+                    // view has moved on the axis it is held towards. The pointer
+                    // is held 40 px past the edge, so a table nearer the edge than
+                    // 38 px is reached before the scroll has taken a step; reaching
+                    // it says nothing about scrolling (2026-10-14: at some sizes of
+                    // view the wait ended before the first step, with the view not
+                    // yet moved). Which way it moved is then asked as before.
+                    const auto reached_at_once = reaches();
+                    const auto moved_that_way = [&]
+                    { return way.sign.y() != 0 ? bars().y() != from.y() : bars().x() != from.x(); };
+                    for (int waited = 0; waited < 4000 && !(reaches() && moved_that_way()); waited += 20)
                         hold_for(20);
-                    must(reaches(), "Held at the " + name + " edge, the band is carried on to the table beyond it");
+                    // What was measured, said when a check fails, so a failure on
+                    // another machine tells its own geometry.
+                    const auto measured = [&]
+                    {
+                        const auto now = bars();
+                        return " (view " + std::to_string(port->width()) + "x" + std::to_string(port->height()) +
+                               ", bars from " + std::to_string(from.x()) + "," + std::to_string(from.y()) + " to " +
+                               std::to_string(now.x()) + "," + std::to_string(now.y()) + ", table reached at once: " +
+                               (reached_at_once ? "yes" : "no") + ")";
+                    };
+                    must(reaches(), "Held at the " + name + " edge, the band is carried on to the table beyond it" +
+                                        measured());
                     const auto scrolled = bars() - from;
                     must(sign_of(scrolled.x()) == way.sign.x() && sign_of(scrolled.y()) == way.sign.y(),
-                         "A band held at the " + name + " edge scrolls the view that way and no other");
+                         "A band held at the " + name + " edge scrolls the view that way and no other" + measured());
                     const auto still = bars();
                     hold_for(60);
                     const auto at_end = way.sign.y() > 0 ? down->value() == down->maximum()
@@ -2203,6 +2224,99 @@ namespace
                     std::sort(marked.begin(), marked.end());
                     must(marked == expected, "The band held at the " + name + " edge marks exactly the tables it reached");
                     must(beyond->intersects(caught), "Among them, the table that was out of view beyond the " + name + " edge");
+                }
+
+                // The case above made on purpose, at the top edge (2026-10-14): a
+                // table 20 px above the view, which the pointer held 40 px past
+                // the edge reaches before the scroll has taken a step; one 38 px
+                // above, at the threshold; and one 60 px above, out of that first
+                // reach. Each time the band waits for the view to move, and it
+                // moves up and only up. At the top of the schema, where the view
+                // cannot move, it is never seen to move, and the check of which
+                // way it moved rejects it.
+                {
+                    const QPoint up(0, -1);
+                    for (const int gap : {20, 38, 60})
+                    {
+                        const std::string what = "A table " + std::to_string(gap) + " px above the view";
+                        // A table that can be brought to that distance above the
+                        // view, with empty canvas in the middle of the view to
+                        // start the band from.
+                        std::optional<QRectF> target;
+                        QPointF start;
+                        auto boxes = view->table_boxes();
+                        std::sort(boxes.begin(), boxes.end(),
+                                  [](const QRectF &a, const QRectF &b) { return a.bottom() < b.bottom(); });
+                        for (const auto &box : boxes)
+                        {
+                            const auto top_of_view = static_cast<int>(std::ceil(box.bottom())) + gap;
+                            if (top_of_view > down->maximum())
+                                continue;
+                            view->select(std::nullopt);
+                            across->setValue(std::clamp(static_cast<int>(box.center().x()) - w / 2, 0, across->maximum()));
+                            down->setValue(top_of_view);
+                            settle();
+                            if (std::abs(seen().top() - (box.bottom() + gap)) > 1.0)
+                                continue;
+                            try
+                            {
+                                start = empty_spot();
+                            }
+                            catch (const std::runtime_error &)
+                            {
+                                continue;
+                            }
+                            target = box;
+                            break;
+                        }
+                        must(target.has_value(), what + " can be set up");
+                        const auto lane = seen().adjusted(40, -1e6, -40, 1e6);
+                        const QPoint at(view->mapTo(port, target->intersected(lane).center().toPoint()).x(), -40);
+                        const auto from = bars();
+                        mouse(QEvent::MouseButtonPress, start, Qt::LeftButton);
+                        mouse(QEvent::MouseMove, start + QPointF(12, 12), Qt::LeftButton);
+                        mouse(QEvent::MouseMove, on_schema(at), Qt::LeftButton);
+                        const auto reaches = [&] { return on_schema(at).y() < target->bottom() - 2; };
+                        const auto reached_at_once = reaches();
+                        must(reached_at_once == (gap < 38),
+                             what + (gap < 38 ? " is reached before the scroll has taken a step"
+                                              : " is not reached before the scroll has taken a step"));
+                        for (int waited = 0; waited < 4000 && !(reaches() && bars().y() != from.y()); waited += 20)
+                            hold_for(20);
+                        const auto scrolled = bars() - from;
+                        std::cout << "PASS band at the top edge, table " << gap << " px beyond: reached at once "
+                                  << (reached_at_once ? "yes" : "no") << ", bars " << from.x() << "," << from.y() << " -> "
+                                  << bars().x() << "," << bars().y() << '\n';
+                        must(reaches(), what + ": the band reaches it");
+                        must(sign_of(scrolled.x()) == up.x() && sign_of(scrolled.y()) == up.y(),
+                             what + ": the band waits for the view to scroll, and it scrolls up and no other way");
+                        mouse(QEvent::MouseButtonRelease, on_schema(at), Qt::NoButton);
+                        settle();
+                    }
+                    // At the top of the schema the view cannot move: the scroll
+                    // runs and takes no step, nothing is ever seen to move, and
+                    // the check of which way it moved does not pass it.
+                    view->select(std::nullopt);
+                    across->setValue(across->maximum() / 2);
+                    down->setValue(0);
+                    settle();
+                    const auto start = empty_spot();
+                    const auto from = bars();
+                    mouse(QEvent::MouseButtonPress, start, Qt::LeftButton);
+                    mouse(QEvent::MouseMove, start + QPointF(12, 12), Qt::LeftButton);
+                    mouse(QEvent::MouseMove, on_schema({w / 2, -40}), Qt::LeftButton);
+                    bool moved = false;
+                    for (int waited = 0; waited < 300 && !moved; waited += 20)
+                    {
+                        hold_for(20);
+                        moved = bars() != from;
+                    }
+                    const auto scrolled = bars() - from;
+                    must(!moved, "At the top of the schema the view cannot scroll up, and is never seen to");
+                    must(!(sign_of(scrolled.x()) == up.x() && sign_of(scrolled.y()) == up.y()),
+                         "And a view that did not scroll does not pass the check of which way it scrolled");
+                    mouse(QEvent::MouseButtonRelease, on_schema({w / 2, -40}), Qt::NoButton);
+                    settle();
                 }
 
                 // Brought back in, the schema put away, or the keyboard taken
