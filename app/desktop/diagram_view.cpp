@@ -2043,9 +2043,10 @@ BodySize measure_fitted_body(NamedShape shape, const QString& name, const QFont&
                     : shape == NamedShape::Attribute ? attribute_body
                     : shape == NamedShape::Relationship ? relationship_body : isa_body;
     const auto font = name_font(base, 1.0);
-    // Smaller in proportion as it is narrower, down to the domain's least and
-    // never so squat that the shape stops reading as itself; wider than its
-    // default it keeps its default height, as a widened shape always has.
+    // Smaller in proportion as it is narrower, down to the width "Attributes"
+    // needs (below) and never so squat that the shape stops reading as itself;
+    // wider than its default it keeps its default height, as a widened shape
+    // always has.
     const auto least_width = domain::min_entity_width;
     const auto least_height = std::max(domain::min_entity_height, std::ceil(body.height * least_width / body.width));
     const auto height_for = [&](double width) {
@@ -2075,8 +2076,20 @@ BodySize measure_fitted_body(NamedShape shape, const QString& name, const QFont&
     if (found == caps.end())
         found = caps.emplace(key, narrowest(QStringLiteral("Relationship"), domain::max_entity_width)).first;
     const auto cap = found->second;
+    // And the narrowest a name makes a shape (Zain, 2026-10-13): wide enough
+    // for "Attributes" on one line, so a short name such as "ID" no longer
+    // makes a shape too small to read as one. Measured the same way, for each
+    // lettering, and never wider than the widest.
+    static std::map<std::pair<int, QString>, double> least_widths;
+    auto least_found = least_widths.find(key);
+    if (least_found == least_widths.end())
+        least_found = least_widths.emplace(key, std::min(cap, narrowest(QStringLiteral("Attributes"), cap))).first;
+    const auto least_named = least_found->second;
     const auto width = narrowest(name, cap);
-    if (width <= cap) return {width, height_for(width)};
+    if (width <= cap) {
+        const auto made = std::max(width, least_named);
+        return {made, height_for(made)};
+    }
     // Longer than that: as wide as "Relationship" and as tall as three lines
     // of it need. What still does not fit is cut short on the third line.
     // Halved towards the least height that does, then checked a pixel at a

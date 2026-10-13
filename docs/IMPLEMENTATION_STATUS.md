@@ -1616,6 +1616,24 @@ to build in Part 1* at the end. The state of the test suites is under
   lines it has room for rather than cut to one. Each shape keeps its name's
   layout until the name, size or lettering changes, so a diagram of long
   names paints as fast as before.
+- **No shape is made narrower than "Attributes" needs** (Zain, 2026-10-13;
+  implemented and verified locally, not merged; cross-platform CI pending).
+  The least width a new or renamed entity, attribute, relationship,
+  generalization or specialization is made at is the width that writes
+  "Attributes" whole on one line, measured for each kind of shape with its
+  own lettering and name room, the same way "Relationship" is measured for
+  the widest (`fitted_body`). A short name such as "ID" or "User" makes a
+  shape that wide; a name that needs more room grows as before, up to
+  "Relationship"; the height stays in proportion to the default, and a longer
+  name still takes up to three lines. The placing tools therefore put down
+  larger entities, attributes and hierarchy triangles than before; the
+  relationship's placeholder already needed more. The defaults, the
+  lettering, a size given by hand and the sizes a saved diagram opens at are
+  unchanged: nothing is refitted when a diagram is opened, and a saved shape
+  narrower than the new least keeps its size until it is renamed. The Debug
+  and Release functional suites pass, and every picture the visual test
+  renders is identical to `main`'s. *Supersedes*, for sizes made to fit a
+  name, the "never under 70 by 44" of the entry above.
 - **An attribute is sized by hand, as an entity is.** Both hold a name, and
   how wide and how tall each is are two separate questions — a long name
   wants width where a second line wants height — so both answer to each of

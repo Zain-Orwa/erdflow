@@ -70,20 +70,24 @@ These have been decided and are not open unless Zain reopens them.
 - **Crow's Foot is the default notation.** Not Chen. Four notations are offered;
   Crow's Foot is what a diagram is drawn in before anybody chooses.
 - **Shapes are made for their names** (Zain, 2026-10-12, replacing the
-  2026-10-11 rule that the defaults were the least size). The defaults --
-  entity 133×77, relationship 171×99, attribute 135×54, hierarchy 96×74 -- are
-  the proportions a shape is made in, and the figures themselves are not to be
-  changed. A new or renamed entity, attribute, relationship, generalization or
-  specialization is made the size its name needs: smaller for a short name,
-  never under 70×44 and in proportion to its default; no wider than the
-  rendered width of "Relationship", measured with its own font and shape's
-  text room, which is always written whole on one line; and taller for a
-  longer name, written in up to three lines. Beyond three lines the last ends
-  with an ellipsis and the full name is offered on hover; existing remark
-  tooltips remain available. A size given by hand is kept and saved, a renamed
-  shape resized by hand keeps its size, and a diagram opens at exactly the
-  sizes it was saved with. The curated examples and the template keep their
-  own layouts.
+  2026-10-11 rule that the defaults were the least size; least width
+  2026-10-13). The defaults -- entity 133×77, relationship 171×99, attribute
+  135×54, hierarchy 96×74 -- are the proportions a shape is made in, and the
+  figures themselves are not to be changed. A new or renamed entity,
+  attribute, relationship, generalization or specialization is made the size
+  its name needs, with the existing lettering, proportions and height
+  fitting: never narrower than the rendered width of "Attributes" and no
+  wider than the rendered width of "Relationship", each measured on one line
+  with the shape's own font and text room, separately for each kind of
+  shape. So a short name such as "ID" makes a shape as wide as "Attributes"
+  needs, in proportion to its default; "Relationship" is always written whole
+  on one line; and a longer name makes it taller, written in up to three
+  lines. Beyond three lines the last ends with an ellipsis and the full name
+  is offered on hover; existing remark tooltips remain available. These
+  limits apply when a shape is placed and when a rename refits it. A size
+  given by hand is kept and saved, a renamed shape resized by hand keeps its
+  size, and a diagram opens at exactly the sizes it was saved with. The
+  curated examples and the template keep their own layouts.
 - **The conceptual canvas and the Relational Schema are sized separately.** The
   canvas has `lettering_scale` and `connector_scale`; the schema measures every
   table from what it holds. A change to one must not reach into the other.
