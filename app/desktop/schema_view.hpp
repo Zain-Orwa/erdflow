@@ -9,6 +9,7 @@
 #include "domain/schema_preview.hpp"
 #include "diagram_view.hpp"
 #include "edge_scroll.hpp"
+#include "schema_colours.hpp"
 
 #include "icons.hpp"
 #include "schema_selection.hpp"
@@ -197,6 +198,14 @@ public:
     // looks like is otherwise only knowable by reading its pixels, and a line
     // that can be moved by hand needs a shape that can be checked.
     [[nodiscard]] std::vector<std::vector<QPointF>> line_shapes() const;
+    // Each line's colour, and the foreign key it draws, in the same order as
+    // line_shapes. A line's colour is the colour of its relationship, so these
+    // say which colour each relationship has been given.
+    [[nodiscard]] std::vector<QColor> line_colours() const;
+    [[nodiscard]] std::vector<std::optional<domain::ForeignKeyId>> line_keys() const;
+    // How many times the lines have been given their colours since the view
+    // was made.
+    [[nodiscard]] std::size_t colourings() const { return colourings_; }
     // Where each table has been put, in the order the preview lists them. The
     // companion to line_shapes: between them they are the whole of what the
     // schema looks like, which is otherwise knowable only by reading pixels.
@@ -439,6 +448,9 @@ private:
         // what a corner put in by hand is remembered against, so a shaped line
         // is still the same line after the preview is worked out again.
         std::optional<domain::LinkSource> link;
+        // The foreign key it draws, which every column of a key of several
+        // shares: what its colour is the colour of.
+        std::optional<domain::ForeignKeyId> key_id;
         // The route as corners, which is what the path is built from and what
         // the pointer is measured against. Keeping both saves walking a
         // QPainterPath to find out whether a line was clicked.
@@ -718,6 +730,14 @@ private:
     mutable std::size_t measurings_ = 0;
     std::vector<Routed> routes_;
     std::size_t routings_ = 0;
+    std::size_t colourings_ = 0;
+    // The relationships the lines were last given colours for, the palette, and
+    // the colour each was given: given again only when either changes.
+    std::vector<schema_colours::Line> colour_lines_;
+    std::optional<schema_colours::Palette> colour_palette_;
+    std::map<std::string, QColor> colour_of_;
+    [[nodiscard]] std::string colour_identity(const Routed& routed) const;
+    void colour_lines(schema_colours::Palette palette);
     double routing_ms_ = 0;
     std::unique_ptr<schema_router::RouteMemory> route_memory_;
     bool route_memory_on_ = true;

@@ -122,6 +122,30 @@ read as still to do.
   behind the memory's back. Every line is drawn exactly as before; tests check
   each search taken again against a fresh one and the lines against routing
   with no memory.
+- **Each relationship keeps one colour of its own** (C3a, 2026-10-13, not yet
+  committed; Zain approved the five shared greys and name-derived colours):
+  a Schema line's colour is its relationship's -- the lines of one foreign
+  key (`key_id`, shared by every column of a key of several) are one
+  relationship -- worked out from what it joins, its tables and columns by
+  name, rather than from the order lines are routed in, which changed with
+  every table moved (18 of 25 Company lines recoloured by one drag). Names
+  rather than `key_id` decide the colour because an example's keys are given
+  new identities each time it is opened; renaming a joined table or column
+  therefore recolours that relationship, at once, and may recolour those it
+  meets. `schema_colours` gives the relationships meeting at a table colours
+  of their own from sixteen chosen to stand plainly apart (no two nearer than
+  22 in CIEDE2000, every one 3:1 against its canvas), a light set and a dark
+  one; each keeps the colour worked out from it unless a relationship it
+  meets already has it, and is looked at again once all have colours. Plain
+  shares out five greys the same way (8.4 apart; more greys could not be told
+  apart): five relationships or fewer at a table have a grey each, and more
+  share them evenly, no grey used more often than its even share where the
+  tables at the other ends allow (Employee's ten use each grey twice).
+  Colours are given again only when the relationships, their names or the
+  palette change -- never while tables move -- and stay the same through
+  saving, opening, undo and redo. Routes are unchanged. *Supersedes* the
+  golden-angle colours by routing order (2026-09-22) and the golden-ratio grey
+  for each line (2026-09-24).
 - **Desktop timeout risk reduced without weakening coverage** (committed in
   `7b12b70`): the old single `desktop` CTest entry is split into
   `desktop_export`, `desktop_relational` and `desktop_window` (the last since
