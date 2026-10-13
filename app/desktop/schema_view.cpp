@@ -11,6 +11,7 @@
 #include <QScopedValueRollback>
 #include "schema_facts.hpp"
 #include "schema_router.hpp"
+#include "schema_colours.hpp"
 
 #include "theme.hpp"
 #include "application/editor.hpp"
@@ -234,33 +235,6 @@ QString type_text(const domain::PreviewColumn& column) {
     return written;
 }
 
-// A line of its own colour, so two crossing lines can still be told apart.
-// Hues step by the golden angle, which spaces each new one as far from all the
-// previous as it can, and once the hues come round the lightness steps to a new
-// band so a repeated hue is still a different colour.
-QColor link_colour(std::size_t index, bool dark) {
-    constexpr double golden = 137.508;
-    const auto hue = std::fmod(static_cast<double>(index) * golden, 360.0);
-    const auto band = (index / 12) % 3;
-    const double base = dark ? 68 : 42;
-    const double step = band == 1 ? (dark ? -15 : 15) : band == 2 ? (dark ? 13 : -11) : 0;
-    // Yellow reads far brighter than blue at one lightness, so it is nudged by
-    // hue to keep every line equally readable.
-    const auto evened = std::cos((hue - 70) * M_PI / 180.0) * (dark ? -7 : 7);
-    return QColor::fromHslF(hue / 360.0, dark ? 0.60 : 0.66,
-                            std::clamp((base + step - evened) / 100.0, 0.12, 0.88));
-}
-
-// The same for a theme with no colour: a grey of its own for each line, so two
-// crossing lines can still be told apart (Zain chose this over one grey or dash
-// patterns, 2026-09-24). The shade steps by the golden ratio through a band
-// dark enough to read on the paper, so each new line is as far as it can be
-// from those before it.
-QColor link_grey(std::size_t index, bool dark) {
-    const auto spread = std::fmod(static_cast<double>(index) * 0.6180339887, 1.0);
-    const auto lightness = dark ? 0.52 + spread * 0.36 : 0.12 + spread * 0.44;
-    return QColor::fromHslF(0.0f, 0.0f, static_cast<float>(lightness));
-}
 } // namespace
 
 QString written_type(const domain::PreviewColumn& column) { return type_text(column); }
@@ -1529,6 +1503,20 @@ std::vector<std::vector<QPointF>> SchemaView::line_shapes() const {
     return shapes;
 }
 
+std::vector<QColor> SchemaView::line_colours() const {
+    std::vector<QColor> colours;
+    colours.reserve(routes_.size());
+    for (const auto& routed : routes_) colours.push_back(routed.colour);
+    return colours;
+}
+
+std::vector<std::optional<domain::ForeignKeyId>> SchemaView::line_keys() const {
+    std::vector<std::optional<domain::ForeignKeyId>> keys;
+    keys.reserve(routes_.size());
+    for (const auto& routed : routes_) keys.push_back(routed.key_id);
+    return keys;
+}
+
 std::vector<std::vector<QRectF>> SchemaView::row_boxes() const {
     std::vector<std::vector<QRectF>> rows;
     rows.reserve(placed_.size());
@@ -2761,7 +2749,11 @@ void SchemaView::reroute() {
     routed_at_.reset();
     if (!theme_ || placed_.empty()) return;
     ++routings_;
-    const auto dark = theme_->canvas.lightnessF() < 0.5;
+    // The palette the lines are given their colours from: grey where the theme
+    // has no colour, and otherwise the one that stands out from the canvas.
+    auto palette = schema_colours::Palette::Light;
+    if (colourless(theme_->id)) palette = schema_colours::Palette::Grey;
+    else if (theme_->canvas.lightnessF() < 0.5) palette = schema_colours::Palette::Dark;
 
     QElapsedTimer routing_clock;
     routing_clock.start();
@@ -2820,7 +2812,6 @@ void SchemaView::reroute() {
         return std::clamp(slot % 2 ? -away : away, -deep / 2 + 4, deep / 2 - 4);
     };
 
-    std::size_t index = 0;
     for (const auto& one : pending) {
         pass.line(static_cast<std::uint32_t>(one.table) << 16 | static_cast<std::uint32_t>(one.column));
         const auto& column = preview_.tables[one.table].columns[one.column];
@@ -2999,7 +2990,7 @@ void SchemaView::reroute() {
 
         Routed routed;
         routed.link = column.link;
-        routed.colour = colourless(theme_->id) ? link_grey(index++, dark) : link_colour(index++, dark);
+        routed.key_id = column.key_id;
         routed.from = from;
         routed.to = to;
         routed.from_loose = from_adrift;
@@ -3111,7 +3102,66 @@ void SchemaView::reroute() {
         routed.path = path_of(routed.corners);
         routes_.push_back(std::move(routed));
     }
+    colour_lines(palette);
     routed_at_ = size();
+}
+
+// What every line of one relationship has in common and no line of another
+// has: the foreign key it draws, which every column of a key of several shares
+// and which is kept in the project, so it is the same when the project is
+// opened again. A line without one -- there is none at present -- is known by
+// its table and column instead.
+std::string SchemaView::colour_identity(const Routed& routed) const {
+    if (routed.key_id) {
+        const auto& bytes = routed.key_id->value.bytes;
+        return std::string("k") + std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+    }
+    const auto& table = preview_.tables[routed.from_table];
+    return "c" + table.name + '\0'
+         + (routed.from_column < table.columns.size() ? table.columns[routed.from_column].name : std::string());
+}
+
+// Each line takes its relationship's colour (schema_colours), worked out from
+// what the relationship joins, by name: the same every time the schema is
+// made, where a key's identity is made afresh each time an example is opened.
+// The colours are given again only when the relationships, what they join or
+// the palette change; a table moving changes none of that, so a drag routes the
+// lines again and gives no line a new colour.
+void SchemaView::colour_lines(schema_colours::Palette palette) {
+    const auto named = [&](std::size_t table, std::size_t column) {
+        if (table >= preview_.tables.size()) return std::string();
+        const auto& one = preview_.tables[table];
+        return one.name + '.' + (column < one.columns.size() ? one.columns[column].name : std::string());
+    };
+    // Every column a relationship joins, so a key of several says all of its
+    // columns, whichever of its lines is asked.
+    std::vector<std::string> identities;
+    identities.reserve(routes_.size());
+    std::map<std::string, std::vector<std::string>> joins;
+    for (const auto& routed : routes_) {
+        identities.push_back(colour_identity(routed));
+        joins[identities.back()].push_back(named(routed.from_table, routed.from_column) + '>'
+                                           + named(routed.to_table, routed.to_column));
+    }
+    std::map<std::string, std::string> says;
+    for (auto& [identity, columns] : joins) {
+        std::sort(columns.begin(), columns.end());
+        std::string joined;
+        for (const auto& column : columns) joined += column + '|';
+        says.emplace(identity, std::move(joined));
+    }
+    std::vector<schema_colours::Line> lines;
+    lines.reserve(routes_.size());
+    for (std::size_t i = 0; i < routes_.size(); ++i)
+        lines.push_back({identities[i], routes_[i].from_table, routes_[i].to_table, says.at(identities[i])});
+    std::sort(lines.begin(), lines.end());
+    if (!colour_palette_ || *colour_palette_ != palette || lines != colour_lines_) {
+        colour_of_ = schema_colours::allocate(lines, palette);
+        colour_lines_ = std::move(lines);
+        colour_palette_ = palette;
+        ++colourings_;
+    }
+    for (std::size_t i = 0; i < routes_.size(); ++i) routes_[i].colour = colour_of_.at(identities[i]);
 }
 
 // Which line the pointer is over, and which of its corners a drag would take

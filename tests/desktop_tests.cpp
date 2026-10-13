@@ -17,6 +17,7 @@
 #include "app/desktop/welcome_flow_illustration.hpp"
 #include "app/desktop/main_window.hpp"
 #include "app/desktop/schema_router.hpp"
+#include "app/desktop/schema_colours.hpp"
 #include "app/desktop/notice.hpp"
 #include "app/desktop/schema_explorer.hpp"
 #include "infrastructure/project_store.hpp"
@@ -92,6 +93,7 @@
 #include <limits>
 #include <functional>
 #include <map>
+#include <random>
 #include <set>
 #include <stdexcept>
 
@@ -3034,6 +3036,1069 @@ namespace
     // half the time the opening took. A resize to the size the lines were routed
     // at routes nothing now; a resize to any other size, and every routing asked
     // for by an edit, a refresh, Undo, Redo or the theme, still routes.
+    // CIEDE2000, the distance at which two colours are told apart: under about
+    // 10 two thin lines are hard to tell apart, from 20 they are plainly
+    // different.
+    double colour_distance(const QColor &one, const QColor &other)
+    {
+        struct Lab
+        {
+            double L, a, b;
+        };
+        const auto lab = [](const QColor &colour)
+        {
+            const auto linear = [](double v) { return v <= 0.04045 ? v / 12.92 : std::pow((v + 0.055) / 1.055, 2.4); };
+            const double r = linear(colour.redF()), g = linear(colour.greenF()), b = linear(colour.blueF());
+            const double x = (0.4124 * r + 0.3576 * g + 0.1805 * b) / 0.95047;
+            const double y = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+            const double z = (0.0193 * r + 0.1192 * g + 0.9505 * b) / 1.08883;
+            const auto f = [](double t) { return t > 0.008856 ? std::cbrt(t) : 7.787 * t + 16.0 / 116; };
+            return Lab{116 * f(y) - 16, 500 * (f(x) - f(y)), 200 * (f(y) - f(z))};
+        };
+        const auto p = lab(one), q = lab(other);
+        constexpr double rad = 3.14159265358979323846 / 180;
+        const double c1 = std::hypot(p.a, p.b), c2 = std::hypot(q.a, q.b), cb = (c1 + c2) / 2;
+        const double g = 0.5 * (1 - std::sqrt(std::pow(cb, 7) / (std::pow(cb, 7) + std::pow(25.0, 7))));
+        const double a1 = (1 + g) * p.a, a2 = (1 + g) * q.a;
+        const double c1p = std::hypot(a1, p.b), c2p = std::hypot(a2, q.b);
+        double h1 = std::atan2(p.b, a1) / rad, h2 = std::atan2(q.b, a2) / rad;
+        if (h1 < 0)
+            h1 += 360;
+        if (h2 < 0)
+            h2 += 360;
+        double dh = h2 - h1;
+        if (c1p * c2p == 0)
+            dh = 0;
+        else if (dh > 180)
+            dh -= 360;
+        else if (dh < -180)
+            dh += 360;
+        const double dL = q.L - p.L, dC = c2p - c1p, dH = 2 * std::sqrt(c1p * c2p) * std::sin(dh / 2 * rad);
+        const double lb = (p.L + q.L) / 2, cbp = (c1p + c2p) / 2;
+        double hb = h1 + h2;
+        if (c1p * c2p != 0)
+        {
+            if (std::abs(h1 - h2) > 180)
+                hb += hb < 360 ? 360 : -360;
+            hb /= 2;
+        }
+        const double t = 1 - 0.17 * std::cos((hb - 30) * rad) + 0.24 * std::cos(2 * hb * rad) +
+                         0.32 * std::cos((3 * hb + 6) * rad) - 0.20 * std::cos((4 * hb - 63) * rad);
+        const double dth = 30 * std::exp(-std::pow((hb - 275) / 25, 2));
+        const double rc = 2 * std::sqrt(std::pow(cbp, 7) / (std::pow(cbp, 7) + std::pow(25.0, 7)));
+        const double sl = 1 + 0.015 * std::pow(lb - 50, 2) / std::sqrt(20 + std::pow(lb - 50, 2));
+        const double sc = 1 + 0.045 * cbp, sh = 1 + 0.015 * cbp * t, rt = -std::sin(2 * dth * rad) * rc;
+        return std::sqrt(std::pow(dL / sl, 2) + std::pow(dC / sc, 2) + std::pow(dH / sh, 2) + rt * (dC / sc) * (dH / sh));
+    }
+
+    // The colours themselves, given to schemas made up for the purpose: every
+    // relationship meeting one table plainly apart while the palette has
+    // colours enough, shared out evenly when it has not, the same whatever
+    // order the lines come in, one colour for every line of a key of several,
+    // every colour standing out from every canvas it is drawn on, and one
+    // relationship added recolouring hardly anything it does not meet.
+    void schema_colour_allocation_tests()
+    {
+        using namespace desktop::schema_colours;
+        // `count` relationships all meeting table 0, alternately leaving and
+        // arriving, each with a table of its own at the other end; the last,
+        // where asked, refers to table 0 itself.
+        const auto star = [](int count, bool itself = false)
+        {
+            std::vector<Line> lines;
+            for (int i = 0; i < count; ++i)
+            {
+                const auto other = static_cast<std::size_t>(i + 1);
+                lines.push_back({"relationship " + std::to_string(i), i % 2 ? other : 0, i % 2 ? 0 : other, {}});
+            }
+            if (itself && !lines.empty())
+                lines.back() = {lines.back().identity, 0, 0, {}};
+            return lines;
+        };
+        const auto given_to = [](const std::vector<Line> &lines, const std::map<std::string, QColor> &given)
+        {
+            std::vector<QColor> colours;
+            for (const auto &line : lines)
+                colours.push_back(given.at(line.identity));
+            return colours;
+        };
+        for (const auto palette : {Palette::Light, Palette::Dark})
+        {
+            const std::string name = palette == Palette::Light ? "light" : "dark";
+            for (const int count : {2, 3, 6, 12, 16})
+            {
+                const auto lines = star(count, count == 6);
+                const auto colours = given_to(lines, allocate(lines, palette));
+                double closest = 1e9;
+                for (std::size_t i = 0; i < colours.size(); ++i)
+                    for (std::size_t j = i + 1; j < colours.size(); ++j)
+                        closest = std::min(closest, distance(colours[i], colours[j]));
+                require(closest >= 20.0, (std::to_string(count) + " relationships at one table are plainly apart on a " +
+                                          name + " canvas (closest " + std::to_string(closest) + ")")
+                                             .c_str());
+            }
+            const auto crowded = star(20);
+            std::map<QRgb, int> used;
+            for (const auto &colour : given_to(crowded, allocate(crowded, palette)))
+                ++used[colour.rgb()];
+            for (const auto &[colour, uses] : used)
+                require(uses <= 2, ("Twenty relationships at one table share the " + name +
+                                    " palette's sixteen colours evenly: none used more than twice")
+                                       .c_str());
+        }
+        {
+            for (const int count : {2, 3, 5})
+            {
+                const auto lines = star(count);
+                const auto colours = given_to(lines, allocate(lines, Palette::Grey));
+                std::set<QRgb> distinct;
+                for (const auto &colour : colours)
+                {
+                    distinct.insert(colour.rgb());
+                    require(colour.red() == colour.green() && colour.green() == colour.blue(), "The grey palette gives greys only");
+                }
+                require(distinct.size() == colours.size(),
+                        (std::to_string(count) + " relationships at one table are given greys of their own").c_str());
+            }
+            const auto crowded = star(12);
+            std::map<QRgb, int> used;
+            for (const auto &colour : given_to(crowded, allocate(crowded, Palette::Grey)))
+                ++used[colour.rgb()];
+            for (const auto &[colour, uses] : used)
+                require(uses <= 3, "Twelve relationships at one table share the five greys evenly: none used more than three times");
+
+            // Exactly five greys, each told apart from every other: greys differ
+            // in lightness alone, so five 8.4 apart is as far apart as five can
+            // be, short of the 20 colours manage.
+            const auto &greys = colours_of(Palette::Grey);
+            require(greys.size() == 5, "Plain has exactly five greys");
+            double closest = 1e9;
+            for (std::size_t i = 0; i < greys.size(); ++i)
+            {
+                require(greys[i].red() == greys[i].green() && greys[i].green() == greys[i].blue(), "Each is a grey");
+                for (std::size_t j = i + 1; j < greys.size(); ++j)
+                    closest = std::min(closest, distance(greys[i], greys[j]));
+            }
+            require(closest >= 8.0, "No two of the five greys are nearer than 8 apart");
+
+            // From six relationships at one table to fifteen, every grey is used
+            // there and none more often than sharing them out evenly asks --
+            // also where every relationship's other end is busy with three
+            // relationships of its own, whose four then each have a grey of
+            // their own -- and whatever order the relationships are listed in,
+            // the greys are the same.
+            for (int count = 6; count <= 15; ++count)
+            {
+                for (const bool busy_ends : {false, true})
+                {
+                    auto lines = star(count);
+                    if (busy_ends)
+                        for (int i = 0; i < count; ++i)
+                            for (int j = 0; j < 3; ++j)
+                                lines.push_back({"elsewhere " + std::to_string(i) + "." + std::to_string(j),
+                                                 static_cast<std::size_t>(i + 1),
+                                                 static_cast<std::size_t>(100 + 3 * i + j), {}});
+                    const auto given = allocate(lines, Palette::Grey);
+                    std::map<QRgb, int> shares;
+                    for (int i = 0; i < count; ++i)
+                        ++shares[given.at("relationship " + std::to_string(i)).rgb()];
+                    int most = 0;
+                    for (const auto &[grey, uses] : shares)
+                        most = std::max(most, uses);
+                    require(shares.size() == 5 && most <= (count + 4) / 5,
+                            (std::to_string(count) + " relationships at one table" + (busy_ends ? ", their other ends busy," : "") +
+                             " share the five greys as evenly as they can")
+                                .c_str());
+                    if (busy_ends)
+                        for (int i = 0; i < count; ++i)
+                        {
+                            std::map<QRgb, int> at_end;
+                            ++at_end[given.at("relationship " + std::to_string(i)).rgb()];
+                            for (int j = 0; j < 3; ++j)
+                                ++at_end[given.at("elsewhere " + std::to_string(i) + "." + std::to_string(j)).rgb()];
+                            require(at_end.size() == 4, "And the four relationships at each other end have a grey each");
+                        }
+                    auto shuffled = lines;
+                    std::reverse(shuffled.begin(), shuffled.end());
+                    require(allocate(shuffled, Palette::Grey) == given, "And the same whatever order they are listed in");
+                }
+            }
+
+            // Every table of a schema shared out evenly at once cannot always be
+            // had: a relationship has a table at each end, and the grey right at
+            // one may be wrong at the other. Over 400 made-up schemas of 6 to 35
+            // tables, a third of their relationships meeting at one table, the
+            // tables are weighed against their own even shares and every
+            // relationship is looked at again knowing them all (2026-10-13): a
+            // table given one grey more often than its share asks is found in
+            // 120 of them, never by more than one. Counting uses across both
+            // ends together, taking each relationship once, it was 271; the
+            // bounds are the figures measured.
+            int uneven = 0, furthest = 0;
+            for (int seed = 1; seed <= 400; ++seed)
+            {
+                std::mt19937 random(static_cast<unsigned>(seed));
+                const auto tables = 6 + static_cast<int>(random() % 30);
+                const auto relations = tables + static_cast<int>(random() % static_cast<unsigned>(2 * tables));
+                std::vector<Line> lines;
+                for (int r = 0; r < relations; ++r)
+                {
+                    auto from = static_cast<std::size_t>(random() % static_cast<unsigned>(tables));
+                    const auto to = static_cast<std::size_t>(random() % static_cast<unsigned>(tables));
+                    if (random() % 3 == 0)
+                        from = 0;
+                    lines.push_back({"r" + std::to_string(seed) + "." + std::to_string(r), from, to, {}});
+                }
+                const auto given = allocate(lines, Palette::Grey);
+                std::map<std::size_t, std::map<QRgb, std::set<std::string>>> at;
+                for (const auto &line : lines)
+                    for (const auto table : {line.from_table, line.to_table})
+                        at[table][given.at(line.identity).rgb()].insert(line.identity);
+                int past = 0;
+                for (const auto &[table, shades] : at)
+                {
+                    std::set<std::string> meeting;
+                    int most = 0;
+                    for (const auto &[grey, identities] : shades)
+                    {
+                        meeting.insert(identities.begin(), identities.end());
+                        most = std::max(most, static_cast<int>(identities.size()));
+                    }
+                    past = std::max(past, most - static_cast<int>((meeting.size() + 4) / 5));
+                }
+                uneven += past > 0 ? 1 : 0;
+                furthest = std::max(furthest, past);
+            }
+            require(furthest <= 1, "No table of a made-up schema is given a grey more than once past its even share");
+            require(uneven <= 120, ("And a table past its share is found in no more than 120 schemas of the 400 (" +
+                                    std::to_string(uneven) + ")")
+                                       .c_str());
+        }
+        // Relationships are told apart by identity, never by what they say: two
+        // that say the same, or nearly the same, stay two, and two that meet
+        // are given colours of their own however alike their names.
+        {
+            const std::vector<Line> alike{{"one", 0, 1, "Order.CustomerID>Customer.CustomerID|"},
+                                          {"two", 0, 1, "Order.CustomerID>Customer.CustomerID|"},
+                                          {"three", 2, 1, "Order.CustomerID>Customer.CustomerID|"},
+                                          {"four", 0, 1, "Order.CustomerId>Customer.CustomerID|"}};
+            for (const auto palette : {Palette::Light, Palette::Dark, Palette::Grey})
+            {
+                const auto given = allocate(alike, palette);
+                require(given.size() == 4, "Relationships saying the same or nearly the same stay as many as they are");
+                std::set<QRgb> distinct;
+                for (const auto &[identity, colour] : given)
+                    distinct.insert(colour.rgb());
+                require(distinct.size() == 4, "Meeting at one table, each is given a colour of its own");
+            }
+        }
+        // One colour for every line of a key of several, and none of it hangs on
+        // the order the lines are listed in.
+        {
+            auto lines = star(7);
+            lines.push_back({"relationship 3", 4, 0, {}});
+            lines.push_back({"relationship 3", 4, 0, {}});
+            const auto given = allocate(lines, Palette::Light);
+            require(given.size() == 7, "Every line of a key of several is one relationship, with one colour");
+            auto shuffled = lines;
+            std::reverse(shuffled.begin(), shuffled.end());
+            std::rotate(shuffled.begin(), shuffled.begin() + 3, shuffled.end());
+            require(allocate(shuffled, Palette::Light) == given, "The colours do not hang on the order of the lines");
+        }
+        // Every colour stands out from every canvas it is drawn on, three to one.
+        {
+            const auto luminance = [](const QColor &colour)
+            {
+                const auto linear = [](double v) { return v <= 0.04045 ? v / 12.92 : std::pow((v + 0.055) / 1.055, 2.4); };
+                return 0.2126 * linear(colour.redF()) + 0.7152 * linear(colour.greenF()) + 0.0722 * linear(colour.blueF());
+            };
+            std::size_t index = 0;
+            for (const auto &theme : desktop::themes())
+            {
+                const auto id = static_cast<desktop::ThemeId>(index++);
+                const auto palette = desktop::colourless(id) ? Palette::Grey
+                                     : theme.canvas.lightnessF() < 0.5 ? Palette::Dark
+                                                                        : Palette::Light;
+                for (const auto &colour : colours_of(palette))
+                {
+                    const auto a = luminance(colour), b = luminance(theme.canvas);
+                    require((std::max(a, b) + 0.05) / (std::min(a, b) + 0.05) >= 3.0,
+                            ("Every line colour stands out three to one from theme " + std::to_string(index - 1) + "'s canvas")
+                                .c_str());
+                }
+            }
+        }
+        // One relationship added to each of 400 made-up schemas of 20 to 160
+        // tables: it can move relationships it meets onto other colours, and
+        // through them, now and then, a few it does not meet. Measured on these
+        // schemas (2026-10-13): in colour, in 23 of the 400, never more than 3.
+        // Five greys leave far less room, and sharing them evenly at every
+        // table means one added can move greys further: in 190, never more
+        // than 16 (taking each relationship once, without the second look and
+        // the even shares, it was 166 and 12). The bounds are those figures,
+        // so that anything making it reach further fails.
+        for (const auto &[palette, reaching, farthest] :
+             {std::make_tuple(Palette::Light, 23L, 3L), std::make_tuple(Palette::Grey, 190L, 16L)})
+        {
+            long additions_reaching_further = 0, furthest = 0;
+            for (int seed = 1; seed <= 400; ++seed)
+            {
+                std::mt19937 random(static_cast<unsigned>(seed));
+                const auto tables = 20 + static_cast<int>(random() % 140);
+                const auto relations = tables + static_cast<int>(random() % static_cast<unsigned>(tables));
+                std::vector<Line> lines;
+                for (int r = 0; r < relations; ++r)
+                {
+                    const auto from = static_cast<std::size_t>(random() % static_cast<unsigned>(tables));
+                    const auto to = static_cast<std::size_t>(random() % static_cast<unsigned>(tables));
+                    lines.push_back({"relationship " + std::to_string(seed) + "." + std::to_string(r), from, to, {}});
+                }
+                const auto before = allocate(lines, palette);
+                const auto from = static_cast<std::size_t>(random() % static_cast<unsigned>(tables));
+                const auto to = static_cast<std::size_t>(random() % static_cast<unsigned>(tables));
+                const Line added{"added " + std::to_string(seed), from, to, {}};
+                auto more = lines;
+                more.push_back(added);
+                const auto after = allocate(more, palette);
+                long further = 0;
+                for (const auto &line : lines)
+                {
+                    const bool meets = line.from_table == added.from_table || line.from_table == added.to_table ||
+                                       line.to_table == added.from_table || line.to_table == added.to_table;
+                    if (!meets && before.at(line.identity) != after.at(line.identity))
+                        ++further;
+                }
+                additions_reaching_further += further > 0 ? 1 : 0;
+                furthest = std::max(furthest, further);
+            }
+            const std::string in = palette == Palette::Grey ? " in greys" : " in colour";
+            require(furthest <= farthest, ("One relationship added recolours at most " + std::to_string(farthest) +
+                                           " relationships it does not meet" + in)
+                                              .c_str());
+            require(additions_reaching_further <= reaching,
+                    ("And only in some schemas: no more than " + std::to_string(reaching) + " of the 400" + in).c_str());
+        }
+        std::cout << "PASS relationship colours are plainly apart, even, stable and readable on every canvas\n";
+    }
+
+    // Each relationship on the schema keeps one colour of its own (2026-10-13):
+    // given by what the relationship is, not by where its tables stand, so it
+    // stays put while tables move and lines are routed again, through saving
+    // and opening, undoing and redoing; and the relationships that meet at one
+    // table are given colours plainly different from one another.
+    // A relationship's colour is worked out from what it joins, by name, so a
+    // rename is the one change besides adding or taking away a relationship
+    // that can recolour one. Renamed on the schema as somebody renames there,
+    // a table or a column gives the relationships it names their colours at
+    // once -- what a fresh view of the same schema gives them -- and nothing
+    // that does not meet them is recoloured; undo, redo, saving and opening
+    // give back exactly what there was.
+    void schema_line_colour_rename_tests(infrastructure::QtIdGenerator &ids)
+    {
+        application::Editor editor(ids);
+        infrastructure::ErdxProjectStore store;
+        desktop::MainWindow window(editor, store, ids);
+        window.resize(1440, 920);
+        window.show();
+        window.show_home(false);
+        settle();
+        window.load_company_database_relational();
+        settle();
+        window.open_schema(true);
+        settle();
+        const auto colours_of = [](desktop::SchemaView &view)
+        {
+            std::map<domain::ForeignKeyId, QColor> by_key;
+            const auto keys = view.line_keys();
+            const auto drawn = view.line_colours();
+            for (std::size_t i = 0; i < keys.size(); ++i)
+            {
+                require(keys[i].has_value(), "Every line on the schema draws a foreign key");
+                const auto [at, added] = by_key.emplace(*keys[i], drawn[i]);
+                require(added || at->second == drawn[i], "Every line of one relationship is drawn in its one colour");
+            }
+            return by_key;
+        };
+        auto *view = window.schema();
+        const auto colours = [&] { return colours_of(*view); };
+        const auto ends = [&]
+        {
+            std::map<domain::ForeignKeyId, std::pair<std::string, std::string>> tables;
+            const auto &preview = view->preview();
+            for (const auto &table : preview.tables)
+                for (const auto &column : table.columns)
+                    if (column.key_id && column.references && *column.references < preview.tables.size())
+                        tables[*column.key_id] = {table.name, preview.tables[*column.references].name};
+            return tables;
+        };
+        const auto closest_at = [&](const std::string &table)
+        {
+            const auto given = colours();
+            std::vector<QColor> meeting;
+            for (const auto &[key, at] : ends())
+                if (at.first == table || at.second == table)
+                    meeting.push_back(given.at(key));
+            double closest = 1e9;
+            for (std::size_t i = 0; i < meeting.size(); ++i)
+                for (std::size_t j = i + 1; j < meeting.size(); ++j)
+                    closest = std::min(closest, colour_distance(meeting[i], meeting[j]));
+            return closest;
+        };
+        const auto table_at = [&](const std::string &name)
+        {
+            const auto &tables = view->preview().tables;
+            for (std::size_t t = 0; t < tables.size(); ++t)
+                if (tables[t].name == name)
+                    return t;
+            throw std::runtime_error("No table named " + name);
+        };
+        const auto column_at = [&](std::size_t table, const std::string &name)
+        {
+            const auto &columns = view->preview().tables[table].columns;
+            for (std::size_t c = 0; c < columns.size(); ++c)
+                if (columns[c].name == name)
+                    return c;
+            throw std::runtime_error("No column named " + name);
+        };
+        // Renamed as the schema's own rename box renames: the window applies
+        // it, as it applies every edit, and the schema is worked out again.
+        const auto rename = [&](std::size_t table, std::optional<std::size_t> column, const char *name)
+        {
+            require(bool(view->renamed), "The schema hands a rename to the window");
+            view->renamed(desktop::SchemaView::Spot{table, column, {}}, QString::fromUtf8(name));
+            settle();
+        };
+        const auto command = [&](const char *name)
+        {
+            child<QAction>(window, name)->trigger();
+            settle();
+        };
+        // Nothing recoloured but relationships meeting the given tables.
+        const auto only_at = [&](const std::map<domain::ForeignKeyId, QColor> &was,
+                                 const std::map<domain::ForeignKeyId, std::pair<std::string, std::string>> &at,
+                                 const std::set<std::string> &tables, const char *what)
+        {
+            const auto now = colours();
+            for (const auto &[key, colour] : was)
+            {
+                const auto &[from, to] = at.at(key);
+                if (!tables.contains(from) && !tables.contains(to))
+                    require(now.at(key) == colour, (std::string(what) + ": " + from + " -> " + to + " keeps its colour").c_str());
+            }
+        };
+        // A view made afresh for the schema as it now is -- saved, and opened in
+        // a window of its own, which keeps the keys' identities -- gives every
+        // relationship the colour this one does: nothing here is left over
+        // from before the rename.
+        QTemporaryDir folder;
+        int saved = 0;
+        const auto as_afresh = [&](const char *what)
+        {
+            const auto path = folder.filePath(QString("renamed-%1.erdx").arg(++saved));
+            require(store.save(path.toStdString(), editor.project()).ok, "The schema saves");
+            application::Editor fresh(ids);
+            infrastructure::ErdxProjectStore fresh_store;
+            desktop::MainWindow fresh_window(fresh, fresh_store, ids);
+            fresh_window.resize(1440, 920);
+            fresh_window.show();
+            fresh_window.show_home(false);
+            settle();
+            require(fresh_window.open_path(path), "And opens in a window of its own");
+            settle();
+            fresh_window.open_schema(true);
+            settle();
+            require(colours_of(*fresh_window.schema()) == colours(), what);
+            fresh.mark_saved(fresh.revision());
+        };
+
+        const auto first = colours();
+        const auto first_ends = ends();
+        // Columns of one name in many tables are as many relationships, each
+        // with a colour of its own where they meet.
+        {
+            int named_alike = 0;
+            for (const auto &table : view->preview().tables)
+                for (const auto &column : table.columns)
+                    named_alike += column.key_id && column.name == "EmployeeID" ? 1 : 0;
+            require(named_alike >= 5 && first.size() == first_ends.size() && first.size() == 25,
+                    "Foreign keys of one name in different tables are each a relationship of their own");
+            require(closest_at("Employee") >= 20.0, "And each has a colour plainly its own");
+        }
+
+        // A table renamed.
+        auto colourings = view->colourings();
+        rename(table_at("Dependent"), std::nullopt, "Dependant");
+        require(view->preview().tables[table_at("Dependant")].name == "Dependant", "The table is renamed");
+        require(view->colourings() == colourings + 1, "A table renamed gives the relationships their colours again at once");
+        std::optional<domain::ForeignKeyId> dependant;
+        for (const auto &[key, at] : first_ends)
+            if (at.first == "Dependent")
+                dependant = key;
+        require(dependant && colours().at(*dependant) != first.at(*dependant),
+                "Dependant -> Employee says something new, and is given the colour that goes with it");
+        only_at(first, first_ends, {"Dependent", "Employee"}, "Dependent renamed");
+        require(closest_at("Employee") >= 20.0, "Employee's relationships are still plainly apart");
+        as_afresh("Renamed, the table's relationships have the colours a view made afresh gives them");
+        const auto table_renamed = colours();
+        command("undoCommand");
+        require(colours() == first, "Undoing the rename gives back every colour there was");
+        command("redoCommand");
+        require(colours() == table_renamed, "Redoing it gives back the colours of the rename");
+        command("undoCommand");
+
+        // A column other tables refer to, renamed.
+        colourings = view->colourings();
+        const auto employee = table_at("Employee");
+        rename(employee, column_at(employee, "EmployeeID"), "StaffID");
+        require(view->colourings() == colourings + 1, "A referenced column renamed gives the colours again at once");
+        int changed = 0;
+        for (const auto &[key, colour] : colours())
+            changed += colour != first.at(key) ? 1 : 0;
+        require(changed > 0, "And the relationships that refer to it by its new name have the colours that go with it");
+        only_at(first, first_ends, {"Employee"}, "Employee's key renamed");
+        require(closest_at("Employee") >= 20.0, "Employee's relationships are still plainly apart");
+        as_afresh("Renamed, every relationship has the colour a view made afresh gives it");
+        const auto column_renamed = colours();
+        command("undoCommand");
+        require(colours() == first, "Undoing the column's rename gives back every colour there was");
+        command("redoCommand");
+        require(colours() == column_renamed, "Redoing it gives back the colours of the rename");
+        command("undoCommand");
+
+        // Two tables' names swapped, by way of a third: as many relationships as
+        // before, none run together, each still plainly apart where it meets
+        // another, and what a view made afresh gives.
+        rename(table_at("EmployeePhone"), std::nullopt, "Swapping");
+        rename(table_at("EmployeeSkill"), std::nullopt, "EmployeePhone");
+        rename(table_at("Swapping"), std::nullopt, "EmployeeSkill");
+        require(colours().size() == first.size(), "Names swapped, every relationship is still one of its own");
+        for (const auto &table : {"Employee", "EmployeePhone", "EmployeeSkill"})
+            require(closest_at(table) >= 20.0, (std::string("Names swapped, the relationships at ") + table +
+                                                " are still plainly apart")
+                                                   .c_str());
+        as_afresh("Names swapped, every relationship has the colour a view made afresh gives it");
+        for (int step = 0; step < 3; ++step)
+            command("undoCommand");
+        require(colours() == first, "Undoing the swap gives back every colour there was");
+        editor.mark_saved(editor.revision());
+
+        // A key of several columns: an invoice known by its number and year,
+        // which a shipment refers to by both, so one relationship is drawn as
+        // two lines -- in one colour, which neither moving a table nor
+        // renaming the shipment's columns splits.
+        {
+            application::Editor model(ids);
+            double placed = 0;
+            const auto entity = [&](const char *name)
+            {
+                placed += 400;
+                return std::get<domain::EntityId>(*model.create_entity(name, domain::Rect{placed, 0, 148, 86}).created);
+            };
+            const auto attribute = [&](const char *name, domain::EntityId owner, domain::AttributeKind kind)
+            {
+                const auto made = model.create_attribute(name, domain::Rect{placed, 200, 150, 60}, domain::ElementRef{owner});
+                require(made.ok && made.created, "An attribute is made");
+                if (kind != domain::AttributeKind::Normal)
+                    require(model.set_attribute_kind(std::get<domain::AttributeId>(*made.created), kind).ok,
+                            "And given its kind");
+            };
+            const auto relate = [&](const char *name, domain::EntityId one, domain::EntityId many)
+            {
+                const auto relationship = std::get<domain::RelationshipId>(
+                    *model.create_relationship(name, domain::Rect{placed, 400, 190, 110}).created);
+                const auto first_side = model.connect(relationship, one);
+                const auto second_side = model.connect(relationship, many);
+                require(first_side.ok && first_side.participant && second_side.ok && second_side.participant,
+                        "Both sides are joined");
+                require(model.update_participant(relationship, *first_side.participant, domain::Cardinality::One,
+                                                 domain::Participation::Partial, "")
+                                .ok &&
+                            model.update_participant(relationship, *second_side.participant, domain::Cardinality::Many,
+                                                     domain::Participation::Partial, "")
+                                .ok,
+                        "And given their cardinalities");
+            };
+            const auto invoice = entity("Invoice");
+            attribute("InvoiceNo", invoice, domain::AttributeKind::Key);
+            attribute("Year", invoice, domain::AttributeKind::Key);
+            const auto shipment = entity("Shipment");
+            attribute("ShipmentNo", shipment, domain::AttributeKind::Key);
+            const auto depot = entity("Depot");
+            attribute("DepotID", depot, domain::AttributeKind::Key);
+            const auto carrier = entity("Carrier");
+            attribute("CarrierID", carrier, domain::AttributeKind::Key);
+            relate("Covers", invoice, shipment);
+            relate("Holds", depot, shipment);
+            relate("Carries", carrier, shipment);
+
+            infrastructure::ErdxProjectStore composite_store;
+            desktop::MainWindow composite(model, composite_store, ids);
+            composite.resize(1440, 920);
+            composite.show();
+            composite.show_home(false);
+            settle();
+            composite.open_schema(true);
+            settle();
+            auto *schema = composite.schema();
+            const auto drawn = [&]
+            {
+                std::map<domain::ForeignKeyId, std::vector<QColor>> lines;
+                const auto keys = schema->line_keys();
+                const auto in = schema->line_colours();
+                for (std::size_t i = 0; i < keys.size(); ++i)
+                {
+                    require(keys[i].has_value(), "Every line of the shipments draws a foreign key");
+                    lines[*keys[i]].push_back(in[i]);
+                }
+                return lines;
+            };
+            const auto before = drawn();
+            std::optional<domain::ForeignKeyId> covers;
+            for (const auto &[key, in] : before)
+                if (in.size() == 2)
+                    covers = key;
+            require(before.size() == 3 && covers, "Shipment refers to the invoice by a key of two columns, one relationship");
+            require(before.at(*covers)[0] == before.at(*covers)[1], "Both of its lines are drawn in its one colour");
+            std::vector<QColor> one_each;
+            for (const auto &[key, in] : before)
+                one_each.push_back(in.front());
+            for (std::size_t i = 0; i < one_each.size(); ++i)
+                for (std::size_t j = i + 1; j < one_each.size(); ++j)
+                    require(colour_distance(one_each[i], one_each[j]) >= 20.0,
+                            "The three relationships meeting at Shipment are plainly apart");
+            const auto boxes = schema->table_boxes();
+            std::size_t invoice_at = 0;
+            for (std::size_t t = 0; t < boxes.size(); ++t)
+                if (schema->preview().tables[t].name == "Invoice")
+                    invoice_at = t;
+            const QPointF grip(boxes[invoice_at].center().x(), boxes[invoice_at].top() + 13);
+            const auto mouse = [&](QEvent::Type type, QPointF where, Qt::MouseButtons held)
+            {
+                QMouseEvent event(type, where, schema->mapToGlobal(where.toPoint()),
+                                  type == QEvent::MouseMove ? Qt::NoButton : Qt::LeftButton, held, Qt::NoModifier);
+                QApplication::sendEvent(schema, &event);
+            };
+            mouse(QEvent::MouseButtonPress, grip, Qt::LeftButton);
+            for (int step = 1; step <= 6; ++step)
+                mouse(QEvent::MouseMove, grip + QPointF(25.0 * step, 40.0 * step), Qt::LeftButton);
+            mouse(QEvent::MouseButtonRelease, grip + QPointF(150, 240), Qt::NoButton);
+            settle();
+            require(drawn() == before, "The invoice moved, the key of two columns keeps its one colour");
+            model.mark_saved(model.revision());
+        }
+        std::cout << "PASS renamed tables and columns give their relationships the colours their names give, at once\n";
+    }
+
+    void schema_line_colour_tests(infrastructure::QtIdGenerator &ids)
+    {
+        application::Editor editor(ids);
+        infrastructure::ErdxProjectStore store;
+        desktop::MainWindow window(editor, store, ids);
+        window.resize(1440, 920);
+        window.show();
+        window.show_home(false);
+        settle();
+        window.load_company_database_relational();
+        settle();
+        window.open_schema(true);
+        settle();
+        auto *view = window.schema();
+        // The colour each relationship has been given, checked first to be the
+        // colour of every line that draws it -- every column of a key of
+        // several.
+        const auto colours = [&]
+        {
+            std::map<domain::ForeignKeyId, QColor> by_key;
+            const auto keys = view->line_keys();
+            const auto drawn = view->line_colours();
+            for (std::size_t i = 0; i < keys.size(); ++i)
+            {
+                require(keys[i].has_value(), "Every line on the schema draws a foreign key");
+                const auto [at, added] = by_key.emplace(*keys[i], drawn[i]);
+                require(added || at->second == drawn[i], "Every line of one relationship is drawn in its one colour");
+            }
+            return by_key;
+        };
+        // The tables each relationship joins, read from the preview.
+        const auto joins = [&]
+        {
+            std::map<domain::ForeignKeyId, std::pair<std::string, std::string>> tables;
+            const auto &preview = view->preview();
+            for (const auto &table : preview.tables)
+                for (const auto &column : table.columns)
+                    if (column.key_id && column.references && *column.references < preview.tables.size())
+                        tables[*column.key_id] = {table.name, preview.tables[*column.references].name};
+            return tables;
+        };
+        const auto meeting = [&](const std::string &table)
+        {
+            std::vector<domain::ForeignKeyId> keys;
+            for (const auto &[key, ends] : joins())
+                if (ends.first == table || ends.second == table)
+                    keys.push_back(key);
+            return keys;
+        };
+        const auto closest_at = [&](const std::string &table, const std::map<domain::ForeignKeyId, QColor> &given)
+        {
+            const auto keys = meeting(table);
+            double closest = 1e9;
+            for (std::size_t i = 0; i < keys.size(); ++i)
+                for (std::size_t j = i + 1; j < keys.size(); ++j)
+                    closest = std::min(closest, colour_distance(given.at(keys[i]), given.at(keys[j])));
+            return closest;
+        };
+
+        // The Employee table (2026-10-13: three of its lines were three greens,
+        // two of them under 8 apart, and two were near-identical purples).
+        const auto first = colours();
+        require(meeting("Employee").size() >= 8, "Employee is joined by many relationships");
+        require(closest_at("Employee", first) >= 20.0,
+                ("Every two relationships meeting at Employee are plainly different colours (closest " +
+                 std::to_string(closest_at("Employee", first)) + ")")
+                    .c_str());
+        for (const auto &table : view->preview().tables)
+            if (meeting(table.name).size() <= 16)
+                require(closest_at(table.name, first) >= 20.0,
+                        ("The relationships meeting at " + table.name + " are plainly different colours").c_str());
+
+        // Tables moved, one and then all of them, and carried into the view's
+        // edge: the lines are routed again, and no relationship changes colour.
+        const auto colourings = view->colourings();
+        const auto mouse = [&](QEvent::Type type, QPointF where, Qt::MouseButtons held)
+        {
+            QMouseEvent event(type, where, view->mapToGlobal(where.toPoint()),
+                              type == QEvent::MouseMove ? Qt::NoButton : Qt::LeftButton, held, Qt::NoModifier);
+            QApplication::sendEvent(view, &event);
+        };
+        const auto carry = [&](const std::string &table, QPointF by, int steps)
+        {
+            const auto boxes = view->table_boxes();
+            for (std::size_t t = 0; t < boxes.size(); ++t)
+                if (view->preview().tables[t].name == table)
+                {
+                    const QPointF grip(boxes[t].center().x(), boxes[t].top() + 13);
+                    mouse(QEvent::MouseButtonPress, grip, Qt::LeftButton);
+                    for (int i = 1; i <= steps; ++i)
+                        mouse(QEvent::MouseMove, grip + by * i, Qt::LeftButton);
+                    mouse(QEvent::MouseButtonRelease, grip + by * steps, Qt::NoButton);
+                    settle();
+                    return;
+                }
+            throw std::runtime_error("No table named " + table);
+        };
+        const auto routed_before = view->routings();
+        carry("Employee", QPointF(30, 0), 10);
+        require(colours() == first, "Employee carried 300 px, every relationship keeps its colour");
+        carry("Project", QPointF(-20, 25), 6);
+        require(colours() == first, "Another table carried, every relationship keeps its colour");
+        view->select_all();
+        settle();
+        carry("Department", QPointF(10, 12), 5);
+        view->select(std::nullopt);
+        settle();
+        require(colours() == first, "Every table carried together, every relationship keeps its colour");
+        {
+            auto *scroll = child<QScrollArea>(window, "schemaScroll");
+            auto *port = scroll->viewport();
+            const auto boxes = view->table_boxes();
+            const QPointF grip(boxes[0].center().x(), boxes[0].top() + 13);
+            mouse(QEvent::MouseButtonPress, grip, Qt::LeftButton);
+            mouse(QEvent::MouseMove, grip + QPointF(0, 10), Qt::LeftButton);
+            mouse(QEvent::MouseMove, QPointF(view->mapFrom(port, QPoint(port->width() / 2, port->height() + 30))),
+                  Qt::LeftButton);
+            QElapsedTimer clock;
+            clock.start();
+            while (clock.elapsed() < 150)
+                QApplication::processEvents(QEventLoop::AllEvents, 5);
+            mouse(QEvent::MouseButtonRelease,
+                  QPointF(view->mapFrom(port, QPoint(port->width() / 2, port->height() + 30))), Qt::NoButton);
+            settle();
+        }
+        require(colours() == first, "A table carried into the edge as the view scrolls on, every colour stays");
+        require(view->routings() > routed_before + 20, "The lines were routed again as the tables moved");
+        require(view->colourings() == colourings,
+                "Moving tables gives no relationship a colour again: colours are given when relationships change");
+
+        // Saved and opened again.
+        QTemporaryDir folder;
+        const auto path = folder.filePath("colours.erdx");
+        require(store.save(path.toStdString(), editor.project()).ok, "The schema saves");
+        editor.mark_saved(editor.revision());
+        require(window.open_path(path), "And opens again");
+        settle();
+        require(colours() == first, "Saved and opened again, every relationship has the colour it had");
+
+        // A relationship taken away, then put back by undo and taken away again
+        // by redo: the relationships at other tables keep their colours, and
+        // undoing and redoing give back exactly what there was.
+        const auto ends = joins();
+        std::optional<domain::ForeignKeyId> removed;
+        for (const auto &[key, at] : ends)
+            if (at.first == "Dependent" && at.second == "Employee")
+                removed = key;
+        require(removed.has_value(), "Dependent refers to Employee");
+        require(editor.erase_foreign_key(*removed).ok, "The relationship is taken away");
+        view->refresh();
+        settle();
+        const auto without = colours();
+        for (const auto &[key, colour] : without)
+        {
+            const auto &at = ends.at(key);
+            const bool elsewhere = at.first != "Dependent" && at.first != "Employee" && at.second != "Dependent" &&
+                                   at.second != "Employee";
+            if (elsewhere)
+                require(colour == first.at(key),
+                        ("Taking a relationship away recolours nothing at other tables (" + at.first + " -> " + at.second + ")")
+                            .c_str());
+        }
+        require(editor.undo().ok, "Undo puts it back");
+        view->refresh();
+        settle();
+        require(colours() == first, "Put back, every relationship has its colour again");
+        require(editor.redo().ok, "Redo takes it away again");
+        view->refresh();
+        settle();
+        require(colours() == without, "Taken away again, the colours are those it had without it");
+        require(editor.undo().ok, "And it is put back once more");
+        view->refresh();
+        settle();
+
+        // Another theme and back; a dark theme's colours are its own and plainly
+        // apart; Plain gives greys only.
+        window.set_theme(desktop::ThemeId::Dracula);
+        settle();
+        const auto dark = colours();
+        require(closest_at("Employee", dark) >= 20.0, "In a dark theme too, Employee's relationships are plainly apart");
+        window.set_theme(desktop::ThemeId::Plain);
+        settle();
+        const auto plain = colours();
+        bool grey = true;
+        for (const auto &[key, colour] : plain)
+            grey = grey && colour.red() == colour.green() && colour.green() == colour.blue();
+        require(grey, "In Plain every line is a grey");
+        {
+            // More relationships meet at Employee than there are greys to tell
+            // apart, so greys repeat there, each as seldom as it can.
+            std::map<QRgb, int> used;
+            const auto keys = meeting("Employee");
+            for (const auto &key : keys)
+                ++used[plain.at(key).rgb()];
+            const auto most = std::max_element(used.begin(), used.end(),
+                                               [](const auto &a, const auto &b) { return a.second < b.second; })
+                                  ->second;
+            require(keys.size() == 10 && used.size() == 5 && most == 2,
+                    "At Employee in Plain, its ten relationships use each of the five greys twice");
+            // And at every table: five relationships or fewer a grey each, more
+            // than five no grey more often than an even share.
+            for (const auto &table : view->preview().tables)
+            {
+                std::map<QRgb, int> at;
+                const auto meeting_here = meeting(table.name);
+                for (const auto &key : meeting_here)
+                    ++at[plain.at(key).rgb()];
+                int most_here = 0;
+                for (const auto &[shade, uses] : at)
+                    most_here = std::max(most_here, uses);
+                const auto share = static_cast<int>((meeting_here.size() + 4) / 5);
+                require(meeting_here.size() > 5 ? most_here <= share : at.size() == meeting_here.size(),
+                        ("In Plain, the relationships at " + table.name + " share the greys evenly").c_str());
+            }
+        }
+        window.set_theme(desktop::ThemeId::OfficeLight);
+        settle();
+        require(colours() == first, "Back in the first theme, every relationship has its first colour");
+        window.set_theme(desktop::ThemeId::Plain);
+        settle();
+        require(colours() == plain, "And in Plain again, every relationship has the grey it had there");
+        window.set_theme(desktop::ThemeId::OfficeLight);
+        settle();
+
+        // A picture of the schema carries the same colours.
+        {
+            desktop::PictureOptions png;
+            png.format = desktop::PictureFormat::Png;
+            png.background = desktop::PictureBackground::ThemeColour;
+            png.carry_project = false;
+            const auto picture = folder.filePath("colours.png");
+            require(window.export_picture(png, picture), "The schema exports as a picture");
+            const QImage image(picture);
+            const auto source = view->export_view().bounds(desktop::PictureExtent::WholeDiagram)
+                                    .adjusted(-png.margin, -png.margin, png.margin, png.margin);
+            const double scale = image.width() / source.width();
+            const auto shapes = view->line_shapes();
+            const auto drawn = view->line_colours();
+            int found = 0, looked = 0;
+            for (std::size_t i = 0; i < shapes.size(); ++i)
+            {
+                // The middle of the line's longest run, where it is drawn whole.
+                std::size_t longest = 1;
+                for (std::size_t k = 1; k < shapes[i].size(); ++k)
+                    if (QLineF(shapes[i][k - 1], shapes[i][k]).length() >
+                        QLineF(shapes[i][longest - 1], shapes[i][longest]).length())
+                        longest = k;
+                if (shapes[i].size() < 2 || QLineF(shapes[i][longest - 1], shapes[i][longest]).length() < 40)
+                    continue;
+                ++looked;
+                const auto middle = (shapes[i][longest - 1] + shapes[i][longest]) / 2;
+                const QPoint at(static_cast<int>((middle.x() - source.left()) * scale),
+                                static_cast<int>((middle.y() - source.top()) * scale));
+                bool seen = false;
+                for (int dy = -3; dy <= 3 && !seen; ++dy)
+                    for (int dx = -3; dx <= 3 && !seen; ++dx)
+                        if (image.valid(at + QPoint(dx, dy)) &&
+                            colour_distance(image.pixelColor(at + QPoint(dx, dy)), drawn[i]) < 4.0)
+                            seen = true;
+                found += seen ? 1 : 0;
+            }
+            require(looked > 10 && found == looked, "Every line in the picture is drawn in its relationship's colour");
+        }
+        editor.mark_saved(editor.revision());
+
+        // The same example opened again, in an editor of its own whose keys are
+        // made with new identities: every relationship has the colour it had,
+        // because a colour is worked out from what a relationship joins, which
+        // is the same every time, and never from an identity made afresh.
+        {
+            const auto by_name = [](desktop::SchemaView &schema)
+            {
+                std::map<domain::ForeignKeyId, std::string> name_of;
+                const auto &preview = schema.preview();
+                for (const auto &table : preview.tables)
+                    for (const auto &column : table.columns)
+                        if (column.key_id && column.references && *column.references < preview.tables.size())
+                            name_of[*column.key_id] += table.name + "." + column.name + ">" +
+                                                       preview.tables[*column.references].name + "|";
+                std::map<std::string, QColor> named;
+                const auto keys = schema.line_keys();
+                const auto drawn = schema.line_colours();
+                for (std::size_t i = 0; i < keys.size(); ++i)
+                    named[name_of.at(*keys[i])] = drawn[i];
+                return named;
+            };
+            application::Editor again(ids);
+            infrastructure::ErdxProjectStore again_store;
+            desktop::MainWindow opened_again(again, again_store, ids);
+            opened_again.resize(1440, 920);
+            opened_again.show();
+            opened_again.show_home(false);
+            settle();
+            opened_again.load_company_database_relational();
+            settle();
+            opened_again.open_schema(true);
+            settle();
+            require(by_name(*opened_again.schema()) == by_name(*view),
+                    "The same example opened again with new identities gives every relationship the same colour");
+            window.set_theme(desktop::ThemeId::Plain);
+            opened_again.set_theme(desktop::ThemeId::Plain);
+            settle();
+            require(by_name(*opened_again.schema()) == by_name(*view),
+                    "And in Plain, every relationship the same grey, Employee's ten among them");
+            window.set_theme(desktop::ThemeId::OfficeLight);
+            settle();
+            again.mark_saved(again.revision());
+        }
+
+        // A schema worked out from a diagram, whose relationships come from the
+        // diagram's: every line still knows its relationship, and those meeting
+        // at a table are plainly apart.
+        {
+            application::Editor drawn(ids);
+            infrastructure::ErdxProjectStore drawn_store;
+            desktop::MainWindow from_diagram(drawn, drawn_store, ids);
+            from_diagram.resize(1440, 920);
+            from_diagram.show();
+            from_diagram.show_home(false);
+            settle();
+            from_diagram.load_company_database();
+            settle();
+            from_diagram.open_schema(true);
+            settle();
+            auto *worked_out = from_diagram.schema();
+            std::map<domain::ForeignKeyId, QColor> by_key;
+            const auto keys = worked_out->line_keys();
+            const auto drawn_in = worked_out->line_colours();
+            for (std::size_t i = 0; i < keys.size(); ++i)
+            {
+                require(keys[i].has_value(), "Every line of a schema worked out from a diagram draws a foreign key");
+                const auto [at, added] = by_key.emplace(*keys[i], drawn_in[i]);
+                require(added || at->second == drawn_in[i], "Every line of one relationship there has its one colour");
+            }
+            std::map<std::size_t, std::vector<domain::ForeignKeyId>> at_table;
+            const auto &preview = worked_out->preview();
+            for (std::size_t t = 0; t < preview.tables.size(); ++t)
+                for (const auto &column : preview.tables[t].columns)
+                    if (column.key_id && column.references)
+                    {
+                        at_table[t].push_back(*column.key_id);
+                        at_table[*column.references].push_back(*column.key_id);
+                    }
+            for (auto &[table, met] : at_table)
+            {
+                std::sort(met.begin(), met.end());
+                met.erase(std::unique(met.begin(), met.end()), met.end());
+                if (met.size() > 16)
+                    continue;
+                for (std::size_t i = 0; i < met.size(); ++i)
+                    for (std::size_t j = i + 1; j < met.size(); ++j)
+                        require(colour_distance(by_key.at(met[i]), by_key.at(met[j])) >= 20.0,
+                                ("In a schema worked out from a diagram, the relationships meeting at " +
+                                 preview.tables[table].name + " are plainly apart")
+                                    .c_str());
+            }
+            drawn.mark_saved(drawn.revision());
+        }
+
+        // The University example in Plain, where two relationships at Programs
+        // once shared a grey: Students, at the other end of both, had used the
+        // greys up by the time the second was taken (2026-10-13). At every
+        // table, five relationships or fewer have a grey each, and more than
+        // five no grey more often than an even share.
+        {
+            application::Editor university(ids);
+            infrastructure::ErdxProjectStore university_store;
+            desktop::MainWindow university_window(university, university_store, ids);
+            university_window.resize(1440, 920);
+            university_window.show();
+            university_window.show_home(false);
+            settle();
+            university_window.load_university_database();
+            settle();
+            university_window.open_schema(true);
+            settle();
+            university_window.set_theme(desktop::ThemeId::Plain);
+            settle();
+            auto *schema = university_window.schema();
+            std::map<domain::ForeignKeyId, QRgb> grey_of;
+            const auto keys = schema->line_keys();
+            const auto drawn_in = schema->line_colours();
+            for (std::size_t i = 0; i < keys.size(); ++i)
+                grey_of[*keys[i]] = drawn_in[i].rgb();
+            std::map<std::string, std::set<domain::ForeignKeyId>> at_table;
+            const auto &preview = schema->preview();
+            for (const auto &table : preview.tables)
+                for (const auto &column : table.columns)
+                    if (column.key_id && column.references)
+                    {
+                        at_table[table.name].insert(*column.key_id);
+                        at_table[preview.tables[*column.references].name].insert(*column.key_id);
+                    }
+            require(at_table.contains("Programs") && at_table.at("Programs").size() == 2, "Programs is met by two relationships");
+            for (const auto &[table, met] : at_table)
+            {
+                std::map<QRgb, int> at;
+                for (const auto &key : met)
+                    ++at[grey_of.at(key)];
+                int most = 0;
+                for (const auto &[shade, uses] : at)
+                    most = std::max(most, uses);
+                require(met.size() > 5 ? most <= static_cast<int>((met.size() + 4) / 5) : at.size() == met.size(),
+                        ("In Plain, the relationships at the University's " + table + " share the greys evenly").c_str());
+            }
+            university.mark_saved(university.revision());
+        }
+        std::cout << "PASS each relationship keeps one colour of its own, plainly apart from its neighbours'\n";
+    }
+
     // The schema's routing grid is written only by the router, which is what
     // lets the view's memory of searches see every write (RouteMemory): code
     // outside it can read the grid's cells but cannot write them.
@@ -6554,6 +7619,9 @@ int main(int argc, char **argv)
             schema_open_routing_tests(ids);
             route_memory_router_tests();
             route_memory_view_tests(ids);
+            schema_colour_allocation_tests();
+            schema_line_colour_tests(ids);
+            schema_line_colour_rename_tests(ids);
         }
         if (relational_part)
         {
