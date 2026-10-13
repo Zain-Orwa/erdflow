@@ -3393,6 +3393,412 @@ namespace
     // once -- what a fresh view of the same schema gives them -- and nothing
     // that does not meet them is recoloured; undo, redo, saving and opening
     // give back exactly what there was.
+    // Several foreign keys referring to one primary key (C3c-1, 2026-10-13).
+    // Their ends are fanned across the key's row, and they are fanned on each
+    // side of the table apart: ends landing on one side stand apart however
+    // many land on the other, up to the five places a row has room for, past
+    // which some must share one. Every end stays on the row it is about; an end
+    // put by hand stays exactly where it was put, and a line shaped by hand
+    // keeps its corners; the lines keep their ends through saving, opening and
+    // undo; and the searches the view remembers stay the searches it would make.
+    void schema_endpoint_separation_tests(infrastructure::QtIdGenerator &ids)
+    {
+        // Where one line leaves and lands: the table and row of the foreign-key
+        // column it leaves from, the table and row of the key it lands on, and
+        // which side of that table it lands on.
+        struct Ends
+        {
+            std::size_t from_table, from_row, to_table, to_row;
+            QPointF from, to;
+            int side;
+        };
+        const auto ends_of = [](desktop::SchemaView &view)
+        {
+            const auto &preview = view.preview();
+            const auto shapes = view.line_shapes();
+            const auto keys = view.line_keys();
+            const auto rows = view.row_boxes();
+            const auto boxes = view.table_boxes();
+            std::vector<Ends> all;
+            for (std::size_t i = 0; i < shapes.size(); ++i)
+            {
+                const auto from = shapes[i].front(), to = shapes[i].back();
+                std::optional<Ends> found;
+                for (std::size_t t = 0; t < preview.tables.size() && !found; ++t)
+                    for (std::size_t c = 0; c < preview.tables[t].columns.size() && !found; ++c)
+                    {
+                        const auto &column = preview.tables[t].columns[c];
+                        if (!column.key_id || !keys[i] || *column.key_id != *keys[i] || !column.references)
+                            continue;
+                        if (from.y() < rows[t][c].top() - 0.01 || from.y() > rows[t][c].bottom() + 0.01)
+                            continue;
+                        const auto target = *column.references;
+                        const int side = std::abs(to.x() - boxes[target].left()) < std::abs(to.x() - boxes[target].right()) ? 0 : 1;
+                        found = Ends{t, c, target, column.references_column, from, to, side};
+                    }
+                require(found.has_value(), "Every line leaves from the row of a column of its foreign key");
+                all.push_back(*found);
+            }
+            return all;
+        };
+        // Every line, but those whose ends were put by hand, lands on the edge
+        // of the row it refers to and leaves from the edge of its own.
+        const auto attached = [](desktop::SchemaView &view, const std::vector<Ends> &all, const std::set<std::size_t> &by_hand,
+                                 const std::string &what)
+        {
+            const auto rows = view.row_boxes();
+            const auto boxes = view.table_boxes();
+            for (std::size_t i = 0; i < all.size(); ++i)
+            {
+                if (by_hand.contains(i))
+                    continue;
+                const auto &one = all[i];
+                const auto on_edge = [](QPointF at, const QRectF &box)
+                { return std::abs(at.x() - box.left()) < 0.01 || std::abs(at.x() - box.right()) < 0.01; };
+                const auto in_row = [](QPointF at, const QRectF &row)
+                { return at.y() >= row.top() - 0.01 && at.y() <= row.bottom() + 0.01; };
+                require(on_edge(one.to, boxes[one.to_table]) && in_row(one.to, rows[one.to_table][one.to_row]),
+                        (what + ": every line lands on the row of the key it refers to").c_str());
+                require(on_edge(one.from, boxes[one.from_table]) && in_row(one.from, rows[one.from_table][one.from_row]),
+                        (what + ": and leaves from the row of its own foreign key").c_str());
+            }
+        };
+        // How many ends land on each side of each key's row, and how many
+        // places they take: at least as many as there are ends, up to five.
+        const auto separated = [](const std::vector<Ends> &all, const std::set<std::size_t> &by_hand, const std::string &what)
+        {
+            std::map<std::tuple<std::size_t, std::size_t, int>, std::pair<int, std::set<long long>>> at;
+            for (std::size_t i = 0; i < all.size(); ++i)
+                if (!by_hand.contains(i))
+                {
+                    auto &landing = at[{all[i].to_table, all[i].to_row, all[i].side}];
+                    ++landing.first;
+                    landing.second.insert(std::llround(all[i].to.y() * 4));
+                }
+            for (const auto &[where, landing] : at)
+                require(static_cast<int>(landing.second.size()) >= std::min(landing.first, 5),
+                        (what + ": ends landing on one side of a key's row stand apart, up to the five places a row has").c_str());
+            return at;
+        };
+        const auto open = [&](application::Editor &model, desktop::MainWindow &window)
+        {
+            (void)model;
+            window.resize(1440, 920);
+            window.show();
+            window.show_home(false);
+            settle();
+            window.open_schema(true);
+            settle();
+        };
+        // A table, Hub, referred to by others: `left` of them standing to its
+        // left and `right` to its right, so their lines land on its key's row
+        // from both sides in known numbers.
+        const auto hub_of = [&](application::Editor &model, int left, int right)
+        {
+            double placed = 0;
+            const auto entity = [&](const std::string &name)
+            {
+                placed += 400;
+                const auto made = std::get<domain::EntityId>(*model.create_entity(name, domain::Rect{placed, 0, 148, 86}).created);
+                const auto key = model.create_attribute(name + "ID", domain::Rect{placed, 200, 150, 60}, domain::ElementRef{made});
+                require(key.ok && model.set_attribute_kind(std::get<domain::AttributeId>(*key.created), domain::AttributeKind::Key).ok,
+                        "Each table has a key");
+                return made;
+            };
+            const auto hub = entity("Hub");
+            std::vector<domain::EntityId> spokes;
+            for (int i = 0; i < left + right; ++i)
+            {
+                const auto spoke = entity("Spoke" + std::to_string(i));
+                const auto relationship = std::get<domain::RelationshipId>(
+                    *model.create_relationship("Has" + std::to_string(i), domain::Rect{placed, 400, 190, 110}).created);
+                const auto one = model.connect(relationship, hub);
+                const auto many = model.connect(relationship, spoke);
+                require(one.ok && one.participant && many.ok && many.participant, "Both sides are joined");
+                require(model.update_participant(relationship, *one.participant, domain::Cardinality::One,
+                                                 domain::Participation::Partial, "")
+                                .ok &&
+                            model.update_participant(relationship, *many.participant, domain::Cardinality::Many,
+                                                     domain::Participation::Partial, "")
+                                .ok,
+                        "One hub to many spokes");
+                spokes.push_back(spoke);
+            }
+            return std::pair{hub, spokes};
+        };
+        const auto place_hub = [&](application::Editor &model, desktop::MainWindow &window, domain::EntityId hub,
+                                   const std::vector<domain::EntityId> &spokes, int left)
+        {
+            std::map<domain::ElementRef, domain::Point> places;
+            places[domain::ElementRef{hub}] = {900, 600};
+            for (std::size_t i = 0; i < spokes.size(); ++i)
+            {
+                const bool on_left = static_cast<int>(i) < left;
+                const auto row = on_left ? i : i - static_cast<std::size_t>(left);
+                places[domain::ElementRef{spokes[i]}] = {on_left ? 100.0 : 1700.0, 60.0 + 170.0 * static_cast<double>(row)};
+            }
+            require(model.move_schema_tables(places).ok, "The tables are put where the test wants them");
+            window.schema()->refresh();
+            settle();
+        };
+        const auto hub_table = [](desktop::SchemaView &view)
+        {
+            for (std::size_t t = 0; t < view.preview().tables.size(); ++t)
+                if (view.preview().tables[t].name.rfind("Hub", 0) == 0)
+                    return t;
+            throw std::runtime_error("No hub");
+        };
+
+        // Hubs: two ends on one side; five on one side while three land on the
+        // other; and seven on each side, more than a row has places for.
+        for (const auto &[left, right] : {std::pair{2, 0}, std::pair{5, 3}, std::pair{7, 7}})
+        {
+            application::Editor model(ids);
+            const auto [hub, spokes] = hub_of(model, left, right);
+            infrastructure::ErdxProjectStore hub_store;
+            desktop::MainWindow window(model, hub_store, ids);
+            open(model, window);
+            place_hub(model, window, hub, spokes, left);
+            auto *view = window.schema();
+            const auto what = "A hub referred to " + std::to_string(left) + " times from its left and " + std::to_string(right) +
+                              " from its right";
+            const auto all = ends_of(*view);
+            attached(*view, all, {}, what);
+            const auto landings = separated(all, {}, what);
+            const auto target = hub_table(*view);
+            int on_left = 0, on_right = 0;
+            for (const auto &[where, landing] : landings)
+                if (std::get<0>(where) == target)
+                    (std::get<2>(where) == 0 ? on_left : on_right) += landing.first;
+            require(on_left == left && on_right == right, (what + ": the lines land on the sides their tables stand on").c_str());
+            if (left > 5)
+                for (const auto &[where, landing] : landings)
+                    if (std::get<0>(where) == target)
+                        require(landing.second.size() >= 5,
+                                (what + ": past five on a side, the row's five places are all used").c_str());
+            model.mark_saved(model.revision());
+        }
+
+        // A key of several columns, referred to from both sides: each line of
+        // it lands on its own column's row, and the ends on each row stand apart.
+        {
+            application::Editor model(ids);
+            double placed = 0;
+            const auto entity = [&](const std::string &name, const std::vector<std::string> &keys)
+            {
+                placed += 400;
+                const auto made = std::get<domain::EntityId>(*model.create_entity(name, domain::Rect{placed, 0, 148, 86}).created);
+                for (const auto &key : keys)
+                {
+                    const auto attribute = model.create_attribute(key, domain::Rect{placed, 200, 150, 60}, domain::ElementRef{made});
+                    require(attribute.ok && model.set_attribute_kind(std::get<domain::AttributeId>(*attribute.created),
+                                                                     domain::AttributeKind::Key)
+                                                .ok,
+                            "A key");
+                }
+                return made;
+            };
+            const auto invoice = entity("Invoice", {"InvoiceNo", "Year"});
+            std::vector<domain::EntityId> referring{entity("Shipment", {"ShipmentNo"}), entity("Refund", {"RefundNo"}),
+                                                    entity("Payment", {"PaymentNo"})};
+            for (std::size_t i = 0; i < referring.size(); ++i)
+            {
+                const auto relationship = std::get<domain::RelationshipId>(
+                    *model.create_relationship("Covers" + std::to_string(i), domain::Rect{placed, 400, 190, 110}).created);
+                const auto one = model.connect(relationship, invoice);
+                const auto many = model.connect(relationship, referring[i]);
+                require(one.ok && one.participant && many.ok && many.participant &&
+                            model.update_participant(relationship, *one.participant, domain::Cardinality::One,
+                                                     domain::Participation::Partial, "")
+                                .ok &&
+                            model.update_participant(relationship, *many.participant, domain::Cardinality::Many,
+                                                     domain::Participation::Partial, "")
+                                .ok,
+                        "Each refers to the invoice");
+            }
+            infrastructure::ErdxProjectStore composite_store;
+            desktop::MainWindow window(model, composite_store, ids);
+            open(model, window);
+            place_hub(model, window, invoice, referring, 2);
+            auto *view = window.schema();
+            const auto all = ends_of(*view);
+            attached(*view, all, {}, "A key of two columns referred to three times");
+            separated(all, {}, "A key of two columns referred to three times");
+            std::map<domain::ForeignKeyId, std::set<std::size_t>> rows_of_key;
+            for (std::size_t i = 0; i < all.size(); ++i)
+                rows_of_key[*view->line_keys()[i]].insert(all[i].to_row);
+            require(rows_of_key.size() == 3 && std::all_of(rows_of_key.begin(), rows_of_key.end(), [](const auto &one)
+                                                           { return one.second.size() == 2; }),
+                    "Each reference is one key landing on both of the key's rows");
+            model.mark_saved(model.revision());
+        }
+
+        // The Company example: Employee's key is referred to seven times,
+        // once by Employee itself, from both sides.
+        application::Editor editor(ids);
+        infrastructure::ErdxProjectStore store;
+        desktop::MainWindow window(editor, store, ids);
+        window.resize(1440, 920);
+        window.show();
+        window.show_home(false);
+        settle();
+        window.load_company_database_relational();
+        settle();
+        window.open_schema(true);
+        settle();
+        auto *view = window.schema();
+        const auto company = ends_of(*view);
+        attached(*view, company, {}, "The Company schema");
+        separated(company, {}, "The Company schema");
+        std::size_t employee = 0;
+        for (std::size_t t = 0; t < view->preview().tables.size(); ++t)
+            if (view->preview().tables[t].name == "Employee")
+                employee = t;
+        int to_employee = 0, sides = 0, itself = 0;
+        std::set<int> seen_sides;
+        for (const auto &one : company)
+            if (one.to_table == employee)
+            {
+                ++to_employee;
+                seen_sides.insert(one.side);
+                itself += one.from_table == employee ? 1 : 0;
+            }
+        sides = static_cast<int>(seen_sides.size());
+        require(to_employee == 7 && sides == 2 && itself == 1,
+                "Employee's key is referred to seven times, from both sides, once by Employee itself");
+
+        // An end put by hand stays exactly where it was put, and is left out of
+        // the fan: the ends the fan places still stand apart.
+        const auto shapes = view->line_shapes();
+        std::optional<std::size_t> by_hand, shaped;
+        for (std::size_t i = 0; i < company.size(); ++i)
+        {
+            if (company[i].to_table != employee || company[i].from_table == employee)
+                continue;
+            if (!by_hand)
+                by_hand = i;
+            else if (!shaped)
+                shaped = i;
+        }
+        require(by_hand && shaped && *by_hand != *shaped, "Two lines into Employee to work with");
+        const auto link_of_line = [&](std::size_t line)
+        {
+            for (const auto &table : view->preview().tables)
+                for (const auto &column : table.columns)
+                    if (column.key_id && view->line_keys()[line] && *column.key_id == *view->line_keys()[line] && column.link)
+                        return *column.link;
+            throw std::runtime_error("A line with no link");
+        };
+        const auto hand_link = link_of_line(*by_hand);
+        const auto box = view->table_boxes()[employee];
+        const auto row = view->row_boxes()[employee][company[*by_hand].to_row];
+        domain::SchemaLine end_by_hand;
+        end_by_hand.to = domain::SchemaEnd{true, {company[*by_hand].side == 0 ? 0.0 : 1.0, (row.top() + 3 - box.top()) / box.height()}};
+        require(editor.shape_schema_line(hand_link, end_by_hand).ok, "An end is put by hand");
+        view->refresh();
+        settle();
+        {
+            const auto now = ends_of(*view);
+            std::optional<std::size_t> found;
+            for (std::size_t i = 0; i < now.size(); ++i)
+                if (link_of_line(i) == hand_link)
+                    found = i;
+            require(found.has_value(), "The line put by hand is still drawn");
+            const QPointF wanted(company[*by_hand].side == 0 ? box.left() : box.right(), row.top() + 3);
+            require(QLineF(now[*found].to, wanted).length() < 0.01, "An end put by hand stays exactly where it was put");
+            separated(now, {*found}, "With an end put by hand");
+            attached(*view, now, {*found}, "With an end put by hand");
+        }
+        require(editor.undo().ok, "Undo takes the hand's end back");
+        view->refresh();
+        settle();
+        require(view->line_shapes() == shapes, "And the lines are drawn as before it");
+
+        // A line shaped by hand keeps every corner the hand gave it; only its
+        // ends follow the tables, as they always have.
+        const auto shaped_link = link_of_line(*shaped);
+        domain::SchemaLine route_by_hand;
+        for (const auto &corner : shapes[*shaped])
+            route_by_hand.route.push_back({corner.x(), corner.y()});
+        require(route_by_hand.route.size() >= 4, "A line with corners to keep");
+        require(editor.shape_schema_line(shaped_link, route_by_hand).ok, "A line is shaped by hand");
+        view->refresh();
+        settle();
+        const auto kept = [&](const char *what)
+        {
+            const auto now = view->line_shapes();
+            std::optional<std::size_t> found;
+            for (std::size_t i = 0; i < now.size(); ++i)
+                if (link_of_line(i) == shaped_link)
+                    found = i;
+            require(found && now[*found].size() == route_by_hand.route.size(), what);
+            for (std::size_t k = 2; k + 2 < route_by_hand.route.size(); ++k)
+                require(QLineF(now[*found][k], QPointF(route_by_hand.route[k].x, route_by_hand.route[k].y)).length() < 0.01, what);
+            require(editor.project().schema_layout.lines.at(domain::foreign_key_from(shaped_link)) == route_by_hand,
+                    "And the shape the hand gave is kept as it was given");
+        };
+        kept("A line shaped by hand keeps its corners");
+        attached(*view, ends_of(*view), {}, "With a line shaped by hand");
+
+        // Saved and opened again, and moved and the move undone: every line
+        // keeps its ends.
+        const auto before = view->line_shapes();
+        {
+            QTemporaryDir folder;
+            const auto path = folder.filePath("ends.erdx");
+            require(store.save(path.toStdString(), editor.project()).ok, "The schema saves");
+            editor.mark_saved(editor.revision());
+            require(window.open_path(path), "And opens again");
+            settle();
+            view = window.schema();
+            require(view->line_shapes() == before, "Opened again, every line has the ends it had");
+        }
+        std::map<domain::ElementRef, domain::Point> moved;
+        for (const auto &table : view->preview().tables)
+            if (table.name == "Dependent" && table.origin)
+                moved[*table.origin] = {40, 1900};
+        require(!moved.empty() && editor.move_schema_tables(moved).ok, "A table is moved");
+        view->refresh();
+        settle();
+        const auto after_move = view->line_shapes();
+        require(after_move != before, "Moving a table moves the lines it has");
+        attached(*view, ends_of(*view), {}, "After a move");
+        separated(ends_of(*view), {}, "After a move");
+        require(editor.undo().ok, "The move is undone");
+        view->refresh();
+        settle();
+        require(view->line_shapes() == before, "Undone, every line has the ends it had");
+        require(editor.redo().ok, "And redone");
+        view->refresh();
+        settle();
+        require(view->line_shapes() == after_move, "Redone, the ends of the move");
+        require(editor.undo().ok, "Undone again");
+        view->refresh();
+        settle();
+
+        // The searches the view remembers are, under the new ends, the
+        // searches it would make afresh.
+        view->check_route_memory(true);
+        const auto account_before = view->route_memory().account();
+        for (const double x : {300.0, 700.0, 40.0})
+        {
+            std::map<domain::ElementRef, domain::Point> step;
+            for (const auto &table : view->preview().tables)
+                if (table.name == "Dependent" && table.origin)
+                    step[*table.origin] = {x, 1900};
+            require(editor.move_schema_tables(step).ok, "A table is moved again");
+            view->refresh();
+            settle();
+        }
+        const auto account_after = view->route_memory().account();
+        require(account_after.taken_again > account_before.taken_again, "Searches are taken again from memory");
+        require(account_after.mismatches == account_before.mismatches,
+                "And every search taken again is the search the router makes afresh");
+        view->check_route_memory(false);
+        editor.mark_saved(editor.revision());
+        std::cout << "PASS ends landing on one key's row are fanned on each side apart, and every end stays on its row\n";
+    }
+
     void schema_line_colour_rename_tests(infrastructure::QtIdGenerator &ids)
     {
         application::Editor editor(ids);
@@ -7622,6 +8028,7 @@ int main(int argc, char **argv)
             schema_colour_allocation_tests();
             schema_line_colour_tests(ids);
             schema_line_colour_rename_tests(ids);
+            schema_endpoint_separation_tests(ids);
         }
         if (relational_part)
         {

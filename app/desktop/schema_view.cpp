@@ -2799,11 +2799,16 @@ void SchemaView::reroute() {
     const auto side_of = [](QPointF step) {
         return step.x() > 0 ? 0 : step.x() < 0 ? 1 : step.y() > 0 ? 2 : 3;
     };
-    // How many lines already land on each row. Several foreign keys pointing at
-    // one primary key is the ordinary case, and left alone they all arrive at
-    // the very same point with their end symbols one on top of another. They
-    // are fanned across the row instead, which is as much room as there is.
-    std::map<std::pair<std::size_t, std::size_t>, int> arriving;
+    // How many lines already land on each side of each row. Several foreign keys
+    // pointing at one primary key is the ordinary case, and left alone they all
+    // arrive at the very same point with their end symbols one on top of
+    // another. They are fanned across the row instead, which is as much room as
+    // there is -- each side of it on its own, so the lines landing on one side
+    // take its places in turn however many land on the other (C3c-1,
+    // 2026-10-13: counted for both sides together, the fan ran out of places
+    // sooner and put two ends on one point). A row of the standard depth has
+    // five places a side; past them, some ends still share one.
+    std::map<std::tuple<std::size_t, std::size_t, int>, int> arriving;
     // Measured against the row they land on rather than the standard one: a
     // table pulled taller has deeper rows, and the fan is as wide as the row
     // it is spread across.
@@ -2974,7 +2979,7 @@ void SchemaView::reroute() {
         // own lane so two lines leaving together do not run as one.
         if (!to_by_hand)
             to += QPointF(-to_step.y(), to_step.x())
-                * fanned(arriving[{target, column.references_column}]++, to_row.height());
+                * fanned(arriving[{target, column.references_column, side_of(to_step)}]++, to_row.height());
         const auto lane_out = from_by_hand ? 0 : taken[{one.table, side_of(from_step)}]++ % lanes_across;
         const auto lane_in = to_by_hand ? 0 : taken[{target, side_of(to_step)}]++ % lanes_across;
         // An end off its table stands off from nothing, and must not: standing

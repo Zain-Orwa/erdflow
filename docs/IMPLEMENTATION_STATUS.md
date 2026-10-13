@@ -146,6 +146,22 @@ read as still to do.
   saving, opening, undo and redo. Routes are unchanged. *Supersedes* the
   golden-angle colours by routing order (2026-09-22) and the golden-ratio grey
   for each line (2026-09-24).
+- **Ends landing on one key's row are fanned on each side apart** (C3c-1,
+  2026-10-13; Zain approved): several foreign keys referring to one primary
+  key land fanned across its row, and the fan's places are now counted for
+  each side of the table apart (`arriving` keyed by table, column and side in
+  `SchemaView::reroute`) rather than for both sides together, which ran out
+  of places sooner and put two ends on one point, their last runs one on top
+  of the other. Same-side ends on one point went from 1 to 0 in each of the
+  four examples, and from 13 to 6 and 24 to 11 with 12 and 17 references to
+  one key. A row of the standard depth has five places a side, so past five
+  ends on one side some still share one, and crow's feet a few pixels apart
+  still overlap. Every end stays on the row it refers to; an end put by hand,
+  which the fan never placed, stays where it was put, and a line shaped by
+  hand keeps its corners. Routes change where their ends moved (total length
+  within 0.6 % on the examples; in the University example the line from
+  Students.ProfessorID now leaves to the left and runs round the top), and
+  the route memory still takes again only what a fresh search finds.
 - **Desktop timeout risk reduced without weakening coverage** (committed in
   `7b12b70`): the old single `desktop` CTest entry is split into
   `desktop_export`, `desktop_relational` and `desktop_window` (the last since
