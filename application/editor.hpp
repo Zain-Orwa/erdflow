@@ -11,8 +11,10 @@
 #include "domain/model.hpp"
 
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -165,6 +167,11 @@ public:
     // be cut short (2026-10-11); its height, and the size its name is lettered
     // for, are left as they are. Nothing is ever narrowed by a rename.
     EditResult rename(domain::ElementRef ref, std::string name, double least_width = 0);
+    // Renamed and made the size its new name is fitted to, about its centre,
+    // in the same edit (2026-10-12): smaller for a shorter name as well as
+    // larger for a longer one. An element resized by hand -- one whose name
+    // has a size of its own to be lettered for -- keeps its size.
+    EditResult rename_to_fit(domain::ElementRef ref, std::string name, double width, double height);
     EditResult describe(domain::ElementRef ref, std::string description);
     // What this becomes in the schema's own words, for the three things that
     // become tables and columns. Refused for anything else, so a note or a
@@ -443,6 +450,9 @@ public:
     EditResult redo();
 
 private:
+    // The one way an element is renamed; what differs is how its box changes.
+    EditResult rename_resizing(domain::ElementRef ref, std::string name,
+                               const std::function<std::optional<domain::Rect>(const domain::Rect&)>& resized);
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

@@ -74,7 +74,54 @@ read as still to do.
   downward, the canvas gives the lowest dragged table about one viewport of
   temporary room below it, then returns to normal sizing on release. The same
   drag can continue while the user scrolls with the wheel or trackpad; there is
-  no timer or automatic edge-autoscroll.
+  no timer or automatic edge-autoscroll. *Superseded in part by C6 (next
+  entry): the view now also scrolls by itself at its edges. The downward-only
+  room described here is unchanged.*
+- **Edge auto-scroll on both canvases** (C6, 2026-10-12):
+  a band being drawn, or tables / shapes being carried (one, a gathered group
+  or Select All), held within 24 px of an edge of the view or past it, scrolls
+  the view that way, diagonally in a corner, and goes on while the pointer is
+  held still (`EdgeScroll`, `edge_scroll.cpp`; a step about every 16 ms, one
+  pixel at the inside of the strip up to 40 px far past the edge). It stops
+  when the pointer comes back in, on release, when the view can go no further,
+  when the canvas loses the keyboard or is put away, and on Escape's
+  `cancel_interaction` on the diagram. The band stays anchored where it was
+  pressed and covers what comes into view; what is carried follows the pointer
+  and is written as one edit on release, as before. On the schema each step
+  carries the tables exactly as a pointer move to that place would, so the
+  downward drag room above and the top/left stop of a carried group are
+  unchanged and no extra room is given upward or across. On the diagram Qt
+  replays the pointer through the view on each scroll. Resizing by a handle,
+  shaping or pulling a line, drawing a connection and Pan do not auto-scroll.
+
+  *What was decided before, and what C6 changes:*
+
+  | | Before C6 | With C6 |
+  |---|---|---|
+  | View at an edge during a band or a carry | stays; scroll by hand | scrolls by itself |
+  | Diagram's room during a carry | fixed until the move is let go ("grows only at command boundaries, never during pointer movement", 2026-09-14) | **superseded:** grows while shapes are carried to reach 800 px past them (`make_room_for_carry`), in every direction, only ever growing during the drag; measured afresh, as before, when the move is let go |
+  | Diagram's room after a command | `default_paper` united with everything plus 800 px | unchanged |
+  | Schema room below a downward carry | one view's height (2026-10-09) | unchanged |
+  | Schema room across or upward | none; the canvas reaches just past the tables | unchanged |
+  | Schema top and left | nought; a carried group stops there as a whole | unchanged; no stored table position is shifted to make room |
+  | Coordinates, history, files | | unchanged: positions stay where they are, a carry is one edit, nothing new is saved |
+
+  On the 159-table schema each auto-scroll step of a carry routes every line,
+  as a pointer move does (about 520 ms with the C2 routing), so the view
+  advances in steps of up to 40 px rather than smoothly.
+- **The schema remembers its searches** (2026-10-13, not yet committed): each
+  Relational Schema view keeps the router's searches from its last pass
+  (`schema_router::RouteMemory`, owned by `SchemaView`) and takes a search's
+  path again only where that is exactly the path the search would find: same
+  line, same cells, same grid size, and -- within the cells it read -- no table
+  blocking otherwise, no line opening a cell otherwise, and every cell's capped
+  count as it was, worked out from what each line wrote then and now. Nothing
+  is compared by digest. Searches not asked for in a pass are let go of; a pass
+  in which every table moves (Select All) keeps nothing. The grid's cells are
+  private to the router (`schema_router::Grid`), so nothing else can write them
+  behind the memory's back. Every line is drawn exactly as before; tests check
+  each search taken again against a fresh one and the lines against routing
+  with no memory.
 - **Desktop timeout risk reduced without weakening coverage** (committed in
   `7b12b70`): the old single `desktop` CTest entry is split into
   `desktop_export`, `desktop_relational` and `desktop_window` (the last since
@@ -1552,7 +1599,23 @@ to build in Part 1* at the end. The state of the test suites is under
   they decide what somebody meets when they draw an element and nothing more,
   since every element is then pulled about by its corners and edges or given
   a width and a height in the Properties panel, and a size given by hand is
-  kept for that element and stored with the document.
+  kept for that element and stored with the document. (Superseded on
+  2026-10-12 by the entry below.)
+- **Shapes are made for their names** (Zain, 2026-10-12; committed in
+  `974230b`). A new or renamed entity, attribute, relationship,
+  generalization or specialization is made the size its name needs
+  (`fitted_body`): smaller for a short name, never under 70 by 44 and in
+  proportion to its default; no wider than the narrowest width that writes
+  "Relationship" whole on one line; taller for a longer name, written in up to
+  three lines inside the shape's outline, the third ending in an ellipsis with
+  the full name on hover if even three are not enough. The placing tools put
+  each down at the size its placeholder is fitted to. A rename refits about
+  the centre in one step of history (`Editor::rename_to_fit`); a shape resized
+  by hand keeps its size and its name wraps inside it; a diagram opens at the
+  sizes it was saved with, a long name in an older shape now written in the
+  lines it has room for rather than cut to one. Each shape keeps its name's
+  layout until the name, size or lettering changes, so a diagram of long
+  names paints as fast as before.
 - **An attribute is sized by hand, as an entity is.** Both hold a name, and
   how wide and how tall each is are two separate questions — a long name
   wants width where a second line wants height — so both answer to each of

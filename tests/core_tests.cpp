@@ -3251,6 +3251,62 @@ void a_schema_converts_into_its_diagram() {
 // A join table between a table and itself -- friendships between people --
 // becomes a many-to-many relationship of the entity with itself, its two sides
 // named for the keys that hold them, and converts back to the same table.
+// Elements made for their names (2026-10-12): converted with sizes that
+// differ from one element to the next -- tall attributes beside short ones in
+// a row, small entities and wide diamonds -- the diagram is laid out with
+// nothing overlapping and each element at exactly the size it was given.
+void converted_elements_take_their_own_sizes() {
+    TestIds ids;
+    Editor editor(ids);
+    editor.new_schema_project();
+    const auto table = [&](const std::string& name, Point at) {
+        return std::get<RelationId>(*editor.create_relation(name, at).created);
+    };
+    const auto key_of = [&](RelationId in) {
+        for (const auto& column : editor.project().schema.added.at(in))
+            if (column.identifier) return column.id;
+        throw std::runtime_error("no key");
+    };
+    const auto wide = table("Department", Point{40, 40});
+    const auto tall = table("Employee", Point{420, 40});
+    for (const auto* name : {"Name", "A Long Name", "Phone", "A Long Address", "Email", "A Long Title", "Hired"})
+        CHECK(editor.add_schema_column(ElementRef{tall}, name));
+    CHECK(editor.add_schema_column(ElementRef{tall}, "DepartmentID"));
+    std::optional<SchemaColumnId> pointing;
+    for (const auto& column : editor.project().schema.added.at(tall))
+        if (column.name == "DepartmentID") pointing = column.id;
+    CHECK(pointing && editor.add_foreign_key(tall, *pointing, wide, key_of(wide)));
+    const auto by_length = [](const std::string& name, double least, double most) {
+        return name.find("Long") != std::string::npos ? most : least;
+    };
+    DiagramSizes sizes;
+    sizes.entity_size = [](const std::string& name) { return DiagramBox{70.0 + 4.0 * static_cast<double>(name.size()), 44}; };
+    sizes.attribute_size = [&](const std::string& name) { return DiagramBox{by_length(name, 70, 137), by_length(name, 44, 108)}; };
+    sizes.relationship_size = [](const std::string&) { return DiagramBox{191, 134}; };
+    std::map<RelationId, Point> places;
+    for (const auto& [id, at] : editor.project().schema_layout.tables) places.emplace(id, at);
+    CHECK(editor.convert_schema_to_diagram(places, sizes, nullptr));
+    const auto& project = editor.project();
+    std::vector<Rect> boxes;
+    for (const auto& [ref, box] : project.layout) {
+        const auto name = erdflow::domain::name(project, ref);
+        if (std::holds_alternative<EntityId>(ref))
+            CHECK(box.width == 70.0 + 4.0 * static_cast<double>(name.size()) && box.height == 44);
+        if (std::holds_alternative<AttributeId>(ref))
+            CHECK(box.width == by_length(name, 70, 137) && box.height == by_length(name, 44, 108));
+        if (std::holds_alternative<RelationshipId>(ref)) CHECK(box.width == 191 && box.height == 134);
+        boxes.push_back(box);
+    }
+    CHECK(boxes.size() > 8);
+    for (std::size_t i = 0; i < boxes.size(); ++i)
+        for (std::size_t j = i + 1; j < boxes.size(); ++j) {
+            const auto& a = boxes[i];
+            const auto& b = boxes[j];
+            CHECK(a.x + a.width <= b.x + 0.5 || b.x + b.width <= a.x + 0.5
+                  || a.y + a.height <= b.y + 0.5 || b.y + b.height <= a.y + 0.5);
+        }
+}
+
 void a_join_of_a_table_with_itself_converts() {
     TestIds ids;
     Editor editor(ids);
@@ -5085,6 +5141,7 @@ int main() {
         {"a drawn table names its key for itself", a_drawn_table_names_its_key_for_itself},
         {"a schema converts into its diagram", a_schema_converts_into_its_diagram},
         {"a join of a table with itself converts", a_join_of_a_table_with_itself_converts},
+        {"converted elements take their own sizes", converted_elements_take_their_own_sizes},
         {"foreign keys can be renamed", foreign_keys_can_be_renamed},
         {"key order is not column order", key_order_is_not_column_order},
         {"generated columns keep the order given them", generated_columns_keep_the_order_given_them},

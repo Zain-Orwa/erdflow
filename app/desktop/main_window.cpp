@@ -5049,9 +5049,9 @@ namespace erdflow::desktop
             // from, so the shape is right the moment it appears.
             const auto found = current.layout.find(ElementRef{id});
             const auto box = found == current.layout.end() ? domain::Rect{} : found->second;
-            const domain::Rect body{box.x + box.width + 130,
-                                    box.y + box.height / 2 - relationship_body.height / 2,
-                                    relationship_body.width, relationship_body.height};
+            const auto size = fitted_body(NamedShape::Relationship, QStringLiteral("Relationship"), canvas_->font());
+            const domain::Rect body{box.x + box.width + 130, box.y + box.height / 2 - size.height / 2,
+                                    size.width, size.height};
             const auto result = editor_.relate(id, id, body, "Relationship");
             show_result(result);
             if (result && result.created) canvas_->select_elements({*result.created}, true); });
@@ -9504,9 +9504,12 @@ namespace erdflow::desktop
         const auto boxes = schema_->table_boxes();
         for (std::size_t i = 0; i < tables.size() && i < boxes.size(); ++i)
             places.emplace(tables[i].id, domain::Point{boxes[i].x(), boxes[i].y()});
+        // Every field named, the six ways of measuring a name empty until they
+        // are given below.
         domain::DiagramSizes sizes{entity_body.width, entity_body.height,
                                    attribute_body.width, attribute_body.height,
-                                   relationship_body.width, relationship_body.height};
+                                   relationship_body.width, relationship_body.height,
+                                   {}, {}, {}, {}, {}, {}};
         // Wider only where a name would otherwise be cut short.
         const auto base = canvas_->font();
         sizes.entity_fit = [base](const std::string &name)
@@ -9521,6 +9524,19 @@ namespace erdflow::desktop
         {
             return width_for_name(NamedShape::Relationship, text(name), base);
         };
+        // Made for their names, as a shape drawn on the diagram is (Zain,
+        // 2026-10-12): smaller for a short name, taller for a long one.
+        const auto fitted = [base](NamedShape shape)
+        {
+            return [base, shape](const std::string &name)
+            {
+                const auto size = fitted_body(shape, text(name), base);
+                return domain::DiagramBox{size.width, size.height};
+            };
+        };
+        sizes.entity_size = fitted(NamedShape::Entity);
+        sizes.attribute_size = fitted(NamedShape::Attribute);
+        sizes.relationship_size = fitted(NamedShape::Relationship);
         return {std::move(places), std::move(sizes)};
     }
 

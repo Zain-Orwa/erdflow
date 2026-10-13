@@ -69,19 +69,21 @@ These have been decided and are not open unless Zain reopens them.
   hidden; native menus and the shared actions/shortcuts remain intact.
 - **Crow's Foot is the default notation.** Not Chen. Four notations are offered;
   Crow's Foot is what a diagram is drawn in before anybody chooses.
-- **Element defaults are starting sizes, not rulings.** A new entity is 133×77,
-  a new relationship 171×99 and a new attribute 135×54 (Zain, 2026-10-11; they
-  were 148×86, 190×110 and 150×60). These are the least each is made at: one
-  whose name would be cut short is made, or on being renamed made, wider up
-  to the rendered width budget of "Relationship", measured with its own font and
-  shape's text room. This budget also applies to generalization and specialization
-  names. Longer names may elide; only shortened names need a
-  full-name hover. Existing remark tooltips remain available. A shorter name
-  never narrows it. They decide what somebody meets when they draw an element;
-  every element is then resized by hand, a size given by hand is kept and saved,
-  and a diagram
-  opens at exactly the sizes it was saved with. The figures themselves are not
-  to be changed.
+- **Shapes are made for their names** (Zain, 2026-10-12, replacing the
+  2026-10-11 rule that the defaults were the least size). The defaults --
+  entity 133×77, relationship 171×99, attribute 135×54, hierarchy 96×74 -- are
+  the proportions a shape is made in, and the figures themselves are not to be
+  changed. A new or renamed entity, attribute, relationship, generalization or
+  specialization is made the size its name needs: smaller for a short name,
+  never under 70×44 and in proportion to its default; no wider than the
+  rendered width of "Relationship", measured with its own font and shape's
+  text room, which is always written whole on one line; and taller for a
+  longer name, written in up to three lines. Beyond three lines the last ends
+  with an ellipsis and the full name is offered on hover; existing remark
+  tooltips remain available. A size given by hand is kept and saved, a renamed
+  shape resized by hand keeps its size, and a diagram opens at exactly the
+  sizes it was saved with. The curated examples and the template keep their
+  own layouts.
 - **The conceptual canvas and the Relational Schema are sized separately.** The
   canvas has `lettering_scale` and `connector_scale`; the schema measures every
   table from what it holds. A change to one must not reach into the other.

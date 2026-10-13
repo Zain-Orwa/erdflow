@@ -85,30 +85,34 @@ Rect centred(double cx, double cy, double width, double height) {
 }
 
 // Rows of attributes laid over and under the thing they belong to, at most
-// `across` to a row, each as wide as it was made. They alternate, over then
-// under, so the first two sit either side of the name; each row is centred
-// on the thing they belong to.
-std::vector<Rect> ring(double cx, double cy, double body_height, const std::vector<double>& widths,
-                       std::size_t across, const DiagramSizes& sizes) {
+// `across` to a row, each as wide and as tall as it was made. They alternate,
+// over then under, so the first two sit either side of the name; each row is
+// centred on the thing they belong to, and as tall as its tallest, so a name
+// written in more lines never reaches into the row beyond it. Rows of one
+// height are laid exactly as they always were.
+std::vector<Rect> ring(double cx, double cy, double body_height, const std::vector<DiagramBox>& boxes,
+                       std::size_t across) {
     constexpr double gap_x = 20;
     constexpr double gap_y = 24;
-    std::vector<Rect> placed(widths.size());
+    std::vector<Rect> placed(boxes.size());
     for (const bool over : {true, false}) {
         std::vector<std::size_t> side;
-        for (std::size_t i = over ? 0 : 1; i < widths.size(); i += 2) side.push_back(i);
+        for (std::size_t i = over ? 0 : 1; i < boxes.size(); i += 2) side.push_back(i);
+        double reached = body_height / 2 + 30;
         for (std::size_t first = 0; first < side.size(); first += across) {
             const auto in_row = std::min(across, side.size() - first);
-            const auto row = first / across;
-            const auto offset = body_height / 2 + 30 + sizes.attribute_height / 2
-                              + static_cast<double>(row) * (sizes.attribute_height + gap_y);
+            double tall = 0;
+            for (std::size_t k = 0; k < in_row; ++k) tall = std::max(tall, boxes[side[first + k]].height);
+            const auto offset = reached + tall / 2;
+            reached += tall + gap_y;
             const auto y = over ? cy - offset : cy + offset;
             double wide = gap_x * static_cast<double>(in_row - 1);
-            for (std::size_t k = 0; k < in_row; ++k) wide += widths[side[first + k]];
+            for (std::size_t k = 0; k < in_row; ++k) wide += boxes[side[first + k]].width;
             auto x = cx - wide / 2;
             for (std::size_t k = 0; k < in_row; ++k) {
-                const auto width = widths[side[first + k]];
-                placed[side[first + k]] = Rect{x, y - sizes.attribute_height / 2, width, sizes.attribute_height};
-                x += width + gap_x;
+                const auto& box = boxes[side[first + k]];
+                placed[side[first + k]] = Rect{x, y - box.height / 2, box.width, box.height};
+                x += box.width + gap_x;
             }
         }
     }
@@ -487,16 +491,27 @@ DiagramFromSchema diagram_from_schema(const Project& project, const std::map<Rel
                         double ordinary) {
         return measure ? std::max(ordinary, measure(name)) : ordinary;
     };
-    const auto width_of_attribute = [&](AttributeId id) {
-        return fit(sizes.attribute_fit, made.attributes.at(id).name, sizes.attribute_width);
+    const auto box_of_attribute = [&](AttributeId id) {
+        const auto& name = made.attributes.at(id).name;
+        if (sizes.attribute_size) return sizes.attribute_size(name);
+        return DiagramBox{fit(sizes.attribute_fit, name, sizes.attribute_width), sizes.attribute_height};
     };
     const auto widths_of = [&](const std::vector<AttributeId>& owned) {
-        std::vector<double> widths;
-        for (const auto& id : owned) widths.push_back(width_of_attribute(id));
-        return widths;
+        std::vector<DiagramBox> boxes;
+        for (const auto& id : owned) boxes.push_back(box_of_attribute(id));
+        return boxes;
     };
+    // Measured once for each: a relationship is tried in several places
+    // before it is put down, and its size is the same in all of them.
+    std::map<RelationshipId, DiagramBox> relationship_sizes;
     const auto relationship_box = [&](RelationshipId id, double cx, double cy) {
-        const auto width = fit(sizes.relationship_fit, made.relationships.at(id).name, sizes.relationship_width);
+        const auto& name = made.relationships.at(id).name;
+        if (sizes.relationship_size) {
+            auto found = relationship_sizes.find(id);
+            if (found == relationship_sizes.end()) found = relationship_sizes.emplace(id, sizes.relationship_size(name)).first;
+            return centred(cx, cy, found->second.width, found->second.height);
+        }
+        const auto width = fit(sizes.relationship_fit, name, sizes.relationship_width);
         // A diamond drawn wider is drawn a little taller with it, as the
         // template's is, so it does not flatten into a line.
         const auto height = sizes.relationship_height + (width - sizes.relationship_width) * 0.1;
@@ -527,10 +542,12 @@ DiagramFromSchema diagram_from_schema(const Project& project, const std::map<Rel
     for (const auto& [old_id, at] : entity_places) {
         (void)at;
         const auto entity = entity_of.at(old_id);
-        const auto body = centred(0, 0, fit(sizes.entity_fit, made.entities.at(entity).name, sizes.entity_width),
-                                  sizes.entity_height);
+        const auto& name = made.entities.at(entity).name;
+        const auto made_at = sizes.entity_size ? sizes.entity_size(name)
+                                               : DiagramBox{fit(sizes.entity_fit, name, sizes.entity_width), sizes.entity_height};
+        const auto body = centred(0, 0, made_at.width, made_at.height);
         body_of[entity] = body;
-        spots_of[entity] = ring(0, 0, sizes.entity_height, widths_of(entity_attributes[entity]), across, sizes);
+        spots_of[entity] = ring(0, 0, made_at.height, widths_of(entity_attributes[entity]), across);
         const auto room = reach(body, spots_of[entity]);
         widest = std::max(widest, room.width);
         tallest = std::max(tallest, room.height);
@@ -608,7 +625,7 @@ DiagramFromSchema diagram_from_schema(const Project& project, const std::map<Rel
         const auto fits = [&](const Point& at) {
             const auto body = relationship_box(id, at.x, at.y);
             std::vector<Rect> wants{body};
-            for (const auto& spot : ring(at.x, at.y, body.height, widths, 3, sizes)) wants.push_back(spot);
+            for (const auto& spot : ring(at.x, at.y, body.height, widths, 3)) wants.push_back(spot);
             for (const auto& want : wants)
                 for (const auto& taken : occupied)
                     if (overlaps(want, taken, 16)) return false;
@@ -620,7 +637,7 @@ DiagramFromSchema diagram_from_schema(const Project& project, const std::map<Rel
         const auto body = relationship_box(id, chosen.x, chosen.y);
         made.layout[ElementRef{id}] = body;
         occupied.push_back(body);
-        const auto spots = ring(chosen.x, chosen.y, body.height, widths, 3, sizes);
+        const auto spots = ring(chosen.x, chosen.y, body.height, widths, 3);
         for (std::size_t n = 0; n < owned.size() && n < spots.size(); ++n) {
             made.layout[ElementRef{owned[n]}] = spots[n];
             occupied.push_back(spots[n]);

@@ -6,11 +6,14 @@
 // covered by this — fix it and say what was wrong. Full rule: CLAUDE.md.
 #include "app/desktop/diagram_view.hpp"
 #include "app/desktop/document_export.hpp"
+#include "app/desktop/edge_scroll.hpp"
 #include "app/desktop/picture_export.hpp"
 #include "domain/schema_preview.hpp"
+#include "infrastructure/project_store.hpp"
 
 #include <QApplication>
 #include <QBuffer>
+#include <QElapsedTimer>
 #include <QGraphicsItem>
 #include <QGraphicsScene>
 #include <QImage>
@@ -28,6 +31,7 @@
 #include <QPainter>
 #include <QPainterPathStroker>
 #include <QStaticText>
+#include <QTemporaryDir>
 #include <QPlainTextEdit>
 #include <QFocusEvent>
 #include <QPointingDevice>
@@ -40,6 +44,7 @@
 #include <cmath>
 #include <numbers>
 #include <iostream>
+#include <map>
 #include <stdexcept>
 #include <vector>
 
@@ -80,6 +85,113 @@ QGraphicsItem* find_node(desktop::DiagramView& view, const QString& name) {
         if (item->zValue() > 0 && item->data(Qt::DisplayRole).toString() == name) return item;
     throw std::runtime_error("Missing node");
 }
+// A name too long for one line is written in up to three (2026-10-12). What a
+// shape paints is the layout it is given, line for line; and the layout keeps
+// to the rules: no more than three lines, each within the room its shape
+// leaves a name and inside the shape's outline, nothing of the name lost
+// unless the last line says so, and the whole name on hover exactly when it is.
+void require_written_in_lines(desktop::DiagramView& view, const application::Editor& editor,
+                              const domain::ElementRef& ref, desktop::NamedShape shape, bool cut_short) {
+    view.synchronize();
+    QApplication::processEvents();
+    const auto name = QString::fromStdString(domain::name(editor.project(), ref));
+    const auto box = editor.project().layout.at(ref);
+    const auto base = editor.project().lettering.find(ref);
+    const auto factor = base == editor.project().lettering.end() ? 1.0
+        : domain::lettering_factor(base->second, box.width, box.height);
+    const QRectF bounds(0, 0, box.width, box.height);
+    const auto laid = desktop::name_layout(shape, name, view.font(), factor, bounds);
+    require(laid.elided == cut_short, cut_short ? "Too long even for three lines, it is cut short on the last"
+                                                : "Written whole, in as many lines as it takes");
+    require(!laid.lines.empty() && laid.lines.size() <= 3 && laid.lines.size() == laid.rects.size(),
+            "In no more than three lines");
+    QFont font = view.font();
+    font.setFamilies({"Inter", "Source Sans 3", "IBM Plex Sans", "Segoe UI Variable",
+                      "Segoe UI", "SF Pro Text", "Helvetica Neue", "Arial"});
+    font.setStyleHint(QFont::SansSerif, QFont::PreferAntialias);
+    font.setPointSizeF(9.0 * desktop::lettering_scale * factor);
+    font.setWeight(QFont::Bold);
+    const QFontMetricsF metrics(font);
+    const bool hierarchy = shape == desktop::NamedShape::Generalization || shape == desktop::NamedShape::Specialization;
+    for (std::size_t i = 0; i < laid.lines.size(); ++i) {
+        const auto& rect = laid.rects[i];
+        const auto wide = metrics.horizontalAdvance(laid.lines[i]);
+        require(wide <= rect.width() + 0.5, "Each line fits the room it is given");
+        require(rect.top() >= -0.5 && rect.bottom() <= box.height + 0.5, "Every line is within the shape");
+        if (shape == desktop::NamedShape::Entity || shape == desktop::NamedShape::Attribute)
+            require(rect.center().x() - wide / 2 >= 15 - 0.5 && rect.center().x() + wide / 2 <= box.width - 15 + 0.5,
+                    "15 in from a box's or an oval's sides");
+        if (shape == desktop::NamedShape::Generalization)
+            require(rect.top() >= box.height / 2 - 0.5, "Under a generalisation's middle, where it is wide");
+        if (shape == desktop::NamedShape::Specialization)
+            require(rect.bottom() <= box.height / 2 + 0.5, "Above a specialisation's middle, where it is wide");
+        if (!hierarchy && laid.lines.size() > 1) {
+            // The letters' corners, from the capitals down to the baseline.
+            const auto baseline = rect.top() + (rect.height() - metrics.height()) / 2 + metrics.ascent();
+            for (const auto y : {baseline, baseline - metrics.capHeight()})
+                for (const auto x : {rect.center().x() - wide / 2, rect.center().x() + wide / 2}) {
+                    const auto dx = std::abs(x - box.width / 2);
+                    const auto dy = std::abs(y - box.height / 2);
+                    if (shape == desktop::NamedShape::Relationship)
+                        require(dx / (box.width / 2) + dy / (box.height / 2) <= 1.0 + 1e-6,
+                                "Every line is inside the diamond");
+                    if (shape == desktop::NamedShape::Attribute)
+                        require((dx * dx) / ((box.width / 2 - 5) * (box.width / 2 - 5))
+                                    + (dy * dy) / ((box.height / 2 - 5) * (box.height / 2 - 5)) <= 1.0 + 1e-6,
+                                "Every line is inside the oval's second ring");
+                }
+        }
+    }
+    QString joined;
+    for (const auto& line : laid.lines) joined += line;
+    joined.remove(QLatin1Char(' '));
+    auto whole = name;
+    whole.remove(QLatin1Char(' '));
+    if (!cut_short) require(joined == whole, "Nothing of the name is lost between its lines");
+    else {
+        require(joined.endsWith(QChar(0x2026)), "The last line says there is more");
+        joined.chop(1);
+        require(whole.startsWith(joined), "What is written is the name's own beginning");
+    }
+    // Painted exactly as laid out.
+    auto* node = find_node(view, name);
+    QImage actual((node->boundingRect().size().toSize() + QSize(8, 8)) * 4, QImage::Format_ARGB32);
+    actual.setDevicePixelRatio(4);
+    actual.fill(Qt::transparent);
+    QPainter painter(&actual);
+    painter.setFont(view.font());
+    node->paint(&painter, nullptr, nullptr);
+    painter.end();
+    QImage reference(actual.size(), QImage::Format_ARGB32);
+    reference.setDevicePixelRatio(4);
+    reference.fill(Qt::transparent);
+    QPainter writer(&reference);
+    writer.setRenderHint(QPainter::Antialiasing);
+    writer.setFont(font);
+    const auto ink = desktop::theme(view.theme_id()).node_text;
+    writer.setPen(ink);
+    for (std::size_t i = 0; i < laid.lines.size(); ++i) writer.drawText(laid.rects[i], Qt::AlignCenter, laid.lines[i]);
+    writer.end();
+    // A hierarchy also writes its d or o in the same ink, in a corner, so
+    // only the name's own lines are compared there.
+    const auto ink_of = [&](const QImage& image) {
+        std::vector<QPoint> dots;
+        for (int y = 0; y < image.height(); ++y)
+            for (int x = 0; x < image.width(); ++x) {
+                if (image.pixelColor(x, y) != ink) continue;
+                const QPointF at((x + 0.5) / 4, (y + 0.5) / 4);
+                if (hierarchy && std::none_of(laid.rects.begin(), laid.rects.end(),
+                                              [&](const QRectF& rect) { return rect.contains(at); })) continue;
+                dots.emplace_back(x, y);
+            }
+        return dots;
+    };
+    const auto painted = ink_of(actual);
+    require(!painted.empty() && painted == ink_of(reference), "The shape paints its name exactly as it is laid out");
+    if (node->toolTip().isEmpty() || node->toolTip() == name)
+        require((node->toolTip() == name) == cut_short, "The whole name is offered on hover exactly when it is cut short");
+}
+
 QGraphicsItem* find_edge(desktop::DiagramView& view, const QString& text = QStringLiteral("Participant:")) {
     for (auto* item : view.scene()->items())
         if (item->zValue() < 0 && item->toolTip().startsWith(text)) return item;
@@ -4072,16 +4184,19 @@ void attribute_resize_tests() {
         QPainter painter(&painted);
         find_node(view, "EnrollmentDate")->paint(&painter, nullptr, nullptr);
         painter.end();
+        // The first line of the name, however many it is written in: the
+        // rows of ink from its top down to the first row without any.
         const auto ink = desktop::theme(view.theme_id()).node_text;
-        int top = painted.height();
-        int bottom = -1;
-        for (int y = 0; y < painted.height(); ++y)
+        const auto inked = [&](int y) {
             for (int x = 0; x < painted.width(); ++x)
-                if (painted.pixelColor(x, y) == ink) {
-                    top = std::min(top, y);
-                    bottom = std::max(bottom, y);
-                }
-        require(bottom >= top, "The name is painted");
+                if (painted.pixelColor(x, y) == ink) return true;
+            return false;
+        };
+        int top = 0;
+        while (top < painted.height() && !inked(top)) ++top;
+        int bottom = top;
+        while (bottom + 1 < painted.height() && inked(bottom + 1)) ++bottom;
+        require(top < painted.height(), "The name is painted");
         return bottom - top + 1;
     };
     const auto ordinary = lettering_height();
@@ -4111,8 +4226,11 @@ void relationship_resize_tests() {
     click(view, {0, 0});
     const domain::ElementRef ref{editor.project().relationships.begin()->first};
     const auto original = editor.project().layout.at(ref);
-    require(original.width == desktop::relationship_body.width && original.height == desktop::relationship_body.height,
-            "Placed at the relationship default");
+    // Placed at the size its own name is fitted to (2026-10-12), which for
+    // "Relationship" is the widest a name makes a diamond on its own.
+    const auto fitted = desktop::fitted_body(desktop::NamedShape::Relationship, "Relationship", view.font());
+    require(original.width == fitted.width && original.height == fitted.height,
+            "Placed at the size its name is fitted to");
     require(editor.rename(ref, "Owns"), "Name the diamond");
     const auto id = std::get<domain::RelationshipId>(ref);
     require(editor.connect(id, std::get<domain::EntityId>(first)), "Connect the first entity");
@@ -4405,7 +4523,9 @@ void content_aware_size_tests() {
              : is_relationship(ref) ? desktop::relationship_body : desktop::attribute_body;
     };
 
-    // Placed with the tools, each is its default, whatever its placeholder.
+    // Placed with the tools, each is the size its placeholder is fitted to
+    // (2026-10-12): Entity and Attribute smaller than their defaults, the
+    // diamond as wide as "Relationship" needs.
     {
         const std::array<std::pair<desktop::Tool, QPointF>, 3> placing{
             {{desktop::Tool::Entity, {-400, 0}},
@@ -4417,9 +4537,15 @@ void content_aware_size_tests() {
             click(view, at);
             require(editor.project().layout.size() == before.size() + 1, "An element placed with its tool");
             for (const auto& [ref, box] : editor.project().layout)
-                if (!before.contains(ref))
-                    require(box.width == body_of(ref).width && box.height == body_of(ref).height,
-                            "Placed at its default: 133 x 77, 171 x 99 or 135 x 54");
+                if (!before.contains(ref)) {
+                    const auto fitted = is_entity(ref) ? desktop::fitted_body(desktop::NamedShape::Entity, "Entity", view.font())
+                        : is_relationship(ref) ? desktop::fitted_body(desktop::NamedShape::Relationship, "Relationship", view.font())
+                                               : desktop::fitted_body(desktop::NamedShape::Attribute, "Attribute", view.font());
+                    require(box.width == fitted.width && box.height == fitted.height,
+                            "Placed at the size its placeholder is fitted to");
+                    if (!is_relationship(ref))
+                        require(box.width < body_of(ref).width, "Smaller than its default for a short placeholder");
+                }
         }
         require(desktop::entity_body.width == 133 && desktop::entity_body.height == 77
                     && desktop::relationship_body.width == 171 && desktop::relationship_body.height == 99
@@ -4498,8 +4624,9 @@ void content_aware_size_tests() {
         }
     };
 
-    // Named on the diagram: a short name keeps the default, a longer one is
-    // made just wide enough, and the height is never touched.
+    // Named on the diagram, each is made the size its name is fitted to
+    // (2026-10-12): a short name smaller than the default, a longer one just
+    // wide enough, about the same centre.
     struct Named { QString name; bool short_name; };
     const std::array<std::pair<int, std::vector<Named>>, 3> naming{{
         {0, {{"User", true}, {"Student", false}, {"Professor", false}, {"Department", false}}},
@@ -4524,35 +4651,42 @@ void content_aware_size_tests() {
             require(editor.revision() == revision + 1 && editor.undo_label() == "Rename element",
                     "Naming it, widened or not, is one step of history");
             const auto& at = editor.project().layout.at(ref);
-            require(at.height == box.height, "Its height is not touched");
-            require(at.width >= box.width, "It is never narrower than its default");
-            if (named.short_name) require(at.width == box.width, "A short name keeps the default width");
-            require(std::abs(at.x + at.width / 2 - (box.x + box.width / 2)) < 0.01 && at.y == box.y,
-                    "Widened about its centre, where it was put");
+            const auto shape = kind == 0 ? desktop::NamedShape::Entity
+                             : kind == 1 ? desktop::NamedShape::Relationship : desktop::NamedShape::Attribute;
+            const auto fitted = desktop::fitted_body(shape, named.name, view.font());
+            require(at.width == fitted.width && at.height == fitted.height, "Made the size its name is fitted to");
+            if (named.short_name)
+                require(at.width < box.width && at.height <= box.height, "A short name makes it smaller than its default");
+            require(at.width >= domain::min_entity_width && at.height >= domain::min_entity_height,
+                    "Never under the domain's least");
+            require(std::abs(at.x + at.width / 2 - (box.x + box.width / 2)) < 0.01
+                        && std::abs(at.y + at.height / 2 - (box.y + box.height / 2)) < 0.01,
+                    "Fitted about its centre, where it was put");
             require(editor.project().lettering.empty(), "Its name is lettered as it was: nothing is kept for it");
-            const auto required = desktop::name_room_width(kind == 0 ? desktop::NamedShape::Entity
-                : kind == 1 ? desktop::NamedShape::Relationship : desktop::NamedShape::Attribute,
-                named.name, view.font(), 1.0, box.height);
-            const auto reference = desktop::name_room_width(kind == 0 ? desktop::NamedShape::Entity
-                : kind == 1 ? desktop::NamedShape::Relationship : desktop::NamedShape::Attribute,
-                QStringLiteral("Relationship"), view.font(), 1.0, box.height);
-            require(at.width == std::max(box.width, std::min(required, reference)), "Automatic growth respects the reference budget");
-            if (required <= reference || required <= box.width) written_whole_inside(ref, named.name);
+            const auto reference = desktop::fitted_body(shape, QStringLiteral("Relationship"), view.font());
+            require(at.width <= reference.width, "No wider than Relationship needs");
+            if (desktop::name_layout(shape, named.name, view.font(), 1.0, QRectF(0, 0, at.width, at.height)).lines.size() == 1)
+                written_whole_inside(ref, named.name);
+            else
+                require_written_in_lines(view, editor, ref, shape, false);
         }
 
-    // A longer name widens it again; a shorter one leaves it as wide as it
-    // is; and Undo takes the name and its width back together.
+    // A longer name widens it; a shorter one narrows it again; and Undo
+    // takes each name and its size back together.
     {
         const auto ref = *editor.create_entity("User", {600, 0, 133, 77}).created;
         require(view.rename(ref, "Professor"), "A longer name");
         const auto grown = editor.project().layout.at(ref);
-        require(grown.width == desktop::width_for_name(desktop::NamedShape::Entity, "Professor", view.font()),
-                "It is widened only if the reference needs more room");
+        const auto professor = desktop::fitted_body(desktop::NamedShape::Entity, "Professor", view.font());
+        require(grown.width == professor.width && grown.height == professor.height, "Made the size Professor is fitted to");
         written_whole_inside(ref, "Professor");
         require(view.rename(ref, "User"), "A shorter name again");
-        require(editor.project().layout.at(ref) == grown, "Which does not narrow it");
+        const auto user = desktop::fitted_body(desktop::NamedShape::Entity, "User", view.font());
+        const auto narrowed = editor.project().layout.at(ref);
+        require(narrowed.width == user.width && narrowed.height == user.height && narrowed.width < grown.width,
+                "Which narrows it again");
         require(editor.undo(), "Undo the shorter name");
-        require(editor.project().layout.at(ref) == grown, "The width stays");
+        require(editor.project().layout.at(ref) == grown, "The size comes back with the name");
         require(editor.undo(), "Undo the longer name");
         require(editor.project().layout.at(ref) == (domain::Rect{600, 0, 133, 77})
                     && domain::name(editor.project(), ref) == "User",
@@ -4566,18 +4700,27 @@ void content_aware_size_tests() {
         field->setText("Student");
         key_to(field, Qt::Key_Return);
         require(domain::name(editor.project(), ref) == "Student", "Named in the box");
-        require(editor.project().layout.at(ref).width >= 133, "Never narrower than its default");
+        const auto student = desktop::fitted_body(desktop::NamedShape::Entity, "Student", view.font());
+        require(editor.project().layout.at(ref).width == student.width
+                    && editor.project().layout.at(ref).height == student.height,
+                "Made the size its name is fitted to");
         written_whole_inside(ref, "Student");
 
         // Resized by hand, it keeps the size it was given, however long its
-        // name: nothing puts a name's width under a hand.
+        // name (2026-10-12): a name too long for it is written in more lines
+        // inside it rather than the hand's size being changed.
         require(editor.resize_entities({{ref, {600, 0, 90, 77}}}), "Pulled narrower than its name");
         view.synchronize();
         require(editor.project().layout.at(ref).width == 90, "It keeps the width it was given");
         require(view.rename(ref, "Professor"), "Renamed longer after that");
-        require(editor.project().layout.at(ref).width >= 90 && editor.project().layout.at(ref).height == 77,
-                "Which widens it only if the new name needs more room");
-        written_whole_inside(ref, "Professor");
+        require(editor.project().layout.at(ref) == (domain::Rect{600, 0, 90, 77}), "Which keeps the size the hand gave it");
+        {
+            const auto lettering = domain::lettering_factor(editor.project().lettering.at(ref), 90, 77);
+            const auto laid = desktop::name_layout(desktop::NamedShape::Entity, "Professor", view.font(), lettering,
+                                                   QRectF(0, 0, 90, 77));
+            if (laid.lines.size() == 1) written_whole_inside(ref, "Professor");
+            else require_written_in_lines(view, editor, ref, desktop::NamedShape::Entity, laid.elided);
+        }
         require(editor.resize_entities({{ref, {600, 0, 80, 60}}}), "And it can still be pulled smaller by hand");
         require(editor.project().layout.at(ref) == (domain::Rect{600, 0, 80, 60}), "To exactly what it was given");
     }
@@ -4779,11 +4922,12 @@ void relationship_fits_without_ellipsis_tests() {
         auto* long_node = find_node(view, long_name);
         require(long_node->toolTip() == long_name, "Hover exposes the full original name");
         require(QString::fromStdString(domain::name(editor.project(), long_ref)) == long_name, "Model name remains complete");
-        const auto font = font_for();
-        const auto room = available_room(shape, cap, body.height, font);
-        const auto elided = QFontMetricsF(font).elidedText(long_name, Qt::ElideRight, room);
-        require(elided != long_name, "The deliberately long name is elided");
-        painted_as(long_ref, shape, elided);
+        // Made at the cap with its default height, the deliberately long name
+        // is written in as many lines as the shape has room for, the last cut
+        // short (2026-10-12).
+        require(QFontMetricsF(font_for()).horizontalAdvance(long_name) > available_room(shape, cap, body.height, font_for()),
+                "The deliberately long name is too long for one line");
+        require_written_in_lines(view, editor, long_ref, shape, true);
         require(editor.create_comment("Keep this contextual remark", {domain::CommentTarget{long_ref}}),
                 "A meaningful existing tooltip");
         view.synchronize();
@@ -4804,17 +4948,24 @@ void relationship_fits_without_ellipsis_tests() {
         const auto base = editor.project().lettering.at(long_ref);
         const auto factor = domain::lettering_factor(base, domain::min_entity_width, body.height);
         const auto narrow_font = font_for(factor);
-        const auto narrow_text = QFontMetricsF(narrow_font).elidedText(long_name, Qt::ElideRight,
-            available_room(shape, domain::min_entity_width, body.height, narrow_font));
-        require(narrow_text != long_name, "A manually narrowed shape can elide");
-        painted_as(long_ref, shape, narrow_text);
+        require(QFontMetricsF(narrow_font).horizontalAdvance(long_name)
+                    > available_room(shape, domain::min_entity_width, body.height, narrow_font),
+                "Too long for a manually narrowed shape's one line");
+        require_written_in_lines(view, editor, long_ref, shape, true);
 
         // After proportional manual resizing, both actual and reference names
         // must use that same font, including its change during automatic growth.
         require(resize(long_ref, body.width * 2, body.height * 2), "Manual lettering scaled with the box");
         const auto lettering_before = editor.project().lettering;
-        require(view.rename(long_ref, "Relationship"), "Reference fitted using manual lettering metadata");
-        painted_as(long_ref, shape, reference_name);
+        const auto hand_box = editor.project().layout.at(long_ref);
+        require(view.rename(long_ref, "Relationship"), "Renamed after being resized by hand");
+        require(editor.project().layout.at(long_ref) == hand_box, "A hand's size is kept by a rename");
+        {
+            const auto laid = desktop::name_layout(shape, reference_name, view.font(),
+                domain::lettering_factor(base, hand_box.width, hand_box.height), QRectF(0, 0, hand_box.width, hand_box.height));
+            if (laid.lines.size() == 1) painted_as(long_ref, shape, reference_name);
+            else require_written_in_lines(view, editor, long_ref, shape, false);
+        }
         const auto measured_box = editor.project().layout.at(long_ref);
         const auto measured_factor = domain::lettering_factor(base, measured_box.width, measured_box.height);
         const auto measured_cap = desktop::name_room_width(shape, reference_name, view.font(), measured_factor, measured_box.height);
@@ -4839,9 +4990,13 @@ void relationship_fits_without_ellipsis_tests() {
                 "One undo restores name and geometry");
         require(view.rename(rename_ref, long_name.toStdString()), "Rename beyond the reference budget");
         require(editor.project().layout.at(rename_ref).width == cap, "Long rename stops at the cap");
-        const auto grown = editor.project().layout.at(rename_ref);
+        require(editor.project().layout.at(rename_ref).height >= body.height, "And is made as tall as its lines need");
+        require_written_in_lines(view, editor, rename_ref, shape, true);
         require(view.rename(rename_ref, "ID"), "Rename shorter");
-        require(editor.project().layout.at(rename_ref) == grown, "No automatic shrinking");
+        const auto id = desktop::fitted_body(shape, "ID", view.font());
+        require(editor.project().layout.at(rename_ref).width == id.width
+                    && editor.project().layout.at(rename_ref).height == id.height,
+                "Which makes it the size ID is fitted to again");
     }
 }
 
@@ -4961,6 +5116,630 @@ void saved_sizes_are_kept_tests() {
             "However short that is for its name");
 }
 
+// Every named shape made for its name (Zain, 2026-10-12): a short name the
+// narrowest shape, in proportion to its default; "Relationship" the widest a
+// name makes it, written whole on one line; a longer name as wide as that and
+// taller, in two or three lines, cut short only after three. Placed with its
+// tool, renamed, undone, joined by its lines and saved, it stays so.
+void fitted_shapes_tests() {
+    SequentialIds ids;
+    application::Editor editor(ids);
+    desktop::DiagramView view(editor);
+    view.resize(1400, 900);
+    view.show();
+    view.actual_size();
+    view.centerOn(0, 0);
+    QApplication::processEvents();
+    const auto font = view.font();
+    const auto laid = [&](desktop::NamedShape shape, const QString& name, const desktop::BodySize& size) {
+        return desktop::name_layout(shape, name, font, 1.0, QRectF(0, 0, size.width, size.height));
+    };
+    const std::array<std::pair<desktop::NamedShape, desktop::BodySize>, 5> kinds{{
+        {desktop::NamedShape::Entity, desktop::entity_body},
+        {desktop::NamedShape::Attribute, desktop::attribute_body},
+        {desktop::NamedShape::Relationship, desktop::relationship_body},
+        {desktop::NamedShape::Generalization, desktop::isa_body},
+        {desktop::NamedShape::Specialization, desktop::isa_body},
+    }};
+    const QString two_lines = QStringLiteral("Department Name Registry");
+    const QString too_long = QStringLiteral("Supercalifragilistic Expialidocious Enterprise Resource Planning "
+                                            "Identifier For Every Department Of The Whole University");
+    for (const auto& [shape, body] : kinds) {
+        const auto least_height = std::max(domain::min_entity_height,
+                                           std::ceil(body.height * domain::min_entity_width / body.width));
+        const auto small = desktop::fitted_body(shape, "Id", font);
+        require(small.width == domain::min_entity_width, "A short name makes the narrowest shape the domain allows");
+        require(small.height == std::clamp(std::round(body.height * small.width / body.width), least_height, body.height),
+                "In proportion to its default, and never squatter than that allows");
+        require(small.width < body.width && small.height <= body.height, "Smaller than the default");
+        const auto reference = desktop::fitted_body(shape, "Relationship", font);
+        const auto written = laid(shape, "Relationship", reference);
+        require(written.lines.size() == 1 && !written.elided && written.lines.front() == "Relationship",
+                "Relationship is written whole on one line, never cut short");
+        const QFontMetricsF metrics(font);
+        for (const auto& name : {QStringLiteral("Owns"), QStringLiteral("Student"), QStringLiteral("Professor")}) {
+            const auto size = desktop::fitted_body(shape, name, font);
+            require(size.width <= reference.width, "No name shorter than Relationship makes it wider");
+            const auto one = laid(shape, name, size);
+            require(one.lines.size() == 1 && !one.elided, "And it is written whole on one line");
+        }
+        const auto two = desktop::fitted_body(shape, two_lines, font);
+        const auto in_two = laid(shape, two_lines, two);
+        require(two.width == reference.width && two.height >= reference.height,
+                "A longer name makes it as wide as Relationship, and taller");
+        require(in_two.lines.size() >= 2 && in_two.lines.size() <= 3 && !in_two.elided,
+                "Written whole in two or three lines");
+        const auto most = desktop::fitted_body(shape, too_long, font);
+        const auto in_three = laid(shape, too_long, most);
+        require(most.width == reference.width, "However long the name, no wider than Relationship");
+        require(in_three.lines.size() == 3 && in_three.elided, "Too long for three lines, it is cut short on the third");
+    }
+
+    // Placed with each tool, each is the size its placeholder is fitted to.
+    const std::array<std::tuple<desktop::Tool, desktop::NamedShape, QString>, 5> placing{{
+        {desktop::Tool::Entity, desktop::NamedShape::Entity, QStringLiteral("Entity")},
+        {desktop::Tool::Attribute, desktop::NamedShape::Attribute, QStringLiteral("Attribute")},
+        {desktop::Tool::Relationship, desktop::NamedShape::Relationship, QStringLiteral("Relationship")},
+        {desktop::Tool::Generalization, desktop::NamedShape::Generalization, QStringLiteral("IS A")},
+        {desktop::Tool::Specialization, desktop::NamedShape::Specialization, QStringLiteral("IS A")},
+    }};
+    double across = -500;
+    std::optional<domain::ElementRef> placed_entity;
+    std::optional<domain::ElementRef> placed_relationship;
+    for (const auto& [tool, shape, placeholder] : placing) {
+        const auto before = editor.project().layout;
+        view.set_tool(tool);
+        click(view, {across, 0});
+        across += 250;
+        require(editor.project().layout.size() == before.size() + 1, "Placed with its tool");
+        for (const auto& [ref, box] : editor.project().layout)
+            if (!before.contains(ref)) {
+                const auto fitted = desktop::fitted_body(shape, placeholder, font);
+                require(box.width == fitted.width && box.height == fitted.height, "At the size its placeholder is fitted to");
+                if (shape == desktop::NamedShape::Entity) placed_entity = ref;
+                if (shape == desktop::NamedShape::Relationship) placed_relationship = ref;
+            }
+    }
+    require(placed_entity && placed_relationship, "An entity and a diamond to work with");
+
+    // Renamed longer and shorter, about its centre, each one step undone and
+    // redone with its size.
+    const auto start = editor.project().layout.at(*placed_entity);
+    const auto centre = [](const domain::Rect& box) { return QPointF(box.x + box.width / 2, box.y + box.height / 2); };
+    require(view.rename(*placed_entity, two_lines.toStdString()), "Renamed longer");
+    const auto longer = editor.project().layout.at(*placed_entity);
+    const auto fitted_longer = desktop::fitted_body(desktop::NamedShape::Entity, two_lines, font);
+    require(longer.width == fitted_longer.width && longer.height == fitted_longer.height
+                && QLineF(centre(longer), centre(start)).length() < 0.01,
+            "Made the size its longer name is fitted to, about the same centre");
+    require_written_in_lines(view, editor, *placed_entity, desktop::NamedShape::Entity, false);
+    require(editor.undo() && editor.project().layout.at(*placed_entity) == start
+                && domain::name(editor.project(), *placed_entity) == "Entity",
+            "One undo takes the name and the size back");
+    require(editor.redo() && editor.project().layout.at(*placed_entity) == longer, "And redo brings both again");
+
+    // Joined to the diamond, then renamed short: the line meets the smaller
+    // entity's outline, not where the old one was.
+    require(editor.connect(std::get<domain::RelationshipId>(*placed_relationship), std::get<domain::EntityId>(*placed_entity)),
+            "Join the entity to the diamond");
+    require(view.rename(*placed_entity, "Id"), "Renamed short");
+    view.synchronize();
+    QApplication::processEvents();
+    const auto shrunk = editor.project().layout.at(*placed_entity);
+    require(shrunk.width == domain::min_entity_width, "Made the narrowest shape");
+    {
+        const auto box = find_node(view, "Id")->sceneBoundingRect().adjusted(4, 4, -4, -4);
+        require(std::abs(box.width() - shrunk.width) < 1.0, "Drawn at its new size");
+        const auto target = find_node(view, "Relationship")->sceneBoundingRect().center();
+        auto direction = target - box.center();
+        if (view.line_style() == desktop::LineStyle::Elbow)
+            direction = std::abs(direction.x()) / box.width() >= std::abs(direction.y()) / box.height()
+                ? QPointF(direction.x(), 0) : QPointF(0, direction.y());
+        const auto scale = std::min(direction.x() != 0 ? (box.width() / 2) / std::abs(direction.x()) : 1e9,
+                                    direction.y() != 0 ? (box.height() / 2) / std::abs(direction.y()) : 1e9);
+        const auto join = box.center() + direction * scale;
+        bool attached = false;
+        for (auto* item : view.scene()->items())
+            if (item->zValue() < 0 && item->shape().contains(item->mapFromScene(join))) attached = true;
+        require(attached, "Its line meets the smaller entity's outline");
+    }
+
+    // A fitted size is an ordinary size: nothing else is kept for it, and a
+    // diagram opened on the same project again draws every shape at exactly
+    // that size without changing anything (the file keeps sizes as it always
+    // has: persistence_tests).
+    require(editor.project().lettering.empty(), "Fitting keeps nothing of its own in the project");
+    const auto layout = editor.project().layout;
+    const auto revision = editor.revision();
+    {
+        desktop::DiagramView again(editor);
+        again.resize(800, 600);
+        again.show();
+        again.synchronize();
+        QApplication::processEvents();
+    }
+    require(editor.revision() == revision && editor.project().layout == layout,
+            "Opened again, every fitted shape is the size it was");
+}
+
+// A band drawn round shapes, or shapes being carried, held near or past the
+// edge of the view scroll it on, so the same gesture goes on into what was
+// not showing (C6, 2026-10-12). Nothing else the hand does with the button
+// held scrolls the view; the history hears of a carry once, when it is let go.
+void hold_for(int ms) {
+    QElapsedTimer clock;
+    clock.start();
+    while (clock.elapsed() < ms) QApplication::processEvents(QEventLoop::AllEvents, 5);
+}
+int sign_of(int value) { return (value > 0) - (value < 0); }
+
+void edge_scroll_tests() {
+    using desktop::EdgeScroll;
+    // The pace: nothing away from the edges, one pixel at the inside of the
+    // strip along one, more nearer it and more again past it, and never more
+    // than the fastest.
+    {
+        const QSize size(600, 400);
+        require(EdgeScroll::step(size, {300, 200}).isNull(), "Away from the edges nothing scrolls");
+        require(EdgeScroll::step(size, {300, 400 - EdgeScroll::reach}) == QPoint(0, 1),
+                "At the inside of the bottom strip the view goes down a pixel a step");
+        require(EdgeScroll::step(size, {300, EdgeScroll::reach - 1}) == QPoint(0, -1),
+                "At the inside of the top strip it goes up a pixel a step");
+        require(EdgeScroll::step(size, {300, 399}).y() > EdgeScroll::step(size, {300, 390}).y(),
+                "Nearer the edge it goes faster");
+        require(EdgeScroll::step(size, {300, 460}).y() > EdgeScroll::step(size, {300, 399}).y(),
+                "Past the edge it goes faster again");
+        require(EdgeScroll::step(size, {300, 5000}).y() == EdgeScroll::fastest
+                    && EdgeScroll::step(size, {-5000, 200}).x() == -EdgeScroll::fastest,
+                "However far past the edge, a step goes no further than the fastest");
+        const auto corner = EdgeScroll::step(size, {599, 0});
+        require(corner.x() > 0 && corner.y() < 0, "In a corner it goes both ways at once");
+        require(EdgeScroll::step(QSize(40, 40), {20, 20}).isNull(), "A tiny view still has a middle that does not scroll");
+        // A step on time goes as far as it says; one that comes late goes as
+        // far as the steps it stands for, but never further than the fastest.
+        require(EdgeScroll::late_step({0, 7}, EdgeScroll::interval_ms) == QPoint(0, 7), "A step on time is itself");
+        require(EdgeScroll::late_step({3, 0}, 0) == QPoint(3, 0), "A step that comes early is itself");
+        require(EdgeScroll::late_step({0, -1}, 10 * EdgeScroll::interval_ms) == QPoint(0, -10),
+                "A step ten steps late goes ten steps' way");
+        require(EdgeScroll::late_step({7, 7}, 600) == QPoint(EdgeScroll::fastest, EdgeScroll::fastest),
+                "A step very late goes no further than the fastest");
+    }
+
+    SequentialIds ids;
+    application::Editor editor(ids);
+    std::vector<domain::EntityId> cells;
+    for (int row = 0; row < 6; ++row)
+        for (int column = 0; column < 6; ++column) {
+            const auto made = editor.create_entity("Cell " + std::to_string(row) + std::to_string(column),
+                                                   {column * 300.0, row * 300.0, 133, 77});
+            require(made, "Create a cell of the grid");
+            cells.push_back(std::get<domain::EntityId>(*made.created));
+        }
+    desktop::DiagramView view(editor);
+    view.resize(600, 400);
+    view.show();
+    view.actual_size();
+    QApplication::processEvents();
+    auto* port = view.viewport();
+    const auto bars = [&] { return QPoint(view.horizontalScrollBar()->value(), view.verticalScrollBar()->value()); };
+    const auto box_of = [&](const domain::EntityId& id) {
+        const auto& rect = editor.project().layout.at(id);
+        return QRectF(rect.x, rect.y, rect.width, rect.height);
+    };
+    const auto empty_spot = [&] {
+        for (int y = port->height() / 3; y < port->height() * 2 / 3; y += 7)
+            for (int x = port->width() / 3; x < port->width() * 2 / 3; x += 7)
+                if (!view.itemAt(QPoint(x, y)) && !view.itemAt(QPoint(x + 12, y + 12))) return QPoint(x, y);
+        throw std::runtime_error("No empty spot in the middle of the view");
+    };
+    const auto seen = [&] { return view.mapToScene(port->rect()).boundingRect(); };
+    const auto look_at = [&](QPointF centre) {
+        view.select_elements({});
+        view.centerOn(centre);
+        QApplication::processEvents();
+    };
+    const auto near = [](QPointF a, QPointF b, double by) { return std::abs(a.x() - b.x()) <= by && std::abs(a.y() - b.y()) <= by; };
+
+    // A band held at each edge, and at a corner, scrolls the view that way;
+    // it goes on while the pointer is held still; it still begins where it
+    // was pressed on the diagram and reaches the pointer; let go, it stops,
+    // and what the band covered is selected -- shapes that were not in view
+    // when it was pressed among them.
+    // Each band begins in a gap of the grid, with the view so placed that a
+    // row or a column lies just beyond the edge the band is taken to.
+    struct Way {
+        const char* name;
+        QPointF centre;
+        QPointF start;
+        QPoint at;
+        QPoint sign;
+    };
+    const auto w = port->width();
+    const auto h = port->height();
+    for (const auto& way : {Way{"bottom", {450, 80}, {220, 150}, {w / 2, h - 3}, {0, 1}},
+                            Way{"top", {450, 650}, {220, 750}, {w / 2, 2}, {0, -1}},
+                            Way{"right", {580, 40}, {520, 150}, {w - 3, h / 2}, {1, 0}},
+                            Way{"left", {1050, 40}, {1120, 150}, {2, h / 2}, {-1, 0}},
+                            Way{"bottom right", {450, 80}, {220, 150}, {w - 3, h - 3}, {1, 1}}}) {
+        const std::string name = way.name;
+        look_at(way.centre);
+        const auto was_seen = seen();
+        const auto start = view.mapFromScene(way.start);
+        require(port->rect().contains(start) && !view.itemAt(start),
+                ("The band to the " + name + " begins on empty canvas in view").c_str());
+        const auto anchor = view.mapToScene(start);
+        const auto from = bars();
+        mouse(view, QEvent::MouseButtonPress, start, Qt::LeftButton, Qt::LeftButton);
+        mouse(view, QEvent::MouseMove, start + QPoint(12, 12), Qt::NoButton, Qt::LeftButton);
+        mouse(view, QEvent::MouseMove, way.at, Qt::NoButton, Qt::LeftButton);
+        hold_for(160);
+        const auto scrolled = bars() - from;
+        require(sign_of(scrolled.x()) == way.sign.x() && sign_of(scrolled.y()) == way.sign.y(),
+                ("A band held at the " + name + " scrolls the view that way").c_str());
+        const auto band = view.rubberBandRect();
+        const QRectF drawn(view.mapToScene(band.topLeft()), view.mapToScene(band.bottomRight()));
+        const auto covered = QRectF(anchor, view.mapToScene(way.at)).normalized();
+        require(near(drawn.topLeft(), covered.topLeft(), 2) && near(drawn.bottomRight(), covered.bottomRight(), 2),
+                ("The band held at the " + name + " begins where it was pressed and reaches the pointer").c_str());
+        const auto still = bars();
+        hold_for(80);
+        require(bars() != still, ("Held still at the " + name + ", the view goes on scrolling").c_str());
+        const auto reached = view.mapToScene(way.at);
+        mouse(view, QEvent::MouseButtonRelease, way.at, Qt::LeftButton, Qt::NoButton);
+        const auto stopped = bars();
+        hold_for(60);
+        require(bars() == stopped, ("Let go at the " + name + ", the view stops").c_str());
+        const auto caught = QRectF(anchor, reached).normalized();
+        const auto selected = view.selected_elements();
+        bool every_one_inside = true, one_from_outside = false;
+        for (const auto& id : cells) {
+            const auto box = box_of(id);
+            const bool chosen = std::find(selected.begin(), selected.end(), domain::ElementRef{id}) != selected.end();
+            if (caught.contains(box) && !chosen) every_one_inside = false;
+            if (chosen && !caught.adjusted(-2, -2, 2, 2).intersects(box)) every_one_inside = false;
+            if (chosen && !was_seen.intersects(box)) one_from_outside = true;
+        }
+        require(every_one_inside, ("The band held at the " + name + " selects exactly what it covered").c_str());
+        require(one_from_outside, ("The band held at the " + name + " reaches shapes that were out of view").c_str());
+    }
+
+    // Brought back in, cancelled, or with the keyboard taken away, the band
+    // stops scrolling the view.
+    const auto band_to_bottom = [&] {
+        look_at({450, 150});
+        const auto start = empty_spot();
+        mouse(view, QEvent::MouseButtonPress, start, Qt::LeftButton, Qt::LeftButton);
+        mouse(view, QEvent::MouseMove, start + QPoint(12, 12), Qt::NoButton, Qt::LeftButton);
+        mouse(view, QEvent::MouseMove, QPoint(w / 2, h - 3), Qt::NoButton, Qt::LeftButton);
+        hold_for(60);
+        return start;
+    };
+    {
+        const auto start = band_to_bottom();
+        mouse(view, QEvent::MouseMove, start + QPoint(30, 30), Qt::NoButton, Qt::LeftButton);
+        const auto in_again = bars();
+        hold_for(80);
+        require(bars() == in_again, "A band brought back from the edge stops scrolling the view");
+        mouse(view, QEvent::MouseButtonRelease, start + QPoint(30, 30), Qt::LeftButton, Qt::NoButton);
+    }
+    {
+        band_to_bottom();
+        view.cancel_interaction();
+        const auto cancelled = bars();
+        hold_for(80);
+        require(bars() == cancelled, "A cancelled gesture stops scrolling the view");
+        mouse(view, QEvent::MouseButtonRelease, QPoint(w / 2, h - 3), Qt::LeftButton, Qt::NoButton);
+    }
+    {
+        band_to_bottom();
+        QFocusEvent away(QEvent::FocusOut, Qt::ActiveWindowFocusReason);
+        QApplication::sendEvent(&view, &away);
+        const auto unfocused = bars();
+        hold_for(80);
+        require(bars() == unfocused, "A view that loses the keyboard stops scrolling");
+        mouse(view, QEvent::MouseButtonRelease, QPoint(w / 2, h - 3), Qt::LeftButton, Qt::NoButton);
+    }
+
+    // Zoomed in, the band still begins where it was pressed on the diagram.
+    {
+        view.zoom_in();
+        view.zoom_in();
+        look_at({450, 150});
+        const auto start = empty_spot();
+        const auto anchor = view.mapToScene(start);
+        const auto from = bars();
+        mouse(view, QEvent::MouseButtonPress, start, Qt::LeftButton, Qt::LeftButton);
+        mouse(view, QEvent::MouseMove, start + QPoint(12, 12), Qt::NoButton, Qt::LeftButton);
+        mouse(view, QEvent::MouseMove, QPoint(w / 2, h - 3), Qt::NoButton, Qt::LeftButton);
+        hold_for(120);
+        require(bars().y() > from.y(), "Zoomed in, a band held at the bottom scrolls the view down");
+        const auto band = view.rubberBandRect();
+        const QRectF drawn(view.mapToScene(band.topLeft()), view.mapToScene(band.bottomRight()));
+        require(near(drawn.topLeft(), anchor, 2), "Zoomed in, the band still begins where it was pressed");
+        mouse(view, QEvent::MouseButtonRelease, QPoint(w / 2, h - 3), Qt::LeftButton, Qt::NoButton);
+        view.actual_size();
+        QApplication::processEvents();
+    }
+
+    // One shape, three, and everything, carried to an edge: the view scrolls,
+    // what is carried follows the pointer and keeps its arrangement, and the
+    // move is one step of history that undoes and redoes whole.
+    const auto cell = [&](int row, int column) { return cells[static_cast<std::size_t>(row * 6 + column)]; };
+    struct Carry {
+        const char* name;
+        QPointF centre;
+        std::vector<domain::EntityId> picked;
+        QPoint sign;
+    };
+    // Everything, taken hold of by a shape in view.
+    std::vector<domain::EntityId> everything{cell(0, 1)};
+    for (const auto& id : cells)
+        if (id != cell(0, 1)) everything.push_back(id);
+    for (const auto& carry : {Carry{"one shape down", {450, 150}, {cell(0, 1)}, {0, 1}},
+                              Carry{"three shapes up", {450, 650}, {cell(2, 1), cell(2, 2), cell(3, 1)}, {0, -1}},
+                              Carry{"everything to the right", {450, 150}, everything, {1, 0}},
+                              Carry{"one shape to the left", {1050, 150}, {cell(0, 3)}, {-1, 0}}}) {
+        const std::string name = carry.name;
+        look_at(carry.centre);
+        std::vector<domain::ElementRef> refs(carry.picked.begin(), carry.picked.end());
+        view.select_elements(refs, false);
+        QApplication::processEvents();
+        std::map<domain::EntityId, QRectF> before;
+        for (const auto& id : cells) before[id] = box_of(id);
+        const auto grip = view.mapFromScene(before[carry.picked.front()].center());
+        require(port->rect().contains(grip), ("The shape carried " + name + " starts in view").c_str());
+        const QPoint edge(carry.sign.x() > 0 ? w - 3 : carry.sign.x() < 0 ? 2 : grip.x(),
+                          carry.sign.y() > 0 ? h - 3 : carry.sign.y() < 0 ? 2 : grip.y());
+        const auto steps = editor.history_position();
+        const auto from = bars();
+        mouse(view, QEvent::MouseButtonPress, grip, Qt::LeftButton, Qt::LeftButton);
+        mouse(view, QEvent::MouseMove, grip + carry.sign * 10, Qt::NoButton, Qt::LeftButton);
+        mouse(view, QEvent::MouseMove, edge, Qt::NoButton, Qt::LeftButton);
+        hold_for(160);
+        const auto scrolled = bars() - from;
+        require(sign_of(scrolled.x()) == carry.sign.x() && sign_of(scrolled.y()) == carry.sign.y(),
+                ("Carrying " + name + " to the edge scrolls the view that way").c_str());
+        require(editor.history_position() == steps, ("Carrying " + name + " writes nothing until it is let go").c_str());
+        mouse(view, QEvent::MouseButtonRelease, edge, Qt::LeftButton, Qt::NoButton);
+        require(editor.history_position() == steps + 1, ("Carrying " + name + " is one step of history").c_str());
+        const QPointF travelled = QPointF(edge - grip + scrolled);
+        const auto moved = box_of(carry.picked.front()).topLeft() - before[carry.picked.front()].topLeft();
+        require(near(moved, travelled, 7.5),
+                ("What is carried " + name + " stays under the pointer, the view's scrolling included").c_str());
+        bool arranged = true, rest_still = true;
+        for (const auto& id : cells) {
+            const bool carried = std::find(carry.picked.begin(), carry.picked.end(), id) != carry.picked.end();
+            const auto now = box_of(id);
+            if (carried && !near(now.topLeft() - before[id].topLeft(), moved, 0.01)) arranged = false;
+            if (!carried && now != before[id]) rest_still = false;
+        }
+        require(arranged, ("Everything carried " + name + " moves together and keeps its arrangement").c_str());
+        require(rest_still, ("Nothing that was not carried " + name + " moves").c_str());
+        std::map<domain::EntityId, QRectF> after;
+        for (const auto& id : cells) after[id] = box_of(id);
+        require(editor.undo(), ("Undo the carry " + name).c_str());
+        view.synchronize();
+        bool back = true;
+        for (const auto& id : cells) back = back && box_of(id) == before[id];
+        require(back, ("Undone, everything carried " + name + " is where it was").c_str());
+        require(editor.redo(), ("Redo the carry " + name).c_str());
+        view.synchronize();
+        bool again = true;
+        for (const auto& id : cells) again = again && box_of(id) == after[id];
+        require(again, ("Redone, everything carried " + name + " is where it was let go").c_str());
+        require(editor.undo(), ("Put the carry " + name + " back").c_str());
+        view.synchronize();
+        QApplication::processEvents();
+    }
+
+    // The diagram's room grows while shapes are carried, by as much as they
+    // need and no more, so the view scrolls on with them past where the room
+    // used to end -- upward and leftward as well as down and right. Nothing
+    // else moves, the view never leaps, and letting go leaves the view where
+    // it is with what was carried under the pointer.
+    // Zoomed out, so the room's old edge is reached sooner, and so the room is
+    // shown to grow at a zoom other than actual size.
+    view.zoom_out();
+    view.zoom_out();
+    view.zoom_out();
+    const auto zoom = view.zoom_factor();
+    struct Further {
+        const char* name;
+        std::vector<domain::EntityId> picked;
+        QPoint sign;
+    };
+    for (const auto& further : {Further{"one shape down", {cell(0, 1)}, {0, 1}},
+                                Further{"one shape up", {cell(0, 1)}, {0, -1}},
+                                Further{"one shape to the left", {cell(0, 1)}, {-1, 0}},
+                                Further{"three shapes to the right", {cell(0, 1), cell(0, 2), cell(1, 1)}, {1, 0}}}) {
+        const std::string name = further.name;
+        look_at({450, 150});
+        std::vector<domain::ElementRef> refs(further.picked.begin(), further.picked.end());
+        view.select_elements(refs, false);
+        QApplication::processEvents();
+        std::map<domain::EntityId, QPointF> placed;
+        for (const auto& id : cells) placed[id] = find_node(view, QString::fromStdString(editor.project().entities.at(id).name))->pos();
+        const auto room = view.sceneRect();
+        const auto steps = editor.history_position();
+        const auto grip = view.mapFromScene(box_of(further.picked.front()).center());
+        std::map<domain::EntityId, QRectF> before;
+        for (const auto& id : further.picked) before[id] = box_of(id);
+        const auto offset = box_of(further.picked.front()).center() - view.mapToScene(grip);
+        const QPoint past(further.sign.x() > 0 ? w + 200 : further.sign.x() < 0 ? -200 : grip.x(),
+                          further.sign.y() > 0 ? h + 200 : further.sign.y() < 0 ? -200 : grip.y());
+        mouse(view, QEvent::MouseButtonPress, grip, Qt::LeftButton, Qt::LeftButton);
+        mouse(view, QEvent::MouseMove, grip + further.sign * 10, Qt::NoButton, Qt::LeftButton);
+        mouse(view, QEvent::MouseMove, past, Qt::NoButton, Qt::LeftButton);
+        const auto beyond = [&] {
+            const auto now = seen();
+            return further.sign.y() > 0 ? now.bottom() > room.bottom() + 300
+                 : further.sign.y() < 0 ? now.top() < room.top() - 300
+                 : further.sign.x() > 0 ? now.right() > room.right() + 300
+                                        : now.left() < room.left() - 300;
+        };
+        auto last_bars = bars();
+        auto last_room = view.sceneRect();
+        int largest_step = 0;
+        bool only_grew = true, kept_in_bounds = true;
+        for (int waited = 0; waited < 5000 && !beyond(); waited += 20) {
+            hold_for(20);
+            const auto moved_by = bars() - last_bars;
+            largest_step = std::max({largest_step, std::abs(moved_by.x()), std::abs(moved_by.y())});
+            last_bars = bars();
+            const auto now = view.sceneRect();
+            // Half a pixel either way: an edge left where it was is worked out
+            // again from the other edge and the size, and may differ in the
+            // last bit.
+            if (!now.adjusted(-0.5, -0.5, 0.5, 0.5).contains(last_room)) only_grew = false;
+            last_room = now;
+            QRectF carried;
+            for (const auto& id : further.picked) {
+                auto* node = find_node(view, QString::fromStdString(editor.project().entities.at(id).name));
+                carried = carried.isNull() ? node->sceneBoundingRect() : carried.united(node->sceneBoundingRect());
+            }
+            // At least 800 px past what is carried, grown 400 px at a time.
+            if (!room.united(carried.adjusted(-1230, -1230, 1230, 1230)).adjusted(-0.5, -0.5, 0.5, 0.5).contains(now))
+                kept_in_bounds = false;
+        }
+        require(beyond(), ("Carrying " + name + ", the view scrolls on past where the room used to end").c_str());
+        require(largest_step <= 3 * EdgeScroll::fastest, ("Carrying " + name + ", the view never leaps").c_str());
+        require(only_grew, ("Carrying " + name + ", the room only ever grows").c_str());
+        require(kept_in_bounds, ("Carrying " + name + ", the room grows no further than a step past what is carried").c_str());
+        bool others_still = true;
+        for (const auto& id : cells)
+            if (std::find(further.picked.begin(), further.picked.end(), id) == further.picked.end()
+                && find_node(view, QString::fromStdString(editor.project().entities.at(id).name))->pos() != placed[id])
+                others_still = false;
+        require(others_still, ("Carrying " + name + ", nothing else moves").c_str());
+        require(editor.history_position() == steps, ("Carrying " + name + " writes nothing until it is let go").c_str());
+        const auto before_release = bars();
+        const auto pointer_on_diagram = view.mapToScene(past);
+        mouse(view, QEvent::MouseButtonRelease, past, Qt::LeftButton, Qt::NoButton);
+        require(bars() == before_release, ("Let go after carrying " + name + ", the view stays where it is").c_str());
+        require(editor.history_position() == steps + 1, ("Carrying " + name + " is one step of history").c_str());
+        // What was carried is where the pointer let go of it, held as it was
+        // taken hold of, give or take a guide's snap; a group keeps its
+        // arrangement.
+        require(near(box_of(further.picked.front()).center(), pointer_on_diagram + offset, 7.5 / zoom),
+                ("What was carried " + name + " is let go under the pointer").c_str());
+        const auto moved = box_of(further.picked.front()).topLeft() - before.at(further.picked.front()).topLeft();
+        bool arranged = true;
+        for (const auto& id : further.picked)
+            if (!near(box_of(id).topLeft() - before.at(id).topLeft(), moved, 0.01)) arranged = false;
+        require(arranged, ("Everything carried " + name + " keeps its arrangement").c_str());
+        require(editor.undo(), ("Put the carry " + name + " back").c_str());
+        view.synchronize();
+        QApplication::processEvents();
+    }
+    view.actual_size();
+    QApplication::processEvents();
+
+    // A shape carried past where the room ended keeps its lines joined to it
+    // as it goes and once it is let go, and the diagram saved and opened again
+    // has it exactly where it was let go.
+    {
+        SequentialIds joined_ids;
+        application::Editor joined(joined_ids);
+        const auto made_carried = joined.create_entity("Carried", {0, 0, 133, 77});
+        const auto made_stays = joined.create_entity("Stays", {400, 0, 133, 77});
+        const auto made_joins = joined.create_relationship("Joins", {180, 160, 171, 99});
+        require(made_carried && made_stays && made_joins, "Create the joined diagram");
+        const auto carried = std::get<domain::EntityId>(*made_carried.created);
+        const auto stays = std::get<domain::EntityId>(*made_stays.created);
+        const auto joins = std::get<domain::RelationshipId>(*made_joins.created);
+        require(joined.connect(joins, carried) && joined.connect(joins, stays), "Join the diagram");
+        desktop::DiagramView small(joined);
+        small.resize(600, 400);
+        small.show();
+        small.actual_size();
+        small.zoom_out();
+        small.zoom_out();
+        small.zoom_out();
+        small.centerOn(266, 100);
+        QApplication::processEvents();
+        auto* small_port = small.viewport();
+        const auto room = small.sceneRect();
+        const auto lines_meet = [&](const QRectF& body) {
+            int meeting = 0;
+            for (auto* item : small.scene()->items())
+                if (item->zValue() < 0 && item->toolTip().startsWith(QStringLiteral("Participant:"))
+                    && item->sceneBoundingRect().intersects(body.adjusted(-4, -4, 4, 4)))
+                    ++meeting;
+            return meeting;
+        };
+        small.select_elements({domain::ElementRef{carried}}, false);
+        QApplication::processEvents();
+        const auto& start = joined.project().layout.at(carried);
+        const auto grip = small.mapFromScene(QPointF(start.x + start.width / 2, start.y + start.height / 2));
+        const QPoint past(grip.x(), small_port->height() + 200);
+        mouse(small, QEvent::MouseButtonPress, grip, Qt::LeftButton, Qt::LeftButton);
+        mouse(small, QEvent::MouseMove, grip + QPoint(0, 10), Qt::NoButton, Qt::LeftButton);
+        mouse(small, QEvent::MouseMove, past, Qt::NoButton, Qt::LeftButton);
+        const auto small_seen = [&] { return small.mapToScene(small_port->rect()).boundingRect(); };
+        for (int waited = 0; waited < 5000 && small_seen().bottom() <= room.bottom() + 300; waited += 20) hold_for(20);
+        require(small_seen().bottom() > room.bottom() + 300, "The joined shape is carried past where the room ended");
+        require(lines_meet(find_node(small, "Carried")->sceneBoundingRect()) == 1,
+                "While it is carried there, its line still meets it");
+        mouse(small, QEvent::MouseButtonRelease, past, Qt::LeftButton, Qt::NoButton);
+        const auto& landed = joined.project().layout.at(carried);
+        require(landed.y > room.bottom(), "It is let go past where the room ended");
+        require(lines_meet(QRectF(landed.x, landed.y, landed.width, landed.height)) == 1,
+                "Let go there, its line still meets it");
+        QTemporaryDir folder;
+        infrastructure::ErdxProjectStore store;
+        const auto path = folder.filePath(QStringLiteral("carried.erdx")).toStdString();
+        require(store.save(path, joined.project()).ok, "The diagram carried past its room saves");
+        const auto reloaded = store.load(path);
+        require(reloaded && reloaded.project->layout == joined.project().layout,
+                "And opens again with every shape exactly where it was");
+        joined.mark_saved(joined.revision());
+    }
+
+    // Pulling a shape by its handle, panning, and drawing a connection do not
+    // scroll the view on, however near the edge they are taken.
+    {
+        look_at({450, 150});
+        const auto picked = cell(0, 1);
+        view.select_elements({domain::ElementRef{picked}}, false);
+        QApplication::processEvents();
+        const auto box = box_of(picked);
+        const auto handle = view.mapFromScene(box.bottomRight());
+        const auto from = bars();
+        mouse(view, QEvent::MouseButtonPress, handle, Qt::LeftButton, Qt::LeftButton);
+        mouse(view, QEvent::MouseMove, handle + QPoint(6, 6), Qt::NoButton, Qt::LeftButton);
+        mouse(view, QEvent::MouseMove, QPoint(handle.x() + 6, h - 3), Qt::NoButton, Qt::LeftButton);
+        hold_for(80);
+        require(bars() == from, "Pulling a shape's handle to the edge does not scroll the view");
+        mouse(view, QEvent::MouseButtonRelease, QPoint(handle.x() + 6, h - 3), Qt::LeftButton, Qt::NoButton);
+        require(box_of(picked).size() != box.size(), "The handle pulled the shape larger rather than carrying it");
+        require(editor.undo(), "Put the pulled shape back");
+        view.synchronize();
+        QApplication::processEvents();
+
+        view.set_tool(desktop::Tool::Pan);
+        const auto start = empty_spot();
+        mouse(view, QEvent::MouseButtonPress, start, Qt::LeftButton, Qt::LeftButton);
+        mouse(view, QEvent::MouseMove, QPoint(start.x(), h - 3), Qt::NoButton, Qt::LeftButton);
+        const auto panned = bars();
+        hold_for(80);
+        require(bars() == panned, "Panning to the edge moves the view only as far as the hand does");
+        mouse(view, QEvent::MouseButtonRelease, QPoint(start.x(), h - 3), Qt::LeftButton, Qt::NoButton);
+
+        view.set_tool(desktop::Tool::Connect);
+        look_at({450, 150});
+        const auto source = view.mapFromScene(box_of(cell(0, 1)).center());
+        const auto still = bars();
+        mouse(view, QEvent::MouseButtonPress, source, Qt::LeftButton, Qt::LeftButton);
+        mouse(view, QEvent::MouseMove, QPoint(source.x(), h - 3), Qt::NoButton, Qt::LeftButton);
+        hold_for(80);
+        require(bars() == still, "Drawing a connection to the edge does not scroll the view");
+        mouse(view, QEvent::MouseButtonRelease, QPoint(source.x(), h - 3), Qt::LeftButton, Qt::NoButton);
+        view.cancel_interaction();
+        view.set_tool(desktop::Tool::Select);
+    }
+    editor.mark_saved(editor.revision());
+}
+
 int main(int argc, char** argv) {
     QApplication app(argc, argv);
     try {
@@ -4969,6 +5748,7 @@ int main(int argc, char** argv) {
             hierarchy_names_use_nine_bold_tests();
             content_aware_size_tests();
             saved_sizes_are_kept_tests();
+            fitted_shapes_tests();
             std::cout << "Name fitting tests passed\n";
             return 0;
         }
@@ -5172,7 +5952,9 @@ int main(int argc, char** argv) {
         hierarchy_names_use_nine_bold_tests();
         content_aware_size_tests();
         saved_sizes_are_kept_tests();
+        fitted_shapes_tests();
         attribute_resize_tests();
+        edge_scroll_tests();
         std::cout << "Canvas tests passed\n";
     } catch (const std::exception& exception) {
         std::cerr << "Canvas test failed: " << exception.what() << '\n';

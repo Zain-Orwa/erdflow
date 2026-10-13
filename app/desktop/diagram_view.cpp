@@ -5,6 +5,7 @@
 // and whether it is a gain or a loss. He decides. Fixing a real defect is not
 // covered by this — fix it and say what was wrong. Full rule: CLAUDE.md.
 #include "diagram_view.hpp"
+#include "edge_scroll.hpp"
 
 #include <QApplication>
 #include <QColorDialog>
@@ -39,6 +40,7 @@
 #include <cmath>
 #include <limits>
 #include <map>
+#include <memory>
 #include <numbers>
 #include <set>
 #include <tuple>
@@ -323,6 +325,139 @@ NameLabel name_label(NamedShape shape, const QString& label, const QFont& font, 
     return {rect, QFontMetricsF(font).elidedText(label, Qt::ElideRight, rect.width())};
 }
 
+// A name too long for one line is written in up to three (Zain, 2026-10-12),
+// and only what does not fit in three is cut short, so a long name is read
+// rather than guessed at. One line is written exactly as name_label writes
+// it, so a name that fits is drawn where and how it always was. Further lines
+// keep inside the shape's outline as well as its usual room: a diamond and an
+// oval narrow away from where one line sits.
+constexpr int name_line_limit = 3;
+
+// The width a line of a name has, drawn centred in this rect.
+double line_room(NamedShape shape, const QFont& font, const QRectF& bounds, const QRectF& line) {
+    const QFontMetricsF metrics(font);
+    // Where the letters stand, drawn centred in the line: from the top of the
+    // capitals down to the baseline, as name_room measures one line.
+    const auto baseline = line.top() + (line.height() - metrics.height()) / 2 + metrics.ascent();
+    const auto cap_top = baseline - metrics.capHeight();
+    const auto centre = bounds.center().y();
+    const auto reach = std::max(std::abs(baseline - centre), std::abs(cap_top - centre));
+    const auto width = bounds.width();
+    const auto height = bounds.height();
+    switch (shape) {
+    case NamedShape::Entity:
+        return std::max(0.0, width - 2 * name_side_room);
+    case NamedShape::Attribute: {
+        const auto band = width - 2 * name_side_room;
+        const auto ring = height / 2 - oval_ring_inset;
+        if (ring <= reach) return std::max(0.0, band);
+        return std::max(0.0, std::min(band, (width - 2 * oval_ring_inset) * std::sqrt(1 - reach * reach / (ring * ring))));
+    }
+    case NamedShape::Relationship:
+        return std::max(0.0, std::min(width * (1 - 2 * diamond_point_room), width * (1 - reach / (height / 2)) - 8));
+    case NamedShape::Generalization:
+    case NamedShape::Specialization:
+        // A hierarchy's name has always had its box's width to stand in, over
+        // the triangle's sides if need be, and each of its lines has the same.
+        return std::max(0.0, width - 12);
+    }
+    return 0;
+}
+
+// Words to lines of the given widths, a word longer than a whole line broken
+// where it has to be. Whatever does not fit is handed back.
+std::vector<QString> fill_lines(const QString& text, const std::vector<double>& widths, const QFontMetricsF& metrics,
+                                QString& left) {
+    std::vector<QString> lines;
+    auto words = text.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+    std::size_t next = 0;
+    QString carried;
+    for (const auto width : widths) {
+        QString line;
+        while (true) {
+            QString word = !carried.isEmpty() ? carried : next < static_cast<std::size_t>(words.size()) ? words[static_cast<qsizetype>(next)] : QString();
+            if (word.isEmpty()) break;
+            const auto tried = line.isEmpty() ? word : line + QLatin1Char(' ') + word;
+            if (metrics.horizontalAdvance(tried) <= width) {
+                line = tried;
+                if (!carried.isEmpty()) carried.clear(); else ++next;
+                continue;
+            }
+            if (line.isEmpty()) {
+                // One word wider than the line: as much of it as fits, and the
+                // rest carried to the next line in place of the word.
+                qsizetype take = 1;
+                while (take < word.size() && metrics.horizontalAdvance(word.left(take + 1)) <= width) ++take;
+                const bool was_carried = !carried.isEmpty();
+                line = word.left(take);
+                carried = word.mid(take);
+                if (!was_carried) ++next;
+            }
+            break;
+        }
+        lines.push_back(line);
+    }
+    QStringList rest;
+    if (!carried.isEmpty()) rest << carried;
+    for (auto i = next; i < static_cast<std::size_t>(words.size()); ++i) rest << words[static_cast<qsizetype>(i)];
+    left = rest.join(QLatin1Char(' '));
+    return lines;
+}
+
+NameLayout name_lines(NamedShape shape, const QString& label, const QFont& font, const QRectF& bounds) {
+    const auto single = name_label(shape, label, font, bounds);
+    if (single.text == label || label.isEmpty()) return {{single.text}, {single.rect}, single.text != label};
+    const QFontMetricsF metrics(font);
+    const auto line_height = metrics.lineSpacing();
+    // The lines stand where one line would: the same band down the shape.
+    const auto band_top = single.rect.top();
+    const auto band_height = single.rect.height();
+    const int room_for = std::clamp(static_cast<int>(std::floor(band_height / line_height)), 1, name_line_limit);
+    if (room_for < 2) return {{single.text}, {single.rect}, true};
+    const auto layout = [&](int count, QString& left) {
+        NameLayout laid;
+        std::vector<double> widths;
+        // In a triangle the lines keep to its base, where it is widest;
+        // elsewhere they stand in the middle of the band.
+        const auto first = shape == NamedShape::Generalization ? band_top + band_height - count * line_height
+                         : shape == NamedShape::Specialization ? band_top
+                                                               : band_top + (band_height - count * line_height) / 2;
+        for (int i = 0; i < count; ++i) {
+            const QRectF line(bounds.left(), first + i * line_height, bounds.width(), line_height);
+            const auto width = line_room(shape, font, bounds, line);
+            widths.push_back(width);
+            laid.rects.emplace_back(bounds.center().x() - width / 2, line.top(), width, line_height);
+        }
+        laid.lines = fill_lines(label, widths, metrics, left);
+        return laid;
+    };
+    for (int count = 2; count <= room_for; ++count) {
+        QString left;
+        auto laid = layout(count, left);
+        if (!left.isEmpty()) continue;
+        // Fewer lines than were made room for: drop the empty ones and stand
+        // the rest in the middle, where they are no narrower than before.
+        auto used = static_cast<int>(std::count_if(laid.lines.begin(), laid.lines.end(), [](const QString& l) { return !l.isEmpty(); }));
+        if (used < count) {
+            QString again;
+            auto tighter = layout(used, again);
+            if (again.isEmpty()) return tighter;
+        }
+        return laid;
+    }
+    // More than three lines' worth: the last of them says the rest is there.
+    QString unused;
+    auto laid = layout(room_for, unused);
+    std::vector<double> earlier;
+    for (int i = 0; i + 1 < room_for; ++i) earlier.push_back(laid.rects[static_cast<std::size_t>(i)].width());
+    QString rest;
+    auto lines = fill_lines(label, earlier, metrics, rest);
+    lines.push_back(metrics.elidedText(rest, Qt::ElideRight, laid.rects.back().width()));
+    laid.lines = std::move(lines);
+    laid.elided = true;
+    return laid;
+}
+
 // The cap belongs only to automatic growth. Both names are measured at the
 // same effective lettering, including the metadata of a hand-resized shape.
 double automatic_name_width(NamedShape shape, const QString& name, const QFont& base,
@@ -497,7 +632,7 @@ public:
                          : std::holds_alternative<SpecializationId>(ref) ? std::optional{generalising ? NamedShape::Generalization : NamedShape::Specialization}
                          : std::nullopt;
         if (!shape) return false;
-        return name_label(*shape, label, name_font(base, lettering_), bounds_).text != label;
+        return laid_name(*shape, name_font(base, lettering_)).elided;
     }
 
     // A picture's own pixels, decoded once from the bytes the model holds.
@@ -995,20 +1130,26 @@ public:
         font.setUnderline(std::holds_alternative<AttributeId>(ref) && attribute_kind == AttributeKind::Key && !partial_key);
         painter->setFont(font);
         painter->setPen(text_);
-        const auto shown_name = name_label(shape, label, font, bounds_);
-        auto text_rect = shown_name.rect;
-        const auto text = shown_name.text;
-        painter->drawText(text_rect, Qt::AlignCenter, text);
+        // Laid out without the underline a key wears, which changes no
+        // measure, so painting and the hover's question share one layout.
+        auto measured = font;
+        measured.setUnderline(false);
+        const auto& written = laid_name(shape, measured);
+        for (std::size_t i = 0; i < written.lines.size(); ++i)
+            painter->drawText(written.rects[i], Qt::AlignCenter, written.lines[i]);
         if (partial_key) {
             // A partial key is underlined in dashes: it identifies the weak
-            // entity only together with its owner's key.
+            // entity only together with its owner's key. Each line of it.
             const QFontMetricsF metrics(font);
-            const auto width = metrics.horizontalAdvance(text);
-            const auto baseline = text_rect.center().y() + (metrics.ascent() - metrics.descent()) / 2;
             QPen dashes(text_, 1.2, Qt::DashLine);
             painter->setPen(dashes);
-            painter->drawLine(QPointF(text_rect.center().x() - width / 2, baseline + metrics.underlinePos() + 1),
-                              QPointF(text_rect.center().x() + width / 2, baseline + metrics.underlinePos() + 1));
+            for (std::size_t i = 0; i < written.lines.size(); ++i) {
+                const auto& text_rect = written.rects[i];
+                const auto width = metrics.horizontalAdvance(written.lines[i]);
+                const auto baseline = text_rect.center().y() + (metrics.ascent() - metrics.descent()) / 2;
+                painter->drawLine(QPointF(text_rect.center().x() - width / 2, baseline + metrics.underlinePos() + 1),
+                                  QPointF(text_rect.center().x() + width / 2, baseline + metrics.underlinePos() + 1));
+            }
         }
         if (std::holds_alternative<SpecializationId>(ref)) {
             // The letter for the constraint, as Elmasri writes it: d for
@@ -1102,6 +1243,24 @@ private:
     int transparency_ = 0;
     qreal lettering_ = 1.0;
     QPixmap image_;
+    // How the name was last laid out, kept until the name, the box, the shape
+    // or the lettering changes: wrapping a long name measures it word by word,
+    // and doing that on every paint made dragging a diagram of long names a
+    // third slower (2026-10-12).
+    struct LaidName {
+        QString label;
+        QRectF bounds;
+        QFont font;
+        NamedShape shape = NamedShape::Entity;
+        NameLayout laid;
+    };
+    mutable std::optional<LaidName> laid_name_;
+    const NameLayout& laid_name(NamedShape shape, const QFont& font) const {
+        if (!laid_name_ || laid_name_->label != label || laid_name_->bounds != bounds_ || laid_name_->shape != shape
+            || laid_name_->font != font)
+            laid_name_ = LaidName{label, bounds_, font, shape, name_lines(shape, label, font, bounds_)};
+        return laid_name_->laid;
+    }
 };
 
 // An edge is keyed by the record that draws it. Attribute and participant links
@@ -1873,6 +2032,91 @@ double width_for_name(NamedShape shape, const QString& name, const QFont& base) 
     return std::max(body.width, automatic_name_width(shape, name, base, 1.0, body.height));
 }
 
+NameLayout name_layout(NamedShape shape, const QString& name, const QFont& base, double lettering,
+                       const QRectF& bounds) {
+    return name_lines(shape, name, name_font(base, lettering), bounds);
+}
+
+namespace {
+BodySize measure_fitted_body(NamedShape shape, const QString& name, const QFont& base) {
+    const auto body = shape == NamedShape::Entity ? entity_body
+                    : shape == NamedShape::Attribute ? attribute_body
+                    : shape == NamedShape::Relationship ? relationship_body : isa_body;
+    const auto font = name_font(base, 1.0);
+    // Smaller in proportion as it is narrower, down to the domain's least and
+    // never so squat that the shape stops reading as itself; wider than its
+    // default it keeps its default height, as a widened shape always has.
+    const auto least_width = domain::min_entity_width;
+    const auto least_height = std::max(domain::min_entity_height, std::ceil(body.height * least_width / body.width));
+    const auto height_for = [&](double width) {
+        return std::clamp(std::round(body.height * width / body.width), least_height, body.height);
+    };
+    const auto one_line = [&](const QString& text, double width) {
+        const auto laid = name_lines(shape, text, font, QRectF(0, 0, width, height_for(width)));
+        return !laid.elided && laid.lines.size() == 1;
+    };
+    // The narrowest width a name is written whole in on one line, measured as
+    // it is painted, looked for no further than `limit`. Each pass settles the
+    // height the width implies, which is what an oval's room depends on.
+    const auto narrowest = [&](const QString& text, double limit) {
+        auto width = std::max(least_width, name_room_width(shape, text, base, 1.0, body.height));
+        for (int pass = 0; pass < 3 && width <= limit; ++pass)
+            width = std::max(least_width, name_room_width(shape, text, base, 1.0, height_for(width)));
+        width = std::ceil(width);
+        while (width <= limit && !one_line(text, width)) width += 1;
+        return width;
+    };
+    // The widest a name makes a shape on its own: wide enough for
+    // "Relationship" on one line, which is therefore never cut short. The same
+    // for every name in the same lettering, so it is worked out once for each.
+    static std::map<std::pair<int, QString>, double> caps;
+    const auto key = std::make_pair(static_cast<int>(shape), font.key());
+    auto found = caps.find(key);
+    if (found == caps.end())
+        found = caps.emplace(key, narrowest(QStringLiteral("Relationship"), domain::max_entity_width)).first;
+    const auto cap = found->second;
+    const auto width = narrowest(name, cap);
+    if (width <= cap) return {width, height_for(width)};
+    // Longer than that: as wide as "Relationship" and as tall as three lines
+    // of it need. What still does not fit is cut short on the third line.
+    // Halved towards the least height that does, then checked a pixel at a
+    // time below it, so the height is the same a pixel-by-pixel search finds.
+    const auto lowest = [&](const std::function<bool(double)>& enough, double from, double to) {
+        if (!enough(to)) return std::optional<double>{};
+        auto low = from;
+        auto high = to;
+        if (enough(low)) return std::optional<double>{low};
+        while (high - low > 1) {
+            const auto middle = std::floor((low + high) / 2);
+            (enough(middle) ? high : low) = middle;
+        }
+        while (high - 1 >= from && enough(high - 1)) high -= 1;
+        return std::optional<double>{high};
+    };
+    const auto tallest = body.height * 4;
+    const auto start = height_for(cap);
+    if (const auto height = lowest([&](double h) { return !name_lines(shape, name, font, QRectF(0, 0, cap, h)).elided; },
+                                   start, tallest))
+        return {cap, *height};
+    const auto most = name_lines(shape, name, font, QRectF(0, 0, cap, tallest)).lines;
+    if (const auto height = lowest([&](double h) { return name_lines(shape, name, font, QRectF(0, 0, cap, h)).lines == most; },
+                                   start, tallest))
+        return {cap, *height};
+    return {cap, tallest};
+}
+} // namespace
+
+// Remembered for each shape, lettering and name, since the same names are
+// fitted again and again: a schema's diagram is worked out afresh after each
+// edit while its preview is open, and a long name takes a moment to measure.
+BodySize fitted_body(NamedShape shape, const QString& name, const QFont& base) {
+    static std::map<std::tuple<int, QString, QString>, BodySize> fitted;
+    const auto key = std::make_tuple(static_cast<int>(shape), base.key(), name);
+    if (const auto found = fitted.find(key); found != fitted.end()) return found->second;
+    if (fitted.size() >= 4096) fitted.clear();
+    return fitted.emplace(key, measure_fitted_body(shape, name, base)).first->second;
+}
+
 struct DiagramView::Impl {
     DiagramView& view;
     application::Editor& editor;
@@ -2161,6 +2405,10 @@ struct DiagramView::Impl {
     std::optional<QPointF> connect_pointer;
     std::optional<ElementRef> connect_hover;
     std::map<ElementRef, Rect> drag_start;
+    // A band or a carry held at the edge of the view scrolls the view on, so
+    // either goes on past what was showing in the same gesture (C6,
+    // 2026-10-12).
+    std::unique_ptr<EdgeScroll> edge_scroll;
     // What a drag can line up against, gathered once when it begins. Nothing
     // that is not being dragged moves while it lasts, so asking every shape on
     // the canvas for its rectangle again on every pointer move was asking the
@@ -2502,6 +2750,31 @@ struct DiagramView::Impl {
         }
         redraw();
         return snapped;
+    }
+    // The diagram's room while shapes are carried (C6, 2026-10-12): it reaches
+    // at least the same 800 px past what is carried that it reaches past
+    // everything once a move is let go, so the view can scroll on with them as
+    // far as the hand takes them. It only ever grows here, and only as far as
+    // they have gone, so nothing in view moves under the hand and holding still
+    // at an edge the view cannot pass does not grow it. When it has to grow it
+    // grows a further 400 px at once: growing the room has the scene index
+    // every shape again, which done on every movement of a large selection was
+    // a millisecond a movement. What it grew is measured afresh when the move
+    // is let go and the diagram is drawn again.
+    void make_room_for_carry() {
+        if (drag_start.empty()) return;
+        QRectF carried;
+        for (const auto& [ref, start] : drag_start) {
+            (void)start;
+            const auto node = nodes.find(ref);
+            if (node == nodes.end()) continue;
+            const auto body = node->second->body_rect().translated(node->second->scenePos());
+            carried = carried.isNull() ? body : carried.united(body);
+        }
+        if (carried.isNull()) return;
+        const auto room = scene->sceneRect();
+        if (room.contains(carried.adjusted(-800, -800, 800, 800))) return;
+        scene->setSceneRect(room.united(carried.adjusted(-1200, -1200, 1200, 1200)));
     }
     void clear_guides() {
         if (guides.empty()) return;
@@ -2973,7 +3246,7 @@ struct DiagramView::Impl {
                 // built, so a pair connected twice in a row steps the second
                 // diamond past the first.
                 const auto place = relationship_place(ElementRef{first}, ElementRef{second});
-                return editor.relate(first, second, centred(place, relationship_body), "Relationship");
+                return editor.relate(first, second, centred(place, fitted_body(NamedShape::Relationship, QStringLiteral("Relationship"), view.font())), "Relationship");
             }};
         }
         if (std::holds_alternative<AttributeId>(from) && std::holds_alternative<AttributeId>(to)
@@ -3012,6 +3285,19 @@ DiagramView::DiagramView(application::Editor& editor, QWidget* parent)
     setMouseTracking(true);
     impl_->scene->setSceneRect(default_paper);
     connect(impl_->scene, &QGraphicsScene::selectionChanged, this, [this] { impl_->selection_changed(); });
+    // A scroll replays the last movement of the pointer through the view
+    // (Qt's QGraphicsView does that for every scroll), so a band grows into
+    // what has come into view and what is carried follows the pointer there
+    // without anything more being done here. The pointer is somewhere new on
+    // the canvas, though, and is remembered as being there.
+    impl_->edge_scroll = std::make_unique<EdgeScroll>(*this, [this] {
+        if (rubberBandRect().isNull() && (impl_->drag_start.empty() || !impl_->scene->mouseGrabberItem())) {
+            impl_->edge_scroll->stop();
+            return;
+        }
+        impl_->pointer_place = mapToScene(impl_->edge_scroll->pointer());
+        impl_->make_room_for_carry();
+    });
     synchronize();
     centerOn(0, 0);
 }
@@ -3046,31 +3332,28 @@ application::EditResult DiagramView::rename(const domain::ElementRef& ref, const
                          project.specializations.at(std::get<SpecializationId>(ref)).direction == Inheritance::Generalization
                              ? NamedShape::Generalization : NamedShape::Specialization}
                      : std::nullopt;
-    double least_width = 0;
-    if (const auto found = project.layout.find(ref); shape && found != project.layout.end()) {
-        const auto& box = found->second;
-        const auto base = project.lettering.find(ref);
-        const auto needed_at = [&](double width) {
-            const auto lettering = base == project.lettering.end()
-                ? 1.0 : domain::lettering_factor(base->second, width, box.height);
-            return automatic_name_width(*shape, QString::fromStdString(name), font(), lettering, box.height);
-        };
-        if (needed_at(box.width) > box.width) {
-            // With manual lettering metadata a wider box may also enlarge the
-            // font. Solve for the lesser of the actual name and the Relationship
-            // reference at that resulting font, just as both will be painted.
-            // Existing widths (including manually wide ones) never shrink.
-            auto narrow = box.width;
-            auto wide = std::max(narrow, needed_at(domain::max_entity_width));
-            if (base != project.lettering.end())
-                for (int halving = 0; halving < 24 && wide - narrow > 0.5; ++halving) {
-                    const auto middle = (narrow + wide) / 2;
-                    (needed_at(middle) <= middle ? wide : narrow) = middle;
-                }
-            least_width = std::ceil(wide);
-        }
+    // Fitted to its new name, smaller as well as larger (Zain, 2026-10-12),
+    // unless it has been resized by hand: a hand's size is kept, and a name
+    // that no longer fits it is written in more lines inside it.
+    // A hierarchy keeps no lettering when it is resized, so for it a size of
+    // its own is told apart by not being a size its current name would have
+    // been given: the size it is fitted to now, or the default height at the
+    // width names were given before. Whatever else it is, a hand made it.
+    const auto automatic = [&] {
+        if (!shape || !project.layout.contains(ref) || project.lettering.contains(ref)) return false;
+        if (*shape != NamedShape::Generalization && *shape != NamedShape::Specialization) return true;
+        const auto& box = project.layout.at(ref);
+        const auto called = QString::fromStdString(domain::name(project, ref));
+        const auto now = fitted_body(*shape, called, font());
+        const auto near = [](double a, double b) { return std::abs(a - b) < 0.5; };
+        return (near(box.width, now.width) && near(box.height, now.height))
+            || (near(box.width, width_for_name(*shape, called, font())) && near(box.height, isa_body.height));
+    }();
+    if (automatic) {
+        const auto fitted = fitted_body(*shape, QString::fromStdString(name), font());
+        return impl_->editor.rename_to_fit(ref, name, fitted.width, fitted.height);
     }
-    return impl_->editor.rename(ref, name, least_width);
+    return impl_->editor.rename(ref, name);
 }
 
 void DiagramView::synchronize() {
@@ -3291,7 +3574,10 @@ void DiagramView::synchronize() {
     for (auto* edge : dirty_edges) edge->refresh();
     impl_->refresh_comments();
     impl_->refresh_search();
-    // The workspace grows only at command boundaries, never during pointer movement.
+    // The workspace is measured afresh at command boundaries. It used to grow
+    // only here, never during pointer movement; since C6 (2026-10-12) it also
+    // grows while shapes are carried, by as much as they need (see
+    // make_room_for_carry), and this measures it again once they are let go.
     const auto content = impl_->scene->itemsBoundingRect().adjusted(-800, -800, 800, 800);
     impl_->scene->setSceneRect(default_paper.united(content));
     for (const auto& [key, description] : desired_edges) {
@@ -3769,6 +4055,7 @@ void DiagramView::set_transparency(const std::vector<ElementRef>& elements, int 
 }
 
 void DiagramView::cancel_interaction() {
+    impl_->edge_scroll->stop();
     if (!impl_->drag_start.empty()) {
         impl_->synchronizing = true;
         std::set<EdgeItem*> dirty;
@@ -4151,7 +4438,8 @@ void DiagramView::mousePressEvent(QMouseEvent* event) {
         // The triangle is placed like any other element and wired up by hand,
         // so the tool only decides which way its apex points.
         const auto centre = mapToScene(event->position().toPoint());
-        const auto result = impl_->editor.create_specialization("IS A", centred(centre, isa_body),
+        const auto shape = impl_->active_tool == Tool::Generalization ? NamedShape::Generalization : NamedShape::Specialization;
+        const auto result = impl_->editor.create_specialization("IS A", centred(centre, fitted_body(shape, QStringLiteral("IS A"), font())),
             impl_->active_tool == Tool::Generalization ? Inheritance::Generalization : Inheritance::Specialization);
         impl_->publish(result);
         if (result && result.created) {
@@ -4168,9 +4456,9 @@ void DiagramView::mousePressEvent(QMouseEvent* event) {
         if (impl_->align_to_grid) center = {std::round(center.x() / grid_spacing) * grid_spacing, std::round(center.y() / grid_spacing) * grid_spacing};
         application::EditResult result;
         if (impl_->active_tool == Tool::Entity) {
-            result = impl_->editor.create_entity("Entity", centred(center, entity_body));
+            result = impl_->editor.create_entity("Entity", centred(center, fitted_body(NamedShape::Entity, QStringLiteral("Entity"), font())));
         } else if (impl_->active_tool == Tool::Relationship) {
-            result = impl_->editor.create_relationship("Relationship", centred(center, relationship_body));
+            result = impl_->editor.create_relationship("Relationship", centred(center, fitted_body(NamedShape::Relationship, QStringLiteral("Relationship"), font())));
         } else if (impl_->active_tool == Tool::Text) {
             if (!impl_->tool_locked) set_tool(Tool::Select);
             impl_->place_text(center);
@@ -4208,7 +4496,7 @@ void DiagramView::mousePressEvent(QMouseEvent* event) {
             // from the middle of the side facing it, which every attribute
             // placed on that side shares (Zain, 2026-09-26).
             if (const auto locked = attribute_owner()) owner = *locked;
-            result = impl_->editor.create_attribute("Attribute", centred(center, attribute_body), owner);
+            result = impl_->editor.create_attribute("Attribute", centred(center, fitted_body(NamedShape::Attribute, QStringLiteral("Attribute"), font())), owner);
         }
         impl_->publish(result);
         if (result && result.created) {
@@ -4372,6 +4660,17 @@ void DiagramView::drawForeground(QPainter* painter, const QRectF& rect) {
         painter->drawEllipse(pointer, 3.5, 3.5);
     }
 }
+// A view that has lost the keyboard to another window or a dialog, or been put
+// away, no longer scrolls on under a pointer it may never hear let go of.
+void DiagramView::focusOutEvent(QFocusEvent* event) {
+    impl_->edge_scroll->stop();
+    QGraphicsView::focusOutEvent(event);
+}
+void DiagramView::hideEvent(QHideEvent* event) {
+    impl_->edge_scroll->stop();
+    QGraphicsView::hideEvent(event);
+}
+
 void DiagramView::begin_rename(const ElementRef& element) { impl_->begin_inline_edit(element); }
 bool DiagramView::renaming() const { return impl_->renaming.has_value() || impl_->text_editing.has_value(); }
 void DiagramView::commit_rename() { impl_->commit_inline_edit(); }
@@ -4599,8 +4898,19 @@ void DiagramView::mouseMoveEvent(QMouseEvent* event) {
         else if (sizing_cursor || cursor().shape() == Qt::PointingHandCursor) setCursor(Qt::ArrowCursor);
     }
     QGraphicsView::mouseMoveEvent(event);
+    // A band being drawn, or shapes being carried, held near or past the edge
+    // of the view scroll it on. Nothing else the hand does with the button
+    // held -- a line shaped, a shape pulled by its handle, a connection drawn
+    // -- reaches this far.
+    if (impl_->active_tool == Tool::Select && (event->buttons() & Qt::LeftButton)
+        && (!rubberBandRect().isNull() || (!impl_->drag_start.empty() && impl_->scene->mouseGrabberItem()))) {
+        if (rubberBandRect().isNull()) impl_->make_room_for_carry();
+        impl_->edge_scroll->follow(event->position().toPoint());
+    }
 }
 void DiagramView::mouseReleaseEvent(QMouseEvent* event) {
+    // Whatever is let go of, nothing scrolls on for it any longer.
+    if (event->button() == Qt::LeftButton) impl_->edge_scroll->stop();
     if (impl_->sizing && event->button() == Qt::LeftButton) {
         const auto drag = *impl_->sizing;
         impl_->sizing.reset();

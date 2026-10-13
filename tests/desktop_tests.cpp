@@ -16,6 +16,7 @@
 #include "app/desktop/start_route_card.hpp"
 #include "app/desktop/welcome_flow_illustration.hpp"
 #include "app/desktop/main_window.hpp"
+#include "app/desktop/schema_router.hpp"
 #include "app/desktop/notice.hpp"
 #include "app/desktop/schema_explorer.hpp"
 #include "infrastructure/project_store.hpp"
@@ -2055,6 +2056,475 @@ namespace
                 opened.mark_saved(opened.revision());
             }
 
+            // A band, or tables carried, held near or past the edge of the view
+            // scroll it on, so the same gesture goes on into what was not
+            // showing (C6, 2026-10-12). The pointer stays where it is on the
+            // screen and the schema moves under it: the band reaches wherever the
+            // pointer now is on the schema, what is carried goes there with it,
+            // and nothing is written until the hand lets go.
+            {
+                // The messages here are put together from the edge being tried.
+                const auto must = [](bool ok, const std::string &message) { require(ok, message.c_str()); };
+                child<QAction>(relational, "fileExampleCompanyRelational")->trigger();
+                settle();
+                relational.resize(1000, 700);
+                settle();
+                auto *view = relational.schema();
+                auto *scroll = child<QScrollArea>(relational, "schemaScroll");
+                auto *port = scroll->viewport();
+                auto *across = scroll->horizontalScrollBar();
+                auto *down = scroll->verticalScrollBar();
+                must(across->maximum() > 0 && down->maximum() > 0, "At this size the Company schema scrolls both ways");
+                const auto as_opened = opened.project();
+                const auto boxes_opened = view->table_boxes();
+                const auto mouse = [&](QEvent::Type type, QPointF where, Qt::MouseButtons held)
+                {
+                    QMouseEvent event(type, where, view->mapToGlobal(where.toPoint()),
+                                      type == QEvent::MouseMove ? Qt::NoButton : Qt::LeftButton, held, Qt::NoModifier);
+                    QApplication::sendEvent(view, &event);
+                };
+                const auto hold_for = [](int ms)
+                {
+                    QElapsedTimer clock;
+                    clock.start();
+                    while (clock.elapsed() < ms)
+                        QApplication::processEvents(QEventLoop::AllEvents, 5);
+                };
+                const auto on_schema = [&](QPoint in_port) { return QPointF(view->mapFrom(port, in_port)); };
+                const auto bars = [&] { return QPoint(across->value(), down->value()); };
+                const auto seen = [&]
+                { return QRectF(on_schema(QPoint(0, 0)), on_schema(QPoint(port->width(), port->height()))); };
+                const auto sign_of = [](int value) { return (value > 0) - (value < 0); };
+                const auto w = port->width();
+                const auto h = port->height();
+                // The view put where there is room to scroll towards the edge.
+                const auto away_from = [&](QPoint sign)
+                {
+                    view->select(std::nullopt);
+                    across->setValue(sign.x() < 0 ? across->maximum() : sign.x() > 0 ? 0 : across->maximum() / 2);
+                    down->setValue(sign.y() < 0 ? down->maximum() : sign.y() > 0 ? 0 : down->maximum() / 2);
+                    settle();
+                };
+                const auto empty_spot = [&]
+                {
+                    const auto empty = [&](QPointF p)
+                    {
+                        for (const auto &box : view->table_boxes())
+                            if (box.adjusted(-14, -14, 14, 14).contains(p))
+                                return false;
+                        for (const auto &line : view->line_shapes())
+                            for (std::size_t i = 1; i < line.size(); ++i)
+                                if (QRectF(line[i - 1], line[i]).normalized().adjusted(-10, -10, 10, 10).contains(p))
+                                    return false;
+                        return true;
+                    };
+                    for (int y = h / 3; y < h * 2 / 3; y += 7)
+                        for (int x = w / 3; x < w * 2 / 3; x += 7)
+                            if (empty(on_schema(QPoint(x, y))))
+                                return on_schema(QPoint(x, y));
+                    throw std::runtime_error("No empty canvas in the middle of the view");
+                };
+
+                // A band held at each edge scrolls the view that way, goes on
+                // while the pointer is held still, stops when it is let go, and
+                // marks exactly the tables it reached -- one that was out of view
+                // when it was begun among them.
+                struct Way
+                {
+                    const char *name;
+                    QPoint at;
+                    QPoint sign;
+                };
+                // Held a little past the edge, where the view goes faster.
+                for (const auto &way : {Way{"bottom", {w / 2, h + 40}, {0, 1}}, Way{"top", {w / 2, -40}, {0, -1}},
+                                        Way{"right", {w + 40, h / 2}, {1, 0}}, Way{"left", {-40, h / 2}, {-1, 0}}})
+                {
+                    const std::string name = way.name;
+                    away_from(way.sign);
+                    const auto was_seen = seen();
+                    const auto start = empty_spot();
+                    // The nearest table wholly beyond that edge, and the pointer
+                    // held at the edge across from it -- clear of the strips along
+                    // the other edges, so the view goes only the one way.
+                    std::optional<QRectF> beyond;
+                    const auto distance = [&](const QRectF &box)
+                    {
+                        return way.sign.y() > 0   ? box.top() - was_seen.bottom()
+                               : way.sign.y() < 0 ? was_seen.top() - box.bottom()
+                               : way.sign.x() > 0 ? box.left() - was_seen.right()
+                                                  : was_seen.left() - box.right();
+                    };
+                    const QRectF lane = way.sign.y() != 0 ? was_seen.adjusted(40, -1e6, -40, 1e6)
+                                                          : was_seen.adjusted(-1e6, 40, 1e6, -40);
+                    for (const auto &box : view->table_boxes())
+                        if (distance(box) > 0 && box.intersects(lane) && (!beyond || distance(box) < distance(*beyond)))
+                            beyond = box;
+                    must(beyond.has_value(), "There is a table beyond the " + name + " edge for the band to reach");
+                    const auto across_from = view->mapTo(port, beyond->intersected(lane).center().toPoint());
+                    const QPoint at(way.sign.y() != 0 ? across_from.x() : way.at.x(),
+                                    way.sign.y() != 0 ? way.at.y() : across_from.y());
+                    const auto from = bars();
+                    mouse(QEvent::MouseButtonPress, start, Qt::LeftButton);
+                    mouse(QEvent::MouseMove, start + QPointF(12, 12), Qt::LeftButton);
+                    mouse(QEvent::MouseMove, on_schema(at), Qt::LeftButton);
+                    const auto reaches = [&]
+                    {
+                        const auto here = on_schema(at);
+                        return way.sign.y() > 0   ? here.y() > beyond->top() + 2
+                               : way.sign.y() < 0 ? here.y() < beyond->bottom() - 2
+                               : way.sign.x() > 0 ? here.x() > beyond->left() + 2
+                                                  : here.x() < beyond->right() - 2;
+                    };
+                    // Waited for until the band has reached that table and the
+                    // view has moved on the axis it is held towards. The pointer
+                    // is held 40 px past the edge, so a table nearer the edge than
+                    // 38 px is reached before the scroll has taken a step; reaching
+                    // it says nothing about scrolling (2026-10-14: at some sizes of
+                    // view the wait ended before the first step, with the view not
+                    // yet moved). Which way it moved is then asked as before.
+                    const auto reached_at_once = reaches();
+                    const auto moved_that_way = [&]
+                    { return way.sign.y() != 0 ? bars().y() != from.y() : bars().x() != from.x(); };
+                    for (int waited = 0; waited < 4000 && !(reaches() && moved_that_way()); waited += 20)
+                        hold_for(20);
+                    // What was measured, said when a check fails, so a failure on
+                    // another machine tells its own geometry.
+                    const auto measured = [&]
+                    {
+                        const auto now = bars();
+                        return " (view " + std::to_string(port->width()) + "x" + std::to_string(port->height()) +
+                               ", bars from " + std::to_string(from.x()) + "," + std::to_string(from.y()) + " to " +
+                               std::to_string(now.x()) + "," + std::to_string(now.y()) + ", table reached at once: " +
+                               (reached_at_once ? "yes" : "no") + ")";
+                    };
+                    must(reaches(), "Held at the " + name + " edge, the band is carried on to the table beyond it" +
+                                        measured());
+                    const auto scrolled = bars() - from;
+                    must(sign_of(scrolled.x()) == way.sign.x() && sign_of(scrolled.y()) == way.sign.y(),
+                         "A band held at the " + name + " edge scrolls the view that way and no other" + measured());
+                    const auto still = bars();
+                    hold_for(60);
+                    const auto at_end = way.sign.y() > 0 ? down->value() == down->maximum()
+                                        : way.sign.y() < 0 ? down->value() == 0
+                                        : way.sign.x() > 0 ? across->value() == across->maximum()
+                                                           : across->value() == 0;
+                    must(bars() != still || at_end, "Held still at the " + name + " edge, the view goes on scrolling");
+                    const auto reached = on_schema(at);
+                    mouse(QEvent::MouseButtonRelease, reached, Qt::NoButton);
+                    const auto stopped = bars();
+                    hold_for(60);
+                    must(bars() == stopped, "Let go at the " + name + " edge, the view stops");
+                    const auto caught = QRectF(start, reached).normalized();
+                    std::vector<domain::ElementRef> expected;
+                    for (std::size_t t = 0; t < view->table_boxes().size(); ++t)
+                        if (view->preview().tables[t].origin && view->table_boxes()[t].intersects(caught))
+                            expected.push_back(*view->preview().tables[t].origin);
+                    auto marked = view->selection();
+                    std::sort(expected.begin(), expected.end());
+                    std::sort(marked.begin(), marked.end());
+                    must(marked == expected, "The band held at the " + name + " edge marks exactly the tables it reached");
+                    must(beyond->intersects(caught), "Among them, the table that was out of view beyond the " + name + " edge");
+                }
+
+                // The case above made on purpose, at the top edge (2026-10-14): a
+                // table 20 px above the view, which the pointer held 40 px past
+                // the edge reaches before the scroll has taken a step; one 38 px
+                // above, at the threshold; and one 60 px above, out of that first
+                // reach. Each time the band waits for the view to move, and it
+                // moves up and only up. At the top of the schema, where the view
+                // cannot move, it is never seen to move, and the check of which
+                // way it moved rejects it.
+                {
+                    const QPoint up(0, -1);
+                    for (const int gap : {20, 38, 60})
+                    {
+                        const std::string what = "A table " + std::to_string(gap) + " px above the view";
+                        // A table that can be brought to that distance above the
+                        // view, with empty canvas in the middle of the view to
+                        // start the band from.
+                        std::optional<QRectF> target;
+                        QPointF start;
+                        auto boxes = view->table_boxes();
+                        std::sort(boxes.begin(), boxes.end(),
+                                  [](const QRectF &a, const QRectF &b) { return a.bottom() < b.bottom(); });
+                        for (const auto &box : boxes)
+                        {
+                            const auto top_of_view = static_cast<int>(std::ceil(box.bottom())) + gap;
+                            if (top_of_view > down->maximum())
+                                continue;
+                            view->select(std::nullopt);
+                            across->setValue(std::clamp(static_cast<int>(box.center().x()) - w / 2, 0, across->maximum()));
+                            down->setValue(top_of_view);
+                            settle();
+                            if (std::abs(seen().top() - (box.bottom() + gap)) > 1.0)
+                                continue;
+                            try
+                            {
+                                start = empty_spot();
+                            }
+                            catch (const std::runtime_error &)
+                            {
+                                continue;
+                            }
+                            target = box;
+                            break;
+                        }
+                        must(target.has_value(), what + " can be set up");
+                        const auto lane = seen().adjusted(40, -1e6, -40, 1e6);
+                        const QPoint at(view->mapTo(port, target->intersected(lane).center().toPoint()).x(), -40);
+                        const auto from = bars();
+                        mouse(QEvent::MouseButtonPress, start, Qt::LeftButton);
+                        mouse(QEvent::MouseMove, start + QPointF(12, 12), Qt::LeftButton);
+                        mouse(QEvent::MouseMove, on_schema(at), Qt::LeftButton);
+                        const auto reaches = [&] { return on_schema(at).y() < target->bottom() - 2; };
+                        const auto reached_at_once = reaches();
+                        must(reached_at_once == (gap < 38),
+                             what + (gap < 38 ? " is reached before the scroll has taken a step"
+                                              : " is not reached before the scroll has taken a step"));
+                        for (int waited = 0; waited < 4000 && !(reaches() && bars().y() != from.y()); waited += 20)
+                            hold_for(20);
+                        const auto scrolled = bars() - from;
+                        std::cout << "PASS band at the top edge, table " << gap << " px beyond: reached at once "
+                                  << (reached_at_once ? "yes" : "no") << ", bars " << from.x() << "," << from.y() << " -> "
+                                  << bars().x() << "," << bars().y() << '\n';
+                        must(reaches(), what + ": the band reaches it");
+                        must(sign_of(scrolled.x()) == up.x() && sign_of(scrolled.y()) == up.y(),
+                             what + ": the band waits for the view to scroll, and it scrolls up and no other way");
+                        mouse(QEvent::MouseButtonRelease, on_schema(at), Qt::NoButton);
+                        settle();
+                    }
+                    // At the top of the schema the view cannot move: the scroll
+                    // runs and takes no step, nothing is ever seen to move, and
+                    // the check of which way it moved does not pass it.
+                    view->select(std::nullopt);
+                    across->setValue(across->maximum() / 2);
+                    down->setValue(0);
+                    settle();
+                    const auto start = empty_spot();
+                    const auto from = bars();
+                    mouse(QEvent::MouseButtonPress, start, Qt::LeftButton);
+                    mouse(QEvent::MouseMove, start + QPointF(12, 12), Qt::LeftButton);
+                    mouse(QEvent::MouseMove, on_schema({w / 2, -40}), Qt::LeftButton);
+                    bool moved = false;
+                    for (int waited = 0; waited < 300 && !moved; waited += 20)
+                    {
+                        hold_for(20);
+                        moved = bars() != from;
+                    }
+                    const auto scrolled = bars() - from;
+                    must(!moved, "At the top of the schema the view cannot scroll up, and is never seen to");
+                    must(!(sign_of(scrolled.x()) == up.x() && sign_of(scrolled.y()) == up.y()),
+                         "And a view that did not scroll does not pass the check of which way it scrolled");
+                    mouse(QEvent::MouseButtonRelease, on_schema({w / 2, -40}), Qt::NoButton);
+                    settle();
+                }
+
+                // Brought back in, the schema put away, or the keyboard taken
+                // away, a band stops scrolling the view.
+                const auto band_to_bottom = [&]
+                {
+                    away_from({0, 1});
+                    const auto start = empty_spot();
+                    mouse(QEvent::MouseButtonPress, start, Qt::LeftButton);
+                    mouse(QEvent::MouseMove, start + QPointF(12, 12), Qt::LeftButton);
+                    mouse(QEvent::MouseMove, on_schema({w / 2, h - 3}), Qt::LeftButton);
+                    hold_for(60);
+                    must(down->value() > 0, "A band held at the bottom scrolls the view down");
+                    return start;
+                };
+                {
+                    const auto start = band_to_bottom();
+                    mouse(QEvent::MouseMove, start + QPointF(30, 30), Qt::LeftButton);
+                    const auto in_again = bars();
+                    hold_for(80);
+                    must(bars() == in_again, "A band brought back from the edge stops scrolling the view");
+                    mouse(QEvent::MouseButtonRelease, start + QPointF(30, 30), Qt::NoButton);
+                }
+                {
+                    band_to_bottom();
+                    QFocusEvent away(QEvent::FocusOut, Qt::ActiveWindowFocusReason);
+                    QApplication::sendEvent(view, &away);
+                    const auto unfocused = bars();
+                    hold_for(80);
+                    must(bars() == unfocused, "A schema that loses the keyboard stops scrolling");
+                    mouse(QEvent::MouseButtonRelease, on_schema({w / 2, h - 3}), Qt::NoButton);
+                }
+                {
+                    band_to_bottom();
+                    relational.show_home(true);
+                    settle();
+                    const auto put_away = bars();
+                    hold_for(80);
+                    must(bars() == put_away, "A schema put away stops scrolling");
+                    relational.show_home(false);
+                    settle();
+                    mouse(QEvent::MouseButtonRelease, on_schema({w / 2, h - 3}), Qt::NoButton);
+                    settle();
+                }
+
+                // One table carried to each edge, and every table carried down:
+                // the view scrolls, what is carried follows the pointer exactly
+                // -- stopping as a group at the top and the left, as it always
+                // has -- the lines are routed as it goes, and the whole carry is
+                // one step of history that undoes and redoes whole.
+                struct Carry
+                {
+                    const char *name;
+                    QPoint sign;
+                    bool everything;
+                };
+                bool saved_once = false;
+                for (const auto &carry : {Carry{"one table down", {0, 1}, false}, Carry{"one table up", {0, -1}, false},
+                                          Carry{"one table right", {1, 0}, false}, Carry{"one table left", {-1, 0}, false},
+                                          Carry{"every table down", {0, 1}, true}})
+                {
+                    const std::string name = carry.name;
+                    view->select(std::nullopt);
+                    const auto before = view->table_boxes();
+                    // A table brought to the middle of the view, with room left to
+                    // scroll on the way it is to be carried.
+                    std::optional<std::size_t> pressed;
+                    for (std::size_t t = 0; t < before.size() && !pressed; ++t)
+                    {
+                        if (!view->preview().tables[t].origin)
+                            continue;
+                        const QPointF heading(before[t].center().x(), before[t].top() + 13);
+                        const auto left = std::clamp(static_cast<int>(heading.x()) - w / 2, 0, across->maximum());
+                        const auto top = std::clamp(static_cast<int>(heading.y()) - h / 2, 0, down->maximum());
+                        const bool room = (carry.sign.x() <= 0 || left < across->maximum() - 40) &&
+                                          (carry.sign.x() >= 0 || left > 40) &&
+                                          (carry.sign.y() <= 0 || top < down->maximum() - 40) &&
+                                          (carry.sign.y() >= 0 || top > 40);
+                        const bool inside = std::abs(heading.x() - left - w / 2) < w / 2 - 60 &&
+                                            std::abs(heading.y() - top - h / 2) < h / 2 - 60;
+                        if (!room || !inside)
+                            continue;
+                        across->setValue(left);
+                        down->setValue(top);
+                        settle();
+                        pressed = t;
+                    }
+                    must(pressed.has_value(), "A table can be brought into view with room to carry " + name);
+                    if (carry.everything)
+                    {
+                        view->select_all();
+                        settle();
+                    }
+                    const QPointF grip(before[*pressed].center().x(), before[*pressed].top() + 13);
+                    const auto grip_in_port = view->mapTo(port, grip.toPoint());
+                    const QPoint edge(carry.sign.x() > 0 ? w - 3 : carry.sign.x() < 0 ? 2 : grip_in_port.x(),
+                                      carry.sign.y() > 0 ? h - 3 : carry.sign.y() < 0 ? 2 : grip_in_port.y());
+                    const auto steps = opened.history_position();
+                    const auto from = bars();
+                    mouse(QEvent::MouseButtonPress, grip, Qt::LeftButton);
+                    const auto carried_refs = view->selection();
+                    std::vector<std::size_t> carried;
+                    for (std::size_t t = 0; t < before.size(); ++t)
+                        if (view->preview().tables[t].origin &&
+                            std::find(carried_refs.begin(), carried_refs.end(), *view->preview().tables[t].origin) !=
+                                carried_refs.end())
+                            carried.push_back(t);
+                    mouse(QEvent::MouseMove, grip + QPointF(carry.sign * 10), Qt::LeftButton);
+                    mouse(QEvent::MouseMove, on_schema(edge), Qt::LeftButton);
+                    const auto routed = view->routings();
+                    hold_for(150);
+                    const auto scrolled = bars() - from;
+                    must(sign_of(scrolled.x()) == carry.sign.x() && sign_of(scrolled.y()) == carry.sign.y(),
+                         "Carrying " + name + " to the edge scrolls the view that way and no other");
+                    must(opened.history_position() == steps, "Carrying " + name + " writes nothing until it is let go");
+                    must(view->routings() > routed, "Carrying " + name + ", the lines are routed as the tables go");
+                    const auto reached = on_schema(edge);
+                    mouse(QEvent::MouseButtonRelease, reached, Qt::NoButton);
+                    settle();
+                    must(opened.history_position() == steps + 1, "Carrying " + name + " is one step of history");
+                    auto moved = reached - grip;
+                    for (const auto t : carried)
+                    {
+                        moved.setX(std::max(moved.x(), -before[t].left()));
+                        moved.setY(std::max(moved.y(), -before[t].top()));
+                    }
+                    const auto after = view->table_boxes();
+                    bool exact = after.size() == before.size();
+                    for (std::size_t t = 0; exact && t < before.size(); ++t)
+                    {
+                        const bool was_carried = std::find(carried.begin(), carried.end(), t) != carried.end();
+                        exact = after[t] == (was_carried ? before[t].translated(moved) : before[t]);
+                    }
+                    must(exact, "Everything carried " + name + " lands exactly where the pointer took it, and the "
+                                                               "rest stay where they were");
+                    if (!saved_once)
+                    {
+                        // Saved and opened again, the carried table is where it was put.
+                        QTemporaryDir folder;
+                        const auto saved_at = folder.filePath("carried.erdx").toStdString();
+                        must(opened_store.save(saved_at, opened.project()).ok, "The carried schema saves");
+                        const auto reloaded = opened_store.load(saved_at);
+                        must(reloaded && *reloaded.project == opened.project(),
+                             "And loads back with the table where it was carried");
+                        saved_once = true;
+                    }
+                    child<QAction>(relational, "undoCommand")->trigger();
+                    settle();
+                    must(view->table_boxes() == before, "Undone, everything carried " + name + " is where it was");
+                    child<QAction>(relational, "redoCommand")->trigger();
+                    settle();
+                    must(view->table_boxes() == after, "Redone, everything carried " + name + " is where it was let go");
+                    child<QAction>(relational, "undoCommand")->trigger();
+                    settle();
+                }
+                // Held at the top or the left long enough, a table carried there
+                // stops at the edge of the schema -- where its coordinates are
+                // nought -- and the view stops with it. No room is made beyond:
+                // the schema does not reach above or left of nought.
+                for (const QPoint sign : {QPoint(0, -1), QPoint(-1, 0)})
+                {
+                    const std::string name = sign.y() ? "top" : "left";
+                    view->select(std::nullopt);
+                    across->setValue(0);
+                    down->setValue(0);
+                    settle();
+                    const auto before = view->table_boxes();
+                    std::optional<std::size_t> pressed;
+                    for (std::size_t t = 0; t < before.size() && !pressed; ++t)
+                        if (view->preview().tables[t].origin &&
+                            seen().adjusted(60, 60, -60, -60)
+                                .contains(QPointF(before[t].center().x(), before[t].top() + 13)))
+                            pressed = t;
+                    must(pressed.has_value(), "A table stands in view to carry to the " + name);
+                    const QPointF grip(before[*pressed].center().x(), before[*pressed].top() + 13);
+                    const auto grip_in_port = view->mapTo(port, grip.toPoint());
+                    const QPoint edge(sign.x() ? -40 : grip_in_port.x(), sign.y() ? -40 : grip_in_port.y());
+                    mouse(QEvent::MouseButtonPress, grip, Qt::LeftButton);
+                    mouse(QEvent::MouseMove, on_schema(edge), Qt::LeftButton);
+                    const auto at_edge = [&]
+                    {
+                        const auto box = view->table_boxes()[*pressed];
+                        return sign.y() ? box.top() == 0 : box.left() == 0;
+                    };
+                    for (int waited = 0; waited < 3000 && !at_edge(); waited += 20)
+                        hold_for(20);
+                    must(at_edge(), "Carried to the " + name + ", the table stops at the edge of the schema");
+                    const auto stopped = bars();
+                    hold_for(60);
+                    must(bars() == stopped && bars() == QPoint(0, 0) && at_edge(),
+                         "Held there, neither the view nor the table goes any further");
+                    bool none_past = true;
+                    for (const auto &box : view->table_boxes())
+                        none_past = none_past && box.top() >= 0 && box.left() >= 0;
+                    must(none_past, "No table is ever taken above or left of the schema's edge");
+                    mouse(QEvent::MouseButtonRelease, on_schema(edge), Qt::NoButton);
+                    settle();
+                    child<QAction>(relational, "undoCommand")->trigger();
+                    settle();
+                    must(view->table_boxes() == before, "The carry to the " + name + " is put back");
+                }
+                relational.resize(1440, 1080);
+                settle();
+                must(opened.project() == as_opened && view->table_boxes() == boxes_opened,
+                     "And the Company schema is as it opened");
+                opened.mark_saved(opened.revision());
+            }
+
             // A table's lettering is measured once, not on every movement of the
             // pointer (2026-10-06): a drag moves tables and changes none of what
             // they say. Whatever does change what a table measures -- a name, a
@@ -2564,6 +3034,297 @@ namespace
     // half the time the opening took. A resize to the size the lines were routed
     // at routes nothing now; a resize to any other size, and every routing asked
     // for by an edit, a refresh, Undo, Redo or the theme, still routes.
+    // The schema's routing grid is written only by the router, which is what
+    // lets the view's memory of searches see every write (RouteMemory): code
+    // outside it can read the grid's cells but cannot write them.
+    template <class G>
+    concept writes_blocked_cells = requires(G grid) { grid.blocked_[0] = 1; };
+    template <class G>
+    concept writes_used_cells = requires(G grid) { grid.used_[0] = 1; };
+    static_assert(!writes_blocked_cells<desktop::schema_router::Grid>, "The grid's blocked cells are the router's to write");
+    static_assert(!writes_used_cells<desktop::schema_router::Grid>, "The grid's counts are the router's to write");
+
+    // A search the memory takes again finds exactly the path a fresh search
+    // finds, and is taken again only where nothing it read has changed
+    // (2026-10-13). Each pass is routed twice -- over a grid with the memory
+    // and over the same grid without -- and every path must agree.
+    void route_memory_router_tests()
+    {
+        using namespace desktop::schema_router;
+        struct Line
+        {
+            std::uint32_t id;
+            QPoint from;
+            QPoint to;
+            std::optional<QPoint> opens{};
+            bool trial_first = false;
+        };
+        const auto route = [](RouteMemory *memory, int columns, int rows, const std::vector<QRectF> &tables,
+                              const std::vector<Line> &lines, bool everything_moves)
+        {
+            Grid grid(columns, rows, tables, memory);
+            RouteMemory::Pass pass(memory, grid, everything_moves);
+            std::vector<std::vector<QPoint>> paths;
+            for (const auto &line : lines)
+            {
+                pass.line(line.id);
+                if (line.opens)
+                    open_cell(grid, *line.opens);
+                if (line.trial_first)
+                    (void)find_way_trial(grid, line.from + QPoint(0, 3), line.to + QPoint(0, 3));
+                auto path = find_way(grid, line.from, line.to);
+                std::vector<QPointF> corners;
+                for (const auto &at : path)
+                    corners.emplace_back(at.x() * cell + cell / 2.0, at.y() * cell + cell / 2.0);
+                mark(grid, corners);
+                paths.push_back(std::move(path));
+            }
+            return paths;
+        };
+        RouteMemory memory;
+        memory.set_checking(true);
+        // One pass, with and without the memory; how many searches it took again.
+        const auto pass = [&](const char *what, int columns, int rows, const std::vector<QRectF> &tables,
+                              const std::vector<Line> &lines, bool everything_moves = false)
+        {
+            const auto before = memory.account().taken_again;
+            const auto remembered = route(&memory, columns, rows, tables, lines, everything_moves);
+            const auto fresh = route(nullptr, columns, rows, tables, lines, everything_moves);
+            require(remembered == fresh, (std::string(what) + ": every path is the one a fresh search finds").c_str());
+            require(!fresh.empty() && !fresh.back().empty(), (std::string(what) + ": the lines find their way").c_str());
+            return memory.account().taken_again - before;
+        };
+        // Cells to pixels, for tables.
+        const auto table = [](int left, int top, int right, int bottom)
+        { return QRectF(left * cell, top * cell, (right - left) * cell, (bottom - top) * cell); };
+        const std::vector<QRectF> tables{table(25, 12, 29, 16)};
+        const Line a{1, {2, 10}, {55, 10}};
+        const Line b{2, {2, 13}, {55, 13}};
+
+        require(pass("The first pass", 60, 40, tables, {a, b}) == 0, "The first pass has nothing to take again");
+        require(pass("The same pass again", 60, 40, tables, {a, b}) == 2,
+                "The same pass again takes both searches again");
+        const std::vector<QRectF> moved{table(28, 12, 32, 16)};
+        require(pass("A table moved across both searches", 60, 40, moved, {a, b}) == 0,
+                "A table moved across what both searches read has both made again");
+        require(pass("And again", 60, 40, moved, {a, b}) == 2, "Unmoved since, both are taken again");
+        auto far = moved;
+        far.push_back(table(2, 30, 6, 35));
+        // Whether a search read that far depends on the search; what it finds,
+        // as ever, must be what a fresh search finds.
+        (void)pass("A table put far away", 60, 40, far, {a, b});
+        require(pass("And again", 60, 40, far, {a, b}) == 2, "Unmoved since, both are taken again");
+        require(pass("The grid made wider", 61, 40, far, {a, b}) == 0, "A grid of another size has every search made again");
+        require(pass("And again", 61, 40, far, {a, b}) == 2, "At that size since, both are taken again");
+        const Line a_lower{1, {2, 12}, {55, 12}};
+        require(pass("A line's ends moved", 61, 40, far, {a_lower, b}) == 0,
+                "A line from other cells is searched again, and the line after it, whose cells it now marks otherwise");
+        require(pass("And again", 61, 40, far, {a_lower, b}) == 2, "Unmoved since, both are taken again");
+        require(pass("The lines in the other order", 61, 40, far, {b, a_lower}) == 0,
+                "Routed in the other order, each finds the other's marks otherwise and is made again");
+        require(pass("And again", 61, 40, far, {b, a_lower}) == 2, "In that order since, both are taken again");
+        require(pass("Every table moving", 61, 40, far, {b, a_lower}, true) == 0 && memory.account().kept == 0,
+                "A pass in which every table moves takes nothing again and keeps nothing");
+        require(pass("After it", 61, 40, far, {b, a_lower}) == 0, "So the pass after it has nothing to take again");
+        const Line a_tried{1, {2, 12}, {55, 12}, std::nullopt, true};
+        const Line b_tried{2, {2, 13}, {55, 13}, std::nullopt, true};
+        (void)pass("Lines tried before they are routed", 61, 40, far, {a_tried, b_tried});
+        require(pass("And again", 61, 40, far, {a_tried, b_tried}) == 4,
+                "A trial puts back what it opened, so trials and searches alike are taken again");
+        // A cell opened by a line before another: opened then, closed now, the
+        // later search reads it otherwise. The line that opened it searched
+        // after writing, so its own search is never kept.
+        const Line opener{5, {2, 5}, {55, 5}, QPoint(30, 11)};
+        const Line not_opening{5, {2, 5}, {55, 5}};
+        (void)pass("A line opening a table's cell", 61, 40, moved, {opener, b});
+        require(pass("And again", 61, 40, moved, {opener, b}) == 1,
+                "A search made after its own line has written is not kept; the one after it is taken again");
+        require(pass("The line no longer opening it", 61, 40, moved, {not_opening, b}) == 0,
+                "A cell opened otherwise than before has the search after it, which read it, made again");
+        require(memory.account().mismatches == 0, "No search the memory took again differed from a fresh one");
+        std::cout << "PASS the router's memory of searches takes again only what a fresh search would find\n";
+    }
+
+    // On the schema itself: a large schema and the examples, carried every way,
+    // a line shaped by hand, undone and redone, saved and opened again, with
+    // every search the memory takes again checked against a fresh one; and the
+    // lines in the end exactly those the router draws without any memory.
+    void route_memory_view_tests(infrastructure::QtIdGenerator &ids)
+    {
+        const auto hold_for = [](int ms)
+        {
+            QElapsedTimer clock;
+            clock.start();
+            while (clock.elapsed() < ms)
+                QApplication::processEvents(QEventLoop::AllEvents, 5);
+        };
+        QTemporaryDir folder;
+        struct Schema
+        {
+            const char *name;
+            std::function<void(application::Editor &)> build;
+            std::function<void(desktop::MainWindow &)> load;
+        };
+        // A schema of some size, made the way a person makes one.
+        const auto larger = [](application::Editor &editor)
+        {
+            std::vector<domain::EntityId> entities;
+            constexpr int wanted = 24;
+            for (int i = 0; i < wanted; ++i)
+            {
+                const double x = (i % 6) * 420.0;
+                const double y = (i / 6) * 360.0;
+                const auto made = editor.create_entity("Entity " + std::to_string(i), {x, y, 150, 80});
+                const auto id = std::get<domain::EntityId>(*made.created);
+                entities.push_back(id);
+                const auto key = editor.create_attribute("Entity" + std::to_string(i) + " ID", {x - 40, y + 110, 120, 50},
+                                                         domain::ElementRef{id});
+                if (key.created)
+                    editor.set_attribute_kind(std::get<domain::AttributeId>(*key.created), domain::AttributeKind::Key);
+            }
+            for (int i = 0; i + 1 < wanted; ++i)
+            {
+                const auto first = entities[static_cast<std::size_t>(i)];
+                const auto second = entities[static_cast<std::size_t>((i * 7 + 3) % wanted)];
+                if (first != second)
+                    editor.relate(first, second, {(i % 6) * 420.0 + 210, (i / 6) * 360.0 + 200, 140, 80},
+                                  "Relates " + std::to_string(i));
+            }
+        };
+        const std::vector<Schema> schemas{
+            {"a larger schema", larger, {}},
+            {"the University schema", {}, [](desktop::MainWindow &w) { w.load_example(); }},
+            {"the Company relational schema", {}, [](desktop::MainWindow &w) { w.load_company_database_relational(); }},
+        };
+        for (const auto &one : schemas)
+        {
+            const std::string name = one.name;
+            const auto must = [&](bool ok, const std::string &what) { require(ok, (name + ": " + what).c_str()); };
+            application::Editor editor(ids);
+            if (one.build)
+                one.build(editor);
+            infrastructure::ErdxProjectStore store;
+            desktop::MainWindow window(editor, store, ids);
+            window.resize(1100, 720);
+            window.show();
+            window.show_home(false);
+            settle();
+            if (one.load)
+                one.load(window);
+            settle();
+            window.open_schema(true);
+            settle();
+            auto *view = window.schema();
+            view->check_route_memory(true);
+            view->refresh();
+            settle();
+            const auto mouse = [&](QEvent::Type type, QPointF where, Qt::MouseButtons held)
+            {
+                QMouseEvent event(type, where, view->mapToGlobal(where.toPoint()),
+                                  type == QEvent::MouseMove ? Qt::NoButton : Qt::LeftButton, held, Qt::NoModifier);
+                QApplication::sendEvent(view, &event);
+            };
+            // A table carried by its heading: `steps` moves of `by` each.
+            const auto carry = [&](std::size_t t, QPointF by, int steps)
+            {
+                const auto boxes = view->table_boxes();
+                if (t >= boxes.size())
+                    return;
+                const QPointF grip(boxes[t].center().x(), boxes[t].top() + 13);
+                mouse(QEvent::MouseButtonPress, grip, Qt::LeftButton);
+                for (int i = 1; i <= steps; ++i)
+                    mouse(QEvent::MouseMove, grip + by * i, Qt::LeftButton);
+                mouse(QEvent::MouseButtonRelease, grip + by * steps, Qt::NoButton);
+                settle();
+            };
+            const auto tables = view->table_boxes().size();
+            must(tables >= 5, "there are tables to carry");
+            // Small movements and large, every way, and a table carried back.
+            carry(0, QPointF(3, 2), 8);
+            carry(1, QPointF(0, 40), 4);
+            carry(2, QPointF(-30, 0), 3);
+            carry(tables / 2, QPointF(25, -25), 4);
+            carry(tables - 1, QPointF(0, -60), 2);
+            carry(0, QPointF(-3, -2), 8);
+            // Everything carried together, which the memory stands aside for.
+            view->select_all();
+            settle();
+            carry(0, QPointF(10, 10), 3);
+            view->select(std::nullopt);
+            settle();
+            // A table carried to the bottom of the view and held there.
+            {
+                auto *scroll = child<QScrollArea>(window, "schemaScroll");
+                auto *port = scroll->viewport();
+                const auto boxes = view->table_boxes();
+                const QPointF grip(boxes[1].center().x(), boxes[1].top() + 13);
+                mouse(QEvent::MouseButtonPress, grip, Qt::LeftButton);
+                mouse(QEvent::MouseMove, grip + QPointF(0, 10), Qt::LeftButton);
+                const auto edge = QPointF(view->mapFrom(port, QPoint(port->width() / 2, port->height() - 3)));
+                mouse(QEvent::MouseMove, edge, Qt::LeftButton);
+                hold_for(120);
+                mouse(QEvent::MouseButtonRelease, QPointF(view->mapFrom(port, QPoint(port->width() / 2, port->height() - 3))),
+                      Qt::NoButton);
+                settle();
+            }
+            // A line shaped by hand: one of its runs pushed aside, and then a
+            // table it joins carried.
+            {
+                const auto lines = view->line_shapes();
+                bool shaped = false;
+                for (const auto &line : lines)
+                {
+                    if (line.size() < 4)
+                        continue;
+                    const auto from = line[line.size() / 2 - 1];
+                    const auto to = line[line.size() / 2];
+                    if (std::hypot(to.x() - from.x(), to.y() - from.y()) < 40)
+                        continue;
+                    const auto middle = (from + to) / 2;
+                    const auto aside = std::abs(to.x() - from.x()) < 0.5 ? QPointF(24, 0) : QPointF(0, 24);
+                    mouse(QEvent::MouseButtonPress, middle, Qt::LeftButton);
+                    mouse(QEvent::MouseMove, middle + aside / 2, Qt::LeftButton);
+                    mouse(QEvent::MouseMove, middle + aside, Qt::LeftButton);
+                    mouse(QEvent::MouseButtonRelease, middle + aside, Qt::NoButton);
+                    settle();
+                    shaped = true;
+                    break;
+                }
+                must(shaped, "a line is shaped by hand");
+                carry(0, QPointF(20, 15), 3);
+            }
+            // Undone and redone, saved and opened again, then carried once more.
+            for (int i = 0; i < 3; ++i)
+            {
+                child<QAction>(window, "undoCommand")->trigger();
+                settle();
+            }
+            for (int i = 0; i < 2; ++i)
+            {
+                child<QAction>(window, "redoCommand")->trigger();
+                settle();
+            }
+            const auto path = folder.filePath(QString::fromStdString(name) + ".erdx");
+            must(store.save(path.toStdString(), editor.project()).ok, "it saves");
+            // Saved, so opening it again asks nothing about what is unsaved.
+            editor.mark_saved(editor.revision());
+            must(window.open_path(path), "it opens again");
+            settle();
+            carry(1, QPointF(-15, 20), 3);
+            const auto &account = view->route_memory().account();
+            must(account.taken_again > 0, "the memory took searches again");
+            must(account.mismatches == 0, "no search the memory took again differed from a fresh search");
+            // And the lines drawn are exactly the router's own, with no memory.
+            const auto remembered = view->line_shapes();
+            view->set_route_memory(false);
+            const auto fresh = view->line_shapes();
+            view->set_route_memory(true);
+            must(remembered == fresh, "every line is exactly the line the router draws without the memory");
+            editor.mark_saved(editor.revision());
+        }
+        std::cout << "PASS the schema's memory of searches leaves every line as the router draws it\n";
+    }
+
     void schema_open_routing_tests(infrastructure::QtIdGenerator &ids)
     {
         application::Editor model(ids);
@@ -5621,6 +6382,97 @@ void entity_kind_terminology_tests()
             "Relationship Kind retains Regular terminology");
 }
 
+
+// A schema converted to its diagram makes each element for its name, as one
+// drawn on the diagram is (Zain, 2026-10-12): short names smaller, long ones
+// taller in lines. The diagram stays laid out as it was -- nothing overlaps,
+// every table still one entity -- and Undo, Redo and a file keep it exactly.
+void converted_shapes_fit_their_names_tests(infrastructure::QtIdGenerator &ids)
+{
+    for (const bool lengthen : {false, true})
+    {
+        application::Editor editor(ids);
+        infrastructure::ErdxProjectStore store;
+        desktop::MainWindow window(editor, store, ids);
+        window.resize(1440, 920);
+        window.show();
+        settle();
+        window.show_home(false);
+        window.load_company_database_relational();
+        settle_motion(window);
+        require(editor.project().schema.standalone, "A schema drawn by hand, to convert");
+        if (lengthen)
+        {
+            std::vector<std::pair<domain::RelationId, std::string>> tables;
+            std::vector<std::pair<domain::SchemaColumnId, std::string>> columns;
+            for (const auto &[id, relation] : editor.project().schema.relations)
+                tables.emplace_back(id, "Department Of International " + relation.name);
+            for (const auto &[table, added] : editor.project().schema.added)
+            {
+                (void)table;
+                for (const auto &column : added)
+                    columns.emplace_back(column.id, column.name + " Of The Whole University");
+            }
+            for (const auto &[id, renamed] : tables)
+                require(bool(editor.rename(domain::ElementRef{id}, renamed)), "A table given a long name");
+            for (const auto &[id, renamed] : columns)
+                require(bool(editor.rename_schema_column(id, renamed)), "A column given a long name");
+            settle();
+        }
+        const auto tables = editor.project().schema.relations.size();
+        const auto before = editor.project();
+        child<QAction>(window, "designConvert")->trigger();
+        settle_motion(window);
+        const auto &project = editor.project();
+        // A bridge table becomes a relationship rather than an entity, as it
+        // always has; which is which is the conversion's own business.
+        require(!project.schema.standalone && !project.entities.empty() && project.entities.size() <= tables,
+                "Converted to the diagram of its tables");
+        const auto font = window.canvas()->font();
+        struct Placed
+        {
+            QRectF box;
+            desktop::NamedShape shape;
+            QString name;
+        };
+        std::vector<Placed> placed;
+        const auto add = [&](const domain::ElementRef &ref, desktop::NamedShape shape)
+        {
+            const auto &rect = project.layout.at(ref);
+            const auto name = QString::fromStdString(domain::name(project, ref));
+            const auto fitted = desktop::fitted_body(shape, name, font);
+            require(rect.width == fitted.width && rect.height == fitted.height,
+                    "Each element is made the size its name is fitted to");
+            placed.push_back({QRectF(rect.x, rect.y, rect.width, rect.height), shape, name});
+        };
+        for (const auto &[id, entity] : project.entities) { (void)entity; add(id, desktop::NamedShape::Entity); }
+        for (const auto &[id, attribute] : project.attributes) { (void)attribute; add(id, desktop::NamedShape::Attribute); }
+        for (const auto &[id, relationship] : project.relationships) { (void)relationship; add(id, desktop::NamedShape::Relationship); }
+        for (std::size_t i = 0; i < placed.size(); ++i)
+            for (std::size_t j = i + 1; j < placed.size(); ++j)
+                require(!placed[i].box.adjusted(0.5, 0.5, -0.5, -0.5).intersects(placed[j].box.adjusted(0.5, 0.5, -0.5, -0.5)),
+                        "Nothing in the converted diagram overlaps anything else");
+        for (const auto &one : placed)
+        {
+            const auto laid = desktop::name_layout(one.shape, one.name, font, 1.0, QRectF(QPointF(0, 0), one.box.size()));
+            if (!lengthen)
+                require(!laid.elided, "Every name of the example is written whole");
+            else if (laid.elided)
+                require(laid.lines.size() == 3, "A name is cut short only after three lines");
+        }
+        const auto converted = editor.project();
+        require(editor.undo() && editor.project() == before, "Undo puts the schema drawn by hand back exactly");
+        require(editor.redo() && editor.project() == converted, "Redo makes the same diagram again");
+        const auto bytes = infrastructure::ErdxProjectStore::encode(editor.project());
+        const auto reopened = infrastructure::ErdxProjectStore::decode(bytes);
+        require(reopened && reopened.project->layout == editor.project().layout,
+                "A file keeps every converted element at its size");
+        editor.mark_saved(editor.revision());
+        window.close();
+        settle();
+    }
+}
+
 int main(int argc, char **argv)
 {
     QApplication app(argc, argv);
@@ -5700,6 +6552,8 @@ int main(int argc, char **argv)
             }
             schema_drawing_tests(ids);
             schema_open_routing_tests(ids);
+            route_memory_router_tests();
+            route_memory_view_tests(ids);
         }
         if (relational_part)
         {
@@ -5716,6 +6570,8 @@ int main(int argc, char **argv)
             std::cout << "Main window tool tests passed\n";
             return 0;
         }
+        if (whole || new_projects_part)
+            converted_shapes_fit_their_names_tests(ids);
         application::Editor editor(ids);
         infrastructure::ErdxProjectStore project_store;
         desktop::MainWindow window(editor, project_store, ids);
@@ -7412,21 +8268,19 @@ int main(int argc, char **argv)
         settle();
         require(window.editor().project().entities.at(student).name == "UniversityStudent", "Name commits through properties on focus loss");
         {
-            // Properties rename uses the same compact Relationship budget as
-            // inline rename. An example already wider than it stays that wide.
+            // Properties rename fits the shape to its name as inline rename
+            // does (2026-10-12), about the same centre; a shape resized by
+            // hand keeps its size.
             const auto &was = original.layout.at(domain::ElementRef{student});
             const auto &now = window.editor().project().layout.at(domain::ElementRef{student});
-            const auto base = original.lettering.find(domain::ElementRef{student});
-            const auto factor = base == original.lettering.end() ? 1.0
-                : domain::lettering_factor(base->second, now.width, now.height);
-            const auto required = desktop::name_room_width(desktop::NamedShape::Entity,
-                "UniversityStudent", window.canvas()->font(), factor, now.height);
-            const auto cap = desktop::name_room_width(desktop::NamedShape::Entity,
-                "Relationship", window.canvas()->font(), factor, now.height);
-            require(std::abs(now.width - std::max(was.width, std::min(required, cap))) <= 1
-                        && now.height == was.height &&
-                        std::abs(now.x + now.width / 2 - (was.x + was.width / 2)) < 0.01,
-                    "Properties rename respects the Relationship cap, preserving centre and height");
+            const bool by_hand = original.lettering.contains(domain::ElementRef{student});
+            const auto fitted = desktop::fitted_body(desktop::NamedShape::Entity, "UniversityStudent",
+                                                     window.canvas()->font());
+            require(by_hand ? now == was
+                            : now.width == fitted.width && now.height == fitted.height
+                                  && std::abs(now.x + now.width / 2 - (was.x + was.width / 2)) < 0.01
+                                  && std::abs(now.y + now.height / 2 - (was.y + was.height / 2)) < 0.01,
+                    "Properties rename fits the shape to its name about its centre, or keeps a hand's size");
         }
         require(window.editor().dirty() && window.isWindowModified(), "Applied field edit marks project dirty");
         auto *undo = child<QAction>(window, "undoCommand");

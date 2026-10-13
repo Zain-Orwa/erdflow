@@ -35,7 +35,7 @@ target_link_libraries(erdflow_infrastructure PUBLIC erdflow_application Qt6::Cor
 # The canvas draws the diagram, so it is also what draws a picture of it.
 # Qt6::Svg brings the generator that writes one as SVG.
 add_library(erdflow_canvas app/desktop/diagram_view.cpp app/desktop/theme.cpp app/desktop/picture_export.cpp
-                          app/desktop/document_export.cpp)
+                          app/desktop/document_export.cpp app/desktop/edge_scroll.cpp)
 target_link_libraries(erdflow_canvas PUBLIC erdflow_application Qt6::Widgets Qt6::Svg PRIVATE erdflow_warnings)
 
 add_library(erdflow_desktop app/desktop/main_window.cpp app/desktop/schema_view.cpp app/desktop/schema_router.cpp app/desktop/schema_explorer.cpp app/desktop/schema_facts.cpp
@@ -170,6 +170,10 @@ target_link_libraries(erdflow PRIVATE erdflow_desktop erdflow_infrastructure erd
 if(BUILD_TESTING)
     add_executable(editor_benchmark tests/editor_benchmark.cpp)
     target_link_libraries(editor_benchmark PRIVATE erdflow_canvas erdflow_infrastructure erdflow_warnings)
+    # Measurements for the pre-release milestone, run by hand before and after
+    # each change rather than as a suite (2026-10-12).
+    add_executable(prerelease_baseline tests/prerelease_baseline.cpp)
+    target_link_libraries(prerelease_baseline PRIVATE erdflow_desktop erdflow_infrastructure erdflow_warnings)
 
     add_executable(core_tests tests/core_tests.cpp)
     target_link_libraries(core_tests PRIVATE erdflow_application erdflow_warnings)
@@ -180,7 +184,7 @@ if(BUILD_TESTING)
     add_test(NAME persistence COMMAND persistence_tests)
 
     add_executable(canvas_tests tests/canvas_tests.cpp)
-    target_link_libraries(canvas_tests PRIVATE erdflow_canvas erdflow_warnings)
+    target_link_libraries(canvas_tests PRIVATE erdflow_canvas erdflow_infrastructure erdflow_warnings)
     add_test(NAME canvas COMMAND canvas_tests)
 
     add_executable(theme_tests tests/theme_tests.cpp)
