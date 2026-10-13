@@ -4524,8 +4524,12 @@ void content_aware_size_tests() {
     };
 
     // Placed with the tools, each is the size its placeholder is fitted to
-    // (2026-10-12): Entity and Attribute smaller than their defaults, the
-    // diamond as wide as "Relationship" needs.
+    // (2026-10-12): never narrower than "Attributes" needs nor wider than
+    // "Relationship" needs (2026-10-13), the short Entity and Attribute
+    // placeholders exactly as wide as "Attributes" needs, and as tall as that
+    // width makes it in proportion to its default. Not measured against the
+    // default's width: where the lettering is wide, as on Linux, "Attributes"
+    // needs more than the default gives, and the shape is made wider.
     {
         const std::array<std::pair<desktop::Tool, QPointF>, 3> placing{
             {{desktop::Tool::Entity, {-400, 0}},
@@ -4538,13 +4542,28 @@ void content_aware_size_tests() {
             require(editor.project().layout.size() == before.size() + 1, "An element placed with its tool");
             for (const auto& [ref, box] : editor.project().layout)
                 if (!before.contains(ref)) {
-                    const auto fitted = is_entity(ref) ? desktop::fitted_body(desktop::NamedShape::Entity, "Entity", view.font())
-                        : is_relationship(ref) ? desktop::fitted_body(desktop::NamedShape::Relationship, "Relationship", view.font())
-                                               : desktop::fitted_body(desktop::NamedShape::Attribute, "Attribute", view.font());
+                    const auto shape = is_entity(ref) ? desktop::NamedShape::Entity
+                                     : is_relationship(ref) ? desktop::NamedShape::Relationship
+                                                            : desktop::NamedShape::Attribute;
+                    const auto fitted = desktop::fitted_body(shape, is_entity(ref) ? QStringLiteral("Entity")
+                                                                    : is_relationship(ref) ? QStringLiteral("Relationship")
+                                                                                           : QStringLiteral("Attribute"),
+                                                             view.font());
                     require(box.width == fitted.width && box.height == fitted.height,
                             "Placed at the size its placeholder is fitted to");
+                    const auto least = desktop::fitted_body(shape, QStringLiteral("Attributes"), view.font());
+                    const auto widest = desktop::fitted_body(shape, QStringLiteral("Relationship"), view.font());
+                    require(box.width >= least.width && box.width <= widest.width,
+                            "Never narrower than Attributes needs, nor wider than Relationship needs");
                     if (!is_relationship(ref))
-                        require(box.width < body_of(ref).width, "Smaller than its default for a short placeholder");
+                        require(box.width == least.width && box.height == least.height,
+                                "A short placeholder is placed as wide as Attributes needs");
+                    const auto body = body_of(ref);
+                    const auto least_height = std::max(domain::min_entity_height,
+                                                       std::ceil(body.height * domain::min_entity_width / body.width));
+                    require(box.height == std::clamp(std::round(body.height * box.width / body.width), least_height,
+                                                     body.height),
+                            "As tall as its width makes it in proportion to its default, and no taller than that");
                 }
         }
         require(desktop::entity_body.width == 133 && desktop::entity_body.height == 77
@@ -4625,8 +4644,10 @@ void content_aware_size_tests() {
     };
 
     // Named on the diagram, each is made the size its name is fitted to
-    // (2026-10-12): a short name smaller than the default, a longer one just
-    // wide enough, about the same centre.
+    // (2026-10-12): never narrower than "Attributes" needs, a short name
+    // exactly that wide (2026-10-13) and no taller than the default, a longer
+    // one just wide enough, about the same centre. Not measured against the
+    // default's width, which wide lettering needs more than for "Attributes".
     struct Named { QString name; bool short_name; };
     const std::array<std::pair<int, std::vector<Named>>, 3> naming{{
         {0, {{"User", true}, {"Student", false}, {"Professor", false}, {"Department", false}}},
@@ -4655,8 +4676,11 @@ void content_aware_size_tests() {
                              : kind == 1 ? desktop::NamedShape::Relationship : desktop::NamedShape::Attribute;
             const auto fitted = desktop::fitted_body(shape, named.name, view.font());
             require(at.width == fitted.width && at.height == fitted.height, "Made the size its name is fitted to");
+            const auto least = desktop::fitted_body(shape, QStringLiteral("Attributes"), view.font());
+            require(at.width >= least.width, "Never narrower than Attributes needs");
             if (named.short_name)
-                require(at.width < box.width && at.height <= box.height, "A short name makes it smaller than its default");
+                require(at.width == least.width && at.height == least.height && at.height <= box.height,
+                        "A short name makes it as wide as Attributes needs, and no taller than its default");
             require(at.width >= domain::min_entity_width && at.height >= domain::min_entity_height,
                     "Never under the domain's least");
             require(std::abs(at.x + at.width / 2 - (box.x + box.width / 2)) < 0.01
