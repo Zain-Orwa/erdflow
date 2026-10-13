@@ -25,6 +25,7 @@
 #include <QSettings>
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <functional>
 #include <iostream>
 #include <map>
@@ -132,6 +133,26 @@ RouteAudit audit_routes(const std::vector<std::vector<QPointF>>& lines, const st
         if (defect) ++audit.lines_with_defect;
     }
     return audit;
+}
+
+// A fingerprint of every corner of every line, to two decimal places: equal
+// between two builds exactly when they draw every line the same way.
+std::uint64_t route_fingerprint(const std::vector<std::vector<QPointF>>& lines) {
+    std::uint64_t hash = 1469598103934665603ULL;
+    const auto mix = [&](long long value) {
+        for (int i = 0; i < 8; ++i) {
+            hash ^= static_cast<std::uint64_t>((value >> (8 * i)) & 0xff);
+            hash *= 1099511628211ULL;
+        }
+    };
+    for (const auto& line : lines) {
+        mix(static_cast<long long>(line.size()));
+        for (const auto& corner : line) {
+            mix(std::llround(corner.x() * 100));
+            mix(std::llround(corner.y() * 100));
+        }
+    }
+    return hash;
 }
 
 void print_audit(const std::string& name, const RouteAudit& a) {
@@ -542,8 +563,10 @@ int main(int argc, char** argv) {
         std::cout << "SCHEMA_REFRESH " << scenario.name << ": ms=" << since(clock) << " tables=" << schema->table_boxes().size()
                   << " routings=" << schema->routings() - routed_before << '\n';
         print_audit(scenario.name, audit_routes(schema->line_shapes(), schema->table_boxes(), end_reach));
+        std::cout << "ROUTE_FINGERPRINT " << scenario.name << ": " << route_fingerprint(schema->line_shapes()) << '\n';
         schema_drags(scenario.name, *schema);
         print_audit(scenario.name + " after drags", audit_routes(schema->line_shapes(), schema->table_boxes(), end_reach));
+        std::cout << "ROUTE_FINGERPRINT " << scenario.name << " after drags: " << route_fingerprint(schema->line_shapes()) << '\n';
         schema_search(scenario.name, *schema);
         schema->set_looking_for({});
         for (const auto theme : {desktop::ThemeId::OfficeLight, desktop::ThemeId::Dracula}) {

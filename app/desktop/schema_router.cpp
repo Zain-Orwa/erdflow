@@ -76,10 +76,18 @@ std::vector<QPoint> find_way(Grid& grid, QPoint from, QPoint to) {
 
 std::vector<QPoint> find_way_trial(Grid& grid, QPoint from, QPoint to) {
     // find_way opens its terminal cells; probes must not leave
-    // holes in the obstacle map for subsequent alternatives.
-    const auto blocked = grid.blocked;
+    // holes in the obstacle map for subsequent alternatives. Those two cells
+    // are all it opens, so they are all that is put back (2026-10-12): a copy
+    // of the whole map for every probe was most of what a probe cost beyond
+    // its search.
+    if (!grid.inside(from.x(), from.y()) || !grid.inside(to.x(), to.y())) return {};
+    const auto start = static_cast<std::size_t>(grid.at(from.x(), from.y()));
+    const auto finish = static_cast<std::size_t>(grid.at(to.x(), to.y()));
+    const auto start_was = grid.blocked[start];
+    const auto finish_was = grid.blocked[finish];
     auto path = find_way(grid, from, to);
-    grid.blocked = blocked;
+    grid.blocked[finish] = finish_was;
+    grid.blocked[start] = start_was;
     return path;
 }
 

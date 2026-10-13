@@ -456,6 +456,97 @@ void reserve_ends(std::vector<QPointF>& line, QPointF from_step, QPointF to_step
     hold(false, to_step);
 }
 
+// How much of a line lies over lines already drawn: the grid's count of
+// earlier lines in each cell its runs pass through, added up.
+int shared_cells(const Grid& grid, const std::vector<QPointF>& corners) {
+    int shared = 0;
+    for (std::size_t i = 1; i < corners.size(); ++i) {
+        const auto from = corners[i - 1];
+        const auto to = corners[i];
+        const auto steps = static_cast<int>(std::max(std::abs(to.x() - from.x()), std::abs(to.y() - from.y())) / cell) + 1;
+        for (int step = 0; step <= steps; ++step) {
+            const auto t = static_cast<double>(step) / steps;
+            const auto x = static_cast<int>((from.x() + (to.x() - from.x()) * t) / cell);
+            const auto y = static_cast<int>((from.y() + (to.y() - from.y()) * t) / cell);
+            if (grid.inside(x, y)) shared += grid.used[static_cast<std::size_t>(grid.at(x, y))];
+        }
+    }
+    return shared;
+}
+
+// Takes out the small steps and hooks a line is left with by the router's
+// coarse grid (2026-10-12): a run shorter than two cells between two turns,
+// where the line steps sideways and carries on, or turns back on itself.
+// Either run beside the short one is slid into line with the other, which
+// leaves the short run with no length; what is left is tidied as before.
+// A change is kept only if the line is still right-angled, starts and ends
+// exactly where it did, leaves each table square out of it for at least as
+// far as it did, crosses no table, and lies over no more of the earlier
+// lines than it did. Lines whose route or ends were put by hand are never
+// given to this.
+void smooth(std::vector<QPointF>& line, const std::vector<QRectF>& tables, const Grid& grid) {
+    constexpr double short_run = 2.0 * cell;
+    if (line.size() < 4) return;
+    const auto front = line.front();
+    const auto back = line.back();
+    const auto length = [](QPointF a, QPointF b) { return std::abs(a.x() - b.x()) + std::abs(a.y() - b.y()); };
+    const auto first_run = length(line[0], line[1]);
+    const auto last_run = length(line[line.size() - 2], line.back());
+    const auto leaves = [](QPointF a, QPointF b) { return QPointF(b.x() - a.x() > 0.01 ? 1 : b.x() - a.x() < -0.01 ? -1 : 0,
+                                                                  b.y() - a.y() > 0.01 ? 1 : b.y() - a.y() < -0.01 ? -1 : 0); };
+    const auto first_way = leaves(line[0], line[1]);
+    const auto last_way = leaves(line.back(), line[line.size() - 2]);
+    const auto shared_before = shared_cells(grid, line);
+    const auto acceptable = [&](const std::vector<QPointF>& tried) {
+        if (tried.size() < 2 || tried.front() != front || tried.back() != back) return false;
+        for (std::size_t i = 1; i < tried.size(); ++i) {
+            const auto across = std::abs(tried[i].x() - tried[i - 1].x()) > 0.01;
+            const auto down = std::abs(tried[i].y() - tried[i - 1].y()) > 0.01;
+            if (across && down) return false;
+        }
+        if (leaves(tried[0], tried[1]) != first_way || leaves(tried.back(), tried[tried.size() - 2]) != last_way)
+            return false;
+        if (length(tried[0], tried[1]) + 0.01 < std::min(first_run, end_reach)
+            || length(tried[tried.size() - 2], tried.back()) + 0.01 < std::min(last_run, end_reach))
+            return false;
+        for (std::size_t i = 1; i < tried.size(); ++i) {
+            const auto run = QRectF(tried[i - 1], tried[i]).normalized();
+            for (const auto& table : tables)
+                if (run.intersects(table.adjusted(1, 1, -1, -1))) return false;
+        }
+        return shared_cells(grid, tried) <= shared_before;
+    };
+    for (int pass = 0; pass < 32; ++pass) {
+        bool changed = false;
+        for (std::size_t i = 1; i + 2 < line.size() && !changed; ++i) {
+            if (length(line[i], line[i + 1]) >= short_run) continue;
+            // Slide the run before the short one into line with the run after
+            // it, or the run after into line with the one before; never a run
+            // at either end, which stays square out of its table.
+            for (const bool before : {false, true}) {
+                if (before ? i - 1 == 0 : i + 2 == line.size() - 1) continue;
+                auto tried = line;
+                const bool horizontal = std::abs(line[i].y() - line[i - 1].y()) < 0.01;
+                if (before) {
+                    if (horizontal) tried[i - 1].setY(line[i + 1].y()), tried[i].setY(line[i + 1].y());
+                    else tried[i - 1].setX(line[i + 1].x()), tried[i].setX(line[i + 1].x());
+                } else {
+                    if (horizontal) tried[i + 1].setY(line[i].y()), tried[i + 2].setY(line[i].y());
+                    else tried[i + 1].setX(line[i].x()), tried[i + 2].setX(line[i].x());
+                }
+                tighten(tried);
+                straighten(tried);
+                if (tried.size() < line.size() && acceptable(tried)) {
+                    line = std::move(tried);
+                    changed = true;
+                    break;
+                }
+            }
+        }
+        if (!changed) return;
+    }
+}
+
 // Which run of a line a point is nearest to, and how far off it is.
 std::pair<std::size_t, double> run_nearest(const std::vector<QPointF>& line, QPointF point) {
     std::size_t nearest = 0;
@@ -2615,6 +2706,10 @@ void SchemaView::reroute() {
                 grid.blocked[static_cast<std::size_t>(grid.at(x, y))] = 1;
     }
 
+    std::vector<QRectF> table_rects;
+    table_rects.reserve(placed_.size());
+    for (const auto& one : placed_) table_rects.push_back(one.box);
+
     // Short links first, so the near ones get the tidy paths and the long ones
     // bend around them rather than the other way about.
     struct Pending { std::size_t table; std::size_t column; double reach; };
@@ -2710,8 +2805,30 @@ void SchemaView::reroute() {
         // penalty makes its left side win when the routes are equally clean.
         // Manual routes and endpoints bypass this choice entirely.
         const auto saved_shape = column.link ? shape_of(*column.link) : Shape{};
+        // The route the chosen sides were tried with, kept so the line can
+        // take it rather than search the same way again (see below).
+        std::vector<QPoint> tried_path;
+        QPoint tried_start;
+        QPoint tried_finish;
         if (!itself && !saved_shape.from && !saved_shape.to && saved_shape.route.empty()) {
-            double best_score = std::numeric_limits<double>::max();
+            // Each pair of sides is scored by the route found for it. No route
+            // can score less than the straight distance between its ends plus
+            // the right-side penalty, so the pairs are tried cheapest-first and
+            // a pair that could not beat the best so far is not searched at
+            // all (2026-10-12). Ties go to the pair tried first in the original
+            // order -- FK left before right, then PK left before right -- so
+            // the sides chosen are exactly the ones chosen before.
+            struct Candidate {
+                int order;
+                int fk_side;
+                int pk_side;
+                QPointF from;
+                QPointF to;
+                QPoint start_cell;
+                QPoint finish_cell;
+                double least;
+            };
+            std::vector<Candidate> candidates;
             for (const int fk_side : {-1, 1}) {
                 for (const int pk_side : {-1, 1}) {
                     const QPointF candidate_from(fk_side < 0 ? from_box.left() : from_box.right(),
@@ -2732,25 +2849,43 @@ void SchemaView::reroute() {
                     };
                     if (!clear_end(candidate_from, start_at, one.table)
                         || !clear_end(candidate_to, finish_at, target)) continue;
-                    // Tried, the obstacles are left exactly as they were found
-                    // (find_way_trial), so one side tried opens no holes for the next.
-                    const auto path = find_way_trial(grid,
-                        QPoint(static_cast<int>(start_at.x()) / cell, static_cast<int>(start_at.y()) / cell),
-                        QPoint(static_cast<int>(finish_at.x()) / cell, static_cast<int>(finish_at.y()) / cell));
-                    if (path.empty()) continue;
-                    double score = static_cast<double>(path.size()) + (fk_side > 0 ? 2.0 : 0.0);
-                    for (std::size_t i = 0; i < path.size(); ++i) {
-                        score += grid.used[static_cast<std::size_t>(grid.at(path[i].x(), path[i].y()))] * share_cost;
-                        if (i > 1 && path[i] - path[i - 1] != path[i - 1] - path[i - 2])
-                            score += turn_cost;
-                    }
-                    if (score >= best_score) continue;
-                    best_score = score;
-                    from = candidate_from;
-                    to = candidate_to;
-                    from_step = fk_step;
-                    to_step = pk_step;
+                    const QPoint start_cell(static_cast<int>(start_at.x()) / cell, static_cast<int>(start_at.y()) / cell);
+                    const QPoint finish_cell(static_cast<int>(finish_at.x()) / cell,
+                                             static_cast<int>(finish_at.y()) / cell);
+                    const auto least = static_cast<double>(std::abs(finish_cell.x() - start_cell.x())
+                                                           + std::abs(finish_cell.y() - start_cell.y()) + 1)
+                                     + (fk_side > 0 ? 2.0 : 0.0);
+                    candidates.push_back({static_cast<int>(candidates.size()), fk_side, pk_side, candidate_from,
+                                          candidate_to, start_cell, finish_cell, least});
                 }
+            }
+            std::stable_sort(candidates.begin(), candidates.end(),
+                             [](const Candidate& a, const Candidate& b) { return a.least < b.least; });
+            double best_score = std::numeric_limits<double>::max();
+            int best_order = std::numeric_limits<int>::max();
+            for (auto& candidate : candidates) {
+                if (candidate.least > best_score || (candidate.least == best_score && candidate.order > best_order))
+                    continue;
+                // Tried, the obstacles are left exactly as they were found
+                // (find_way_trial), so one side tried opens no holes for the next.
+                auto path = find_way_trial(grid, candidate.start_cell, candidate.finish_cell);
+                if (path.empty()) continue;
+                double score = static_cast<double>(path.size()) + (candidate.fk_side > 0 ? 2.0 : 0.0);
+                for (std::size_t i = 0; i < path.size(); ++i) {
+                    score += grid.used[static_cast<std::size_t>(grid.at(path[i].x(), path[i].y()))] * share_cost;
+                    if (i > 1 && path[i] - path[i - 1] != path[i - 1] - path[i - 2])
+                        score += turn_cost;
+                }
+                if (score > best_score || (score == best_score && candidate.order > best_order)) continue;
+                best_score = score;
+                best_order = candidate.order;
+                from = candidate.from;
+                to = candidate.to;
+                from_step = QPointF(candidate.fk_side, 0);
+                to_step = QPointF(candidate.pk_side, 0);
+                tried_path = std::move(path);
+                tried_start = candidate.start_cell;
+                tried_finish = candidate.finish_cell;
             }
         }
 
@@ -2824,10 +2959,20 @@ void SchemaView::reroute() {
             follow(routed.corners.size() - 1, routed.corners.size() - 2, to);
             tighten(routed.corners);
         } else {
-            const auto cells = itself || routing_ == SchemaRouting::Straight
-                ? std::vector<QPoint>{}
-                : find_way(grid, QPoint(static_cast<int>(start.x()) / cell, static_cast<int>(start.y()) / cell),
-                                 QPoint(static_cast<int>(finish.x()) / cell, static_cast<int>(finish.y()) / cell));
+            const QPoint start_cell(static_cast<int>(start.x()) / cell, static_cast<int>(start.y()) / cell);
+            const QPoint finish_cell(static_cast<int>(finish.x()) / cell, static_cast<int>(finish.y()) / cell);
+            // The sides were chosen by searching from exactly these cells over
+            // exactly this grid, so that search's route is the one this search
+            // would find (2026-10-12). Only its lasting effect is repeated:
+            // find_way leaves its two end cells open for the lines after it.
+            const bool tried_here = !tried_path.empty() && tried_start == start_cell && tried_finish == finish_cell;
+            if (tried_here) {
+                grid.blocked[static_cast<std::size_t>(grid.at(start_cell.x(), start_cell.y()))] = 0;
+                grid.blocked[static_cast<std::size_t>(grid.at(finish_cell.x(), finish_cell.y()))] = 0;
+            }
+            const auto cells = itself || routing_ == SchemaRouting::Straight ? std::vector<QPoint>{}
+                             : tried_here                                     ? std::move(tried_path)
+                                                                              : find_way(grid, start_cell, finish_cell);
             if (cells.size() > 2) {
                 routed.corners = {from};
                 const auto middle = corners_of(cells, start, finish);
@@ -2880,6 +3025,11 @@ void SchemaView::reroute() {
             // its symbols need be held open at each end.
             reserve_ends(routed.corners, routed.from_step, routed.to_step);
             tighten(routed.corners);
+            // The small steps and hooks the grid leaves are taken out of a line
+            // the router drew on its own; one shaped by hand, or with an end put
+            // by hand, is left exactly as the hand left it.
+            if (!shape && !from_by_hand && !to_by_hand && !itself && routing_ == SchemaRouting::AroundTables)
+                smooth(routed.corners, table_rects, grid);
         }
         // Whatever shape it ended up with, the next line is told where it went.
         // The fallback elbows used to say nothing, which is how two of them came
