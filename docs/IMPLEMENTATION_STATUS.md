@@ -109,6 +109,19 @@ read as still to do.
   On the 159-table schema each auto-scroll step of a carry routes every line,
   as a pointer move does (about 520 ms with the C2 routing), so the view
   advances in steps of up to 40 px rather than smoothly.
+- **The schema remembers its searches** (2026-10-13, not yet committed): each
+  Relational Schema view keeps the router's searches from its last pass
+  (`schema_router::RouteMemory`, owned by `SchemaView`) and takes a search's
+  path again only where that is exactly the path the search would find: same
+  line, same cells, same grid size, and -- within the cells it read -- no table
+  blocking otherwise, no line opening a cell otherwise, and every cell's capped
+  count as it was, worked out from what each line wrote then and now. Nothing
+  is compared by digest. Searches not asked for in a pass are let go of; a pass
+  in which every table moves (Select All) keeps nothing. The grid's cells are
+  private to the router (`schema_router::Grid`), so nothing else can write them
+  behind the memory's back. Every line is drawn exactly as before; tests check
+  each search taken again against a fresh one and the lines against routing
+  with no memory.
 - **Desktop timeout risk reduced without weakening coverage** (committed in
   `7b12b70`): the old single `desktop` CTest entry is split into
   `desktop_export`, `desktop_relational` and `desktop_window` (the last since

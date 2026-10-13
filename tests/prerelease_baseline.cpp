@@ -10,6 +10,7 @@
 #include "app/desktop/diagram_view.hpp"
 #include "app/desktop/main_window.hpp"
 #include "app/desktop/picture_export.hpp"
+#include "app/desktop/schema_router.hpp"
 #include "app/desktop/schema_view.hpp"
 #include "app/desktop/theme.hpp"
 #include "application/editor.hpp"
@@ -173,6 +174,18 @@ void send_mouse(QWidget* to, QEvent::Type type, QPointF at, Qt::MouseButton butt
     QApplication::sendEvent(to, &event);
 }
 
+// Whether the schema's memory of searches is in use, and whether every search
+// it takes again is checked against a fresh one (--route-memory=off,
+// --check-route-memory).
+bool route_memory = true;
+bool check_route_memory = false;
+
+// The router's own time per routing since `routing_ms` and `routings` were read.
+double routing_ms_since(const desktop::SchemaView& schema, double routing_ms, std::size_t routings) {
+    const auto passes = schema.routings() - routings;
+    return passes ? (schema.routing_ms() - routing_ms) / static_cast<double>(passes) : 0.0;
+}
+
 // A table dragged by its heading, and then everything dragged together.
 void schema_drags(const std::string& name, desktop::SchemaView& schema) {
     const auto boxes = schema.table_boxes();
@@ -182,6 +195,8 @@ void schema_drags(const std::string& name, desktop::SchemaView& schema) {
         const auto routed_before = schema.routings();
         send_mouse(&schema, QEvent::MouseButtonPress, grip, Qt::LeftButton, Qt::LeftButton);
         settle();
+        const auto routing_ms_before = schema.routing_ms();
+        const auto routed_at_press = schema.routings();
         QElapsedTimer clock;
         clock.start();
         constexpr int moves = 40;
@@ -190,10 +205,11 @@ void schema_drags(const std::string& name, desktop::SchemaView& schema) {
             settle();
         }
         const auto moving = since(clock);
+        const auto routing = routing_ms_since(schema, routing_ms_before, routed_at_press);
         send_mouse(&schema, QEvent::MouseButtonRelease, grip + QPointF(moves * 3.0, moves * 1.5), Qt::LeftButton, Qt::NoButton);
         settle();
         std::cout << "SCHEMA_DRAG " << name << " " << what << ": per_move_ms=" << moving / moves
-                  << " routings=" << schema.routings() - routed_before << '\n';
+                  << " routings=" << schema.routings() - routed_before << " routing_ms=" << routing << '\n';
     };
     schema.select(std::nullopt);
     drag("one table");
@@ -663,11 +679,13 @@ void schema_edge_holds(const std::string& name, desktop::SchemaView& schema, app
         send_mouse(&schema, QEvent::MouseMove, on_schema(at_edge(port->size(), edge)), Qt::NoButton, Qt::LeftButton);
         settle();
         const auto routed = schema.routings();
+        const auto routing_ms_before = schema.routing_ms();
         QElapsedTimer clock;
         clock.start();
         settle_ms(hold_ms);
         const auto held = since(clock);
         const auto routings = schema.routings() - routed;
+        const auto routing = routing_ms_since(schema, routing_ms_before, routed);
         const auto scrolled = bars(area) - from;
         send_mouse(&schema, QEvent::MouseButtonRelease, on_schema(at_edge(port->size(), edge)), Qt::LeftButton,
                    Qt::NoButton);
@@ -677,6 +695,7 @@ void schema_edge_holds(const std::string& name, desktop::SchemaView& schema, app
                   << ',' << scrolled.y() << " moved=" << moved.x() << ',' << moved.y()
                   << " routings_while_held=" << routings
                   << " ms_per_routing=" << (routings ? held / static_cast<double>(routings) : 0.0)
+                  << " routing_ms=" << routing
                   << " undo_steps=" << editor.history_position() - steps << " canvas=" << schema.width() << 'x'
                   << schema.height() << (popups_closed ? " POPUPS_CLOSED=" + std::to_string(popups_closed) : "") << '\n';
         // Put back as it was, so what is measured after starts from the same place.
@@ -685,6 +704,7 @@ void schema_edge_holds(const std::string& name, desktop::SchemaView& schema, app
         settle();
     };
     for (const auto& edge : edges) carry(edge, false);
+    carry(Edge{"down-right", 1, 1}, false);
     carry(edges[0], true);
     schema.select(std::nullopt);
     settle();
@@ -821,8 +841,16 @@ int main(int argc, char** argv) {
         // a canvas being dragged and exported.
         {"large-80-long-names", {}, [](application::Editor& e) { build_large(e, 80, true); }, false},
     };
-    // A scenario named on the command line is run alone.
-    const auto only = argc > 1 ? std::string(argv[1]) : std::string();
+    // A scenario named on the command line is run alone; --route-memory=off
+    // routes as the router always has, and --check-route-memory checks every
+    // search the schema takes again.
+    std::string only;
+    for (int i = 1; i < argc; ++i) {
+        const std::string argument = argv[i];
+        if (argument == "--route-memory=off") route_memory = false;
+        else if (argument == "--check-route-memory") check_route_memory = true;
+        else only = argument;
+    }
     for (const auto& scenario : scenarios) {
         if (!only.empty() && scenario.name != only) continue;
         application::Editor editor(ids);
@@ -853,13 +881,17 @@ int main(int argc, char** argv) {
         window.open_schema(true);
         settle_ms(900);
         auto* schema = window.schema();
+        schema->set_route_memory(route_memory);
+        schema->check_route_memory(check_route_memory);
         QElapsedTimer clock;
         clock.start();
         const auto routed_before = schema->routings();
+        const auto routing_ms_before = schema->routing_ms();
         schema->refresh();
         settle();
         std::cout << "SCHEMA_REFRESH " << scenario.name << ": ms=" << since(clock) << " tables=" << schema->table_boxes().size()
-                  << " routings=" << schema->routings() - routed_before << '\n';
+                  << " routings=" << schema->routings() - routed_before
+                  << " routing_ms=" << routing_ms_since(*schema, routing_ms_before, routed_before) << '\n';
         print_audit(scenario.name, audit_routes(schema->line_shapes(), schema->table_boxes(), end_reach));
         std::cout << "ROUTE_FINGERPRINT " << scenario.name << ": " << route_fingerprint(schema->line_shapes()) << '\n';
         schema_drags(scenario.name, *schema);
@@ -874,6 +906,13 @@ int main(int argc, char** argv) {
             export_checks(scenario.name + "-schema", window, theme, desktop::theme(theme).canvas, folder, true);
         }
         schema_edge_holds(scenario.name, *schema, editor);
+        {
+            const auto& account = schema->route_memory().account();
+            std::cout << "ROUTE_MEMORY " << scenario.name << ": in_use=" << route_memory << " checked=" << check_route_memory
+                      << " taken_again=" << account.taken_again << " searched=" << account.searched
+                      << " outdated=" << account.outdated << " mismatches=" << account.mismatches
+                      << " kept=" << account.kept << " most_bytes=" << account.most_bytes << '\n';
+        }
         editor.mark_saved(editor.revision());
         window.close();
         settle();

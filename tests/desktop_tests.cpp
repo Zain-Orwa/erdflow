@@ -16,6 +16,7 @@
 #include "app/desktop/start_route_card.hpp"
 #include "app/desktop/welcome_flow_illustration.hpp"
 #include "app/desktop/main_window.hpp"
+#include "app/desktop/schema_router.hpp"
 #include "app/desktop/notice.hpp"
 #include "app/desktop/schema_explorer.hpp"
 #include "infrastructure/project_store.hpp"
@@ -2919,6 +2920,297 @@ namespace
     // half the time the opening took. A resize to the size the lines were routed
     // at routes nothing now; a resize to any other size, and every routing asked
     // for by an edit, a refresh, Undo, Redo or the theme, still routes.
+    // The schema's routing grid is written only by the router, which is what
+    // lets the view's memory of searches see every write (RouteMemory): code
+    // outside it can read the grid's cells but cannot write them.
+    template <class G>
+    concept writes_blocked_cells = requires(G grid) { grid.blocked_[0] = 1; };
+    template <class G>
+    concept writes_used_cells = requires(G grid) { grid.used_[0] = 1; };
+    static_assert(!writes_blocked_cells<desktop::schema_router::Grid>, "The grid's blocked cells are the router's to write");
+    static_assert(!writes_used_cells<desktop::schema_router::Grid>, "The grid's counts are the router's to write");
+
+    // A search the memory takes again finds exactly the path a fresh search
+    // finds, and is taken again only where nothing it read has changed
+    // (2026-10-13). Each pass is routed twice -- over a grid with the memory
+    // and over the same grid without -- and every path must agree.
+    void route_memory_router_tests()
+    {
+        using namespace desktop::schema_router;
+        struct Line
+        {
+            std::uint32_t id;
+            QPoint from;
+            QPoint to;
+            std::optional<QPoint> opens{};
+            bool trial_first = false;
+        };
+        const auto route = [](RouteMemory *memory, int columns, int rows, const std::vector<QRectF> &tables,
+                              const std::vector<Line> &lines, bool everything_moves)
+        {
+            Grid grid(columns, rows, tables, memory);
+            RouteMemory::Pass pass(memory, grid, everything_moves);
+            std::vector<std::vector<QPoint>> paths;
+            for (const auto &line : lines)
+            {
+                pass.line(line.id);
+                if (line.opens)
+                    open_cell(grid, *line.opens);
+                if (line.trial_first)
+                    (void)find_way_trial(grid, line.from + QPoint(0, 3), line.to + QPoint(0, 3));
+                auto path = find_way(grid, line.from, line.to);
+                std::vector<QPointF> corners;
+                for (const auto &at : path)
+                    corners.emplace_back(at.x() * cell + cell / 2.0, at.y() * cell + cell / 2.0);
+                mark(grid, corners);
+                paths.push_back(std::move(path));
+            }
+            return paths;
+        };
+        RouteMemory memory;
+        memory.set_checking(true);
+        // One pass, with and without the memory; how many searches it took again.
+        const auto pass = [&](const char *what, int columns, int rows, const std::vector<QRectF> &tables,
+                              const std::vector<Line> &lines, bool everything_moves = false)
+        {
+            const auto before = memory.account().taken_again;
+            const auto remembered = route(&memory, columns, rows, tables, lines, everything_moves);
+            const auto fresh = route(nullptr, columns, rows, tables, lines, everything_moves);
+            require(remembered == fresh, (std::string(what) + ": every path is the one a fresh search finds").c_str());
+            require(!fresh.empty() && !fresh.back().empty(), (std::string(what) + ": the lines find their way").c_str());
+            return memory.account().taken_again - before;
+        };
+        // Cells to pixels, for tables.
+        const auto table = [](int left, int top, int right, int bottom)
+        { return QRectF(left * cell, top * cell, (right - left) * cell, (bottom - top) * cell); };
+        const std::vector<QRectF> tables{table(25, 12, 29, 16)};
+        const Line a{1, {2, 10}, {55, 10}};
+        const Line b{2, {2, 13}, {55, 13}};
+
+        require(pass("The first pass", 60, 40, tables, {a, b}) == 0, "The first pass has nothing to take again");
+        require(pass("The same pass again", 60, 40, tables, {a, b}) == 2,
+                "The same pass again takes both searches again");
+        const std::vector<QRectF> moved{table(28, 12, 32, 16)};
+        require(pass("A table moved across both searches", 60, 40, moved, {a, b}) == 0,
+                "A table moved across what both searches read has both made again");
+        require(pass("And again", 60, 40, moved, {a, b}) == 2, "Unmoved since, both are taken again");
+        auto far = moved;
+        far.push_back(table(2, 30, 6, 35));
+        // Whether a search read that far depends on the search; what it finds,
+        // as ever, must be what a fresh search finds.
+        (void)pass("A table put far away", 60, 40, far, {a, b});
+        require(pass("And again", 60, 40, far, {a, b}) == 2, "Unmoved since, both are taken again");
+        require(pass("The grid made wider", 61, 40, far, {a, b}) == 0, "A grid of another size has every search made again");
+        require(pass("And again", 61, 40, far, {a, b}) == 2, "At that size since, both are taken again");
+        const Line a_lower{1, {2, 12}, {55, 12}};
+        require(pass("A line's ends moved", 61, 40, far, {a_lower, b}) == 0,
+                "A line from other cells is searched again, and the line after it, whose cells it now marks otherwise");
+        require(pass("And again", 61, 40, far, {a_lower, b}) == 2, "Unmoved since, both are taken again");
+        require(pass("The lines in the other order", 61, 40, far, {b, a_lower}) == 0,
+                "Routed in the other order, each finds the other's marks otherwise and is made again");
+        require(pass("And again", 61, 40, far, {b, a_lower}) == 2, "In that order since, both are taken again");
+        require(pass("Every table moving", 61, 40, far, {b, a_lower}, true) == 0 && memory.account().kept == 0,
+                "A pass in which every table moves takes nothing again and keeps nothing");
+        require(pass("After it", 61, 40, far, {b, a_lower}) == 0, "So the pass after it has nothing to take again");
+        const Line a_tried{1, {2, 12}, {55, 12}, std::nullopt, true};
+        const Line b_tried{2, {2, 13}, {55, 13}, std::nullopt, true};
+        (void)pass("Lines tried before they are routed", 61, 40, far, {a_tried, b_tried});
+        require(pass("And again", 61, 40, far, {a_tried, b_tried}) == 4,
+                "A trial puts back what it opened, so trials and searches alike are taken again");
+        // A cell opened by a line before another: opened then, closed now, the
+        // later search reads it otherwise. The line that opened it searched
+        // after writing, so its own search is never kept.
+        const Line opener{5, {2, 5}, {55, 5}, QPoint(30, 11)};
+        const Line not_opening{5, {2, 5}, {55, 5}};
+        (void)pass("A line opening a table's cell", 61, 40, moved, {opener, b});
+        require(pass("And again", 61, 40, moved, {opener, b}) == 1,
+                "A search made after its own line has written is not kept; the one after it is taken again");
+        require(pass("The line no longer opening it", 61, 40, moved, {not_opening, b}) == 0,
+                "A cell opened otherwise than before has the search after it, which read it, made again");
+        require(memory.account().mismatches == 0, "No search the memory took again differed from a fresh one");
+        std::cout << "PASS the router's memory of searches takes again only what a fresh search would find\n";
+    }
+
+    // On the schema itself: a large schema and the examples, carried every way,
+    // a line shaped by hand, undone and redone, saved and opened again, with
+    // every search the memory takes again checked against a fresh one; and the
+    // lines in the end exactly those the router draws without any memory.
+    void route_memory_view_tests(infrastructure::QtIdGenerator &ids)
+    {
+        const auto hold_for = [](int ms)
+        {
+            QElapsedTimer clock;
+            clock.start();
+            while (clock.elapsed() < ms)
+                QApplication::processEvents(QEventLoop::AllEvents, 5);
+        };
+        QTemporaryDir folder;
+        struct Schema
+        {
+            const char *name;
+            std::function<void(application::Editor &)> build;
+            std::function<void(desktop::MainWindow &)> load;
+        };
+        // A schema of some size, made the way a person makes one.
+        const auto larger = [](application::Editor &editor)
+        {
+            std::vector<domain::EntityId> entities;
+            constexpr int wanted = 24;
+            for (int i = 0; i < wanted; ++i)
+            {
+                const double x = (i % 6) * 420.0;
+                const double y = (i / 6) * 360.0;
+                const auto made = editor.create_entity("Entity " + std::to_string(i), {x, y, 150, 80});
+                const auto id = std::get<domain::EntityId>(*made.created);
+                entities.push_back(id);
+                const auto key = editor.create_attribute("Entity" + std::to_string(i) + " ID", {x - 40, y + 110, 120, 50},
+                                                         domain::ElementRef{id});
+                if (key.created)
+                    editor.set_attribute_kind(std::get<domain::AttributeId>(*key.created), domain::AttributeKind::Key);
+            }
+            for (int i = 0; i + 1 < wanted; ++i)
+            {
+                const auto first = entities[static_cast<std::size_t>(i)];
+                const auto second = entities[static_cast<std::size_t>((i * 7 + 3) % wanted)];
+                if (first != second)
+                    editor.relate(first, second, {(i % 6) * 420.0 + 210, (i / 6) * 360.0 + 200, 140, 80},
+                                  "Relates " + std::to_string(i));
+            }
+        };
+        const std::vector<Schema> schemas{
+            {"a larger schema", larger, {}},
+            {"the University schema", {}, [](desktop::MainWindow &w) { w.load_example(); }},
+            {"the Company relational schema", {}, [](desktop::MainWindow &w) { w.load_company_database_relational(); }},
+        };
+        for (const auto &one : schemas)
+        {
+            const std::string name = one.name;
+            const auto must = [&](bool ok, const std::string &what) { require(ok, (name + ": " + what).c_str()); };
+            application::Editor editor(ids);
+            if (one.build)
+                one.build(editor);
+            infrastructure::ErdxProjectStore store;
+            desktop::MainWindow window(editor, store, ids);
+            window.resize(1100, 720);
+            window.show();
+            window.show_home(false);
+            settle();
+            if (one.load)
+                one.load(window);
+            settle();
+            window.open_schema(true);
+            settle();
+            auto *view = window.schema();
+            view->check_route_memory(true);
+            view->refresh();
+            settle();
+            const auto mouse = [&](QEvent::Type type, QPointF where, Qt::MouseButtons held)
+            {
+                QMouseEvent event(type, where, view->mapToGlobal(where.toPoint()),
+                                  type == QEvent::MouseMove ? Qt::NoButton : Qt::LeftButton, held, Qt::NoModifier);
+                QApplication::sendEvent(view, &event);
+            };
+            // A table carried by its heading: `steps` moves of `by` each.
+            const auto carry = [&](std::size_t t, QPointF by, int steps)
+            {
+                const auto boxes = view->table_boxes();
+                if (t >= boxes.size())
+                    return;
+                const QPointF grip(boxes[t].center().x(), boxes[t].top() + 13);
+                mouse(QEvent::MouseButtonPress, grip, Qt::LeftButton);
+                for (int i = 1; i <= steps; ++i)
+                    mouse(QEvent::MouseMove, grip + by * i, Qt::LeftButton);
+                mouse(QEvent::MouseButtonRelease, grip + by * steps, Qt::NoButton);
+                settle();
+            };
+            const auto tables = view->table_boxes().size();
+            must(tables >= 5, "there are tables to carry");
+            // Small movements and large, every way, and a table carried back.
+            carry(0, QPointF(3, 2), 8);
+            carry(1, QPointF(0, 40), 4);
+            carry(2, QPointF(-30, 0), 3);
+            carry(tables / 2, QPointF(25, -25), 4);
+            carry(tables - 1, QPointF(0, -60), 2);
+            carry(0, QPointF(-3, -2), 8);
+            // Everything carried together, which the memory stands aside for.
+            view->select_all();
+            settle();
+            carry(0, QPointF(10, 10), 3);
+            view->select(std::nullopt);
+            settle();
+            // A table carried to the bottom of the view and held there.
+            {
+                auto *scroll = child<QScrollArea>(window, "schemaScroll");
+                auto *port = scroll->viewport();
+                const auto boxes = view->table_boxes();
+                const QPointF grip(boxes[1].center().x(), boxes[1].top() + 13);
+                mouse(QEvent::MouseButtonPress, grip, Qt::LeftButton);
+                mouse(QEvent::MouseMove, grip + QPointF(0, 10), Qt::LeftButton);
+                const auto edge = QPointF(view->mapFrom(port, QPoint(port->width() / 2, port->height() - 3)));
+                mouse(QEvent::MouseMove, edge, Qt::LeftButton);
+                hold_for(120);
+                mouse(QEvent::MouseButtonRelease, QPointF(view->mapFrom(port, QPoint(port->width() / 2, port->height() - 3))),
+                      Qt::NoButton);
+                settle();
+            }
+            // A line shaped by hand: one of its runs pushed aside, and then a
+            // table it joins carried.
+            {
+                const auto lines = view->line_shapes();
+                bool shaped = false;
+                for (const auto &line : lines)
+                {
+                    if (line.size() < 4)
+                        continue;
+                    const auto from = line[line.size() / 2 - 1];
+                    const auto to = line[line.size() / 2];
+                    if (std::hypot(to.x() - from.x(), to.y() - from.y()) < 40)
+                        continue;
+                    const auto middle = (from + to) / 2;
+                    const auto aside = std::abs(to.x() - from.x()) < 0.5 ? QPointF(24, 0) : QPointF(0, 24);
+                    mouse(QEvent::MouseButtonPress, middle, Qt::LeftButton);
+                    mouse(QEvent::MouseMove, middle + aside / 2, Qt::LeftButton);
+                    mouse(QEvent::MouseMove, middle + aside, Qt::LeftButton);
+                    mouse(QEvent::MouseButtonRelease, middle + aside, Qt::NoButton);
+                    settle();
+                    shaped = true;
+                    break;
+                }
+                must(shaped, "a line is shaped by hand");
+                carry(0, QPointF(20, 15), 3);
+            }
+            // Undone and redone, saved and opened again, then carried once more.
+            for (int i = 0; i < 3; ++i)
+            {
+                child<QAction>(window, "undoCommand")->trigger();
+                settle();
+            }
+            for (int i = 0; i < 2; ++i)
+            {
+                child<QAction>(window, "redoCommand")->trigger();
+                settle();
+            }
+            const auto path = folder.filePath(QString::fromStdString(name) + ".erdx");
+            must(store.save(path.toStdString(), editor.project()).ok, "it saves");
+            // Saved, so opening it again asks nothing about what is unsaved.
+            editor.mark_saved(editor.revision());
+            must(window.open_path(path), "it opens again");
+            settle();
+            carry(1, QPointF(-15, 20), 3);
+            const auto &account = view->route_memory().account();
+            must(account.taken_again > 0, "the memory took searches again");
+            must(account.mismatches == 0, "no search the memory took again differed from a fresh search");
+            // And the lines drawn are exactly the router's own, with no memory.
+            const auto remembered = view->line_shapes();
+            view->set_route_memory(false);
+            const auto fresh = view->line_shapes();
+            view->set_route_memory(true);
+            must(remembered == fresh, "every line is exactly the line the router draws without the memory");
+            editor.mark_saved(editor.revision());
+        }
+        std::cout << "PASS the schema's memory of searches leaves every line as the router draws it\n";
+    }
+
     void schema_open_routing_tests(infrastructure::QtIdGenerator &ids)
     {
         application::Editor model(ids);
@@ -6146,6 +6438,8 @@ int main(int argc, char **argv)
             }
             schema_drawing_tests(ids);
             schema_open_routing_tests(ids);
+            route_memory_router_tests();
+            route_memory_view_tests(ids);
         }
         if (relational_part)
         {

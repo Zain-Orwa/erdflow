@@ -30,6 +30,7 @@ class QAbstractScrollArea;
 namespace erdflow::application { class Editor; struct EditResult; }
 
 namespace erdflow::desktop {
+namespace schema_router { class RouteMemory; }
 struct ExportView;
 
 struct Theme;
@@ -73,6 +74,7 @@ enum class SchemaRouting { AroundTables, Straight };
 class SchemaView : public QWidget {
 public:
     explicit SchemaView(application::Editor& editor, QWidget* parent = nullptr);
+    ~SchemaView() override;
 
     // Read the project again. Called whenever the model changes, because the
     // preview is derived and never stored.
@@ -242,6 +244,18 @@ public:
     // every movement of the pointer, so how often it happens is worth being
     // able to ask: one movement is one routing, never two (2026-10-06).
     [[nodiscard]] std::size_t routings() const { return routings_; }
+    // How long all that routing has taken, in milliseconds, since the view was
+    // made: what a measurement of dragging subtracts to see the router alone.
+    [[nodiscard]] double routing_ms() const { return routing_ms_; }
+    // The view remembers the searches its last routing made, and takes a
+    // search's path again wherever that is exactly the path the search would
+    // find (schema_router::RouteMemory, 2026-10-13). For measuring and tests
+    // it can be put out of use, which routes as the router always has; and it
+    // can be made to search afresh for every path it takes again and count
+    // any difference, which tests require to be none.
+    void set_route_memory(bool on);
+    void check_route_memory(bool on);
+    [[nodiscard]] const schema_router::RouteMemory& route_memory() const { return *route_memory_; }
     // How many times a table's lettering has been measured since the view was
     // made. A drag moves tables without changing a word of them, so it
     // measures nothing; a table is measured again only once the schema, the
@@ -704,6 +718,9 @@ private:
     mutable std::size_t measurings_ = 0;
     std::vector<Routed> routes_;
     std::size_t routings_ = 0;
+    double routing_ms_ = 0;
+    std::unique_ptr<schema_router::RouteMemory> route_memory_;
+    bool route_memory_on_ = true;
     Painted painted_;
     // Set while the arrangement grows the canvas to fit what it has placed.
     // That resizes the view there and then, and a resize routes every line;

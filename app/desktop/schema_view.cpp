@@ -21,6 +21,7 @@
 #include <QToolTip>
 
 #include <QContextMenuEvent>
+#include <QElapsedTimer>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QFontMetricsF>
@@ -468,7 +469,7 @@ int shared_cells(const Grid& grid, const std::vector<QPointF>& corners) {
             const auto t = static_cast<double>(step) / steps;
             const auto x = static_cast<int>((from.x() + (to.x() - from.x()) * t) / cell);
             const auto y = static_cast<int>((from.y() + (to.y() - from.y()) * t) / cell);
-            if (grid.inside(x, y)) shared += grid.used[static_cast<std::size_t>(grid.at(x, y))];
+            if (grid.inside(x, y)) shared += grid.used(x, y);
         }
     }
     return shared;
@@ -569,7 +570,7 @@ const QColor& key_ink(const Theme& theme, const domain::PreviewColumn& column) {
 } // namespace
 
 SchemaView::SchemaView(application::Editor& editor, QWidget* parent)
-    : QWidget(parent), editor_(editor) {
+    : QWidget(parent), editor_(editor), route_memory_(std::make_unique<schema_router::RouteMemory>()) {
     setObjectName("schemaView");
     setMouseTracking(true);
     setMinimumHeight(180);
@@ -578,6 +579,20 @@ SchemaView::SchemaView(application::Editor& editor, QWidget* parent)
     // is about the schema rather than about the diagram behind it.
     setFocusPolicy(Qt::ClickFocus);
 }
+
+SchemaView::~SchemaView() = default;
+
+// Put out of use, the memory forgets what it kept: put back in use, it starts
+// from nothing rather than from searches made before it was put away.
+void SchemaView::set_route_memory(bool on) {
+    if (route_memory_on_ == on) return;
+    route_memory_on_ = on;
+    route_memory_ = std::make_unique<schema_router::RouteMemory>();
+    reroute();
+    update();
+}
+
+void SchemaView::check_route_memory(bool on) { route_memory_->set_checking(on); }
 
 void SchemaView::set_icon_mode(IconMode mode) {
     if (icon_mode_ == mode) return;
@@ -2748,23 +2763,24 @@ void SchemaView::reroute() {
     ++routings_;
     const auto dark = theme_->canvas.lightnessF() < 0.5;
 
-    Grid grid;
-    grid.columns = std::max(1, width() / cell + 2);
-    grid.rows = std::max(1, height() / cell + 2);
-    grid.blocked.assign(static_cast<std::size_t>(grid.columns) * static_cast<std::size_t>(grid.rows), 0);
-    grid.used.assign(grid.blocked.size(), 0);
-    for (const auto& one : placed_) {
-        const auto box = one.box.adjusted(-clearance, -clearance, clearance, clearance);
-        for (int y = std::max(0, static_cast<int>(box.top()) / cell);
-             y < std::min(grid.rows, static_cast<int>(box.bottom()) / cell + 1); ++y)
-            for (int x = std::max(0, static_cast<int>(box.left()) / cell);
-                 x < std::min(grid.columns, static_cast<int>(box.right()) / cell + 1); ++x)
-                grid.blocked[static_cast<std::size_t>(grid.at(x, y))] = 1;
-    }
-
+    QElapsedTimer routing_clock;
+    routing_clock.start();
     std::vector<QRectF> table_rects;
     table_rects.reserve(placed_.size());
     for (const auto& one : placed_) table_rects.push_back(one.box);
+    // The tables blocked out, each with its clearance round it; the grid is
+    // then written only by the router, which the view's memory of searches
+    // follows (RouteMemory). When every table is being carried nothing it
+    // remembers could still hold, and it keeps nothing from the pass.
+    auto* memory = route_memory_on_ ? route_memory_.get() : nullptr;
+    Grid grid(std::max(1, width() / cell + 2), std::max(1, height() / cell + 2), table_rects, memory);
+    const bool everything_carried = dragging_ && !carried_.empty() && carried_.size() >= preview_.tables.size();
+    schema_router::RouteMemory::Pass pass(memory, grid, everything_carried);
+    struct Clocked {
+        QElapsedTimer& clock;
+        double& total;
+        ~Clocked() { total += static_cast<double>(clock.nsecsElapsed()) / 1e6; }
+    } clocked{routing_clock, routing_ms_};
 
     // Short links first, so the near ones get the tidy paths and the long ones
     // bend around them rather than the other way about.
@@ -2806,6 +2822,7 @@ void SchemaView::reroute() {
 
     std::size_t index = 0;
     for (const auto& one : pending) {
+        pass.line(static_cast<std::uint32_t>(one.table) << 16 | static_cast<std::uint32_t>(one.column));
         const auto& column = preview_.tables[one.table].columns[one.column];
         const auto target = *column.references;
         const auto& from_box = placed_[one.table].box;
@@ -2928,7 +2945,7 @@ void SchemaView::reroute() {
                 if (path.empty()) continue;
                 double score = static_cast<double>(path.size()) + (candidate.fk_side > 0 ? 2.0 : 0.0);
                 for (std::size_t i = 0; i < path.size(); ++i) {
-                    score += grid.used[static_cast<std::size_t>(grid.at(path[i].x(), path[i].y()))] * share_cost;
+                    score += grid.used(path[i].x(), path[i].y()) * share_cost;
                     if (i > 1 && path[i] - path[i - 1] != path[i - 1] - path[i - 2])
                         score += turn_cost;
                 }
@@ -3023,8 +3040,8 @@ void SchemaView::reroute() {
             // find_way leaves its two end cells open for the lines after it.
             const bool tried_here = !tried_path.empty() && tried_start == start_cell && tried_finish == finish_cell;
             if (tried_here) {
-                grid.blocked[static_cast<std::size_t>(grid.at(start_cell.x(), start_cell.y()))] = 0;
-                grid.blocked[static_cast<std::size_t>(grid.at(finish_cell.x(), finish_cell.y()))] = 0;
+                schema_router::open_cell(grid, start_cell);
+                schema_router::open_cell(grid, finish_cell);
             }
             const auto cells = itself || routing_ == SchemaRouting::Straight ? std::vector<QPoint>{}
                              : tried_here                                     ? std::move(tried_path)
