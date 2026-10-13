@@ -72,9 +72,10 @@ enum class JoinMode { Automatic, WhereClicked };
 // grow to fit normal names (2026-10-11). Since 2026-10-12 they are the
 // proportions a shape is made in rather than its least size: a new or renamed
 // shape is fitted to its name by fitted_body below -- smaller for a short
-// name, no wider than "Relationship" needs, taller for a name written in more
-// lines. A shape resized by hand keeps its size, and a diagram opened is drawn
-// at exactly the sizes it was saved with.
+// name, though no narrower than "Attributes" needs, no wider than
+// "Relationship" needs, taller for a name written in more lines. A shape
+// resized by hand keeps its size, and a diagram opened is drawn at exactly the
+// sizes it was saved with.
 struct BodySize { double width, height; };
 inline constexpr BodySize entity_body{133, 77};
 inline constexpr BodySize attribute_body{135, 54};
@@ -121,8 +122,9 @@ inline constexpr double symbol_step = 1.25;
 enum class NamedShape { Entity, Attribute, Relationship, Generalization, Specialization };
 [[nodiscard]] double width_for_name(NamedShape shape, const QString& name, const QFont& base);
 // The size a shape is made at, and remade at when it is renamed, for its name
-// (Zain, 2026-10-12): as small as the name allows, down to the domain's least
-// and in proportion to the default; no wider than "Relationship" needs, which
+// (Zain, 2026-10-12): as small as the name allows, in proportion to the
+// default, though never narrower than "Attributes" needs on one line (Zain,
+// 2026-10-13); no wider than "Relationship" needs, which
 // is always written whole on one line; and a longer name made taller to be
 // written in up to three lines, the third cut short if even that is not
 // enough. Measured with the lettering and the room the name is painted in. A
