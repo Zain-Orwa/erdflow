@@ -5,6 +5,7 @@
 // and whether it is a gain or a loss. He decides. Fixing a real defect is not
 // covered by this — fix it and say what was wrong. Full rule: CLAUDE.md.
 #include "diagram_view.hpp"
+#include "edge_scroll.hpp"
 
 #include <QApplication>
 #include <QColorDialog>
@@ -39,6 +40,7 @@
 #include <cmath>
 #include <limits>
 #include <map>
+#include <memory>
 #include <numbers>
 #include <set>
 #include <tuple>
@@ -2403,6 +2405,10 @@ struct DiagramView::Impl {
     std::optional<QPointF> connect_pointer;
     std::optional<ElementRef> connect_hover;
     std::map<ElementRef, Rect> drag_start;
+    // A band or a carry held at the edge of the view scrolls the view on, so
+    // either goes on past what was showing in the same gesture (C6,
+    // 2026-10-12).
+    std::unique_ptr<EdgeScroll> edge_scroll;
     // What a drag can line up against, gathered once when it begins. Nothing
     // that is not being dragged moves while it lasts, so asking every shape on
     // the canvas for its rectangle again on every pointer move was asking the
@@ -2744,6 +2750,31 @@ struct DiagramView::Impl {
         }
         redraw();
         return snapped;
+    }
+    // The diagram's room while shapes are carried (C6, 2026-10-12): it reaches
+    // at least the same 800 px past what is carried that it reaches past
+    // everything once a move is let go, so the view can scroll on with them as
+    // far as the hand takes them. It only ever grows here, and only as far as
+    // they have gone, so nothing in view moves under the hand and holding still
+    // at an edge the view cannot pass does not grow it. When it has to grow it
+    // grows a further 400 px at once: growing the room has the scene index
+    // every shape again, which done on every movement of a large selection was
+    // a millisecond a movement. What it grew is measured afresh when the move
+    // is let go and the diagram is drawn again.
+    void make_room_for_carry() {
+        if (drag_start.empty()) return;
+        QRectF carried;
+        for (const auto& [ref, start] : drag_start) {
+            (void)start;
+            const auto node = nodes.find(ref);
+            if (node == nodes.end()) continue;
+            const auto body = node->second->body_rect().translated(node->second->scenePos());
+            carried = carried.isNull() ? body : carried.united(body);
+        }
+        if (carried.isNull()) return;
+        const auto room = scene->sceneRect();
+        if (room.contains(carried.adjusted(-800, -800, 800, 800))) return;
+        scene->setSceneRect(room.united(carried.adjusted(-1200, -1200, 1200, 1200)));
     }
     void clear_guides() {
         if (guides.empty()) return;
@@ -3254,6 +3285,19 @@ DiagramView::DiagramView(application::Editor& editor, QWidget* parent)
     setMouseTracking(true);
     impl_->scene->setSceneRect(default_paper);
     connect(impl_->scene, &QGraphicsScene::selectionChanged, this, [this] { impl_->selection_changed(); });
+    // A scroll replays the last movement of the pointer through the view
+    // (Qt's QGraphicsView does that for every scroll), so a band grows into
+    // what has come into view and what is carried follows the pointer there
+    // without anything more being done here. The pointer is somewhere new on
+    // the canvas, though, and is remembered as being there.
+    impl_->edge_scroll = std::make_unique<EdgeScroll>(*this, [this] {
+        if (rubberBandRect().isNull() && (impl_->drag_start.empty() || !impl_->scene->mouseGrabberItem())) {
+            impl_->edge_scroll->stop();
+            return;
+        }
+        impl_->pointer_place = mapToScene(impl_->edge_scroll->pointer());
+        impl_->make_room_for_carry();
+    });
     synchronize();
     centerOn(0, 0);
 }
@@ -3530,7 +3574,10 @@ void DiagramView::synchronize() {
     for (auto* edge : dirty_edges) edge->refresh();
     impl_->refresh_comments();
     impl_->refresh_search();
-    // The workspace grows only at command boundaries, never during pointer movement.
+    // The workspace is measured afresh at command boundaries. It used to grow
+    // only here, never during pointer movement; since C6 (2026-10-12) it also
+    // grows while shapes are carried, by as much as they need (see
+    // make_room_for_carry), and this measures it again once they are let go.
     const auto content = impl_->scene->itemsBoundingRect().adjusted(-800, -800, 800, 800);
     impl_->scene->setSceneRect(default_paper.united(content));
     for (const auto& [key, description] : desired_edges) {
@@ -4008,6 +4055,7 @@ void DiagramView::set_transparency(const std::vector<ElementRef>& elements, int 
 }
 
 void DiagramView::cancel_interaction() {
+    impl_->edge_scroll->stop();
     if (!impl_->drag_start.empty()) {
         impl_->synchronizing = true;
         std::set<EdgeItem*> dirty;
@@ -4612,6 +4660,17 @@ void DiagramView::drawForeground(QPainter* painter, const QRectF& rect) {
         painter->drawEllipse(pointer, 3.5, 3.5);
     }
 }
+// A view that has lost the keyboard to another window or a dialog, or been put
+// away, no longer scrolls on under a pointer it may never hear let go of.
+void DiagramView::focusOutEvent(QFocusEvent* event) {
+    impl_->edge_scroll->stop();
+    QGraphicsView::focusOutEvent(event);
+}
+void DiagramView::hideEvent(QHideEvent* event) {
+    impl_->edge_scroll->stop();
+    QGraphicsView::hideEvent(event);
+}
+
 void DiagramView::begin_rename(const ElementRef& element) { impl_->begin_inline_edit(element); }
 bool DiagramView::renaming() const { return impl_->renaming.has_value() || impl_->text_editing.has_value(); }
 void DiagramView::commit_rename() { impl_->commit_inline_edit(); }
@@ -4839,8 +4898,19 @@ void DiagramView::mouseMoveEvent(QMouseEvent* event) {
         else if (sizing_cursor || cursor().shape() == Qt::PointingHandCursor) setCursor(Qt::ArrowCursor);
     }
     QGraphicsView::mouseMoveEvent(event);
+    // A band being drawn, or shapes being carried, held near or past the edge
+    // of the view scroll it on. Nothing else the hand does with the button
+    // held -- a line shaped, a shape pulled by its handle, a connection drawn
+    // -- reaches this far.
+    if (impl_->active_tool == Tool::Select && (event->buttons() & Qt::LeftButton)
+        && (!rubberBandRect().isNull() || (!impl_->drag_start.empty() && impl_->scene->mouseGrabberItem()))) {
+        if (rubberBandRect().isNull()) impl_->make_room_for_carry();
+        impl_->edge_scroll->follow(event->position().toPoint());
+    }
 }
 void DiagramView::mouseReleaseEvent(QMouseEvent* event) {
+    // Whatever is let go of, nothing scrolls on for it any longer.
+    if (event->button() == Qt::LeftButton) impl_->edge_scroll->stop();
     if (impl_->sizing && event->button() == Qt::LeftButton) {
         const auto drag = *impl_->sizing;
         impl_->sizing.reset();

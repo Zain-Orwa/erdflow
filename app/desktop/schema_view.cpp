@@ -1938,6 +1938,7 @@ void SchemaView::mouseMoveEvent(QMouseEvent* event) {
         if (band_ || travelled > shaping_travel) {
             band_ = QRectF(band_from_, event->position()).normalized();
             update();
+            follow_edge(event->position());
             return;
         }
     }
@@ -2022,6 +2023,13 @@ void SchemaView::mouseMoveEvent(QMouseEvent* event) {
         setCursor(table_at(event->position()) ? Qt::OpenHandCursor : Qt::ArrowCursor);
         return;
     }
+    if (!preview_.tables[*dragging_].origin) return;
+    carry_to(event->position());
+    follow_edge(event->position());
+}
+
+void SchemaView::carry_to(QPointF here) {
+    if (!dragging_ || *dragging_ >= preview_.tables.size()) return;
     const auto& table = preview_.tables[*dragging_];
     if (!table.origin) return;
     // The table follows the pointer exactly: nothing is snapped while it is
@@ -2030,7 +2038,7 @@ void SchemaView::mouseMoveEvent(QMouseEvent* event) {
     // past the top or the left of the schema, and the group stops there as a
     // whole when the first of them reaches it, rather than the rest piling
     // up against the edge and losing the arrangement they were moved in.
-    auto moved = event->position() - carried_from_;
+    auto moved = here - carried_from_;
     for (const auto& [carried, from] : carried_) {
         moved.setX(std::max(moved.x(), -from.x()));
         moved.setY(std::max(moved.y(), -from.y()));
@@ -2042,7 +2050,47 @@ void SchemaView::mouseMoveEvent(QMouseEvent* event) {
     update();
 }
 
+// The pointer of a band or a carry, told to the edge scroll in the viewport's
+// terms: it is the view, not the schema, whose edges the pointer is near.
+void SchemaView::follow_edge(QPointF here) {
+    auto* area = scroller();
+    if (!area) return;
+    if (!edge_scroll_ || &edge_scroll_->area() != area)
+        edge_scroll_ = std::make_unique<EdgeScroll>(*area, [this] { scrolled_at_edge(); });
+    edge_scroll_->follow(mapTo(area->viewport(), here).toPoint());
+}
+
+void SchemaView::stop_edge() {
+    if (edge_scroll_) edge_scroll_->stop();
+}
+
+// The view has scrolled on under a pointer held at its edge. The pointer has
+// not moved on the screen, so it is somewhere new on the schema, and the band
+// or the tables carried go there, exactly as a move of the pointer to that
+// place would take them. Nothing is written: the band settles what it caught,
+// and a carry is written as one edit, when the hand lets go, as ever.
+void SchemaView::scrolled_at_edge() {
+    auto* area = scroller();
+    if (!edge_scroll_ || !area) return;
+    const auto here = mapFrom(area->viewport(), QPointF(edge_scroll_->pointer()));
+    if (band_) {
+        pointer_ = here;
+        band_ = QRectF(band_from_, here).normalized();
+        update();
+        return;
+    }
+    if (dragging_) {
+        pointer_ = here;
+        carry_to(here);
+        return;
+    }
+    // Whatever was held has been let go of some other way.
+    stop_edge();
+}
+
 void SchemaView::mouseReleaseEvent(QMouseEvent* event) {
+    // Whatever is let go of, nothing scrolls on for it any longer.
+    if (event->button() == Qt::LeftButton) stop_edge();
     // A drag with Pan in hand let go: the view stays where it was taken, and
     // the hand opens again.
     if (panning_ && event->button() == Qt::LeftButton) {
@@ -2420,6 +2468,7 @@ void SchemaView::leaveEvent(QEvent* event) {
 // when the schema comes back.
 void SchemaView::hideEvent(QHideEvent* event) {
     QWidget::hideEvent(event);
+    stop_edge();
     if (linking_) {
         linking_.reset();
         update();
@@ -2429,6 +2478,13 @@ void SchemaView::hideEvent(QHideEvent* event) {
         arrange();
         reroute();
     }
+}
+
+// A view that has lost the keyboard to another window or a dialog no longer
+// scrolls on under a pointer it may never hear let go of.
+void SchemaView::focusOutEvent(QFocusEvent* event) {
+    QWidget::focusOutEvent(event);
+    stop_edge();
 }
 
 // A line is given back to the router by double-clicking it, which is the way

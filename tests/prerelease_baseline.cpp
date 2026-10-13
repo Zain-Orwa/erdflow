@@ -16,6 +16,7 @@
 #include "infrastructure/project_store.hpp"
 
 #include <QAction>
+#include <QAbstractScrollArea>
 #include <QApplication>
 #include <QDir>
 #include <QElapsedTimer>
@@ -23,12 +24,14 @@
 #include <QMouseEvent>
 #include <QScrollBar>
 #include <QSettings>
+#include <QTimer>
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <functional>
 #include <iostream>
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -369,12 +372,58 @@ void canvas_timings(const std::string& name, desktop::MainWindow& window) {
         const auto moving = since(clock);
         send_mouse(viewport, QEvent::MouseButtonRelease, at + QPoint(moves * 3, moves), Qt::LeftButton, Qt::NoButton);
         settle();
-        std::cout << "CANVAS_DRAG " << name << " " << what << ": per_move_ms=" << moving / moves << '\n';
+        std::cout << "CANVAS_DRAG " << name << " " << what << ": per_move_ms=" << moving / moves << " pressed_at=" << at.x()
+                  << ',' << at.y() << " in " << viewport->width() << 'x' << viewport->height() << '\n';
     };
     drag("one entity", {elements.front()});
     std::vector<domain::ElementRef> everything;
     for (const auto& [ref, rect] : window.editor().project().layout) { (void)rect; everything.push_back(ref); }
     drag("select all (" + std::to_string(everything.size()) + ")", everything);
+    // The line above presses where the first of everything stands, which on a
+    // large diagram is out of view, so it measures a band rather than a carry.
+    // Here everything is carried by a shape in the middle of the view.
+    {
+        canvas->select_elements(everything, false);
+        settle();
+        auto* viewport = canvas->viewport();
+        const QRect middle(viewport->width() / 4, viewport->height() / 4, viewport->width() / 2, viewport->height() / 2);
+        std::optional<QPoint> at;
+        for (const auto& [id, entity] : window.editor().project().entities) {
+            (void)entity;
+            const auto& rect = window.editor().project().layout.at(id);
+            const auto here = canvas->mapFromScene(QPointF(rect.x + rect.width / 2, rect.y + rect.height / 2));
+            if (middle.contains(here)) {
+                at = here;
+                break;
+            }
+        }
+        if (at) {
+            const auto steps = window.editor().history_position();
+            send_mouse(viewport, QEvent::MouseButtonPress, *at, Qt::LeftButton, Qt::LeftButton);
+            settle();
+            QElapsedTimer clock;
+            clock.start();
+            constexpr int moves = 40;
+            for (int i = 1; i <= moves; ++i) {
+                send_mouse(viewport, QEvent::MouseMove, *at + QPoint(i * 3, i), Qt::NoButton, Qt::LeftButton);
+                settle();
+            }
+            const auto moving = since(clock);
+            send_mouse(viewport, QEvent::MouseButtonRelease, *at + QPoint(moves * 3, moves), Qt::LeftButton,
+                       Qt::NoButton);
+            settle();
+            std::cout << "CANVAS_DRAG " << name << " select all, carried from the middle: per_move_ms=" << moving / moves
+                      << '\n';
+            canvas->select_elements({});
+            settle();
+            // The carry is put back, so what is measured after starts from the same place.
+            auto* undo = window.findChild<QAction*>("undoCommand");
+            for (int tries = 0; undo && tries < 4 && window.editor().history_position() > steps; ++tries) {
+                undo->trigger();
+                settle();
+            }
+        }
+    }
     canvas->select_elements({});
     settle();
     for (const auto* typed : {"E", "En", "Ent", "zz"}) {
@@ -493,6 +542,248 @@ void conversion_audit(const std::string& name, desktop::MainWindow& window, cons
                   << "=" << sizes.first.width() << "x" << sizes.first.height() << ".." << sizes.second.width() << "x" << sizes.second.height();
     std::cout << '\n';
 }
+
+// A gesture held at the edge of the view (C6). The pointer is taken to just
+// inside one edge and held still there; what is measured is whether the view
+// scrolls on under it, how far, what the gesture then covers or carries, and
+// what holding it costs.
+struct Edge {
+    const char* name;
+    int dx;
+    int dy;
+};
+constexpr Edge edges[]{{"down", 0, 1}, {"up", 0, -1}, {"right", 1, 0}, {"left", -1, 0}};
+constexpr int hold_ms = 600;
+// A press meant for a table that lands on a cell offering a menu opens it,
+// and a menu waits for an answer nobody here gives. Any such menu is closed
+// as soon as it opens, and counted, so a measurement says it went astray
+// rather than waiting for ever.
+int popups_closed = 0;
+void close_popups_as_they_open(QObject* owner) {
+    auto* watch = new QTimer(owner);
+    QObject::connect(watch, &QTimer::timeout, [] {
+        if (auto* popup = QApplication::activePopupWidget()) {
+            popup->close();
+            ++popups_closed;
+        }
+    });
+    watch->start(50);
+}
+
+QAbstractScrollArea* scroll_area_of(QWidget* widget) {
+    for (auto* up = widget->parentWidget(); up; up = up->parentWidget())
+        if (auto* area = qobject_cast<QAbstractScrollArea*>(up)) return area;
+    return nullptr;
+}
+QPoint at_edge(QSize port, const Edge& edge) {
+    return QPoint(edge.dx > 0 ? port.width() - 4 : edge.dx < 0 ? 3 : port.width() / 2,
+                  edge.dy > 0 ? port.height() - 4 : edge.dy < 0 ? 3 : port.height() / 2);
+}
+// The view put where there is room to scroll towards the edge.
+void scroll_away(QAbstractScrollArea* area, const Edge& edge) {
+    auto* across = area->horizontalScrollBar();
+    auto* down = area->verticalScrollBar();
+    across->setValue(edge.dx < 0 ? across->maximum() : across->minimum());
+    down->setValue(edge.dy < 0 ? down->maximum() : down->minimum());
+    settle();
+}
+QPoint bars(QAbstractScrollArea* area) {
+    return {area->horizontalScrollBar()->value(), area->verticalScrollBar()->value()};
+}
+// The first point of the middle of the viewport that `empty` accepts.
+std::optional<QPoint> empty_middle(QWidget* port, const std::function<bool(QPoint)>& empty) {
+    for (int y = port->height() / 3; y < port->height() * 2 / 3; y += 9)
+        for (int x = port->width() / 3; x < port->width() * 2 / 3; x += 9)
+            if (empty(QPoint(x, y))) return QPoint(x, y);
+    return std::nullopt;
+}
+
+void schema_edge_holds(const std::string& name, desktop::SchemaView& schema, application::Editor& editor) {
+    auto* area = scroll_area_of(&schema);
+    if (!area) return;
+    auto* port = area->viewport();
+    const auto on_schema = [&](QPoint in_port) { return QPointF(schema.mapFrom(port, in_port)); };
+    const auto empty = [&](QPoint in_port) {
+        const auto p = on_schema(in_port);
+        for (const auto& box : schema.table_boxes())
+            if (box.adjusted(-14, -14, 14, 14).contains(p)) return false;
+        for (const auto& line : schema.line_shapes())
+            for (std::size_t i = 1; i < line.size(); ++i)
+                if (QRectF(line[i - 1], line[i]).normalized().adjusted(-10, -10, 10, 10).contains(p)) return false;
+        return true;
+    };
+    for (const auto& edge : edges) {
+        schema.select(std::nullopt);
+        scroll_away(area, edge);
+        const auto start = empty_middle(port, empty);
+        if (!start) {
+            std::cout << "EDGE_HOLD schema " << name << " select " << edge.name << ": no empty spot\n";
+            continue;
+        }
+        const auto from = bars(area);
+        send_mouse(&schema, QEvent::MouseButtonPress, on_schema(*start), Qt::LeftButton, Qt::LeftButton);
+        send_mouse(&schema, QEvent::MouseMove, on_schema(*start + QPoint(20, 20)), Qt::NoButton, Qt::LeftButton);
+        send_mouse(&schema, QEvent::MouseMove, on_schema(at_edge(port->size(), edge)), Qt::NoButton, Qt::LeftButton);
+        QElapsedTimer clock;
+        clock.start();
+        settle_ms(hold_ms);
+        const auto held = since(clock);
+        const auto scrolled = bars(area) - from;
+        send_mouse(&schema, QEvent::MouseButtonRelease, on_schema(at_edge(port->size(), edge)), Qt::LeftButton,
+                   Qt::NoButton);
+        settle();
+        std::cout << "EDGE_HOLD schema " << name << " select " << edge.name << ": scrolled=" << scrolled.x() << ','
+                  << scrolled.y() << " caught=" << schema.selection().size() << " held_ms=" << held << '\n';
+    }
+    // A table carried to each edge, and then the whole schema (Select All)
+    // carried down.
+    const auto carry = [&](const Edge& edge, bool everything) {
+        schema.select(std::nullopt);
+        scroll_away(area, edge);
+        const auto boxes = schema.table_boxes();
+        const QRectF seen(on_schema(QPoint(port->width() / 4, port->height() / 4)),
+                          on_schema(QPoint(port->width() * 3 / 4, port->height() * 3 / 4)));
+        std::optional<std::size_t> chosen;
+        for (std::size_t t = 0; t < boxes.size() && !chosen; ++t)
+            if (seen.contains(boxes[t].topLeft() + QPointF(boxes[t].width() / 2, 10))) chosen = t;
+        const std::string what = everything ? "carry all" : "carry";
+        if (!chosen) {
+            std::cout << "EDGE_HOLD schema " << name << " " << what << " " << edge.name << ": no table in view\n";
+            return;
+        }
+        if (everything) {
+            schema.select_all();
+            settle();
+        }
+        const auto steps = editor.history_position();
+        const auto grip = boxes[*chosen].topLeft() + QPointF(boxes[*chosen].width() / 2, 10);
+        const auto from = bars(area);
+        send_mouse(&schema, QEvent::MouseButtonPress, grip, Qt::LeftButton, Qt::LeftButton);
+        send_mouse(&schema, QEvent::MouseMove, grip + QPointF(edge.dx * 10, edge.dy * 10), Qt::NoButton, Qt::LeftButton);
+        send_mouse(&schema, QEvent::MouseMove, on_schema(at_edge(port->size(), edge)), Qt::NoButton, Qt::LeftButton);
+        settle();
+        const auto routed = schema.routings();
+        QElapsedTimer clock;
+        clock.start();
+        settle_ms(hold_ms);
+        const auto held = since(clock);
+        const auto routings = schema.routings() - routed;
+        const auto scrolled = bars(area) - from;
+        send_mouse(&schema, QEvent::MouseButtonRelease, on_schema(at_edge(port->size(), edge)), Qt::LeftButton,
+                   Qt::NoButton);
+        settle();
+        const auto moved = schema.table_boxes()[*chosen].topLeft() - boxes[*chosen].topLeft();
+        std::cout << "EDGE_HOLD schema " << name << " " << what << " " << edge.name << ": scrolled=" << scrolled.x()
+                  << ',' << scrolled.y() << " moved=" << moved.x() << ',' << moved.y()
+                  << " routings_while_held=" << routings
+                  << " ms_per_routing=" << (routings ? held / static_cast<double>(routings) : 0.0)
+                  << " undo_steps=" << editor.history_position() - steps << " canvas=" << schema.width() << 'x'
+                  << schema.height() << (popups_closed ? " POPUPS_CLOSED=" + std::to_string(popups_closed) : "") << '\n';
+        // Put back as it was, so what is measured after starts from the same place.
+        for (int tries = 0; tries < 4 && editor.history_position() > steps; ++tries)
+            if (!editor.undo()) break;
+        settle();
+    };
+    for (const auto& edge : edges) carry(edge, false);
+    carry(edges[0], true);
+    schema.select(std::nullopt);
+    settle();
+}
+
+void canvas_edge_holds(const std::string& name, desktop::MainWindow& window, application::Editor& editor) {
+    auto* canvas = window.canvas();
+    auto* port = canvas->viewport();
+    for (const auto& edge : edges) {
+        canvas->select_elements({});
+        // The middle of the diagram, which leaves room every way: the
+        // canvas reaches 800 px past what is on it.
+        canvas->centerOn(canvas->diagram_bounds().center());
+        settle();
+        const auto start = empty_middle(port, [&](QPoint p) {
+            return !canvas->itemAt(p) && !canvas->itemAt(p + QPoint(20, 20));
+        });
+        if (!start) {
+            std::cout << "EDGE_HOLD canvas " << name << " select " << edge.name << ": no empty spot\n";
+            continue;
+        }
+        const auto from = bars(canvas);
+        send_mouse(port, QEvent::MouseButtonPress, *start, Qt::LeftButton, Qt::LeftButton);
+        send_mouse(port, QEvent::MouseMove, *start + QPoint(20, 20), Qt::NoButton, Qt::LeftButton);
+        send_mouse(port, QEvent::MouseMove, at_edge(port->size(), edge), Qt::NoButton, Qt::LeftButton);
+        QElapsedTimer clock;
+        clock.start();
+        settle_ms(hold_ms);
+        const auto held = since(clock);
+        const auto scrolled = bars(canvas) - from;
+        send_mouse(port, QEvent::MouseButtonRelease, at_edge(port->size(), edge), Qt::LeftButton, Qt::NoButton);
+        settle();
+        std::cout << "EDGE_HOLD canvas " << name << " select " << edge.name << ": scrolled=" << scrolled.x() << ','
+                  << scrolled.y() << " caught=" << canvas->selected_elements().size() << " held_ms=" << held << '\n';
+    }
+    const auto carry = [&](const Edge& edge, bool everything) {
+        canvas->select_elements({});
+        // The middle of the diagram, which leaves room every way: the
+        // canvas reaches 800 px past what is on it.
+        canvas->centerOn(canvas->diagram_bounds().center());
+        settle();
+        const QRect seen(port->width() / 4, port->height() / 4, port->width() / 2, port->height() / 2);
+        std::optional<domain::ElementRef> chosen;
+        QPoint grip;
+        for (const auto& [id, entity] : editor.project().entities) {
+            (void)entity;
+            const auto& rect = editor.project().layout.at(id);
+            const auto at = canvas->mapFromScene(QPointF(rect.x + rect.width / 2, rect.y + rect.height / 2));
+            if (seen.contains(at)) {
+                chosen = id;
+                grip = at;
+                break;
+            }
+        }
+        const std::string what = everything ? "carry all" : "carry";
+        if (!chosen) {
+            std::cout << "EDGE_HOLD canvas " << name << " " << what << " " << edge.name << ": no entity in view\n";
+            return;
+        }
+        std::vector<domain::ElementRef> picked{*chosen};
+        if (everything) {
+            picked.clear();
+            for (const auto& [ref, rect] : editor.project().layout) {
+                (void)rect;
+                picked.push_back(ref);
+            }
+        }
+        canvas->select_elements(picked, false);
+        settle();
+        const auto before = editor.project().layout.at(*chosen);
+        const auto steps = editor.history_position();
+        const auto from = bars(canvas);
+        send_mouse(port, QEvent::MouseButtonPress, grip, Qt::LeftButton, Qt::LeftButton);
+        send_mouse(port, QEvent::MouseMove, grip + QPoint(edge.dx * 10, edge.dy * 10), Qt::NoButton, Qt::LeftButton);
+        send_mouse(port, QEvent::MouseMove, at_edge(port->size(), edge), Qt::NoButton, Qt::LeftButton);
+        settle();
+        QElapsedTimer clock;
+        clock.start();
+        settle_ms(hold_ms);
+        const auto held = since(clock);
+        const auto scrolled = bars(canvas) - from;
+        send_mouse(port, QEvent::MouseButtonRelease, at_edge(port->size(), edge), Qt::LeftButton, Qt::NoButton);
+        settle();
+        const auto& after = editor.project().layout.at(*chosen);
+        std::cout << "EDGE_HOLD canvas " << name << " " << what << " " << edge.name << ": scrolled=" << scrolled.x()
+                  << ',' << scrolled.y() << " moved=" << after.x - before.x << ',' << after.y - before.y
+                  << " undo_steps=" << editor.history_position() - steps << " held_ms=" << held
+                  << " scene=" << canvas->sceneRect().width() << 'x' << canvas->sceneRect().height()
+                  << (popups_closed ? " POPUPS_CLOSED=" + std::to_string(popups_closed) : "") << '\n';
+        // Put back as it was, so what is measured after starts from the same place.
+        for (int tries = 0; tries < 4 && editor.history_position() > steps; ++tries)
+            if (!editor.undo()) break;
+        settle();
+    };
+    for (const auto& edge : edges) carry(edge, false);
+    carry(edges[0], true);
+    canvas->select_elements({});
+    settle();
+}
 } // namespace
 
 int main(int argc, char** argv) {
@@ -500,6 +791,9 @@ int main(int argc, char** argv) {
     QCoreApplication::setOrganizationName("ERDFlowTests");
     QCoreApplication::setApplicationName("ERDFlowTests-PrereleaseBaseline");
     QSettings().clear();
+    // Each line as it is measured, so a run watched from a file shows where it is.
+    std::cout << std::unitbuf;
+    close_popups_as_they_open(&app);
     const auto folder = QDir::temp().filePath("erdflow-prerelease-baseline");
     QDir().mkpath(folder);
     std::cout << "QT_VERSION " << qVersion() << " platform=" << QGuiApplication::platformName().toStdString()
@@ -527,7 +821,10 @@ int main(int argc, char** argv) {
         // a canvas being dragged and exported.
         {"large-80-long-names", {}, [](application::Editor& e) { build_large(e, 80, true); }, false},
     };
+    // A scenario named on the command line is run alone.
+    const auto only = argc > 1 ? std::string(argv[1]) : std::string();
     for (const auto& scenario : scenarios) {
+        if (!only.empty() && scenario.name != only) continue;
         application::Editor editor(ids);
         if (scenario.build) scenario.build(editor);
         infrastructure::ErdxProjectStore store;
@@ -542,6 +839,7 @@ int main(int argc, char** argv) {
         if (has_diagram && !window.editor().project().schema.standalone) {
             canvas_timings(scenario.name, window);
             if (scenario.name == "large-80") rubber_band_anchor(*window.canvas());
+            canvas_edge_holds(scenario.name, window, editor);
             export_checks(scenario.name + "-conceptual", window, desktop::ThemeId::OfficeLight,
                           desktop::theme(desktop::ThemeId::OfficeLight).canvas, folder, false);
             window.set_theme(desktop::ThemeId::OfficeLight);
@@ -575,6 +873,7 @@ int main(int argc, char** argv) {
             selection_ring(scenario.name + (theme == desktop::ThemeId::OfficeLight ? "-light" : "-dark"), window, *schema);
             export_checks(scenario.name + "-schema", window, theme, desktop::theme(theme).canvas, folder, true);
         }
+        schema_edge_holds(scenario.name, *schema, editor);
         editor.mark_saved(editor.revision());
         window.close();
         settle();

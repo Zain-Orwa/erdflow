@@ -350,6 +350,8 @@ protected:
     void wheelEvent(QWheelEvent*) override;
     void keyPressEvent(QKeyEvent*) override;
     void contextMenuEvent(QContextMenuEvent*) override;
+    void focusOutEvent(QFocusEvent*) override;
+    void hideEvent(QHideEvent*) override;
 
 private:
     // The connector menu. It finds the line itself rather than being handed one,

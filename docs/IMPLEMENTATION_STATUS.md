@@ -74,7 +74,41 @@ read as still to do.
   downward, the canvas gives the lowest dragged table about one viewport of
   temporary room below it, then returns to normal sizing on release. The same
   drag can continue while the user scrolls with the wheel or trackpad; there is
-  no timer or automatic edge-autoscroll.
+  no timer or automatic edge-autoscroll. *Superseded in part by C6 (next
+  entry): the view now also scrolls by itself at its edges. The downward-only
+  room described here is unchanged.*
+- **Edge auto-scroll on both canvases** (C6, 2026-10-12):
+  a band being drawn, or tables / shapes being carried (one, a gathered group
+  or Select All), held within 24 px of an edge of the view or past it, scrolls
+  the view that way, diagonally in a corner, and goes on while the pointer is
+  held still (`EdgeScroll`, `edge_scroll.cpp`; a step about every 16 ms, one
+  pixel at the inside of the strip up to 40 px far past the edge). It stops
+  when the pointer comes back in, on release, when the view can go no further,
+  when the canvas loses the keyboard or is put away, and on Escape's
+  `cancel_interaction` on the diagram. The band stays anchored where it was
+  pressed and covers what comes into view; what is carried follows the pointer
+  and is written as one edit on release, as before. On the schema each step
+  carries the tables exactly as a pointer move to that place would, so the
+  downward drag room above and the top/left stop of a carried group are
+  unchanged and no extra room is given upward or across. On the diagram Qt
+  replays the pointer through the view on each scroll. Resizing by a handle,
+  shaping or pulling a line, drawing a connection and Pan do not auto-scroll.
+
+  *What was decided before, and what C6 changes:*
+
+  | | Before C6 | With C6 |
+  |---|---|---|
+  | View at an edge during a band or a carry | stays; scroll by hand | scrolls by itself |
+  | Diagram's room during a carry | fixed until the move is let go ("grows only at command boundaries, never during pointer movement", 2026-09-14) | **superseded:** grows while shapes are carried to reach 800 px past them (`make_room_for_carry`), in every direction, only ever growing during the drag; measured afresh, as before, when the move is let go |
+  | Diagram's room after a command | `default_paper` united with everything plus 800 px | unchanged |
+  | Schema room below a downward carry | one view's height (2026-10-09) | unchanged |
+  | Schema room across or upward | none; the canvas reaches just past the tables | unchanged |
+  | Schema top and left | nought; a carried group stops there as a whole | unchanged; no stored table position is shifted to make room |
+  | Coordinates, history, files | | unchanged: positions stay where they are, a carry is one edit, nothing new is saved |
+
+  On the 159-table schema each auto-scroll step of a carry routes every line,
+  as a pointer move does (about 520 ms with the C2 routing), so the view
+  advances in steps of up to 40 px rather than smoothly.
 - **Desktop timeout risk reduced without weakening coverage** (committed in
   `7b12b70`): the old single `desktop` CTest entry is split into
   `desktop_export`, `desktop_relational` and `desktop_window` (the last since

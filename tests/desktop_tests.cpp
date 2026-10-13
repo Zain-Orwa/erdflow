@@ -2055,6 +2055,361 @@ namespace
                 opened.mark_saved(opened.revision());
             }
 
+            // A band, or tables carried, held near or past the edge of the view
+            // scroll it on, so the same gesture goes on into what was not
+            // showing (C6, 2026-10-12). The pointer stays where it is on the
+            // screen and the schema moves under it: the band reaches wherever the
+            // pointer now is on the schema, what is carried goes there with it,
+            // and nothing is written until the hand lets go.
+            {
+                // The messages here are put together from the edge being tried.
+                const auto must = [](bool ok, const std::string &message) { require(ok, message.c_str()); };
+                child<QAction>(relational, "fileExampleCompanyRelational")->trigger();
+                settle();
+                relational.resize(1000, 700);
+                settle();
+                auto *view = relational.schema();
+                auto *scroll = child<QScrollArea>(relational, "schemaScroll");
+                auto *port = scroll->viewport();
+                auto *across = scroll->horizontalScrollBar();
+                auto *down = scroll->verticalScrollBar();
+                must(across->maximum() > 0 && down->maximum() > 0, "At this size the Company schema scrolls both ways");
+                const auto as_opened = opened.project();
+                const auto boxes_opened = view->table_boxes();
+                const auto mouse = [&](QEvent::Type type, QPointF where, Qt::MouseButtons held)
+                {
+                    QMouseEvent event(type, where, view->mapToGlobal(where.toPoint()),
+                                      type == QEvent::MouseMove ? Qt::NoButton : Qt::LeftButton, held, Qt::NoModifier);
+                    QApplication::sendEvent(view, &event);
+                };
+                const auto hold_for = [](int ms)
+                {
+                    QElapsedTimer clock;
+                    clock.start();
+                    while (clock.elapsed() < ms)
+                        QApplication::processEvents(QEventLoop::AllEvents, 5);
+                };
+                const auto on_schema = [&](QPoint in_port) { return QPointF(view->mapFrom(port, in_port)); };
+                const auto bars = [&] { return QPoint(across->value(), down->value()); };
+                const auto seen = [&]
+                { return QRectF(on_schema(QPoint(0, 0)), on_schema(QPoint(port->width(), port->height()))); };
+                const auto sign_of = [](int value) { return (value > 0) - (value < 0); };
+                const auto w = port->width();
+                const auto h = port->height();
+                // The view put where there is room to scroll towards the edge.
+                const auto away_from = [&](QPoint sign)
+                {
+                    view->select(std::nullopt);
+                    across->setValue(sign.x() < 0 ? across->maximum() : sign.x() > 0 ? 0 : across->maximum() / 2);
+                    down->setValue(sign.y() < 0 ? down->maximum() : sign.y() > 0 ? 0 : down->maximum() / 2);
+                    settle();
+                };
+                const auto empty_spot = [&]
+                {
+                    const auto empty = [&](QPointF p)
+                    {
+                        for (const auto &box : view->table_boxes())
+                            if (box.adjusted(-14, -14, 14, 14).contains(p))
+                                return false;
+                        for (const auto &line : view->line_shapes())
+                            for (std::size_t i = 1; i < line.size(); ++i)
+                                if (QRectF(line[i - 1], line[i]).normalized().adjusted(-10, -10, 10, 10).contains(p))
+                                    return false;
+                        return true;
+                    };
+                    for (int y = h / 3; y < h * 2 / 3; y += 7)
+                        for (int x = w / 3; x < w * 2 / 3; x += 7)
+                            if (empty(on_schema(QPoint(x, y))))
+                                return on_schema(QPoint(x, y));
+                    throw std::runtime_error("No empty canvas in the middle of the view");
+                };
+
+                // A band held at each edge scrolls the view that way, goes on
+                // while the pointer is held still, stops when it is let go, and
+                // marks exactly the tables it reached -- one that was out of view
+                // when it was begun among them.
+                struct Way
+                {
+                    const char *name;
+                    QPoint at;
+                    QPoint sign;
+                };
+                // Held a little past the edge, where the view goes faster.
+                for (const auto &way : {Way{"bottom", {w / 2, h + 40}, {0, 1}}, Way{"top", {w / 2, -40}, {0, -1}},
+                                        Way{"right", {w + 40, h / 2}, {1, 0}}, Way{"left", {-40, h / 2}, {-1, 0}}})
+                {
+                    const std::string name = way.name;
+                    away_from(way.sign);
+                    const auto was_seen = seen();
+                    const auto start = empty_spot();
+                    // The nearest table wholly beyond that edge, and the pointer
+                    // held at the edge across from it -- clear of the strips along
+                    // the other edges, so the view goes only the one way.
+                    std::optional<QRectF> beyond;
+                    const auto distance = [&](const QRectF &box)
+                    {
+                        return way.sign.y() > 0   ? box.top() - was_seen.bottom()
+                               : way.sign.y() < 0 ? was_seen.top() - box.bottom()
+                               : way.sign.x() > 0 ? box.left() - was_seen.right()
+                                                  : was_seen.left() - box.right();
+                    };
+                    const QRectF lane = way.sign.y() != 0 ? was_seen.adjusted(40, -1e6, -40, 1e6)
+                                                          : was_seen.adjusted(-1e6, 40, 1e6, -40);
+                    for (const auto &box : view->table_boxes())
+                        if (distance(box) > 0 && box.intersects(lane) && (!beyond || distance(box) < distance(*beyond)))
+                            beyond = box;
+                    must(beyond.has_value(), "There is a table beyond the " + name + " edge for the band to reach");
+                    const auto across_from = view->mapTo(port, beyond->intersected(lane).center().toPoint());
+                    const QPoint at(way.sign.y() != 0 ? across_from.x() : way.at.x(),
+                                    way.sign.y() != 0 ? way.at.y() : across_from.y());
+                    const auto from = bars();
+                    mouse(QEvent::MouseButtonPress, start, Qt::LeftButton);
+                    mouse(QEvent::MouseMove, start + QPointF(12, 12), Qt::LeftButton);
+                    mouse(QEvent::MouseMove, on_schema(at), Qt::LeftButton);
+                    const auto reaches = [&]
+                    {
+                        const auto here = on_schema(at);
+                        return way.sign.y() > 0   ? here.y() > beyond->top() + 2
+                               : way.sign.y() < 0 ? here.y() < beyond->bottom() - 2
+                               : way.sign.x() > 0 ? here.x() > beyond->left() + 2
+                                                  : here.x() < beyond->right() - 2;
+                    };
+                    for (int waited = 0; waited < 4000 && !reaches(); waited += 20)
+                        hold_for(20);
+                    must(reaches(), "Held at the " + name + " edge, the band is carried on to the table beyond it");
+                    const auto scrolled = bars() - from;
+                    must(sign_of(scrolled.x()) == way.sign.x() && sign_of(scrolled.y()) == way.sign.y(),
+                         "A band held at the " + name + " edge scrolls the view that way and no other");
+                    const auto still = bars();
+                    hold_for(60);
+                    const auto at_end = way.sign.y() > 0 ? down->value() == down->maximum()
+                                        : way.sign.y() < 0 ? down->value() == 0
+                                        : way.sign.x() > 0 ? across->value() == across->maximum()
+                                                           : across->value() == 0;
+                    must(bars() != still || at_end, "Held still at the " + name + " edge, the view goes on scrolling");
+                    const auto reached = on_schema(at);
+                    mouse(QEvent::MouseButtonRelease, reached, Qt::NoButton);
+                    const auto stopped = bars();
+                    hold_for(60);
+                    must(bars() == stopped, "Let go at the " + name + " edge, the view stops");
+                    const auto caught = QRectF(start, reached).normalized();
+                    std::vector<domain::ElementRef> expected;
+                    for (std::size_t t = 0; t < view->table_boxes().size(); ++t)
+                        if (view->preview().tables[t].origin && view->table_boxes()[t].intersects(caught))
+                            expected.push_back(*view->preview().tables[t].origin);
+                    auto marked = view->selection();
+                    std::sort(expected.begin(), expected.end());
+                    std::sort(marked.begin(), marked.end());
+                    must(marked == expected, "The band held at the " + name + " edge marks exactly the tables it reached");
+                    must(beyond->intersects(caught), "Among them, the table that was out of view beyond the " + name + " edge");
+                }
+
+                // Brought back in, the schema put away, or the keyboard taken
+                // away, a band stops scrolling the view.
+                const auto band_to_bottom = [&]
+                {
+                    away_from({0, 1});
+                    const auto start = empty_spot();
+                    mouse(QEvent::MouseButtonPress, start, Qt::LeftButton);
+                    mouse(QEvent::MouseMove, start + QPointF(12, 12), Qt::LeftButton);
+                    mouse(QEvent::MouseMove, on_schema({w / 2, h - 3}), Qt::LeftButton);
+                    hold_for(60);
+                    must(down->value() > 0, "A band held at the bottom scrolls the view down");
+                    return start;
+                };
+                {
+                    const auto start = band_to_bottom();
+                    mouse(QEvent::MouseMove, start + QPointF(30, 30), Qt::LeftButton);
+                    const auto in_again = bars();
+                    hold_for(80);
+                    must(bars() == in_again, "A band brought back from the edge stops scrolling the view");
+                    mouse(QEvent::MouseButtonRelease, start + QPointF(30, 30), Qt::NoButton);
+                }
+                {
+                    band_to_bottom();
+                    QFocusEvent away(QEvent::FocusOut, Qt::ActiveWindowFocusReason);
+                    QApplication::sendEvent(view, &away);
+                    const auto unfocused = bars();
+                    hold_for(80);
+                    must(bars() == unfocused, "A schema that loses the keyboard stops scrolling");
+                    mouse(QEvent::MouseButtonRelease, on_schema({w / 2, h - 3}), Qt::NoButton);
+                }
+                {
+                    band_to_bottom();
+                    relational.show_home(true);
+                    settle();
+                    const auto put_away = bars();
+                    hold_for(80);
+                    must(bars() == put_away, "A schema put away stops scrolling");
+                    relational.show_home(false);
+                    settle();
+                    mouse(QEvent::MouseButtonRelease, on_schema({w / 2, h - 3}), Qt::NoButton);
+                    settle();
+                }
+
+                // One table carried to each edge, and every table carried down:
+                // the view scrolls, what is carried follows the pointer exactly
+                // -- stopping as a group at the top and the left, as it always
+                // has -- the lines are routed as it goes, and the whole carry is
+                // one step of history that undoes and redoes whole.
+                struct Carry
+                {
+                    const char *name;
+                    QPoint sign;
+                    bool everything;
+                };
+                bool saved_once = false;
+                for (const auto &carry : {Carry{"one table down", {0, 1}, false}, Carry{"one table up", {0, -1}, false},
+                                          Carry{"one table right", {1, 0}, false}, Carry{"one table left", {-1, 0}, false},
+                                          Carry{"every table down", {0, 1}, true}})
+                {
+                    const std::string name = carry.name;
+                    view->select(std::nullopt);
+                    const auto before = view->table_boxes();
+                    // A table brought to the middle of the view, with room left to
+                    // scroll on the way it is to be carried.
+                    std::optional<std::size_t> pressed;
+                    for (std::size_t t = 0; t < before.size() && !pressed; ++t)
+                    {
+                        if (!view->preview().tables[t].origin)
+                            continue;
+                        const QPointF heading(before[t].center().x(), before[t].top() + 13);
+                        const auto left = std::clamp(static_cast<int>(heading.x()) - w / 2, 0, across->maximum());
+                        const auto top = std::clamp(static_cast<int>(heading.y()) - h / 2, 0, down->maximum());
+                        const bool room = (carry.sign.x() <= 0 || left < across->maximum() - 40) &&
+                                          (carry.sign.x() >= 0 || left > 40) &&
+                                          (carry.sign.y() <= 0 || top < down->maximum() - 40) &&
+                                          (carry.sign.y() >= 0 || top > 40);
+                        const bool inside = std::abs(heading.x() - left - w / 2) < w / 2 - 60 &&
+                                            std::abs(heading.y() - top - h / 2) < h / 2 - 60;
+                        if (!room || !inside)
+                            continue;
+                        across->setValue(left);
+                        down->setValue(top);
+                        settle();
+                        pressed = t;
+                    }
+                    must(pressed.has_value(), "A table can be brought into view with room to carry " + name);
+                    if (carry.everything)
+                    {
+                        view->select_all();
+                        settle();
+                    }
+                    const QPointF grip(before[*pressed].center().x(), before[*pressed].top() + 13);
+                    const auto grip_in_port = view->mapTo(port, grip.toPoint());
+                    const QPoint edge(carry.sign.x() > 0 ? w - 3 : carry.sign.x() < 0 ? 2 : grip_in_port.x(),
+                                      carry.sign.y() > 0 ? h - 3 : carry.sign.y() < 0 ? 2 : grip_in_port.y());
+                    const auto steps = opened.history_position();
+                    const auto from = bars();
+                    mouse(QEvent::MouseButtonPress, grip, Qt::LeftButton);
+                    const auto carried_refs = view->selection();
+                    std::vector<std::size_t> carried;
+                    for (std::size_t t = 0; t < before.size(); ++t)
+                        if (view->preview().tables[t].origin &&
+                            std::find(carried_refs.begin(), carried_refs.end(), *view->preview().tables[t].origin) !=
+                                carried_refs.end())
+                            carried.push_back(t);
+                    mouse(QEvent::MouseMove, grip + QPointF(carry.sign * 10), Qt::LeftButton);
+                    mouse(QEvent::MouseMove, on_schema(edge), Qt::LeftButton);
+                    const auto routed = view->routings();
+                    hold_for(150);
+                    const auto scrolled = bars() - from;
+                    must(sign_of(scrolled.x()) == carry.sign.x() && sign_of(scrolled.y()) == carry.sign.y(),
+                         "Carrying " + name + " to the edge scrolls the view that way and no other");
+                    must(opened.history_position() == steps, "Carrying " + name + " writes nothing until it is let go");
+                    must(view->routings() > routed, "Carrying " + name + ", the lines are routed as the tables go");
+                    const auto reached = on_schema(edge);
+                    mouse(QEvent::MouseButtonRelease, reached, Qt::NoButton);
+                    settle();
+                    must(opened.history_position() == steps + 1, "Carrying " + name + " is one step of history");
+                    auto moved = reached - grip;
+                    for (const auto t : carried)
+                    {
+                        moved.setX(std::max(moved.x(), -before[t].left()));
+                        moved.setY(std::max(moved.y(), -before[t].top()));
+                    }
+                    const auto after = view->table_boxes();
+                    bool exact = after.size() == before.size();
+                    for (std::size_t t = 0; exact && t < before.size(); ++t)
+                    {
+                        const bool was_carried = std::find(carried.begin(), carried.end(), t) != carried.end();
+                        exact = after[t] == (was_carried ? before[t].translated(moved) : before[t]);
+                    }
+                    must(exact, "Everything carried " + name + " lands exactly where the pointer took it, and the "
+                                                               "rest stay where they were");
+                    if (!saved_once)
+                    {
+                        // Saved and opened again, the carried table is where it was put.
+                        QTemporaryDir folder;
+                        const auto saved_at = folder.filePath("carried.erdx").toStdString();
+                        must(opened_store.save(saved_at, opened.project()).ok, "The carried schema saves");
+                        const auto reloaded = opened_store.load(saved_at);
+                        must(reloaded && *reloaded.project == opened.project(),
+                             "And loads back with the table where it was carried");
+                        saved_once = true;
+                    }
+                    child<QAction>(relational, "undoCommand")->trigger();
+                    settle();
+                    must(view->table_boxes() == before, "Undone, everything carried " + name + " is where it was");
+                    child<QAction>(relational, "redoCommand")->trigger();
+                    settle();
+                    must(view->table_boxes() == after, "Redone, everything carried " + name + " is where it was let go");
+                    child<QAction>(relational, "undoCommand")->trigger();
+                    settle();
+                }
+                // Held at the top or the left long enough, a table carried there
+                // stops at the edge of the schema -- where its coordinates are
+                // nought -- and the view stops with it. No room is made beyond:
+                // the schema does not reach above or left of nought.
+                for (const QPoint sign : {QPoint(0, -1), QPoint(-1, 0)})
+                {
+                    const std::string name = sign.y() ? "top" : "left";
+                    view->select(std::nullopt);
+                    across->setValue(0);
+                    down->setValue(0);
+                    settle();
+                    const auto before = view->table_boxes();
+                    std::optional<std::size_t> pressed;
+                    for (std::size_t t = 0; t < before.size() && !pressed; ++t)
+                        if (view->preview().tables[t].origin &&
+                            seen().adjusted(60, 60, -60, -60)
+                                .contains(QPointF(before[t].center().x(), before[t].top() + 13)))
+                            pressed = t;
+                    must(pressed.has_value(), "A table stands in view to carry to the " + name);
+                    const QPointF grip(before[*pressed].center().x(), before[*pressed].top() + 13);
+                    const auto grip_in_port = view->mapTo(port, grip.toPoint());
+                    const QPoint edge(sign.x() ? -40 : grip_in_port.x(), sign.y() ? -40 : grip_in_port.y());
+                    mouse(QEvent::MouseButtonPress, grip, Qt::LeftButton);
+                    mouse(QEvent::MouseMove, on_schema(edge), Qt::LeftButton);
+                    const auto at_edge = [&]
+                    {
+                        const auto box = view->table_boxes()[*pressed];
+                        return sign.y() ? box.top() == 0 : box.left() == 0;
+                    };
+                    for (int waited = 0; waited < 3000 && !at_edge(); waited += 20)
+                        hold_for(20);
+                    must(at_edge(), "Carried to the " + name + ", the table stops at the edge of the schema");
+                    const auto stopped = bars();
+                    hold_for(60);
+                    must(bars() == stopped && bars() == QPoint(0, 0) && at_edge(),
+                         "Held there, neither the view nor the table goes any further");
+                    bool none_past = true;
+                    for (const auto &box : view->table_boxes())
+                        none_past = none_past && box.top() >= 0 && box.left() >= 0;
+                    must(none_past, "No table is ever taken above or left of the schema's edge");
+                    mouse(QEvent::MouseButtonRelease, on_schema(edge), Qt::NoButton);
+                    settle();
+                    child<QAction>(relational, "undoCommand")->trigger();
+                    settle();
+                    must(view->table_boxes() == before, "The carry to the " + name + " is put back");
+                }
+                relational.resize(1440, 1080);
+                settle();
+                must(opened.project() == as_opened && view->table_boxes() == boxes_opened,
+                     "And the Company schema is as it opened");
+                opened.mark_saved(opened.revision());
+            }
+
             // A table's lettering is measured once, not on every movement of the
             // pointer (2026-10-06): a drag moves tables and changes none of what
             // they say. Whatever does change what a table measures -- a name, a

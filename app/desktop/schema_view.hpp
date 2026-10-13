@@ -8,6 +8,7 @@
 
 #include "domain/schema_preview.hpp"
 #include "diagram_view.hpp"
+#include "edge_scroll.hpp"
 
 #include "icons.hpp"
 #include "schema_selection.hpp"
@@ -20,6 +21,7 @@ class QLineEdit;
 class QAbstractScrollArea;
 #include <functional>
 #include <map>
+#include <memory>
 #include <optional>
 #include <set>
 #include <variant>
@@ -407,6 +409,7 @@ protected:
     void mouseDoubleClickEvent(QMouseEvent* event) override;
     void leaveEvent(QEvent* event) override;
     void hideEvent(QHideEvent* event) override;
+    void focusOutEvent(QFocusEvent* event) override;
     void contextMenuEvent(QContextMenuEvent* event) override;
     bool eventFilter(QObject* watched, QEvent* event) override;
     bool event(QEvent* happening) override;
@@ -809,6 +812,10 @@ private:
     // on its table already follows it, being kept as a place on the table.
     std::vector<domain::LinkSource> carried_lines_;
     QPointF carried_by_;
+    // The tables carried taken to where the pointer at `here` puts them:
+    // asked by a move of the pointer, and by the view scrolling on under a
+    // pointer held at its edge.
+    void carry_to(QPointF here);
     [[nodiscard]] static Shape moved_by(Shape shape, QPointF by);
     [[nodiscard]] static domain::SchemaLine as_line(const Shape& shape);
     QPointF carried_from_;
@@ -834,6 +841,14 @@ private:
     // view's own coordinates, like everything else the hand is doing.
     std::optional<QRectF> band_;
     QPointF band_from_;
+    // A band or a carry held at the edge of the view scrolls the view on, so
+    // either goes on past what was showing in the same gesture (C6,
+    // 2026-10-12). Made when first wanted, for the scroll area the schema is
+    // in by then.
+    std::unique_ptr<EdgeScroll> edge_scroll_;
+    void follow_edge(QPointF here);
+    void stop_edge();
+    void scrolled_at_edge();
     std::optional<Answering> answering_;
     bool answering_size_ = false;
     Notation notation_ = Notation::CrowsFoot;
