@@ -142,6 +142,51 @@ bool put_payload_in_svg(QByteArray& svg, const QByteArray& payload) {
     return keeps_transparency ? QColor(Qt::transparent) : QColor(Qt::white);
 }
 
+// A PDF page as the diagram's lettering has to see it. Qt sizes a font given in
+// points by the dots per inch of whatever it is drawn on, and a PDF writer's
+// are the resolution asked for -- 300 unless changed -- while every name was
+// measured, and every shape and column sized to it, at the dots per inch of the
+// screen and of a raster picture. Drawn on the writer itself, the lettering came
+// out three or four times too large for the shapes around it and was cut down to
+// a letter or two (C5, 2026-10-14). This hands Qt the writer's own engine, page
+// and resolution unchanged, and gives lettering the dots per inch a raster
+// picture has, so a page is lettered exactly as a PNG of it is: still vector,
+// its text still selectable, in one pass.
+class PdfPage final : public QPaintDevice {
+public:
+    explicit PdfPage(QPdfWriter& writer) : writer_(writer) {}
+    // Public on every paint device, protected on the writer's own class.
+    QPaintEngine* paintEngine() const override { return static_cast<const QPaintDevice&>(writer_).paintEngine(); }
+
+protected:
+    int metric(PaintDeviceMetric which) const override {
+        switch (which) {
+            case PdmWidth: return writer_.width();
+            case PdmHeight: return writer_.height();
+            case PdmWidthMM: return writer_.widthMM();
+            case PdmHeightMM: return writer_.heightMM();
+            case PdmNumColors: return writer_.colorCount();
+            case PdmDepth: return writer_.depth();
+            case PdmDpiX: return raster_.logicalDpiX();
+            case PdmDpiY: return raster_.logicalDpiY();
+            case PdmPhysicalDpiX: return writer_.physicalDpiX();
+            case PdmPhysicalDpiY: return writer_.physicalDpiY();
+            case PdmDevicePixelRatio: return static_cast<int>(writer_.devicePixelRatio());
+            case PdmDevicePixelRatioScaled:
+                return static_cast<int>(writer_.devicePixelRatioF() * devicePixelRatioFScale());
+            case PdmDevicePixelRatioF_EncodedA:
+            case PdmDevicePixelRatioF_EncodedB: return encodeMetricF(which, writer_.devicePixelRatioF());
+        }
+        return QPaintDevice::metric(which);
+    }
+
+private:
+    QPdfWriter& writer_;
+    // A raster picture's lettering resolution, which is the one the diagram
+    // measured its names at.
+    const QImage raster_{1, 1, QImage::Format_ARGB32_Premultiplied};
+};
+
 } // namespace
 
 const std::vector<PictureFormatInfo>& picture_formats() {
@@ -249,7 +294,8 @@ PictureResult draw_picture(ExportView view, const PictureOptions& options,
             const QSizeF points(source.width() * scale * 72.0 / 96.0, source.height() * scale * 72.0 / 96.0);
             writer.setPageSize(QPageSize(points, QPageSize::Point, QString(), QPageSize::ExactMatch));
             writer.setPageMargins(QMarginsF(0, 0, 0, 0));
-            QPainter painter(&writer);
+            PdfPage page(writer);
+            QPainter painter(&page);
             const QRectF target(0, 0, writer.width(), writer.height());
             const auto colour = background_colour(view, options, info.keeps_transparency);
             if (colour.alpha() != 0) painter.fillRect(target, colour);

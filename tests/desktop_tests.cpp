@@ -860,6 +860,113 @@ namespace
         std::cout << "PASS exported pictures carry no halo, on any ground, and hollow ends stay hollow\n";
     }
 
+    // A PDF page is lettered the way a raster picture of it is (C5,
+    // 2026-10-14). Qt sizes a font given in points by the dots per inch of what
+    // it is drawn on, and a PDF writer's are its resolution, while every name
+    // was measured, and every shape and column sized to it, at a raster
+    // picture's; drawn on the writer itself, a page's lettering came out three
+    // or four times too large and was cut down to a letter or two. At any
+    // resolution, what a workspace paints a page on now has a raster picture's
+    // dots per inch for its lettering and the page's own size at the resolution
+    // asked for, and the text the PDF sets is the same size at 72 dpi as at 1200.
+    void export_page_tests()
+    {
+        infrastructure::QtIdGenerator ids;
+        const QImage raster(1, 1, QImage::Format_ARGB32_Premultiplied);
+        // The sizes of the text a PDF sets, each with how often it is set: its
+        // packed streams unpacked and their `Tf` operators read. A page whose
+        // fonts cannot be embedded has none, its lettering drawn as outlines.
+        const auto text_sizes = [](const QByteArray &pdf)
+        {
+            std::map<QString, int> sizes;
+            static const QRegularExpression packed("/Filter /FlateDecode[^>]*>>\\s*stream\\r?\\n");
+            static const QRegularExpression setting("([0-9.]+) Tf");
+            const auto latin = QString::fromLatin1(pdf);
+            for (auto found = packed.globalMatch(latin); found.hasNext();)
+            {
+                const auto start = found.next().capturedEnd();
+                auto end = pdf.indexOf("endstream", start);
+                require(end > start, "Every packed stream of the page ends");
+                while (end > start && (pdf.at(end - 1) == '\n' || pdf.at(end - 1) == '\r'))
+                    --end;
+                // qUncompress reads a length first; nought lets it grow.
+                const auto unpacked = qUncompress(QByteArray(4, '\0') + pdf.mid(start, end - start));
+                for (auto set = setting.globalMatch(QString::fromLatin1(unpacked)); set.hasNext();)
+                    ++sizes[set.next().captured(1)];
+            }
+            return sizes;
+        };
+        struct Page
+        {
+            QByteArray bytes;
+            int lettering = 0;
+            QSize drawn_on;
+        };
+        const auto page = [](const desktop::ExportView &view, int resolution)
+        {
+            Page made;
+            auto watched = view;
+            watched.paint = [&made, paint = view.paint](QPainter &painter, const QRectF &target, const QRectF &source,
+                                                        const QColor &ground)
+            {
+                made.lettering = painter.device()->logicalDpiY();
+                made.drawn_on = QSize(painter.device()->width(), painter.device()->height());
+                paint(painter, target, source, ground);
+            };
+            desktop::PictureOptions options;
+            options.format = desktop::PictureFormat::Pdf;
+            options.background = desktop::PictureBackground::White;
+            options.resolution = resolution;
+            options.carry_project = false;
+            require(desktop::draw_picture(watched, options, {}, made.bytes).ok, "The page is drawn");
+            require(made.bytes.startsWith("%PDF") && made.bytes.trimmed().endsWith("%%EOF"), "And is a whole PDF");
+            return made;
+        };
+        const auto check = [&](const desktop::ExportView &view)
+        {
+            // The page's width in points, as the PDF itself states it.
+            const auto points_wide = [](const QByteArray &pdf)
+            {
+                static const QRegularExpression media("/MediaBox \\[0 0 ([0-9.]+) ([0-9.]+)\\]");
+                const auto found = media.match(QString::fromLatin1(pdf));
+                require(found.hasMatch(), "The page states its size");
+                return found.captured(1).toDouble();
+            };
+            const auto at72 = page(view, 72);
+            const auto lettered = text_sizes(at72.bytes);
+            for (const int resolution : {72, 300, 1200})
+            {
+                const auto made = resolution == 72 ? at72 : page(view, resolution);
+                require(made.lettering == raster.logicalDpiY(),
+                        "A page letters at a raster picture's dots per inch, whatever its resolution");
+                require(std::abs(made.drawn_on.width() - points_wide(made.bytes) * resolution / 72.0) <= 1.5,
+                        "And keeps the resolution asked for");
+                require(points_wide(made.bytes) == points_wide(at72.bytes), "Its page is the same size at any resolution");
+                require(text_sizes(made.bytes) == lettered, "And the text it sets is the same size at any resolution");
+            }
+        };
+
+        application::Editor editor(ids);
+        infrastructure::ErdxProjectStore store;
+        desktop::MainWindow window(editor, store, ids);
+        window.resize(1440, 920);
+        window.show();
+        window.show_home(false);
+        settle();
+        window.load_company_database_relational();
+        settle();
+        window.open_schema(true);
+        settle();
+        check(window.schema()->export_view());
+        window.open_schema(false);
+        settle();
+        window.load_company_database();
+        settle();
+        check(desktop::ExportView(*window.canvas()));
+        editor.mark_saved(editor.revision());
+        std::cout << "PASS a PDF page is lettered as a raster picture is, at any resolution\n";
+    }
+
     void export_state_tests()
     {
         infrastructure::QtIdGenerator ids;
@@ -8499,6 +8606,7 @@ int main(int argc, char **argv)
         {
             export_state_tests();
             export_halo_tests();
+            export_page_tests();
             if (export_part)
                 return 0;
         }

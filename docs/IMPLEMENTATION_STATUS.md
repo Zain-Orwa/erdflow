@@ -205,6 +205,24 @@ read as still to do.
   (diagram, transparent, crow's foot and Chen). A picture on the theme's own
   colour is byte for byte what it was, and the canvas on screen is unchanged
   (every visual-suite picture identical).
+- **A PDF page is lettered as its PNG is** (C5, 2026-10-14, built in the
+  release laboratory, awaiting Zain's review): Qt sizes a font given in points
+  by the dots per inch of what it is drawn on, and a PDF writer's are the
+  resolution asked for (300 unless changed), while every name was measured,
+  and every shape and column sized to it, at a raster picture's. A PDF's
+  lettering therefore came out three or four times too large for its shapes
+  and was cut down to a letter or two ("Em…", "artm"), in both workspaces;
+  that was the damaged macOS file. The page is now drawn through `PdfPage`
+  (`picture_export.cpp`), which gives Qt the writer's own engine, page and
+  resolution and reports only a raster picture's dots per inch for
+  lettering: one pass, still vector, its text still embedded and selectable.
+  Nothing else about a PDF changes: its page size, the resolution option,
+  and SVG, PNG and the other rasters are as they were, as is the PDF
+  document, whose diagram is a PNG. Measured on the Company examples, the
+  PDF drawn back differs from the PNG in 0.02-0.19% of pixels, where it was
+  1.3-6.8%, at 72, 300 and 1200 dpi, offscreen and on macOS; Apple's PDFKit
+  draws it as the PNG and reads back every name whole, where it read 164
+  cut short. Not yet seen on Windows or Linux.
 - **Desktop timeout risk reduced without weakening coverage** (committed in
   `7b12b70`): the old single `desktop` CTest entry is split into
   `desktop_export`, `desktop_relational` and `desktop_window` (the last since
