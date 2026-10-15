@@ -26,15 +26,6 @@ jobs:
           - name: Windows x86-64
             runner: windows-2025
             qt-arch: win64_msvc2022_64
-          - name: Linux x86-64
-            runner: ubuntu-24.04
-            qt-arch: linux_gcc_64
-          - name: macOS Apple Silicon
-            runner: macos-15
-            qt-arch: clang_64
-          - name: macOS Intel
-            runner: macos-15-intel
-            qt-arch: clang_64
 
     steps:
       - name: Check out the source
@@ -56,7 +47,24 @@ jobs:
           -DBUILD_TESTING=ON
 
       - name: Build
-        run: cmake --build build/ci --config Release --parallel
+        run: cmake --build build/ci --config Release --parallel --target canvas_tests
 
-      - name: Test
-        run: ctest --test-dir build/ci --build-config Release --output-on-failure --timeout 120
+      # Diagnostic branch only (never merged): the canvas suite run 30 times,
+      # each with 90 s, reporting the test group it was in if it stalls.
+      - name: Diagnose
+        shell: bash
+        env:
+          QT_QPA_PLATFORM: offscreen
+          QT_QPA_FONTDIR: C:/Windows/Fonts
+        run: |
+          exe=build/ci/Release/canvas_tests.exe
+          stalls=0
+          for i in $(seq 1 30); do
+            start=$(date +%s)
+            timeout 90 "$exe" > "out-$i.txt" 2>&1; code=$?
+            took=$(( $(date +%s) - start ))
+            last=$(grep '^\[canvas\]' "out-$i.txt" | tail -1)
+            echo "run $i: exit $code in ${took}s, last: $last"
+            if [ $code -ne 0 ] || [ $took -gt 25 ]; then stalls=$((stalls+1)); tail -5 "out-$i.txt"; fi
+          done
+          echo "runs over 25 s or failing: $stalls"
