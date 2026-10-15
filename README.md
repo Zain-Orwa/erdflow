@@ -208,7 +208,8 @@ Reviewable Change Proposal
 - [Architecture review](docs/PHASE_0_REVIEW.md)
 - [Current implementation choices](docs/adr/ADR-014-CONCEPTUAL-EDITOR-FOUNDATION.md)
 
-The current development build has been verified on macOS arm64. Windows/Linux
-support and release packaging remain unverified. The project is released under
-the [MIT License](LICENSE); a dependency/module license review for
-distribution has not yet been performed.
+ERDFlow 0.1.0 is built and tested for Windows x86-64, macOS (Apple silicon and
+Intel) and Linux x86-64, as installers whose packaging, licence notices and
+source offer are recorded in [the release record](docs/RELEASE_0.1.0.md). The
+project is released under the [MIT License](LICENSE); it uses Qt under the
+LGPL version 3 ([compliance plan](docs/QT_LGPL_COMPLIANCE.md)).

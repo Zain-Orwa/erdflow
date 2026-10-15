@@ -35,9 +35,47 @@ diagrams.
 | macOS, Intel | `ERDFlow-0.1.0-macos-x86_64.dmg` | macOS 13 or later. |
 | Linux, 64-bit | `ERDFlow-0.1.0-linux-x86_64.AppImage` | A distribution with glibc 2.39 or later, such as Ubuntu 24.04, Debian 13 or Fedora 40. Make it executable and run it. On Wayland it runs through XWayland. |
 
-To check a download, compare its SHA-256 with `SHA256SUMS`:
+## These packages are not signed by Apple or Microsoft
 
-    shasum -a 256 -c SHA256SUMS --ignore-missing
+ERDFlow is a free project and this release is not signed with an Apple
+Developer ID, not notarized by Apple, and not signed with a Windows
+code-signing certificate. Your system will therefore warn that it cannot
+verify the developer. The warnings are expected; they do not mean anything is
+wrong with the download, but they also mean that only the checksums below
+tell you the file is the one published here.
+
+**Check the download first.** Compare its SHA-256 with the line for it in
+`SHA256SUMS` from this release page:
+
+- Windows (PowerShell): `Get-FileHash .\ERDFlow-0.1.0-windows-x86_64-setup.exe -Algorithm SHA256`
+- macOS: `shasum -a 256 -c SHA256SUMS --ignore-missing`
+- Linux: `sha256sum -c SHA256SUMS --ignore-missing`
+
+`SHA256SUMS` is not signed in this release; it is as trustworthy as the GitHub
+release page you downloaded it from.
+
+**Windows.** When you start the installer, Microsoft Defender SmartScreen may
+say *Windows protected your PC*. Choose **More info**, check that the file is
+`ERDFlow-0.1.0-windows-x86_64-setup.exe`, then **Run anyway**. The publisher is
+shown as unknown. On a PC where *Smart App Control* is on, Windows blocks
+unsigned programs outright and offers no way to run them; ERDFlow cannot be
+installed there until it is signed.
+
+**macOS.** Open the disk image and drag ERDFlow to Applications. The first
+time you open it, macOS says it cannot verify that ERDFlow is free of malware.
+
+- macOS 15 (Sequoia) and later: choose **Done**, open **System Settings ->
+  Privacy & Security**, find *"ERDFlow" was blocked* near the bottom, choose
+  **Open Anyway**, and confirm with your password.
+- macOS 13 (Ventura) and 14 (Sonoma): Control-click ERDFlow in Applications,
+  choose **Open**, then **Open** again.
+
+macOS remembers the choice; later starts open ERDFlow directly.
+
+**Linux.** Make the AppImage executable (`chmod +x
+ERDFlow-0.1.0-linux-x86_64.AppImage`) and run it. No FUSE library needs to be
+installed. If it says it cannot mount the AppImage, because the system does
+not allow FUSE mounts, run it with `--appimage-extract-and-run`.
 
 ## Licences
 

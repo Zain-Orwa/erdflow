@@ -47,8 +47,13 @@ Visual Studio 2022 used to build ERDFlow. They are copyright Microsoft
 Corporation, unmodified, and redistributed as Distributable Code under the
 Microsoft Software License Terms for Visual Studio 2022 (see
 <https://learn.microsoft.com/en-us/visualstudio/releases/2022/redistribution>).
-They are not covered by ERDFlow's MIT licence. Their exact versions are listed
-in `THIRD-PARTY-LICENSES.txt` and in the package's inventory.
+They are not covered by ERDFlow's MIT licence. Microsoft's terms for them
+apply: they may be used only as part of ERDFlow, and may not be modified, or
+reverse engineered, decompiled or disassembled except where the law allows it.
+These terms concern Microsoft's files only and do not limit your rights under
+the LGPL to modify the Qt libraries and reverse engineer for debugging such
+modifications. Their exact versions are listed in `THIRD-PARTY-LICENSES.txt`
+and in the package's inventory.
 
 The installer and the uninstaller beside `erdflow.exe` (`unins000.exe`) are
 made with Inno Setup 6.7.1, copyright Jordan Russell and Martijn Laan, under

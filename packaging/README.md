@@ -17,11 +17,12 @@ suite.
 
 **Status: release preparation (2026-10-15).** Every package says it is a test
 candidate until the release owner approves distribution (the repository
-variable `ERDFLOW_REDISTRIBUTION_APPROVED`, below). The macOS packages are
-signed with a Developer ID and notarized, and `SHA256SUMS` carries an OpenPGP
-signature, once the secrets for them are set; until then they are signed ad
-hoc and not notarized. Windows code signing is not yet set up. What is done and
-what remains is in `docs/RELEASE_0.1.0.md`.
+variable `ERDFLOW_REDISTRIBUTION_APPROVED`, below). ERDFlow 0.1.0 is distributed
+without paid signing (owner, 2026-10-15): the macOS packages are signed ad hoc
+and not notarized, the Windows installer is not signed, and `SHA256SUMS` is not
+signed; the release notes say so and how to install. The signing steps below
+stay in the workflow, deferred, and run only if their secrets are ever set.
+What is done and what remains is in `docs/RELEASE_0.1.0.md`.
 
 ## Layout
 
@@ -71,7 +72,8 @@ files for a release.
 ### Signing, notarization and approval
 
 Each runs only when its repository secrets or variable are set (Settings ->
-Secrets and variables -> Actions):
+Secrets and variables -> Actions). None of the secrets is set for 0.1.0; a
+missing secret skips its step and never fails the build.
 
 | Secret or variable | What it is |
 | --- | --- |
