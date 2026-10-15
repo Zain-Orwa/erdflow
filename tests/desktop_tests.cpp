@@ -6,6 +6,7 @@
 // covered by this — fix it and say what was wrong. Full rule: CLAUDE.md.
 #include "app/desktop/icons.hpp"
 #include "app/desktop/dr_icons.hpp"
+#include "app/desktop/licences.hpp"
 #include "app/desktop/symbols.hpp"
 #include "app/desktop/export_dialog.hpp"
 #include "app/desktop/home_page.hpp"
@@ -9532,6 +9533,58 @@ void converted_shapes_fit_their_names_tests(infrastructure::QtIdGenerator &ids)
     }
 }
 
+    // Help -> Licences (2026-10-15): beside About, it names ERDFlow's licence
+    // and the Qt it uses, and finds the licence files wherever a package put
+    // them (docs/QT_LGPL_COMPLIANCE.md, section 3).
+    void licences_tests(infrastructure::QtIdGenerator &ids)
+    {
+        application::Editor editor(ids);
+        infrastructure::ErdxProjectStore store;
+        desktop::MainWindow window(editor, store, ids);
+        QStringList help;
+        for (auto *action : child<QMenu>(window, "helpMenu")->actions())
+            help << action->objectName();
+        require(help == QStringList({"quickGuide", "aboutErdflow", "licencesErdflow"}),
+                "Help offers the quick guide, About ERDFlow and then Licences");
+        require(child<QAction>(window, "licencesErdflow")->text() == "Licences", "Named Licences");
+
+        // Each package's own layout, as packaging/packaging.cmake installs it.
+        QTemporaryDir root;
+        require(root.isValid(), "A folder to lay packages out in");
+        const auto lay = [&](const QString &program, const QString &licences)
+        {
+            QDir().mkpath(root.filePath(program));
+            if (!licences.isEmpty())
+            {
+                QDir().mkpath(root.filePath(licences));
+                QFile licence(root.filePath(licences + "/LICENSE"));
+                require(licence.open(QIODevice::WriteOnly), "The package's LICENSE is written");
+            }
+            return desktop::installed_licences_folder(root.filePath(program));
+        };
+        const auto same = [&](const QString &found, const QString &licences)
+        { return QFileInfo(found).canonicalFilePath() == QFileInfo(root.filePath(licences)).canonicalFilePath(); };
+        require(same(lay("mac/ERDFlow.app/Contents/MacOS", "mac/ERDFlow.app/Contents/Resources/Licenses"),
+                     "mac/ERDFlow.app/Contents/Resources/Licenses"),
+                "In ERDFlow.app, the licences are in its Resources");
+        require(same(lay("windows/bin", "windows/licenses"), "windows/licenses"),
+                "On Windows, beside the program's bin folder");
+        require(same(lay("linux/usr/bin", "linux/usr/share/doc/erdflow"), "linux/usr/share/doc/erdflow"),
+                "In the AppImage, in its share/doc/erdflow");
+        require(lay("built/bin", {}).isEmpty(), "A build that was not installed has none");
+
+        const auto installed = desktop::licences_text("0.1.0", "6.11.2", root.filePath("windows/licenses"));
+        require(installed.contains("ERDFlow 0.1.0") && installed.contains("MIT licence") &&
+                    installed.contains("Zain Orwa") && installed.contains("Qt 6.11.2") &&
+                    installed.contains("GNU Lesser General Public License version 3") &&
+                    installed.contains("replace the Qt libraries") &&
+                    installed.contains(QDir::toNativeSeparators(root.filePath("windows/licenses"))),
+                "Licences names ERDFlow's licence and holder, the Qt it uses under the LGPL, and the folder");
+        require(desktop::licences_text("0.1.0", "6.11.2", {}).contains("packaging/notices"),
+                "And says where the files are when the build was not installed");
+        std::cout << "PASS Help names ERDFlow's licence and Qt's, and finds the licence files of every package\n";
+    }
+
 int main(int argc, char **argv)
 {
     QApplication app(argc, argv);
@@ -9649,6 +9702,7 @@ int main(int argc, char **argv)
             search_filter_tests(ids);
             dr_icons_tests(ids);
             schema_figures_tests(ids);
+            licences_tests(ids);
         }
         if (window_tools_part)
         {
