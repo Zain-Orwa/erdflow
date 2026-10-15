@@ -169,6 +169,7 @@ linuxdeploy-x86_64.AppImage --appdir build/package/AppDir \
   --icon-file build/package/AppDir/usr/share/icons/hicolor/512x512/apps/erdflow.png \
   --plugin qt
 rm -rf build/package/AppDir/usr/translations   # Qt's translations stay out
+cp -L /usr/lib/x86_64-linux-gnu/libOpenGL.so.0 build/package/AppDir/usr/lib/   # not on every desktop
 cmake -D ERDFLOW_NOTICES_ROOT="$PWD/build/package/AppDir" \
   -P build/package/packaging/write-notices.cmake
 # Use the runtime and tool hashes pinned in .github/workflows/package.yml.

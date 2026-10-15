@@ -464,6 +464,12 @@ jobs:
           # ERDFlow is in English, and they would add qttranslations' source to
           # what must be offered (2026-10-15).
           rm -rf "$appdir/usr/translations"
+          # libOpenGL.so.0, glvnd's vendor-neutral OpenGL front end, which Qt Gui
+          # links to. linuxdeploy leaves it out as part of every desktop, but
+          # Debian, Ubuntu and Fedora installs without libopengl0 or
+          # libglvnd-opengl do not have it, and the AppImage would not start
+          # there (2026-10-15). It hands over to the system's own OpenGL.
+          cp -L /usr/lib/x86_64-linux-gnu/libOpenGL.so.0 "$appdir/usr/lib/"
           # 2. The licences of everything now in the AppDir.
           cmake -D ERDFLOW_NOTICES_ROOT="$appdir" -P build/package/packaging/write-notices.cmake
           # 3. The AppImage.
@@ -499,6 +505,9 @@ jobs:
           done
           if [ -e "$root/usr/translations" ]; then
             echo "::error::Qt's translations are in the AppImage"; status=1
+          fi
+          if [ ! -f "$root/usr/lib/libOpenGL.so.0" ]; then
+            echo "::error::libOpenGL.so.0 is not in the AppImage"; status=1
           fi
           if grep -q '^INCOMPLETE' "$licences/THIRD-PARTY-LICENSES.txt"; then
             echo "::error::THIRD-PARTY-LICENSES.txt is marked incomplete"; status=1

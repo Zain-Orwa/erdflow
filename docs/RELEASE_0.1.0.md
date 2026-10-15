@@ -32,7 +32,7 @@ do. It is not legal advice.
 | Qt source offer set | Done: the packages carry it, and the offer's release blocker is gone |
 | AppImage runtime notices and LGPL source | Done: the licences of libfuse, squashfuse, zstd, zlib, mimalloc and musl ship in `appimage-runtime/`; the runtime, libfuse 3.15.0 with its patch and squashfuse are published with the release |
 | Ubuntu libraries in the AppImage | Done: their source packages, at the exact versions, are collected by the workflow and published with the release |
-| AppRun, hooks and linuxdeploy additions audited | Done: `AppRun`, linuxdeploy-plugin-qt's hook (MIT, notice shipped), `qt.conf`, the desktop entry and icon; Qt's translations removed |
+| AppRun, hooks and linuxdeploy additions audited | Done: `AppRun`, linuxdeploy-plugin-qt's hook (MIT, notice shipped), `qt.conf`, the desktop entry and icon; Qt's translations removed; `libOpenGL.so.0` added, without which the AppImage did not start on fresh Ubuntu, Debian and Fedora systems |
 | Visual C++ runtime | Versions recorded in each Windows package. **Release owner:** confirm the entitlement to redistribute them (below) |
 | Inno Setup engine and notices | Done: the Inno Setup licence ships with the uninstaller it covers |
 | Final-package SPDX SBOM | Done |
