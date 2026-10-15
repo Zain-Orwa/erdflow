@@ -49,12 +49,13 @@ packaging/
     LGPL-3.0.txt, GPL-3.0.txt
 ```
 
-The package workflow is `.github/workflows/package.yml`. It runs only when
-started by hand from the Actions tab. It builds and tests on each platform,
-packages, checks the package, installs or launches it, and uploads it with its
-SHA-256 checksum as a workflow artifact. A last job checks the four checksums
-and writes `SHA256SUMS`. It creates no release and no tag, and publishes
-nothing.
+The package workflow is `.github/workflows/package.yml`. It runs when
+started by hand from the Actions tab, and when a `release/**` branch is
+pushed, so a release candidate's packages are built before it is merged. It
+builds and tests on each platform, packages, checks the package, installs or
+launches it, and uploads it with its SHA-256 checksum as a workflow artifact.
+A last job checks the four checksums and writes `SHA256SUMS`. It creates no
+release and no tag, and publishes nothing.
 
 ## What `ERDFLOW_PACKAGING` changes
 

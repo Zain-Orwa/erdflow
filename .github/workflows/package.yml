@@ -11,12 +11,17 @@ name: Desktop Packages
 # with, for each package, its SHA-256 and an inventory of what it contains
 # (ERDFlow-<version>-<platform>-inventory.json).
 #
-# It runs only when started by hand. It creates no release and no tag, and
-# publishes nothing; the packages are unsigned test candidates. See
+# It runs when started by hand, and when a release/** branch is pushed, so a
+# release candidate's packages are built before it is merged (a run started
+# by hand needs the workflow on the default branch). It creates no release and
+# no tag, and publishes nothing; the packages are unsigned test candidates. See
 # packaging/README.md. The ordinary CI (ci.yml) is separate and unchanged.
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - 'release/**'
 
 concurrency:
   group: desktop-packages-${{ github.ref }}
