@@ -191,10 +191,14 @@ endif()
 # On Windows, windeployqt would also add the Mesa software OpenGL renderer and
 # the DirectX shader compilers. ERDFlow draws with Qt's raster engine and uses
 # neither OpenGL nor Direct3D, so they are left out, together with their
-# licences.
+# licences. It would add the TUIO touch plugin (plugin type "generic") too,
+# and with it Qt Network and Network's TLS and network-information plugins;
+# ERDFlow uses no network, so those are left out as well, as the macOS bundle
+# leaves them out (2026-10-15).
 if(WIN32)
     set(erdflow_deploy_tool_options DEPLOY_TOOL_OPTIONS
-        --no-opengl-sw --no-system-d3d-compiler --no-system-dxc-compiler)
+        --no-opengl-sw --no-system-d3d-compiler --no-system-dxc-compiler
+        --skip-plugin-types generic --no-network)
 else()
     set(erdflow_deploy_tool_options "")
 endif()
