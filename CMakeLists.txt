@@ -175,7 +175,8 @@ qt_add_resources(erdflow_desktop "erdflow_dr_icons"
     BASE "assets/dr-icons"
     FILES
         assets/dr-icons/student.png assets/dr-icons/course.png
-        assets/dr-icons/family.png assets/dr-icons/identification_card.png
+        assets/dr-icons/family.png assets/dr-icons/family_2.png
+        assets/dr-icons/identification_card.png
         assets/dr-icons/order.png assets/dr-icons/product.png
         assets/dr-icons/book.png assets/dr-icons/project.png
         assets/dr-icons/employee.png assets/dr-icons/person.png

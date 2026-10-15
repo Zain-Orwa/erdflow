@@ -8148,7 +8148,7 @@ namespace
         every_key_answers("in the Schema workspace");
     }
 
-    // Dr.icons (Item 9, 2026-10-14): sixteen illustrations of what an entity
+    // Dr.icons (Item 9, 2026-10-14): seventeen illustrations of what an entity
     // stands for, put on the conceptual diagram as pictures from a gallery on
     // Insert (Zain chose pictures over a property of the entity, 2026-10-14).
     // The keys and labels are his and fixed. Each icon is compiled in as a
@@ -8159,15 +8159,16 @@ namespace
     // stretched. Relational Design, which has no pictures, does not offer it.
     void dr_icons_tests(infrastructure::QtIdGenerator &ids)
     {
-        // The contract: the sixteen keys, labels and order.
+        // The contract: the seventeen keys, labels and order. The two
+        // families share a label (Zain, 2026-10-15).
         const std::vector<std::pair<QString, QString>> wanted{
-            {"student", "Student"}, {"course", "Course"}, {"family", "Family"},
+            {"student", "Student"}, {"course", "Course"}, {"family", "Family"}, {"family_2", "Family"},
             {"identification_card", "Identification Card"}, {"order", "Order"}, {"product", "Product"},
             {"book", "Book"}, {"project", "Project"}, {"employee", "Employee"}, {"person", "Person"},
             {"seat", "Seat"}, {"task", "Task"}, {"car", "Car"}, {"mobile_line", "Mobile Line"},
             {"phone_ext", "Phone Ext."}, {"desk", "Desk"}};
         const auto &icons = desktop::dr_icons();
-        require(icons.size() == wanted.size(), "There are sixteen Dr.icons");
+        require(icons.size() == wanted.size(), "There are seventeen Dr.icons");
         std::set<QByteArray> seen;
         for (std::size_t i = 0; i < icons.size(); ++i)
         {
@@ -8201,7 +8202,7 @@ namespace
             require(ink > 384 * 384 / 10, "Something is drawn in it");
             require(left > 0 && top > 0 && right < 383 && bottom < 383, "And nothing drawn is cut by its edge");
         }
-        require(!desktop::dr_icon("unicorn"), "A key that is not one of the sixteen finds nothing");
+        require(!desktop::dr_icon("unicorn"), "A key that is not one of the seventeen finds nothing");
 
         application::Editor model(ids);
         infrastructure::ErdxProjectStore store;
@@ -8224,7 +8225,7 @@ namespace
         require(entry->isVisible() && !entry->icon().isNull() && !entry->toolTip().isEmpty(),
                 "With a glyph and a tooltip");
 
-        // The gallery: sixteen buttons, each its icon over its label.
+        // The gallery: seventeen buttons, each its icon over its label.
         entry->trigger();
         settle();
         auto *gallery = child<QDialog>(window, "drIconPicker");
@@ -8448,7 +8449,7 @@ namespace
                     "And the icon keeps its proportions in it");
         }
         empty.mark_saved(empty.revision());
-        std::cout << "PASS Dr.icons: sixteen compiled-in icons placed as pictures, kept, undone, drawn and exported\n";
+        std::cout << "PASS Dr.icons: seventeen compiled-in icons placed as pictures, kept, undone, drawn and exported\n";
     }
 
     // A locked tool's padlock is seen whatever room its row has and whatever

@@ -10,13 +10,16 @@
 
 namespace erdflow::desktop {
 
-const std::array<DrIcon, 16>& dr_icons() {
+const std::array<DrIcon, 17>& dr_icons() {
     // The keys and labels are Zain's (2026-10-14) and are not to be renamed:
-    // the key is also the file under assets/dr-icons.
-    static const std::array<DrIcon, 16> icons{{
+    // the key is also the file under assets/dr-icons. There are two families,
+    // both called Family, the second straight after the first (2026-10-15);
+    // the pictures tell them apart.
+    static const std::array<DrIcon, 17> icons{{
         {"student", "Student"},
         {"course", "Course"},
         {"family", "Family"},
+        {"family_2", "Family"},
         {"identification_card", "Identification Card"},
         {"order", "Order"},
         {"product", "Product"},

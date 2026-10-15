@@ -17,8 +17,8 @@
 namespace erdflow::desktop {
 namespace {
 
-// Four to a row, so the sixteen make a square of four rows with nothing to
-// scroll.
+// Four to a row, so the seventeen make four full rows and a fifth holding
+// the last (Zain, 2026-10-15), with nothing to scroll.
 constexpr int columns = 4;
 // Large enough to tell a family from a person and a desk from a seat; the
 // pictures are detailed and lose their point drawn as small as a glyph.

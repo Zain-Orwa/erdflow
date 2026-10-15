@@ -15,7 +15,7 @@ class QLabel;
 
 namespace erdflow::desktop {
 
-// The Dr.icons gallery: the sixteen illustrations, four to a row, each with
+// The Dr.icons gallery: the seventeen illustrations, four to a row, each with
 // its name beneath it. Picking one puts it on the diagram as a picture. It
 // stays open while several are placed, as the symbol gallery does, and like
 // that gallery it is a tool window that never takes the keyboard, so the

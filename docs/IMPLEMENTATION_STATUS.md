@@ -261,8 +261,8 @@ read as still to do.
   its words alone. On the 159-table generated schema, working out what is
   hidden costs 13-113 µs and a repaint with most of it hidden 0.4-0.6 ms.
 - **Dr.icons are put on the diagram from Insert** (Item 9, 2026-10-14, built
-  in the release laboratory, awaiting Zain's review): sixteen illustrations of
-  what an entity commonly stands for -- Student, Course, Family,
+  in the release laboratory, awaiting Zain's review): seventeen illustrations
+  of what an entity commonly stands for -- Student, Course, two called Family,
   Identification Card, Order, Product, Book, Project, Employee, Person, Seat,
   Task, Car, Mobile Line, Phone Ext. and Desk -- in a gallery of their own,
   **Insert → Dr.icons…**, after Symbols, offered while the diagram is in front
@@ -275,13 +275,18 @@ read as still to do.
   undone, saved, reopened and exported as any picture is. Nothing matches an
   icon to an entity by name, and placing one changes no entity. The icons are
   compiled in (`erdflow_dr_icons`, `assets/dr-icons/<key>.png`, 384 px
-  transparent PNGs, 71-135 KB; `dr_icons.hpp` maps the sixteen keys to their
-  labels). Each placed icon keeps its own copy in the project, and a project
+  transparent PNGs, 71-135 KB; `dr_icons.hpp` maps the seventeen keys to
+  their labels). Each placed icon keeps its own copy in the project, and a project
   file holds 8 MiB, so 384 px was chosen over 512: sharp at an entity's height
   to 250% zoom on a high-density screen, with room for about twice as many
-  icons (some 55-60 of the largest before the limit, against 28-41). The ten
-  of the first batch are Zain's approved artwork scaled down from 1254 px. The
-  six of the second (Seat, Task, Car, Mobile Line, Phone Ext., Desk) were
+  icons (some 55-60 of the largest before the limit, against 28-41). Eight of
+  the first batch are Zain's approved artwork scaled down from 1254 px. Student
+  and Employee were exchanged (Zain, 2026-10-15) for full-length figures -- the
+  student holding books, the employee with a briefcase -- and a second Family
+  added straight after the first; all three are cut from Zain's other sheet of
+  sixteen, at the 380-410 px it holds them at, the employee placed on its
+  canvas unscaled rather than enlarged. The four rows of the gallery became
+  four full rows and a fifth holding Desk. The six of the second batch (Seat, Task, Car, Mobile Line, Phone Ext., Desk) were
   redrawn in the first batch's 3D style (Zain, 2026-10-14), supplied as one
   transparent sheet, cut apart into masters of 496-682 px and scaled down;
   they replaced the first, flatter drawings under the same file names. A

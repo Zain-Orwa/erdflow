@@ -28,8 +28,8 @@ struct DrIcon {
     const char* label;
 };
 
-// All sixteen, in the order the gallery shows them.
-[[nodiscard]] const std::array<DrIcon, 16>& dr_icons();
+// All seventeen, in the order the gallery shows them.
+[[nodiscard]] const std::array<DrIcon, 17>& dr_icons();
 
 // The icon with this key, or nothing for a key that is not one of them.
 [[nodiscard]] std::optional<DrIcon> dr_icon(const QString& key);
