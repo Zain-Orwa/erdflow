@@ -822,6 +822,11 @@ inline constexpr double max_coordinate = 100000;
 // it is drawn on. Between them a symbol can be enlarged and shrunk freely.
 inline constexpr double min_symbol_size = 16;
 inline constexpr double max_symbol_size = 4000;
+// A picture is drawn fitted to its box, never stretched, so the box is how big
+// it is drawn. It is pulled by any edge or corner (Zain, 2026-10-15) between the
+// same bounds as a symbol: down to a mark beside a name, up to a region's head.
+inline constexpr double min_picture_size = min_symbol_size;
+inline constexpr double max_picture_size = max_symbol_size;
 // How small and how large an entity's box may be pulled. Small enough for a
 // compact diagram of short names, large enough to hold a long one without
 // shortening it, and bounded at both ends so a pull that runs away cannot

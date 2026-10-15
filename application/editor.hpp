@@ -390,6 +390,11 @@ public:
     // symbols is enlarged together, and it refuses anything that is not a
     // symbol so the command cannot quietly reshape the rest of the diagram.
     EditResult resize_symbols(const std::map<domain::ElementRef, domain::Rect>& boxes);
+    // A picture's box is how big the picture is drawn, so its size is a
+    // property of it as a symbol's is: its own named edit, refusing anything
+    // that is not a picture, with a pull on a left or top edge writing the new
+    // place and the new size together.
+    EditResult resize_pictures(const std::map<domain::ElementRef, domain::Rect>& boxes);
     // An entity's box is pulled by its own edges and corners, each of which
     // moves one side and leaves the opposite one where it was. Its own named
     // edit rather than a move that happens to change a size, so the history

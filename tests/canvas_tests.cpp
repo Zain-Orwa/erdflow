@@ -4211,6 +4211,159 @@ void attribute_resize_tests() {
     require(editor.project().lettering.empty(), "With nothing kept for it");
 }
 
+// A picture -- a Dr.icon above all -- is pulled by any of its eight handles
+// (Zain, 2026-10-15), as small as a symbol may be and as large. It is never
+// stretched, so whichever handle is pulled the whole picture is scaled and
+// keeps its proportions: a corner from the corner opposite, an edge from the
+// edge opposite, staying centred along the edge. One pull is one step of
+// history, called what it is.
+void picture_resize_tests() {
+    SequentialIds ids;
+    application::Editor editor(ids);
+    QImage art(64, 64, QImage::Format_ARGB32);
+    art.fill(Qt::transparent);
+    {
+        QPainter painter(&art);
+        painter.setBrush(QColor(40, 110, 220));
+        painter.setPen(Qt::NoPen);
+        painter.drawEllipse(QRectF(8, 8, 48, 48));
+    }
+    QByteArray png;
+    QBuffer buffer(&png);
+    buffer.open(QIODevice::WriteOnly);
+    art.save(&buffer, "PNG");
+    const std::vector<std::uint8_t> bytes(png.begin(), png.end());
+    const domain::ElementRef icon = *editor.create_picture("Icon", {0, 0, 80, 80}, bytes).created;
+    const domain::ElementRef wide = *editor.create_picture("Banner", {400, 0, 160, 80}, bytes).created;
+    const domain::ElementRef entity = *editor.create_entity("Student", {0, 300, 133, 77}).created;
+    desktop::DiagramView view(editor);
+    QString refused;
+    view.on_edit = [&](const application::EditResult& result) { if (!result) refused = QString::fromStdString(result.error); };
+    view.resize(1000, 700);
+    view.show();
+    view.actual_size();
+    view.centerOn(200, 100);
+    QApplication::processEvents();
+    const auto box_of = [&](const domain::ElementRef& ref) { return editor.project().layout.at(ref); };
+    // A handle sits just inside the picture, half a grip in from the edge or
+    // corner it stands on; `grip` is that point in the picture's own terms.
+    const auto haul = [&](const domain::ElementRef& ref, QPointF grip, QPoint by) {
+        view.select_elements({ref});
+        QApplication::processEvents();
+        const auto& at = box_of(ref);
+        const auto start = view.mapFromScene(QPointF(at.x, at.y) + grip);
+        mouse(view, QEvent::MouseButtonPress, start, Qt::LeftButton, Qt::LeftButton);
+        mouse(view, QEvent::MouseMove, start + by, Qt::NoButton, Qt::LeftButton);
+        mouse(view, QEvent::MouseButtonRelease, start + by, Qt::LeftButton, Qt::NoButton);
+        view.synchronize();
+        return box_of(ref);
+    };
+    const auto undo = [&] {
+        require(editor.undo(), "The pull undoes");
+        view.synchronize();
+        QApplication::processEvents();
+    };
+
+    // The right edge: the left stays, the picture grows to the right and
+    // keeps its proportions, centred where it was down the edge.
+    auto box = haul(icon, {75.5, 40}, {40, 0});
+    require(refused.isEmpty(), "Pulling a picture is not refused");
+    require(box == domain::Rect{0, -20, 120, 120}, "The right edge scales the whole picture, from the left edge");
+    require(editor.undo_label() == "Resize picture", "It is its own step of history");
+    undo();
+    require(box_of(icon) == domain::Rect{0, 0, 80, 80}, "And it undoes to the size it was");
+
+    // The left and top edges move the picture as well as sizing it, in the
+    // same one step.
+    box = haul(icon, {4.5, 40}, {-40, 0});
+    require(box == domain::Rect{-40, -20, 120, 120}, "The left edge scales it from the right edge");
+    undo();
+    box = haul(icon, {40, 4.5}, {0, -40});
+    require(box == domain::Rect{-20, -40, 120, 120}, "The top edge scales it from the bottom edge");
+    undo();
+    box = haul(icon, {40, 75.5}, {0, 20});
+    require(box == domain::Rect{-10, 0, 100, 100}, "The bottom edge scales it from the top edge");
+    undo();
+
+    // A corner, from the corner opposite.
+    box = haul(icon, {75.5, 75.5}, {60, 60});
+    require(box == domain::Rect{0, 0, 140, 140}, "The bottom right corner scales it from the top left");
+    undo();
+    box = haul(icon, {4.5, 4.5}, {-20, -20});
+    require(box == domain::Rect{-20, -20, 100, 100}, "The top left corner scales it from the bottom right");
+    undo();
+
+    // Down to a mark beside a name, and no further; up to the largest.
+    box = haul(icon, {75.5, 40}, {-400, 0});
+    require(box.width == domain::min_picture_size && box.height == domain::min_picture_size && box.x == 0,
+            "Pulled past the smallest, it stops there, square still and its left edge where it was");
+    // Made that small, its handles shrink with it, so it is still seen and
+    // still taken hold of: its middle carries it, its corner pulls it out.
+    {
+        view.select_elements({icon});
+        QApplication::processEvents();
+        const auto small = box_of(icon);
+        const auto middle = view.mapFromScene(QPointF(small.x + small.width / 2, small.y + small.height / 2));
+        mouse(view, QEvent::MouseButtonPress, middle, Qt::LeftButton, Qt::LeftButton);
+        mouse(view, QEvent::MouseMove, middle + QPoint(30, 0), Qt::NoButton, Qt::LeftButton);
+        mouse(view, QEvent::MouseButtonRelease, middle + QPoint(30, 0), Qt::LeftButton, Qt::NoButton);
+        view.synchronize();
+        const auto carried = box_of(icon);
+        require(carried.width == small.width && carried.height == small.height && carried.x > small.x + 20,
+                "A picture made its smallest is carried by its middle, not pulled");
+        undo();
+        // Its top left handle is four wide, two in from the corner.
+        box = haul(icon, {2, 2}, {-24, -24});
+        require(box == domain::Rect{small.x - 24, small.y - 24, 40, 40},
+                "And its corner, small as its handle is, pulls it out again");
+        undo();
+    }
+    undo();
+    box = haul(icon, {75.5, 40}, {9000, 0});
+    require(box.width == domain::max_picture_size && box.height == domain::max_picture_size,
+            "Pulled past the largest, it stops there");
+    undo();
+    box = haul(icon, {75.5, 75.5}, {-300, -300});
+    require(box.width == domain::min_picture_size && box.height == domain::min_picture_size && box.x == 0 && box.y == 0,
+            "A corner pulled past the opposite one stops at the smallest");
+    undo();
+
+    // A picture that is not square keeps its own proportions.
+    box = haul(wide, {155.5, 40}, {80, 0});
+    require(box == domain::Rect{400, -20, 240, 120}, "A wide picture pulled by its edge stays twice as wide as it is tall");
+    undo();
+
+    // Pressed and let go where it was, nothing is written; Escape abandons a
+    // pull in progress.
+    view.select_elements({icon});
+    QApplication::processEvents();
+    const auto before_click = editor.revision();
+    const auto grip = view.mapFromScene(QPointF(75.5, 40));
+    mouse(view, QEvent::MouseButtonPress, grip, Qt::LeftButton, Qt::LeftButton);
+    mouse(view, QEvent::MouseButtonRelease, grip, Qt::LeftButton, Qt::NoButton);
+    require(editor.revision() == before_click, "A handle clicked and let go writes nothing");
+    mouse(view, QEvent::MouseButtonPress, grip, Qt::LeftButton, Qt::LeftButton);
+    mouse(view, QEvent::MouseMove, grip + QPoint(100, 0), Qt::NoButton, Qt::LeftButton);
+    // A picture's item is found where it stands, since nothing is written on it.
+    const auto drawn_width = [&] {
+        // The picture alone stands there; it lies beneath the diagram's
+        // shapes, so it is not looked for among them.
+        const auto here = view.scene()->items(QPointF(40, 40));
+        if (here.isEmpty()) throw std::runtime_error("Missing picture");
+        return here.front()->boundingRect().width();
+    };
+    require(drawn_width() > 150, "A picture being pulled is drawn at the size asked for");
+    require(box_of(icon) == domain::Rect{0, 0, 80, 80}, "Though nothing is written until it is let go");
+    view.cancel_interaction();
+    QApplication::processEvents();
+    require(box_of(icon) == domain::Rect{0, 0, 80, 80} && editor.revision() == before_click, "Escape abandons the pull");
+    require(drawn_width() < 100, "And the picture is drawn at its stored size again");
+
+    // The edit is for pictures alone.
+    require(!editor.resize_pictures({{entity, domain::Rect{0, 300, 200, 200}}}), "An entity is not resized as a picture");
+    require(refused.isEmpty(), "And nothing pulled on the canvas was refused");
+}
+
 void relationship_resize_tests() {
     SequentialIds ids;
     application::Editor editor(ids);
@@ -6047,6 +6200,7 @@ int main(int argc, char** argv) {
         saved_sizes_are_kept_tests();
         fitted_shapes_tests();
         attribute_resize_tests();
+        picture_resize_tests();
         edge_scroll_tests();
         std::cout << "Canvas tests passed\n";
     } catch (const std::exception& exception) {

@@ -292,6 +292,21 @@ read as still to do.
   they replaced the first, flatter drawings under the same file names. A
   project saved with the earlier drawings keeps them, since a placed picture
   carries its own pixels.
+- **A picture is pulled by any edge or corner** (2026-10-15, built in the
+  release laboratory at Zain's request for the Dr.icons, awaiting his review):
+  a chosen picture -- a Dr.icon or one inserted from a file -- shows the eight
+  handles an entity has, just inside its outline. A picture is drawn fitted
+  and never stretched, so whichever handle is pulled the whole picture is
+  scaled and keeps its proportions: a corner travels with the hand while the
+  corner opposite stays; an edge travels while the edge opposite stays, the
+  picture staying centred along it, so an icon stood level with its entity
+  stays level with it. It goes down to 16 px and up to 4000 px, a symbol's
+  bounds (`min_picture_size`, `max_picture_size`); below 36 px its handles
+  shrink with it, to a quarter of its shorter side and never under 4 px, so a
+  small picture is still seen while it is chosen. It is drawn at the new size as
+  it is pulled, and is written once on letting go as one step, "Resize
+  picture" (`Editor::resize_pictures`), place and size together; Escape
+  abandons a pull, and a handle clicked without travelling writes nothing.
 - **Desktop timeout risk reduced without weakening coverage** (committed in
   `7b12b70`): the old single `desktop` CTest entry is split into
   `desktop_export`, `desktop_relational` and `desktop_window` (the last since

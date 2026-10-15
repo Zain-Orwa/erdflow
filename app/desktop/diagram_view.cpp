@@ -785,8 +785,20 @@ public:
         return std::holds_alternative<EntityId>(ref) || std::holds_alternative<AttributeId>(ref)
             || std::holds_alternative<RelationshipId>(ref);
     }
-    [[nodiscard]] bool sizeable() const { return (plain || boxed()) && isSelected(); }
-    [[nodiscard]] int handle_count() const { return boxed() ? 8 : 4; }
+    // A picture is pulled by every edge and corner too (Zain, 2026-10-15), but
+    // keeps its proportions whichever is pulled: see scaled_picture.
+    [[nodiscard]] bool pictured() const { return std::holds_alternative<PictureId>(ref); }
+    // How large this shape's handles are. A picture may be pulled down to a
+    // mark beside a name, smaller than eight full handles could sit on without
+    // hiding it, so below four handles' width its handles shrink with it, to a
+    // quarter of its shorter side and never under four, and what is chosen is
+    // still seen while it is made small. Everything else keeps the one size.
+    [[nodiscard]] qreal grip_size() const {
+        if (!pictured()) return grip;
+        return std::clamp(std::min(bounds_.width(), bounds_.height()) / 4, qreal(4), grip);
+    }
+    [[nodiscard]] bool sizeable() const { return (plain || boxed() || pictured()) && isSelected(); }
+    [[nodiscard]] int handle_count() const { return boxed() || pictured() ? 8 : 4; }
     // Which sides of the box each handle lies on. The four corners come first,
     // clockwise from the top left, so a corner's number still says which one
     // it is; then the four edges, in the same order round the box.
@@ -818,9 +830,13 @@ public:
             // target and everything else that reaches for a body measures that
             // box, and padding it would move all of them. A symbol has no such
             // furniture, and keeps the grips that straddle its corners.
-            const QPointF inward(!boxed() ? 0.0 : side.left ? grip / 2 : side.right ? -grip / 2 : 0.0,
-                                 !boxed() ? 0.0 : side.top ? grip / 2 : side.bottom ? -grip / 2 : 0.0);
-            rects[i] = QRectF(at - QPointF(grip / 2, grip / 2) + inward, QSizeF(grip, grip));
+            // A picture's handles sit inside it as an entity's do, so the box
+            // it is chosen and hit by stays the box it is drawn in.
+            const bool inside = boxed() || pictured();
+            const auto size = grip_size();
+            const QPointF inward(!inside ? 0.0 : side.left ? size / 2 : side.right ? -size / 2 : 0.0,
+                                 !inside ? 0.0 : side.top ? size / 2 : side.bottom ? -size / 2 : 0.0);
+            rects[i] = QRectF(at - QPointF(size / 2, size / 2) + inward, QSizeF(size, size));
         }
         return rects;
     }
@@ -925,6 +941,7 @@ public:
     // colour draws a frame, and the colour gives it a mount to sit on.
     void paint_picture(QPainter* painter) {
         const bool mounted = chosen_.has_value();
+        const auto given = painter->opacity();
         // A faded picture is the whole picture faded, mount and all.
         painter->setOpacity(1.0 - transparency_ / 100.0);
         if (mounted || isSelected()) {
@@ -935,16 +952,20 @@ public:
         if (image_.isNull()) {
             painter->setPen(text_);
             painter->drawText(bounds_, Qt::AlignCenter, QStringLiteral("Picture"));
-            return;
+        } else {
+            // Fitted to the body without being stretched, so resizing the body
+            // never distorts the picture, and drawn from the pixels themselves so
+            // zooming in shows more of them rather than a scaled copy.
+            const auto inset = mounted ? bounds_.adjusted(6, 6, -6, -6) : bounds_;
+            const auto size = QSizeF(image_.size()).scaled(inset.size(), Qt::KeepAspectRatio);
+            const QRectF target(inset.center() - QPointF(size.width() / 2, size.height() / 2), size);
+            painter->setRenderHint(QPainter::SmoothPixmapTransform);
+            painter->drawPixmap(target, image_, QRectF(QPointF(0, 0), QSizeF(image_.size())));
         }
-        // Fitted to the body without being stretched, so resizing the body
-        // never distorts the picture, and drawn from the pixels themselves so
-        // zooming in shows more of them rather than a scaled copy.
-        const auto inset = mounted ? bounds_.adjusted(6, 6, -6, -6) : bounds_;
-        const auto size = QSizeF(image_.size()).scaled(inset.size(), Qt::KeepAspectRatio);
-        const QRectF target(inset.center() - QPointF(size.width() / 2, size.height() / 2), size);
-        painter->setRenderHint(QPainter::SmoothPixmapTransform);
-        painter->drawPixmap(target, image_, QRectF(QPointF(0, 0), QSizeF(image_.size())));
+        // The handles at the strength the item is drawn at, not the picture's
+        // own fading, so a faded picture can still be seen to be pullable.
+        painter->setOpacity(given);
+        paint_grips(painter);
     }
     // A note: its title in bold across the top, and its text wrapped beneath.
     // A plain note: the character and nothing else, sized to the room it has,
@@ -2556,6 +2577,44 @@ struct DiagramView::Impl {
             bottom = std::clamp(start.bottom() + travelled.y(), top + min_entity_height, top + max_entity_height);
         return Rect{left, top, right - left, bottom - top};
     }
+    // The box a picture's handle asks for (Zain, 2026-10-15). A picture is
+    // drawn fitted and never stretched, so a box pulled out of its proportions
+    // would only pad it with air and the picture would not grow: every handle,
+    // edge or corner, scales the whole picture and keeps its proportions. A
+    // corner travels with the hand while the corner opposite stays put. An
+    // edge travels with the hand while the edge opposite stays where it was,
+    // and the picture stays centred along it, so an icon stood level with its
+    // entity stays level with it.
+    [[nodiscard]] static Rect scaled_picture(const SizeDrag& drag, const QPointF& pointer) {
+        const auto& side = NodeItem::handle_sides[static_cast<std::size_t>(
+            std::clamp(drag.corner, 0, static_cast<int>(NodeItem::handle_sides.size()) - 1))];
+        const QRectF start(drag.start.x, drag.start.y, drag.start.width, drag.start.height);
+        if (start.width() < 0.1 || start.height() < 0.1) return drag.start;
+        // Measured by how far the hand has travelled since it took hold, not
+        // by where it is: a picture's handle sits inside its corner, and the
+        // picture must not jump to meet the hand when it is grabbed.
+        const auto travelled = pointer - drag.grab;
+        const auto across = side.right ? travelled.x() : side.left ? -travelled.x() : 0.0;
+        const auto down = side.bottom ? travelled.y() : side.top ? -travelled.y() : 0.0;
+        // How much larger the hand asks for. An edge asks along its own axis;
+        // a corner by whichever way the hand went further, so the picture
+        // follows it rather than lagging behind. A corner hauled back past
+        // the one opposite asks for the smallest, not for a picture turned
+        // inside out.
+        auto scale = drag.corner >= 4
+            ? (side.left || side.right ? (start.width() + across) / start.width() : (start.height() + down) / start.height())
+            : std::max((start.width() + across) / start.width(), (start.height() + down) / start.height());
+        const auto least = std::max(min_picture_size / start.width(), min_picture_size / start.height());
+        const auto most = std::min(max_picture_size / start.width(), max_picture_size / start.height());
+        scale = std::clamp(scale, std::min(least, most), std::max(least, most));
+        const auto width = start.width() * scale;
+        const auto height = start.height() * scale;
+        // The sides the handle lies on travel; the ones opposite stay; along
+        // an edge, the picture stays centred.
+        const auto x = side.right ? start.left() : side.left ? start.right() - width : start.center().x() - width / 2;
+        const auto y = side.bottom ? start.top() : side.top ? start.bottom() - height : start.center().y() - height / 2;
+        return Rect{x, y, width, height};
+    }
     // How large a name is drawn in a box being pulled from the one it started
     // at: from the size its lettering was set for, or, the first time it is
     // resized, from the size it started the pull at, which is what the edit
@@ -2572,6 +2631,7 @@ struct DiagramView::Impl {
     }
     // Which of the two the shape under the hand is pulled by.
     [[nodiscard]] static Rect hauled_box(const SizeDrag& drag, const QPointF& pointer) {
+        if (std::holds_alternative<PictureId>(drag.ref)) return scaled_picture(drag, pointer);
         return (std::holds_alternative<EntityId>(drag.ref) || std::holds_alternative<RelationshipId>(drag.ref)
                 || std::holds_alternative<AttributeId>(drag.ref))
             ? pulled_body(drag, pointer) : sized_box(drag, pointer);
@@ -4984,7 +5044,9 @@ void DiagramView::mouseReleaseEvent(QMouseEvent* event) {
                     // one out ended in "Only a symbol can be resized".
                     : std::holds_alternative<AttributeId>(drag.ref)
                         ? impl_->editor.resize_attributes({{drag.ref, box}})
-                        : impl_->editor.resize_symbols({{drag.ref, box}});
+                        : std::holds_alternative<PictureId>(drag.ref)
+                            ? impl_->editor.resize_pictures({{drag.ref, box}})
+                            : impl_->editor.resize_symbols({{drag.ref, box}});
             if (!result) impl_->displayed_revision.reset(); // Put the stored size back after a refusal.
             impl_->publish(result);
         }

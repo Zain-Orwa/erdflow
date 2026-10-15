@@ -2562,6 +2562,24 @@ EditResult Editor::resize_symbols(const std::map<ElementRef, Rect>& boxes) {
         return EditResult{};
     });
 }
+EditResult Editor::resize_pictures(const std::map<ElementRef, Rect>& boxes) {
+    return impl_->edit("Resize picture", [&](Delta& delta) {
+        for (const auto& [ref, box] : boxes) {
+            if (!std::holds_alternative<PictureId>(ref)) return failure("Only a picture can be resized here.");
+            if (!exists(project(), ref)) return failure("The picture no longer exists.");
+            // Clamped rather than refused, as a symbol's size is: a drag that
+            // runs past the end is asking for the end.
+            auto sized = box;
+            sized.width = std::clamp(sized.width, min_picture_size, max_picture_size);
+            sized.height = std::clamp(sized.height, min_picture_size, max_picture_size);
+            sized.x = std::clamp(sized.x, -max_coordinate, max_coordinate - sized.width);
+            sized.y = std::clamp(sized.y, -max_coordinate, max_coordinate - sized.height);
+            const auto found = project().layout.find(ref);
+            if (found == project().layout.end() || found->second != sized) delta.layout.put(ref, sized);
+        }
+        return EditResult{};
+    });
+}
 EditResult Editor::resize_entities(const std::map<ElementRef, Rect>& boxes) {
     return impl_->edit("Resize entity", [&](Delta& delta) {
         for (const auto& [ref, box] : boxes) {
