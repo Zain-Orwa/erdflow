@@ -275,15 +275,18 @@ read as still to do.
   undone, saved, reopened and exported as any picture is. Nothing matches an
   icon to an entity by name, and placing one changes no entity. The icons are
   compiled in (`erdflow_dr_icons`, `assets/dr-icons/<key>.png`, 384 px
-  transparent PNGs, 16-135 KB; `dr_icons.hpp` maps the sixteen keys to their
+  transparent PNGs, 71-135 KB; `dr_icons.hpp` maps the sixteen keys to their
   labels). Each placed icon keeps its own copy in the project, and a project
   file holds 8 MiB, so 384 px was chosen over 512: sharp at an entity's height
   to 250% zoom on a high-density screen, with room for about twice as many
   icons (some 55-60 of the largest before the limit, against 28-41). The ten
-  of the first batch are Zain's approved artwork scaled down from 1254 px; the
-  six of the second (Seat, Task, Car, Mobile Line, Phone Ext., Desk) are the
-  supplied flatter drawings scaled from 512 px, still to be redrawn in the
-  first batch's style, and will be replaced under the same file names.
+  of the first batch are Zain's approved artwork scaled down from 1254 px. The
+  six of the second (Seat, Task, Car, Mobile Line, Phone Ext., Desk) were
+  redrawn in the first batch's 3D style (Zain, 2026-10-14), supplied as one
+  transparent sheet, cut apart into masters of 496-682 px and scaled down;
+  they replaced the first, flatter drawings under the same file names. A
+  project saved with the earlier drawings keeps them, since a placed picture
+  carries its own pixels.
 - **Desktop timeout risk reduced without weakening coverage** (committed in
   `7b12b70`): the old single `desktop` CTest entry is split into
   `desktop_export`, `desktop_relational` and `desktop_window` (the last since
