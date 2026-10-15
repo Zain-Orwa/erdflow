@@ -5,6 +5,7 @@
 // and whether it is a gain or a loss. He decides. Fixing a real defect is not
 // covered by this — fix it and say what was wrong. Full rule: CLAUDE.md.
 #include "app/desktop/icons.hpp"
+#include "app/desktop/dr_icons.hpp"
 #include "app/desktop/symbols.hpp"
 #include "app/desktop/export_dialog.hpp"
 #include "app/desktop/home_page.hpp"
@@ -8147,6 +8148,309 @@ namespace
         every_key_answers("in the Schema workspace");
     }
 
+    // Dr.icons (Item 9, 2026-10-14): sixteen illustrations of what an entity
+    // stands for, put on the conceptual diagram as pictures from a gallery on
+    // Insert (Zain chose pictures over a property of the entity, 2026-10-14).
+    // The keys and labels are his and fixed. Each icon is compiled in as a
+    // transparent, square PNG; placing one adds a picture carrying exactly
+    // those bytes, named by the label, as tall as a new entity, and touches no
+    // entity. It undoes, saves and reopens as any picture does, is drawn
+    // without a plate in every theme and every picture format, and is never
+    // stretched. Relational Design, which has no pictures, does not offer it.
+    void dr_icons_tests(infrastructure::QtIdGenerator &ids)
+    {
+        // The contract: the sixteen keys, labels and order.
+        const std::vector<std::pair<QString, QString>> wanted{
+            {"student", "Student"}, {"course", "Course"}, {"family", "Family"},
+            {"identification_card", "Identification Card"}, {"order", "Order"}, {"product", "Product"},
+            {"book", "Book"}, {"project", "Project"}, {"employee", "Employee"}, {"person", "Person"},
+            {"seat", "Seat"}, {"task", "Task"}, {"car", "Car"}, {"mobile_line", "Mobile Line"},
+            {"phone_ext", "Phone Ext."}, {"desk", "Desk"}};
+        const auto &icons = desktop::dr_icons();
+        require(icons.size() == wanted.size(), "There are sixteen Dr.icons");
+        std::set<QByteArray> seen;
+        for (std::size_t i = 0; i < icons.size(); ++i)
+        {
+            const auto &icon = icons[i];
+            const auto key = QString::fromLatin1(icon.key);
+            require(key == wanted[i].first && QString::fromUtf8(icon.label) == wanted[i].second,
+                    "Each Dr.icon has its own key and label, in the agreed order");
+            require(desktop::dr_icon(key) && QString::fromLatin1(desktop::dr_icon(key)->key) == key,
+                    "And is found by its key");
+            // Compiled in, so it is there without any file beside the program.
+            require(desktop::dr_icon_resource(icon).startsWith(":/"), "Its picture is a compiled-in resource");
+            const auto png = desktop::dr_icon_bytes(icon);
+            require(png.startsWith("\x89PNG"), "Which is a PNG");
+            require(seen.insert(png).second, "And no two icons share a picture");
+            QImage image;
+            require(image.loadFromData(png, "PNG"), "That decodes");
+            require(image.size() == QSize(384, 384) && image.hasAlphaChannel(), "Square, 384 pixels, with transparency");
+            image = image.convertToFormat(QImage::Format_ARGB32);
+            for (const QPoint corner : {QPoint(0, 0), QPoint(383, 0), QPoint(0, 383), QPoint(383, 383)})
+                require(qAlpha(image.pixel(corner)) == 0, "Transparent at every corner, so it carries no plate");
+            int left = 384, top = 384, right = -1, bottom = -1;
+            long ink = 0;
+            for (int y = 0; y < 384; ++y)
+                for (int x = 0; x < 384; ++x)
+                    if (qAlpha(image.pixel(x, y)) >= 16)
+                    {
+                        ++ink;
+                        left = std::min(left, x), right = std::max(right, x);
+                        top = std::min(top, y), bottom = std::max(bottom, y);
+                    }
+            require(ink > 384 * 384 / 10, "Something is drawn in it");
+            require(left > 0 && top > 0 && right < 383 && bottom < 383, "And nothing drawn is cut by its edge");
+        }
+        require(!desktop::dr_icon("unicorn"), "A key that is not one of the sixteen finds nothing");
+
+        application::Editor model(ids);
+        infrastructure::ErdxProjectStore store;
+        desktop::MainWindow window(model, store, ids);
+        window.resize(1440, 920);
+        window.show();
+        window.show_home(false);
+        settle();
+        window.load_university_database();
+        window.set_theme(desktop::ThemeId::OfficeLight);
+        settle();
+
+        // Insert offers it after Symbols, in the menu and on Home's Insert.
+        auto *entry = child<QAction>(window, "insertDrIcons");
+        auto *menu = child<QMenu>(window, "insertMenu");
+        const auto entries = menu->actions();
+        require(entries.indexOf(entry) == entries.indexOf(child<QAction>(window, "insertSymbols")) + 1,
+                "Insert offers Dr.icons straight after Symbols");
+        require(child<QToolButton>(window, "insertButton")->menu() == menu, "Home's Insert offers it too");
+        require(entry->isVisible() && !entry->icon().isNull() && !entry->toolTip().isEmpty(),
+                "With a glyph and a tooltip");
+
+        // The gallery: sixteen buttons, each its icon over its label.
+        entry->trigger();
+        settle();
+        auto *gallery = child<QDialog>(window, "drIconPicker");
+        require(gallery->isVisible(), "Dr.icons opens its gallery");
+        for (const auto &[key, label] : wanted)
+        {
+            auto *button = gallery->findChild<QToolButton *>("drIcon_" + key);
+            require(button && button->text() == label && button->toolTip() == label && !button->icon().isNull(),
+                    "The gallery shows every icon with its label");
+            require(button->focusPolicy() == Qt::NoFocus, "And leaves the keyboard with the diagram");
+        }
+
+        // Placing every one: a picture each, with exactly the icon's bytes and
+        // its label, as tall as a new entity, and nothing else touched.
+        const auto before = model.project();
+        const auto steps = model.history().size();
+        std::map<QString, domain::PictureId> placed;
+        for (const auto &[key, label] : wanted)
+        {
+            const auto had = model.project().pictures;
+            gallery->findChild<QToolButton *>("drIcon_" + key)->click();
+            settle();
+            const auto &now = model.project().pictures;
+            require(now.size() == had.size() + 1, "Picking an icon places one picture");
+            for (const auto &[id, picture] : now)
+                if (!had.contains(id))
+                    placed[key] = id;
+            const auto &picture = now.at(placed.at(key));
+            const auto png = desktop::dr_icon_bytes(*desktop::dr_icon(key));
+            require(QByteArray(reinterpret_cast<const char *>(picture.image.data()), static_cast<qsizetype>(picture.image.size())) == png,
+                    "Carrying exactly that icon's picture");
+            require(QString::fromStdString(picture.name) == label, "Named by the icon's label");
+            const auto &box = model.project().layout.at(domain::ElementRef{placed.at(key)});
+            require(box.width == desktop::entity_body.height && box.height == desktop::entity_body.height,
+                    "Square, and as tall as a new entity");
+        }
+        require(model.project().entities == before.entities && model.project().relationships == before.relationships &&
+                    model.project().attributes == before.attributes && model.project().specializations == before.specializations,
+                "Placing icons changes no entity, relationship or attribute");
+        require(window.canvas()->selected_elements().empty(), "A placed icon is left unchosen, as a placed symbol is");
+        std::set<std::pair<double, double>> corners;
+        for (const auto &[key, id] : placed)
+        {
+            const auto &box = model.project().layout.at(domain::ElementRef{id});
+            corners.insert({box.x, box.y});
+        }
+        require(corners.size() == wanted.size(), "Icons placed one after another do not land on one another");
+        require(model.history().size() == steps + wanted.size(), "Each is one step of history");
+        require(!window.place_dr_icon("unicorn") && model.project().pictures.size() == before.pictures.size() + wanted.size(),
+                "An unknown key places nothing");
+
+        // Undo and Redo, and placing again after undoing, keep the mapping.
+        child<QAction>(window, "undoCommand")->trigger();
+        settle();
+        require(!model.project().pictures.contains(placed.at("desk")), "Undo takes the last icon away");
+        child<QAction>(window, "redoCommand")->trigger();
+        settle();
+        require(model.project().pictures.contains(placed.at("desk")), "Redo puts it back");
+        for (int round = 0; round < 3; ++round)
+        {
+            require(window.place_dr_icon("family"), "An icon is placed again");
+            const auto &last = model.project().pictures;
+            const auto png = desktop::dr_icon_bytes(*desktop::dr_icon("family"));
+            const bool right = std::any_of(last.begin(), last.end(), [&](const auto &entry)
+                                           { return entry.second.name == "Family" &&
+                                                    QByteArray(reinterpret_cast<const char *>(entry.second.image.data()),
+                                                               static_cast<qsizetype>(entry.second.image.size())) == png; });
+            require(right, "With the same picture every time");
+            child<QAction>(window, "undoCommand")->trigger();
+            settle();
+        }
+        require(model.project().pictures.size() == before.pictures.size() + wanted.size(),
+                "Placing and undoing leaves exactly what was there");
+
+        // Saved and opened again, every icon is still its own picture.
+        QTemporaryDir folder;
+        require(folder.isValid(), "A folder to save in");
+        const auto path = folder.filePath("dr-icons.erdx");
+        const auto kept = model.project();
+        require(store.save(path.toStdString(), kept).ok, "The project with its icons saves");
+        model.mark_saved(model.revision());
+        require(window.open_path(path), "And opens again");
+        settle();
+        require(model.project().pictures == kept.pictures && model.project().layout == kept.layout,
+                "With every icon's picture, name and place as they were");
+
+        // Relational Design has no pictures, so it offers none, and an open
+        // gallery goes with it.
+        window.show_dr_icons();
+        settle();
+        gallery = child<QDialog>(window, "drIconPicker");
+        window.open_schema(true);
+        settle_schema_full(window);
+        require(!entry->isVisible() && !gallery->isVisible(), "With the schema in front Dr.icons is not offered");
+        child<QPushButton>(window, "schemaFull")->click();
+        settle();
+        require(entry->isVisible(), "And the diagram has it back");
+
+        // Room for many: every placed icon keeps its own copy, and a project
+        // file holds 8 MiB, so forty of the largest still save.
+        {
+            const auto *largest = &icons.front();
+            for (const auto &icon : icons)
+                if (desktop::dr_icon_bytes(icon).size() > desktop::dr_icon_bytes(*largest).size())
+                    largest = &icon;
+            const auto png = desktop::dr_icon_bytes(*largest);
+            application::Editor many(ids);
+            for (int i = 0; i < 40; ++i)
+                require(bool(many.create_picture(largest->label, domain::Rect{i * 90.0, 0, 77, 77},
+                                                 std::vector<std::uint8_t>(png.begin(), png.end()))),
+                        "Forty of the largest icon are placed");
+            require(store.save(folder.filePath("forty.erdx").toStdString(), many.project()).ok,
+                    "A project carrying forty of the largest icon is still within the file limit");
+        }
+
+        // Drawn: on the theme's own colour in a light, a dark and the plain
+        // theme, then on no ground as PNG and SVG, and as a PDF. Only one icon
+        // is kept on an otherwise empty diagram, so the picture is the icon.
+        model.mark_saved(model.revision());
+        application::Editor empty(ids);
+        infrastructure::ErdxProjectStore empty_store;
+        desktop::MainWindow drawing(empty, empty_store, ids);
+        drawing.resize(1440, 920);
+        drawing.show();
+        drawing.show_home(false);
+        settle();
+        require(drawing.place_dr_icon("student") && empty.project().pictures.size() == 1, "One icon on an empty diagram");
+        const auto id = empty.project().pictures.begin()->first;
+        const auto draw = [&](desktop::PictureFormat format, desktop::PictureBackground ground)
+        {
+            desktop::PictureOptions options;
+            options.format = format;
+            options.background = ground;
+            options.scale = 2.0;
+            options.carry_project = false;
+            QByteArray bytes;
+            const auto result = desktop::draw_picture(desktop::ExportView(*drawing.canvas()), options, {}, bytes);
+            require(result.ok, "The diagram with its icon is drawn");
+            return std::pair{result, bytes};
+        };
+        const auto as_image = [](const desktop::PictureResult &result, const QByteArray &bytes, desktop::PictureFormat format)
+        {
+            QImage image;
+            if (format == desktop::PictureFormat::Svg)
+            {
+                QSvgRenderer renderer(bytes);
+                image = QImage(result.pixels, QImage::Format_ARGB32_Premultiplied);
+                image.fill(Qt::transparent);
+                QPainter painter(&image);
+                renderer.render(&painter);
+            }
+            else
+                image.loadFromData(bytes, "png");
+            return image.convertToFormat(QImage::Format_ARGB32);
+        };
+        // The icon's drawn box within a picture of it: the picture is the
+        // diagram's bounds plus the margin, at the scale asked for.
+        const auto ink_box = [](const QImage &image, const std::function<bool(QRgb)> &drawn)
+        {
+            QRect box;
+            for (int y = 0; y < image.height(); ++y)
+                for (int x = 0; x < image.width(); ++x)
+                    if (drawn(image.pixel(x, y)))
+                        box |= QRect(x, y, 1, 1);
+            return box;
+        };
+        const auto source = QImage(desktop::dr_icon_resource(*desktop::dr_icon("student"))).convertToFormat(QImage::Format_ARGB32);
+        const auto source_box = ink_box(source, [](QRgb pixel) { return qAlpha(pixel) >= 128; });
+        const auto source_ratio = double(source_box.width()) / source_box.height();
+        for (const auto theme : {desktop::ThemeId::OfficeLight, desktop::ThemeId::Dracula, desktop::ThemeId::Plain})
+        {
+            drawing.set_theme(theme);
+            settle();
+            const auto ground = desktop::theme(theme).canvas;
+            const auto [result, bytes] = draw(desktop::PictureFormat::Png, desktop::PictureBackground::ThemeColour);
+            const auto image = as_image(result, bytes, desktop::PictureFormat::Png);
+            const auto off_ground = [&](QRgb pixel)
+            {
+                return std::abs(qRed(pixel) - ground.red()) + std::abs(qGreen(pixel) - ground.green()) +
+                           std::abs(qBlue(pixel) - ground.blue()) > 60;
+            };
+            const auto box = ink_box(image, off_ground);
+            require(!box.isEmpty(), "The icon is drawn in every theme");
+            for (const QPoint corner : {QPoint(1, 1), QPoint(image.width() - 2, 1), QPoint(1, image.height() - 2),
+                                        QPoint(image.width() - 2, image.height() - 2)})
+                require(!off_ground(image.pixel(corner)), "On the theme's own colour, with no plate around it");
+        }
+        drawing.set_theme(desktop::ThemeId::OfficeLight);
+        settle();
+        for (const auto format : {desktop::PictureFormat::Png, desktop::PictureFormat::Svg})
+        {
+            const auto [result, bytes] = draw(format, desktop::PictureBackground::Transparent);
+            if (format == desktop::PictureFormat::Svg)
+                require(bytes.contains("<image"), "An SVG picture carries the icon as an image");
+            const auto image = as_image(result, bytes, format);
+            const auto box = ink_box(image, [](QRgb pixel) { return qAlpha(pixel) >= 128; });
+            require(!box.isEmpty(), "The icon is drawn on no ground");
+            for (const QPoint corner : {QPoint(0, 0), QPoint(image.width() - 1, 0), QPoint(0, image.height() - 1),
+                                        QPoint(image.width() - 1, image.height() - 1)})
+                require(qAlpha(image.pixel(corner)) == 0, "And nothing is laid behind it");
+            require(std::abs(double(box.width()) / box.height() - source_ratio) < 0.06, "In its own proportions");
+        }
+        {
+            const auto [result, bytes] = draw(desktop::PictureFormat::Pdf, desktop::PictureBackground::White);
+            require(bytes.startsWith("%PDF") && bytes.contains("/Image"), "A PDF page carries the icon as an image");
+        }
+        // Pulled wide, it is fitted rather than stretched.
+        const auto square = draw(desktop::PictureFormat::Png, desktop::PictureBackground::Transparent).first.pixels;
+        const auto box = empty.project().layout.at(domain::ElementRef{id});
+        require(bool(empty.move({{domain::ElementRef{id}, domain::Rect{box.x, box.y, box.width * 2, box.height}}})),
+                "The icon's picture is pulled to twice its width");
+        drawing.canvas()->synchronize();
+        settle();
+        {
+            const auto [result, bytes] = draw(desktop::PictureFormat::Png, desktop::PictureBackground::Transparent);
+            require(result.pixels.width() - square.width() >= int(box.width * 2) - 4 && result.pixels.height() == square.height(),
+                    "The diagram holds the wider picture");
+            const auto image = as_image(result, bytes, desktop::PictureFormat::Png);
+            const auto drawn = ink_box(image, [](QRgb pixel) { return qAlpha(pixel) >= 128; });
+            require(std::abs(double(drawn.width()) / drawn.height() - source_ratio) < 0.06,
+                    "And the icon keeps its proportions in it");
+        }
+        empty.mark_saved(empty.revision());
+        std::cout << "PASS Dr.icons: sixteen compiled-in icons placed as pictures, kept, undone, drawn and exported\n";
+    }
+
     // A locked tool's padlock is seen whatever room its row has and whatever
     // fonts the machine has (2026-10-09, 2026-10-10). It once followed the name
     // as a character, so it went with the name where the row was too narrow for
@@ -9024,6 +9328,7 @@ int main(int argc, char **argv)
             menu_bar_shortcut_tests(ids);
             tool_lock_mark_tests(ids);
             search_filter_tests(ids);
+            dr_icons_tests(ids);
         }
         if (window_tools_part)
         {

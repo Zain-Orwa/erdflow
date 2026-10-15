@@ -260,6 +260,30 @@ read as still to do.
   does. `SchemaView::set_search` carries the whole search, `set_looking_for`
   its words alone. On the 159-table generated schema, working out what is
   hidden costs 13-113 µs and a repaint with most of it hidden 0.4-0.6 ms.
+- **Dr.icons are put on the diagram from Insert** (Item 9, 2026-10-14, built
+  in the release laboratory, awaiting Zain's review): sixteen illustrations of
+  what an entity commonly stands for -- Student, Course, Family,
+  Identification Card, Order, Product, Book, Project, Employee, Person, Seat,
+  Task, Car, Mobile Line, Phone Ext. and Desk -- in a gallery of their own,
+  **Insert → Dr.icons…**, after Symbols, offered while the diagram is in front
+  as Picture is. ERDFlow had no illustrations of entities to plug them into,
+  and Zain chose (2026-10-14) to place them as pictures rather than make one a
+  property of an entity, which would have needed a new project-file version.
+  Picking one puts an ordinary picture where the pointer last was, square and
+  as tall as a new entity, named by the icon's label and left unchosen, as a
+  picked symbol is; it is moved beside its entity by hand, and is resized,
+  undone, saved, reopened and exported as any picture is. Nothing matches an
+  icon to an entity by name, and placing one changes no entity. The icons are
+  compiled in (`erdflow_dr_icons`, `assets/dr-icons/<key>.png`, 384 px
+  transparent PNGs, 16-135 KB; `dr_icons.hpp` maps the sixteen keys to their
+  labels). Each placed icon keeps its own copy in the project, and a project
+  file holds 8 MiB, so 384 px was chosen over 512: sharp at an entity's height
+  to 250% zoom on a high-density screen, with room for about twice as many
+  icons (some 55-60 of the largest before the limit, against 28-41). The ten
+  of the first batch are Zain's approved artwork scaled down from 1254 px; the
+  six of the second (Seat, Task, Car, Mobile Line, Phone Ext., Desk) are the
+  supplied flatter drawings scaled from 512 px, still to be redrawn in the
+  first batch's style, and will be replaced under the same file names.
 - **Desktop timeout risk reduced without weakening coverage** (committed in
   `7b12b70`): the old single `desktop` CTest entry is split into
   `desktop_export`, `desktop_relational` and `desktop_window` (the last since

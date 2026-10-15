@@ -47,6 +47,7 @@ class QTreeWidget;
 namespace erdflow::desktop
 {
 
+    class DrIconPicker;
     class Ribbon;
     class SearchBar;
     class SymbolPicker;
@@ -173,6 +174,13 @@ namespace erdflow::desktop
         // carrying that character, since putting a character somewhere is the
         // whole purpose of picking one. False only if the edit itself was refused.
         bool insert_symbol(const QString &character);
+        // Opens the Dr.icons gallery, built the first time it is asked for and
+        // kept afterwards.
+        void show_dr_icons();
+        // Puts the Dr.icon with this key on the diagram as a picture, where the
+        // pointer last was. False for a key that is not one of them, or if the
+        // edit was refused.
+        bool place_dr_icon(const QString &key);
 
     protected:
         void closeEvent(QCloseEvent *event) override;
@@ -641,6 +649,7 @@ namespace erdflow::desktop
         SearchBar *search_bar_ = nullptr;
         SearchBar *schema_search_bar_ = nullptr;
         SymbolPicker *symbols_ = nullptr;
+        DrIconPicker *dr_icons_ = nullptr;
         // The text field a picked character goes into: the last one that was being
         // written in. Committing an edit rebuilds the properties panel and takes
         // the widget with it, so the field is remembered by name as well and looked

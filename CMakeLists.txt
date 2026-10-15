@@ -42,6 +42,7 @@ add_library(erdflow_desktop app/desktop/main_window.cpp app/desktop/schema_view.
                             app/desktop/notice.cpp
                             app/desktop/home_page.cpp app/desktop/home_live_demo.cpp app/desktop/home_demo_scenes.cpp app/desktop/home_demo_canvas.cpp app/desktop/conceptual_examples.cpp app/desktop/relational_examples.cpp app/desktop/app_top_bar.cpp app/desktop/home_sidebar.cpp app/desktop/home_learning_panel.cpp app/desktop/start_route_card.cpp app/desktop/project_details_form.cpp app/desktop/welcome_flow_illustration.cpp app/desktop/ribbon.cpp app/desktop/icons.cpp
                             app/desktop/symbols.cpp app/desktop/symbol_picker.cpp
+                            app/desktop/dr_icons.cpp app/desktop/dr_icon_picker.cpp
                             app/desktop/export_dialog.cpp app/desktop/search_bar.cpp)
 target_link_libraries(erdflow_desktop PUBLIC erdflow_canvas Qt6::Svg PRIVATE erdflow_warnings)
 # The Relational Schema's router is compiled optimised even in a Debug build.
@@ -165,6 +166,22 @@ qt_add_resources(erdflow_desktop "erdflow_icons_outline"
         # panel button when neither panel is showing.
         assets/icons-outline/file.svg assets/icons-outline/insert.svg
         assets/icons-outline/no-panels.svg
+)
+# Dr.icons: illustrations put on the conceptual diagram as pictures, from
+# Insert (2026-10-14). Painted artwork, so shipped as the transparent PNGs it
+# is, 384 pixels square; each file is named by the icon's key.
+qt_add_resources(erdflow_desktop "erdflow_dr_icons"
+    PREFIX "/erdflow/dr-icons"
+    BASE "assets/dr-icons"
+    FILES
+        assets/dr-icons/student.png assets/dr-icons/course.png
+        assets/dr-icons/family.png assets/dr-icons/identification_card.png
+        assets/dr-icons/order.png assets/dr-icons/product.png
+        assets/dr-icons/book.png assets/dr-icons/project.png
+        assets/dr-icons/employee.png assets/dr-icons/person.png
+        assets/dr-icons/seat.png assets/dr-icons/task.png
+        assets/dr-icons/car.png assets/dr-icons/mobile_line.png
+        assets/dr-icons/phone_ext.png assets/dr-icons/desk.png
 )
 
 add_executable(erdflow app/desktop/main.cpp)

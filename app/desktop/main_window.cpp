@@ -6,6 +6,8 @@
 // covered by this — fix it and say what was wrong. Full rule: CLAUDE.md.
 #include "main_window.hpp"
 #include "conceptual_examples.hpp"
+#include "dr_icon_picker.hpp"
+#include "dr_icons.hpp"
 #include "relational_examples.hpp"
 #include "export_dialog.hpp"
 #include "ribbon.hpp"
@@ -4110,6 +4112,16 @@ namespace erdflow::desktop
         action_glyphs_[symbols] = Glyph::Symbols;
         connect(symbols, &QAction::triggered, this, [this]
                 { show_symbols(QStringLiteral("Relational algebra")); });
+        // Dr.icons (Zain, 2026-10-14): illustrations of what an entity stands
+        // for, put on the diagram as pictures from a gallery of their own. One
+        // entry, as Symbols is, for the same reason, and the picture glyph,
+        // since what it puts down is a picture.
+        auto *dr_icons = insert_menu->addAction("Dr.icons…");
+        dr_icons->setObjectName("insertDrIcons");
+        dr_icons->setToolTip("Illustrations for entities, such as a student, a course or an order, put on the diagram as pictures.");
+        action_glyphs_[dr_icons] = Glyph::Picture;
+        connect(dr_icons, &QAction::triggered, this, [this]
+                { show_dr_icons(); });
         // Insert's own tab is gone (Zain, 2026-10-06): what it carried is on
         // Home, after Note and Text, as one button that drops the Insert menu -- the
         // picture and the symbols, the visual aids beside the note.
@@ -7332,6 +7344,51 @@ namespace erdflow::desktop
         return placed;
     }
 
+    void MainWindow::show_dr_icons()
+    {
+        if (!dr_icons_)
+        {
+            dr_icons_ = new DrIconPicker(this);
+            dr_icons_->on_chosen = [this](const QString &key)
+            { place_dr_icon(key); };
+        }
+        dr_icons_->set_theme(theme(theme_));
+        dr_icons_->show();
+        dr_icons_->raise();
+    }
+
+    bool MainWindow::place_dr_icon(const QString &key)
+    {
+        const auto icon = dr_icon(key);
+        if (!icon)
+            return false;
+        const auto png = dr_icon_bytes(*icon);
+        if (png.isEmpty())
+            return false;
+        finish_field_edit();
+        // As tall as a new entity and square, so the icon stands beside the
+        // entity it illustrates at the entity's own height. A starting size, as
+        // every element's is: a picture is resized by hand like anything else.
+        constexpr double side = entity_body.height;
+        // Put down where the pointer last was over the diagram, stepping down
+        // and across past any icon already there, as a picked symbol is.
+        auto centre = canvas_->pointer_place().value_or(canvas_->mapToScene(canvas_->viewport()->rect().center()));
+        const auto &layout = editor_.project().layout;
+        const auto taken = [&](const QPointF &at)
+        {
+            return std::any_of(layout.begin(), layout.end(), [&](const auto &entry)
+                               { return std::abs(entry.second.x - (at.x() - side / 2)) < 2 && std::abs(entry.second.y - (at.y() - side / 2)) < 2; });
+        };
+        for (int step = 0; step < 64 && taken(centre); ++step)
+            centre += QPointF(24, 24);
+        const domain::Rect rect{centre.x() - side / 2, centre.y() - side / 2, side, side};
+        // Left unchosen, as a picked symbol is: the gallery stays open for the
+        // next one, and choosing each would swap the properties panel over to it.
+        const auto result = editor_.create_picture(icon->label, rect, std::vector<std::uint8_t>(png.begin(), png.end()));
+        show_result(result, false);
+        return bool(result);
+    }
+
     void MainWindow::insert_picture_dialog(std::optional<QPointF> at)
     {
         const auto location = QFileDialog::getOpenFileName(this, "Insert picture", {},
@@ -8279,6 +8336,12 @@ namespace erdflow::desktop
             badge->setText(relational ? "RELATIONAL DESIGN" : "CONCEPTUAL");
         if (auto *picture = findChild<QAction *>("insertPicture"))
             picture->setVisible(!relational);
+        // Dr.icons go where pictures go, so they are put away with Picture, and
+        // an open gallery with them.
+        if (auto *dr_icons = findChild<QAction *>("insertDrIcons"))
+            dr_icons->setVisible(!relational);
+        if (relational && dr_icons_)
+            dr_icons_->hide();
         // Examples, the template and Import belong to the design they work on,
         // not to Home (Zain, 2026-10-03), in every menu that offers them. Every
         // example and the template are Conceptual diagrams, and Import brings in
