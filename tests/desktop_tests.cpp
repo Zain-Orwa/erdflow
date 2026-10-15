@@ -16323,11 +16323,16 @@ int main(int argc, char **argv)
                     return child<QToolButton>(window, name)->toolButtonStyle() == Qt::ToolButtonTextBesideIcon;
                 };
                 const auto size_was = window.size();
-                window.resize(1900, size_was.height());
+                // Room for every word in any platform's lettering: 1900 was
+                // room enough in macOS's, not in the wider letters of Linux
+                // (2026-10-15), so a window 4K wide.
+                const int roomy = 3840;
+                window.resize(roomy, size_was.height());
                 settle();
                 const std::vector<const char *> tools{"schemaSelect", "schemaAddTable", "schemaConnect", "schemaText",
                                                       "schemaInsert", "schemaTopArrange", "schemaTopAppearance"};
-                require(std::all_of(tools.begin(), tools.end(), worded), "With room, every tool in the header says its name");
+                require(window.width() == roomy && std::all_of(tools.begin(), tools.end(), worded),
+                        "With room, every tool in the header says its name");
                 window.resize(1440, size_was.height());
                 settle();
                 require(window.width() == 1440 && std::none_of(tools.begin(), tools.end(), worded) &&
