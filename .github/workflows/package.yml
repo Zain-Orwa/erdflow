@@ -470,6 +470,10 @@ jobs:
           # libglvnd-opengl do not have it, and the AppImage would not start
           # there (2026-10-15). It hands over to the system's own OpenGL.
           cp -L /usr/lib/x86_64-linux-gnu/libOpenGL.so.0 "$appdir/usr/lib/"
+          # libgpg-error.so.0, which the libgcrypt in the AppImage needs. Also
+          # left out by linuxdeploy, and missing from Debian 13 and Fedora 42
+          # installs without GnuPG (2026-10-15).
+          cp -L /usr/lib/x86_64-linux-gnu/libgpg-error.so.0 "$appdir/usr/lib/"
           # 2. The licences of everything now in the AppDir.
           cmake -D ERDFLOW_NOTICES_ROOT="$appdir" -P build/package/packaging/write-notices.cmake
           # 3. The AppImage.
@@ -506,9 +510,9 @@ jobs:
           if [ -e "$root/usr/translations" ]; then
             echo "::error::Qt's translations are in the AppImage"; status=1
           fi
-          if [ ! -f "$root/usr/lib/libOpenGL.so.0" ]; then
-            echo "::error::libOpenGL.so.0 is not in the AppImage"; status=1
-          fi
+          for library in libOpenGL.so.0 libgpg-error.so.0; do
+            test -f "$root/usr/lib/$library" || { echo "::error::$library is not in the AppImage"; status=1; }
+          done
           if grep -q '^INCOMPLETE' "$licences/THIRD-PARTY-LICENSES.txt"; then
             echo "::error::THIRD-PARTY-LICENSES.txt is marked incomplete"; status=1
           fi
