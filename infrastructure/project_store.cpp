@@ -68,6 +68,24 @@ namespace {
 // the columns of a table worked out from the diagram.
 // Version 35 distinguishes borderless free text from card notes and symbols.
 constexpr int current_format_version = 35;
+
+// A titled card note, written by an older ERDFlow, as the free text it is now
+// read as: the title on the first line and the text beneath. Kept within a
+// description's limit, cut only between characters.
+std::string card_as_text(const std::string& title, const std::string& text) {
+    auto joined = title.empty() ? text : text.empty() ? title : title + "\n" + text;
+    if (joined.size() <= domain::max_description_bytes) return joined;
+    joined.resize(domain::max_description_bytes);
+    // Back off any character left half written by the cut.
+    auto start = joined.size();
+    while (start > 0 && (static_cast<unsigned char>(joined[start - 1]) & 0xC0) == 0x80) --start;
+    if (start > 0) {
+        const auto lead = static_cast<unsigned char>(joined[start - 1]);
+        const std::size_t length = lead < 0x80 ? 1 : lead >= 0xF0 ? 4 : lead >= 0xE0 ? 3 : 2;
+        if (joined.size() - (start - 1) < length) joined.resize(start - 1);
+    }
+    return joined;
+}
 QString text(const std::string& value) { return QString::fromUtf8(value.data(), static_cast<qsizetype>(value.size())); }
 Uuid bytes_of(const QUuid& value) {
     Uuid result;
@@ -1374,6 +1392,14 @@ application::LoadResult ErdxProjectStore::decode(const QByteArray& input) {
                 if (number_version >= 35) {
                     if (!o["free_text"].isBool()) invalid("A note's free-text flag must be true or false.");
                     note.free_text = o["free_text"].toBool();
+                }
+                // The titled card is gone (Zain, 2026-10-15). One written by an
+                // older ERDFlow is read as free text: its title on the first
+                // line and its text beneath, so nothing written on it is lost.
+                if (!note.plain && !note.free_text) {
+                    note.description = card_as_text(note.name, note.description);
+                    note.name.clear();
+                    note.free_text = true;
                 }
                 if (!project.notes.emplace(note.id, std::move(note)).second) invalid("Duplicate note identifier.");
             }

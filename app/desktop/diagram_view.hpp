@@ -26,7 +26,7 @@ namespace erdflow::desktop {
 // first, then name the entity that generalises them.
 // Note places a card and Text places prose; a picture comes
 // from a file, so it is an action of the window rather than a tool.
-enum class Tool { Select, Entity, Attribute, Relationship, Specialization, Generalization, Connect, Pan, Note, Text };
+enum class Tool { Select, Entity, Attribute, Relationship, Specialization, Generalization, Connect, Pan, Text };
 
 // How each participant end is drawn. The model is the same in every notation:
 // participation supplies the minimum (0 or 1) and cardinality the maximum
@@ -81,7 +81,6 @@ inline constexpr BodySize entity_body{133, 77};
 inline constexpr BodySize attribute_body{135, 54};
 inline constexpr BodySize relationship_body{171, 99};
 inline constexpr BodySize isa_body{96, 74};
-inline constexpr BodySize note_body{200, 120};
 
 // What is drawn *on* the diagram rather than sized by it, at its own scale.
 //

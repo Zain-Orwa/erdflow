@@ -728,6 +728,17 @@ Versions 1–34 retain their strict historical field sets and must not contain
 symbols exactly. Version 35 rejects missing, non-boolean, or conflicting
 presentation flags. Saving an older project writes version 35.
 
+**The titled card note is retired (2026-10-15).** ERDFlow no longer makes or
+draws a card. A note read with both flags `false` — in version 35, or any note
+that is not a symbol in versions 11–34 — is read as free text: `free_text`
+becomes `true`, `description` becomes the card's `name` on the first line and
+its `description` beneath (either alone when the other is empty, cut between
+characters to the description limit), and `name` becomes empty. Its identity,
+layout, colour, transparency and any comments pinned to it are kept. The writer
+never emits a card, so a project opened with one is written back with it as free
+text; the field set and version are unchanged. The model rejects a note that is
+neither a symbol nor free text.
+
 ## Verification
 
 `tests/persistence_tests.cpp` covers exact graph and Unicode roundtrips, copied

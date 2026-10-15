@@ -707,6 +707,8 @@ std::vector<Issue> validate(const Project& project) {
         const ElementRef ref = id;
         if (note.plain && note.free_text)
             error("note.presentation.invalid", "A note cannot be both a symbol and free text.", ref);
+        else if (!note.plain && !note.free_text)
+            error("note.presentation.invalid", "A note must be free text or a symbol.", ref);
         if (!project.layout.contains(ref)) error("layout.element.missing", "The note has no canvas layout.", ref);
         identity(id.value, ref);
         if (note.id != id) error("identity.key_mismatch", "The note key and identifier differ.", ref);

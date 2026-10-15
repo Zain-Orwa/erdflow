@@ -1334,24 +1334,17 @@ void figure_tests() {
     view.centerOn(0, 0);
     QApplication::processEvents();
 
-    // The note tool puts a note where the canvas is clicked and opens it for
-    // its title, since a note is for writing on.
-    view.set_tool(desktop::Tool::Note);
-    click(view, QPointF(200, 150));
-    require(editor.project().notes.size() == 1, "A click places a note");
-    const domain::ElementRef note = editor.project().notes.begin()->first;
-    require(view.tool() == desktop::Tool::Select, "The note tool is one use, like the others");
-    require(view.selected_elements() == std::vector<domain::ElementRef>{note}, "The new note is selected");
-    require(view.renaming(), "And opens for its title at once");
-    auto* field = view.findChild<QLineEdit*>("inlineName");
-    require(field && field->isVisible(), "With the title field on screen");
-    field->setText("Assumptions");
-    key_to(field, Qt::Key_Return);
-    require(editor.project().notes.begin()->second.name == "Assumptions", "Typing gives the note its title");
-    require(editor.describe(note, "Each student enrols each term."), "Its text is its description");
+    // The titled Note is gone (Zain, 2026-10-15): there is no Note tool, and
+    // the note put beside the model is free text.
+    const auto made = editor.create_free_text("Assumptions\nEach student enrols each term.", {150, 120, 200, 60});
+    require(made && made.created, "Free text is placed beside the model");
+    const domain::ElementRef note = *made.created;
     view.synchronize();
     QApplication::processEvents();
-    require(find_node(view, "Assumptions") != nullptr, "The note is a node like any other");
+    const auto note_centre = [&] {
+        const auto& at = editor.project().layout.at(note);
+        return QPointF(at.x + at.width / 2, at.y + at.height / 2);
+    };
 
 
     // A picture draws its own pixels: a solid red image comes out red.
@@ -1377,9 +1370,9 @@ void figure_tests() {
     // Nothing connects to a figure: Connect refuses the pair.
     view.set_tool(desktop::Tool::Connect);
     const auto revision = editor.revision();
-    click(view, find_node(view, "Assumptions")->sceneBoundingRect().center());
+    click(view, note_centre());
     click(view, find_node(view, "Student")->sceneBoundingRect().center());
-    require(editor.revision() == revision, "A note and an entity do not connect");
+    require(editor.revision() == revision, "Text and an entity do not connect");
     require(view.tool() == desktop::Tool::Select, "The refused pair spends the tool");
 
     // The right-click menu offers to insert either, at the point clicked.
@@ -1407,20 +1400,33 @@ void figure_tests() {
         QApplication::processEvents();
         view.activateWindow();
     };
-    right_click(QPointF(-300, 200), "contextInsertNote");
-    require(editor.project().notes.size() == 2, "Insert → Note from the menu places a note");
-    const auto latest = editor.project().layout.at(editor.project().notes.rbegin()->first);
-    require(std::abs(latest.x + latest.width / 2 + 300) < 1 && std::abs(latest.y + latest.height / 2 - 200) < 1,
-            "Centred where the canvas was clicked");
-    require(opened_for_title, "And opened for its title");
-    view.cancel_interaction();
+    // What a right-click's Insert offers: Text and Picture, and no Note.
+    const auto offered = [&](const QPointF& scene_point) {
+        QStringList names;
+        QTimer::singleShot(0, [&] {
+            auto* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+            require(menu != nullptr, "A right-click opens a menu");
+            for (auto* action : menu->findChildren<QAction*>()) names << action->objectName();
+            menu->close();
+        });
+        const auto position = view.mapFromScene(scene_point);
+        QContextMenuEvent event(QContextMenuEvent::Mouse, position, view.viewport()->mapToGlobal(position));
+        QApplication::sendEvent(view.viewport(), &event);
+        QApplication::processEvents();
+        view.activateWindow();
+        return names;
+    };
+    const auto on_canvas = offered(QPointF(-300, 200));
+    require(on_canvas.contains("contextInsertText") && on_canvas.contains("contextInsertPicture"),
+            "Insert on the canvas offers Text and Picture");
+    require(!on_canvas.contains("contextInsertNote"), "And no Note");
+    (void)opened_for_title;
     right_click(QPointF(120, -80), "contextInsertPicture");
     require(asked_for == QPointF(120, -80), "Insert → Picture asks the window for a file, for that point");
     // The same entries sit at the end of an element's own menu.
-    right_click(find_node(view, "Student")->sceneBoundingRect().center(), "contextInsertNote");
-    require(editor.project().notes.size() == 3, "An element's menu offers Insert as well");
-    view.cancel_interaction();
-    require(editor.undo() && editor.undo(), "Take the two menu notes away again");
+    const auto on_element = offered(find_node(view, "Student")->sceneBoundingRect().center());
+    require(on_element.contains("contextInsertText") && !on_element.contains("contextInsertNote"),
+            "An element's menu offers Insert as well, without a Note");
     view.synchronize();
 
     // Both go with the rest of a selection, and come back with one undo.
@@ -1452,7 +1458,12 @@ void figure_tests() {
                     if ((image.pixel(x, y) | 0xff000000u) == wanted) ++found;
             return found;
         };
-        require(carded(shot()) > 0, "An ordinary note is drawn on a card");
+        // The titled card is gone (2026-10-15), so nothing on the diagram is
+        // drawn on one any longer; the colour is still told apart where it is.
+        QImage swatch(8, 8, QImage::Format_RGB32);
+        swatch.fill(surface);
+        require(carded(swatch) > 0, "The card's colour is recognised where it is drawn");
+        require(carded(shot()) == 0, "And nothing on the diagram is drawn on a card");
         const domain::Rect where{120, -220, 56, 56};
         const auto symbol = editor.create_symbol("⋈", where);
         require(symbol && symbol.created, "A symbol is placed");

@@ -307,6 +307,17 @@ read as still to do.
   it is pulled, and is written once on letting go as one step, "Resize
   picture" (`Editor::resize_pictures`), place and size together; Escape
   abandons a pull, and a handle clicked without travelling writes nothing.
+- **The titled Note is gone; Text stays** (2026-10-15, built in the release
+  laboratory at Zain's request, awaiting his review): Conceptual Design's Note
+  tool, its button on Home, and Insert → Note in the canvas's right-click menu
+  are removed, with the titled card itself (`Tool::Note`, `place_note`,
+  `Editor::create_note`, the card's drawing and its default size). Text and the
+  placed symbols, which are notes underneath, are unchanged, and Text now
+  follows Connect directly. A card in a project saved earlier is read as Text
+  -- its title on the first line and its text beneath, in the place it stood --
+  and is written back as Text when the project is saved (Zain chose this over
+  keeping old cards); the model no longer admits a card. The Explorer's group
+  is still called Notes, as it was for Text and symbols.
 - **Desktop timeout risk reduced without weakening coverage** (committed in
   `7b12b70`): the old single `desktop` CTest entry is split into
   `desktop_export`, `desktop_relational` and `desktop_window` (the last since

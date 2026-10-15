@@ -257,11 +257,9 @@ std::vector<HistoryChange> summarise(const Delta& delta, const Project& now) {
         const auto id = std::get<NoteId>(ref);
         const auto found = now.notes.find(id);
         const auto was = delta.notes.alternate.find(id);
-        const bool plain = found != now.notes.end() ? found->second.plain
-                         : was != delta.notes.alternate.end() && was->second.plain;
         const bool free_text = found != now.notes.end() ? found->second.free_text
                              : was != delta.notes.alternate.end() && was->second.free_text;
-        return free_text ? "Text" : plain ? "Symbol" : "Note";
+        return free_text ? "Text" : "Symbol";
     };
     // Created, deleted, renamed or otherwise changed, for each kind of element
     // whose only question is its name.
@@ -837,14 +835,6 @@ EditResult Editor::create_picture(std::string name, Rect rect, std::vector<std::
     return impl_->edit("Insert picture", [&](Delta& delta) {
         const PictureId id{impl_->next_id()};
         delta.pictures.put(id, Picture{id, std::move(name), {}, std::move(image)});
-        delta.layout.put(ElementRef{id}, rect);
-        return EditResult{true, {}, ElementRef{id}, {}};
-    });
-}
-EditResult Editor::create_note(std::string name, Rect rect, std::string text) {
-    return impl_->edit("Insert note", [&](Delta& delta) {
-        const NoteId id{impl_->next_id()};
-        delta.notes.put(id, Note{id, std::move(name), std::move(text), false});
         delta.layout.put(ElementRef{id}, rect);
         return EditResult{true, {}, ElementRef{id}, {}};
     });

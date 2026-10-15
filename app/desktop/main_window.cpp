@@ -4057,31 +4057,19 @@ namespace erdflow::desktop
         tool_actions_[Tool::Connect] = connect_action;
         connect_button->installEventFilter(this);
 
-        // Pictures and notes are the visual aids. A picture comes from a file, so
-        // it is an action and lives on Insert; a note is put down by a click, so
-        // it is a tool like the elements, sits with them after Connect, and locks
-        // like them.
+        // Pictures and text are the visual aids. A picture comes from a file, so
+        // it is an action and lives on Insert; text is put down by a click, so it
+        // is a tool like the elements, sits with them after Connect, and locks
+        // like them. (The titled Note went on 2026-10-15, at Zain's request.)
         auto *picture = new QAction("Picture…", this);
         picture->setObjectName("insertPicture");
         picture->setToolTip("Insert a picture from a file.");
         action_glyphs_[picture] = Glyph::Picture;
         connect(picture, &QAction::triggered, this, [this]
                 { insert_picture_dialog(); });
-        auto *note_action = new QAction("Note", this);
-        note_action->setCheckable(true);
-        note_action->setData("Note");
-        note_action->setObjectName("toolNote");
-        note_action->setActionGroup(group);
-        action_glyphs_[note_action] = Glyph::Note;
-        tool_actions_[Tool::Note] = note_action;
-        connect(note_action, &QAction::triggered, this, [this]
-                { choose_tool(Tool::Note, false); });
-        toolbar->addAction(note_action);
-        if (auto *button = toolbar->widgetForAction(note_action))
-            button->installEventFilter(this);
         // The picture in the menu bar too, for the keyboard and for anyone who
         // looks there first. The ribbon's Insert row is built from this menu, and
-        // the canvas's right-click menu offers both a picture and a note.
+        // the canvas's right-click menu offers both a picture and text.
         auto *insert_menu = new QMenu("&Insert", this);
         insert_menu->setObjectName("insertMenu");
         menuBar()->insertMenu(findChild<QMenu *>("viewMenu")->menuAction(), insert_menu);
@@ -4123,8 +4111,8 @@ namespace erdflow::desktop
         connect(dr_icons, &QAction::triggered, this, [this]
                 { show_dr_icons(); });
         // Insert's own tab is gone (Zain, 2026-10-06): what it carried is on
-        // Home, after Note and Text, as one button that drops the Insert menu -- the
-        // picture and the symbols, the visual aids beside the note.
+        // Home, after Text, as one button that drops the Insert menu -- the
+        // picture and the symbols, the visual aids beside the text.
         auto *text_action = new QAction("Text", this);
         text_action->setObjectName("toolText");
         text_action->setData("Text");
@@ -5130,14 +5118,13 @@ namespace erdflow::desktop
         }
         if (const auto *note_id = std::get_if<NoteId>(&ref))
         {
+            // Text has a panel of its own, so a note here is a symbol.
             const bool symbol = project.notes.at(*note_id).plain;
-            layout->addWidget(hint(symbol
-                                       ? "The name is the character that is drawn. It is drawn on its own, with nothing "
-                                         "behind it, and fills whatever size it is given."
-                                       : "The name is the note's title, drawn bold; the text below is drawn beneath it.",
-                                   panel));
             if (symbol)
             {
+                layout->addWidget(hint("The name is the character that is drawn. It is drawn on its own, with nothing "
+                                       "behind it, and fills whatever size it is given.",
+                                       panel));
                 // One number rather than the width and height below, because a
                 // symbol is drawn to the smaller of the two and so is square in
                 // practice. The two fields are still there for anyone who wants a
@@ -5415,16 +5402,13 @@ namespace erdflow::desktop
                 layout->addWidget(card);
             }
         }
-        // A card note draws its text beneath its title; a symbol draws neither, so
-        // for a symbol the field is a description like any other element's.
-        bool note = false;
-        if (const auto *note_id = std::get_if<NoteId>(&ref))
-            note = !project.notes.at(*note_id).plain;
-        layout->addWidget(field_label(note ? "Text" : "Description", label_tone, panel));
+        // A symbol draws no text, so its field is a description like any other
+        // element's.
+        layout->addWidget(field_label("Description", label_tone, panel));
         auto *description_edit = new DescriptionEdit(panel);
         description_edit->setObjectName("elementDescription");
         description_edit->setPlainText(text(description(project, ref)));
-        description_edit->setPlaceholderText(note ? "Write the note’s text…" : "Explain this object’s meaning…");
+        description_edit->setPlaceholderText("Explain this object’s meaning…");
         description_edit->setFixedHeight(100);
         offer_text_comment(description_edit);
         description_edit->commit = [this, ref, description_edit]

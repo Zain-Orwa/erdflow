@@ -867,21 +867,62 @@ void connector_shapes_persist_and_older_versions_still_open() {
 // something that could be an image.
 void free_text_persists() {
     Fixture fixture;
-    const auto card = fixture.editor.create_note("Card", {10, 20, 200, 120}, "Body");
+    const auto card = fixture.editor.create_free_text("Body", {10, 20, 200, 120});
     const auto symbol = fixture.editor.create_symbol("⋈", {50, 60, 56, 56});
     const auto legacy_project = fixture.editor.project();
     auto legacy = QJsonDocument::fromJson(ErdxProjectStore::encode(legacy_project)).object();
     legacy["format_version"] = 34;
     auto project = legacy["project"].toObject();
     auto notes = project["notes"].toArray();
+    // Version 34 knew no free text: a note that was not a symbol was a card,
+    // with a title.
     for (qsizetype i = 0; i < notes.size(); ++i) {
-        auto note = notes[i].toObject(); note.remove("free_text"); notes[i] = note;
+        auto note = notes[i].toObject();
+        note.remove("free_text");
+        if (!note["plain"].toBool()) note["name"] = "Card";
+        notes[i] = note;
     }
     project["notes"] = notes; legacy["project"] = project;
     const auto old = ErdxProjectStore::decode(bytes(legacy));
-    CHECK(old && *old.project == legacy_project);
-    CHECK(!old.project->notes.at(std::get<NoteId>(*card.created)).plain);
+    CHECK(old);
+    // The card is gone (Zain, 2026-10-15): it is read as free text, its title
+    // on the first line and its text beneath, where it stood.
+    const auto& as_text = old.project->notes.at(std::get<NoteId>(*card.created));
+    CHECK(as_text.free_text && !as_text.plain && as_text.name.empty() && as_text.description == "Card\nBody");
     CHECK(old.project->notes.at(std::get<NoteId>(*symbol.created)).plain);
+    CHECK(old.project->layout == legacy_project.layout);
+    // A version 35 file holding a card reads the same way, and is written back
+    // as the free text it now is.
+    auto card35 = QJsonDocument::fromJson(ErdxProjectStore::encode(legacy_project)).object();
+    const auto make_card = [](QJsonObject& note) { note["name"] = "Card"; note["plain"] = false; note["free_text"] = false; };
+    change_first(card35, "notes", make_card);
+    const auto from35 = ErdxProjectStore::decode(bytes(card35));
+    CHECK(from35);
+    const auto first = QJsonDocument::fromJson(bytes(card35)).object()["project"].toObject()["notes"].toArray()[0].toObject()["id"].toString();
+    bool converted = false;
+    for (const auto& [id, kept] : from35.project->notes)
+        if (kept.free_text && kept.description == "Card\nBody") converted = true;
+    CHECK(converted && !first.isEmpty());
+    const auto rewritten = ErdxProjectStore::decode(ErdxProjectStore::encode(*from35.project));
+    CHECK(rewritten && *rewritten.project == *from35.project);
+    // A card too long to be one text is cut between characters, never inside one.
+    std::string long_body = "a";
+    for (int i = 0; i < 8191; ++i) long_body += "\xC3\xA9";
+    CHECK(long_body.size() == 16383);
+    auto longest = QJsonDocument::fromJson(ErdxProjectStore::encode(legacy_project)).object();
+    change_first(longest, "notes", [&](QJsonObject& note) {
+        note["name"] = "T"; note["plain"] = false; note["free_text"] = false;
+        note["description"] = QString::fromStdString(long_body);
+    });
+    const auto cut = ErdxProjectStore::decode(bytes(longest));
+    CHECK(cut);
+    bool trimmed = false;
+    for (const auto& [id, kept] : cut.project->notes)
+        if (kept.free_text && kept.description.rfind("T\na", 0) == 0) {
+            trimmed = kept.description.size() == 16383
+                && QString::fromUtf8(kept.description.data(), static_cast<qsizetype>(kept.description.size())).toStdString() == kept.description;
+        }
+    CHECK(trimmed);
     const auto text = fixture.editor.create_free_text("CRM import\nΚαλημέρα", {123, -40, 400, 58});
     CHECK(text && text.created);
     const auto encoded = ErdxProjectStore::encode(fixture.editor.project());
@@ -906,8 +947,8 @@ void pictures_and_notes_persist() {
     const std::vector<std::uint8_t> png{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 'I', 'H', 'D', 'R'};
     const auto picture = fixture.editor.create_picture("Campus map", {400, -200, 240, 160}, png);
     CHECK(picture && picture.created);
-    const auto note = fixture.editor.create_note("Assumptions", {-400, 300, 200, 120},
-                                                 "Each student enrols each term.\nGrades per enrolment.");
+    const auto note = fixture.editor.create_free_text("Each student enrols each term.\nGrades per enrolment.",
+                                                      {-400, 300, 200, 120});
     CHECK(note && note.created);
     CHECK(fixture.editor.recolour({*note.created}, Colour{255, 224, 138}));
 
@@ -987,7 +1028,8 @@ void pictures_and_notes_persist() {
     older["project"] = older_project;
     const auto from_older = ErdxProjectStore::decode(QJsonDocument(older).toJson(QJsonDocument::Compact));
     CHECK(from_older);
-    for (const auto& [id, kept] : from_older.project->notes) { (void)id; CHECK(!kept.plain); }
+    // Those cards are free text now (2026-10-15).
+    for (const auto& [id, kept] : from_older.project->notes) { (void)id; CHECK(!kept.plain && kept.free_text); }
 
     // Through the adapter and back, the same.
     QTemporaryDir directory;

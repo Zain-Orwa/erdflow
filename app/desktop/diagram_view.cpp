@@ -1025,31 +1025,11 @@ public:
             y += metrics.lineSpacing();
         }
     }
+    // A note is free text or a symbol; the titled card it once could be is
+    // gone (Zain, 2026-10-15).
     void paint_note(QPainter* painter) {
-        if (free_text) { paint_text(painter); return; }
-        if (plain) { paint_plain_note(painter); return; }
-        painter->setPen(QPen(isSelected() ? selection_ : border_, isSelected() ? 2.4 : 1.6));
-        painter->setBrush(fill_);
-        painter->drawPath(body_path());
-        const auto inner = bounds_.adjusted(10, 8, -10, -8);
-        painter->setClipRect(bounds_.adjusted(2, 2, -2, -2));
-        painter->setPen(text_);
-        auto font = painter->font();
-        qreal used = 0;
-        if (!label.isEmpty()) {
-            font = lettered(font, 12.5);
-            font.setWeight(QFont::Bold);
-            painter->setFont(font);
-            const QRectF title(inner.left(), inner.top(), inner.width(), QFontMetricsF(font).height() * 1.25);
-            painter->drawText(title, Qt::AlignLeft | Qt::AlignVCenter,
-                              QFontMetricsF(font).elidedText(label, Qt::ElideRight, title.width()));
-            used = title.height() + 3;
-        }
-        font = lettered(font, 11);
-        font.setWeight(QFont::Normal);
-        painter->setFont(font);
-        painter->drawText(QRectF(inner.left(), inner.top() + used, inner.width(), inner.height() - used),
-                          Qt::AlignLeft | Qt::AlignTop | Qt::TextWordWrap, body);
+        if (free_text) paint_text(painter);
+        else paint_plain_note(painter);
     }
     // The element's own shape, drawn small and without its name. Anything that
     // wants to show what this element is uses this, so what it shows and what
@@ -2715,18 +2695,6 @@ struct DiagramView::Impl {
         mesh(grid_spacing * 5, 1.6);
         painter->restore();
     }
-    // A note put down centred on a point, selected and opened for its title,
-    // since a note is for writing on. Used by the tool and by the menus.
-    void place_note(QPointF centre) {
-        if (snap_enabled()) centre = {std::round(centre.x() / grid_spacing) * grid_spacing,
-                                      std::round(centre.y() / grid_spacing) * grid_spacing};
-        const auto result = editor.create_note("Note", centred(centre, note_body));
-        publish(result);
-        if (result && result.created) {
-            view.select_elements({*result.created});
-            begin_inline_edit(*result.created);
-        }
-    }
     void place_text(QPointF at) {
         if (snap_enabled()) at = {std::round(at.x() / grid_spacing) * grid_spacing,
                                  std::round(at.y() / grid_spacing) * grid_spacing};
@@ -2750,9 +2718,6 @@ struct DiagramView::Impl {
         auto* picture = insert->addAction("Picture…");
         picture->setObjectName("contextInsertPicture");
         QObject::connect(picture, &QAction::triggered, &view, [this, at] { if (view.on_insert_picture) view.on_insert_picture(at); });
-        auto* note = insert->addAction("Note");
-        note->setObjectName("contextInsertNote");
-        QObject::connect(note, &QAction::triggered, &view, [this, at] { place_note(at); });
     }
     void publish(const application::EditResult& result) {
         view.synchronize();
@@ -3759,7 +3724,6 @@ void DiagramView::set_tool(Tool tool, bool locked) {
         break;
     case Tool::Pan: impl_->status(QStringLiteral("Drag to pan. The middle mouse button pans in every tool.")); break;
     case Tool::Text: impl_->status(QStringLiteral("Place plain text on the Conceptual diagram. Click to place, then type.")); break;
-    case Tool::Note: impl_->status(QStringLiteral("Click the canvas to place a note, then type its title. Its text is written in Properties.")); break;
     }
 }
 bool DiagramView::tool_locked() const { return impl_->tool_locked; }
@@ -4565,7 +4529,7 @@ void DiagramView::mousePressEvent(QMouseEvent* event) {
         return;
     }
     if (impl_->active_tool == Tool::Entity || impl_->active_tool == Tool::Attribute
-        || impl_->active_tool == Tool::Relationship || impl_->active_tool == Tool::Note || impl_->active_tool == Tool::Text) {
+        || impl_->active_tool == Tool::Relationship || impl_->active_tool == Tool::Text) {
         auto center = mapToScene(event->position().toPoint());
         if (impl_->align_to_grid) center = {std::round(center.x() / grid_spacing) * grid_spacing, std::round(center.y() / grid_spacing) * grid_spacing};
         application::EditResult result;
@@ -4576,14 +4540,6 @@ void DiagramView::mousePressEvent(QMouseEvent* event) {
         } else if (impl_->active_tool == Tool::Text) {
             if (!impl_->tool_locked) set_tool(Tool::Select);
             impl_->place_text(center);
-            event->accept();
-            return;
-        } else if (impl_->active_tool == Tool::Note) {
-            // The tool hands back first, as the others do, and the note is
-            // then placed through the same path the menus use: handing back
-            // afterwards would close the title the note opens for.
-            if (!impl_->tool_locked) set_tool(Tool::Select);
-            impl_->place_note(center);
             event->accept();
             return;
         } else {

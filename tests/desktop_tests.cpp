@@ -1222,7 +1222,7 @@ namespace
         state(true, true, true);
         new_conceptual();
         state(false, false, false);
-        require(model.create_note("Note", {0, 0, 200, 100}, "Only a note").ok, "Picture-only content");
+        require(model.create_free_text("Only text", {0, 0, 200, 100}).ok, "Picture-only content");
         changed();
         state(true, false, true);
         new_conceptual();
@@ -8534,13 +8534,12 @@ namespace
         auto *select = button_for("toolSelect");
         child<QAction>(window, "isaGeneralization")->trigger();
         press(select, 0);
-        const std::array<std::tuple<const char *, desktop::Tool, QToolButton *>, 7> tools{{
+        const std::array<std::tuple<const char *, desktop::Tool, QToolButton *>, 6> tools{{
             {"Entity", desktop::Tool::Entity, button_for("toolEntity")},
             {"Attribute", desktop::Tool::Attribute, button_for("toolAttribute")},
             {"Relationship", desktop::Tool::Relationship, button_for("toolRelationship")},
             {"Generalization", desktop::Tool::Generalization, child<QToolButton>(window, "isaButton")},
             {"Connect", desktop::Tool::Connect, child<QToolButton>(window, "connectButton")},
-            {"Note", desktop::Tool::Note, button_for("toolNote")},
             {"Text", desktop::Tool::Text, button_for("toolText")},
         }};
         const auto marked = [](QToolButton *button)
@@ -9004,9 +9003,10 @@ void toolbar_fitting_tests() {
     const auto actions = bar->actions();
     const auto text = actions.indexOf(child<QAction>(window, "toolText"));
     require(text > 0 && text + 1 < actions.size()
-            && actions[text - 1] == child<QAction>(window, "toolNote")
+            && bar->widgetForAction(actions[text - 1]) == child<QToolButton>(window, "connectButton")
             && bar->widgetForAction(actions[text + 1]) == child<QToolButton>(window, "insertButton"),
-            "Toolbar fitting preserves Note, Text, Insert order");
+            "Toolbar fitting preserves Connect, Text, Insert order");
+    require(!window.findChild<QAction*>("toolNote"), "There is no Note tool (2026-10-15)");
     require(bar->toolButtonStyle() == Qt::ToolButtonTextBesideIcon, "A wide window shows the names");
     require(picker->isVisible(), "A wide window keeps Notation");
     // Find the actual compact boundary rather than assume a platform's font
@@ -9043,12 +9043,13 @@ void free_text_desktop_tests() {
     auto* toolbar = child<QToolBar>(window, "modelTools");
     const auto actions = toolbar->actions();
     const auto index = actions.indexOf(tool);
-    require(index > 0 && actions[index - 1] == child<QAction>(window, "toolNote"), "Text follows existing Note");
+    require(index > 0 && toolbar->widgetForAction(actions[index - 1]) == child<QToolButton>(window, "connectButton")
+            && !window.findChild<QAction*>("toolNote"),
+            "Text follows Connect: the Note tool is gone (2026-10-15)");
     require(index + 1 < actions.size() && toolbar->widgetForAction(actions[index + 1]) == child<QToolButton>(window, "insertButton"),
             "Text immediately precedes the existing Picture/Insert control");
     require(child<QToolButton>(window, "insertButton")->menu()->actions().contains(child<QAction>(window, "insertPicture")), "Picture remains in Insert");
     require(toolbar->widgetForAction(tool)->isVisible() && tool->text() == "Text" && !tool->icon().isNull(), "Text is a visible toolbar tool");
-    require(tool->icon().pixmap(34, 34).toImage() == child<QAction>(window, "toolNote")->icon().pixmap(34, 34).toImage(), "Text reuses the unchanged Note icon");
     QMouseEvent lock(QEvent::MouseButtonDblClick, QPointF(10, 10), QPointF(10, 10), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
     QApplication::sendEvent(toolbar->widgetForAction(tool), &lock);
     require(window.canvas()->tool() == desktop::Tool::Text && window.canvas()->tool_locked(), "Text inherits double-click placement locking");
@@ -9071,10 +9072,6 @@ void free_text_desktop_tests() {
     require(!explorer->model()->match(explorer->model()->index(0, 0), Qt::DisplayRole, "Notes", 1, Qt::MatchExactly | Qt::MatchRecursive).isEmpty(), "Text reuses Notes group");
     require(!explorer->model()->match(explorer->model()->index(0, 0), Qt::DisplayRole, "Text · Properties edit", 1, Qt::MatchExactly | Qt::MatchRecursive).isEmpty(), "Explorer shows useful Text preview");
     require(toolbar->height() == height, "Text placement does not change toolbar row height");
-    const auto card = editor.create_note("Card", {100, 100, 200, 120}, "Body");
-    window.canvas()->synchronize(); window.canvas()->select_elements({*card.created}); settle();
-    require(child<QLabel>(window, "propertyHeading")->text() == "Note" && window.findChild<QLineEdit*>("elementName"),
-            "Existing card Note retains its title Properties");
     const auto symbol = editor.create_symbol("⋈", {400, 100, 56, 56});
     window.canvas()->synchronize(); window.canvas()->select_elements({*symbol.created}); settle();
     require(child<QLabel>(window, "propertyHeading")->text() == "Symbol" && window.findChild<QSpinBox*>("symbolSize"),
@@ -12788,10 +12785,11 @@ int main(int argc, char **argv)
         {
             auto *insert = child<QToolButton>(window, "insertButton");
             auto *picture_action = child<QAction>(window, "insertPicture");
-            auto *note_tool = child<QAction>(window, "toolNote");
+            auto *text_tool = child<QAction>(window, "toolText");
             require(insert->menu() && insert->menu()->actions().contains(picture_action), "Home's Insert offers a picture");
-            require(child<QToolBar>(window, "modelTools")->actions().contains(note_tool), "The note tool is on Home");
-            require(!picture_action->icon().isNull() && !note_tool->icon().isNull(), "Each with a glyph of its own");
+            require(child<QToolBar>(window, "modelTools")->actions().contains(text_tool), "The Text tool is on Home");
+            require(!window.findChild<QAction *>("toolNote"), "And there is no Note tool (2026-10-15)");
+            require(!picture_action->icon().isNull() && !text_tool->icon().isNull(), "Each with a glyph of its own");
             require(child<QMenu>(window, "insertMenu")->actions().contains(picture_action),
                     "And the Insert menu offers the picture too");
 
@@ -12825,21 +12823,24 @@ int main(int argc, char **argv)
             }
             require(listed, "The explorer lists the picture under a group of its own");
 
-            note_tool->trigger();
+            text_tool->trigger();
             click_canvas(*window.canvas(), QPointF(700, 400));
-            require(window.editor().project().notes.size() == 1, "The note tool places a note");
-            require(window.canvas()->renaming(), "Which opens for its title");
+            require(window.editor().project().notes.size() == 1, "The Text tool places text");
+            auto *typed = child<QPlainTextEdit>(window, "inlineText");
+            require(typed->isVisible(), "Which opens for writing");
+            typed->setPlainText("Assumptions");
             window.canvas()->commit_rename();
             settle();
-            require(child<QLabel>(window, "propertyHeading")->text() == "Note", "Properties show it as a note");
+            require(child<QLabel>(window, "propertyHeading")->text() == "Text", "Properties show it as text");
 
             // A file that is not a picture is refused, and says so.
             dismiss(QMessageBox::Ok);
             require(!window.insert_picture(pictures.filePath("missing.png")), "A missing file inserts nothing");
             require(window.editor().project().pictures.size() == count + 1, "And leaves the project alone");
 
-            child<QAction>(window, "undoCommand")->trigger();
-            child<QAction>(window, "undoCommand")->trigger();
+            // The text is two steps, placed and then written, and the picture one.
+            for (int step = 0; step < 3; ++step)
+                child<QAction>(window, "undoCommand")->trigger();
             require(window.editor().project().notes.empty() && window.editor().project().pictures.size() == count,
                     "Undo takes both away again");
             child<QAction>(window, "tabHome")->trigger();
@@ -12882,18 +12883,25 @@ int main(int argc, char **argv)
             require(tabs->height() <= 30, "And the row of tabs is no taller for it");
             const auto row_height = home->height();
 
-            // What Insert carried is on Home, after Note and Text: one button dropping
-            // the Insert menu.
+            // What Insert carried is on Home, after Text: one button dropping
+            // the Insert menu. Text follows Connect, the Note tool being gone
+            // (2026-10-15).
             auto *insert = child<QToolButton>(window, "insertButton");
-            auto *note_tool = child<QAction>(window, "toolNote");
+            auto *text_tool = child<QAction>(window, "toolText");
             const auto home_actions = home->actions();
             int insert_at = -1;
+            int connect_at = -1;
             for (int i = 0; i < home_actions.size(); ++i)
+            {
                 if (home->widgetForAction(home_actions[i]) == insert)
                     insert_at = i;
-            require(home_actions.indexOf(child<QAction>(window, "toolText")) == home_actions.indexOf(note_tool) + 1
-                    && insert_at == home_actions.indexOf(child<QAction>(window, "toolText")) + 1,
-                    "Text stands between Note and the existing Insert control");
+                if (home->widgetForAction(home_actions[i]) == child<QToolButton>(window, "connectButton"))
+                    connect_at = i;
+            }
+            require(home_actions.indexOf(text_tool) == connect_at + 1
+                    && insert_at == home_actions.indexOf(text_tool) + 1,
+                    "Text stands between Connect and the existing Insert control");
+            require(!window.findChild<QAction *>("toolNote"), "With no Note tool on Home");
             require(insert->menu() == child<QMenu>(window, "insertMenu") && insert->popupMode() == QToolButton::InstantPopup &&
                         !insert->icon().isNull(),
                     "It drops the Insert menu, picture and symbols, and wears an icon");
@@ -12901,29 +12909,31 @@ int main(int argc, char **argv)
                         insert->menu()->actions().contains(child<QAction>(window, "insertSymbols")),
                     "Both of what Insert's row offered");
 
-            // The note is a tool among the elements, after Connect, and locks
-            // by a double click exactly as they do.
-            require(home_actions.indexOf(note_tool) > home_actions.indexOf(child<QAction>(window, "toolSelect")),
-                    "Note sits on Home with the element tools");
+            // Text is a tool among the elements, after Connect, and locks by
+            // a double click exactly as they do.
+            require(home_actions.indexOf(text_tool) > home_actions.indexOf(child<QAction>(window, "toolSelect")),
+                    "Text sits on Home with the element tools");
             const auto count = window.editor().project().notes.size();
-            auto *note_button = home->widgetForAction(note_tool);
-            require(note_button != nullptr, "The note tool has a button on Home");
+            auto *text_button = home->widgetForAction(text_tool);
+            require(text_button != nullptr, "The Text tool has a button on Home");
             QMouseEvent twice(QEvent::MouseButtonDblClick, QPointF(5, 5), QPointF(5, 5),
                               Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
-            QApplication::sendEvent(note_button, &twice);
+            QApplication::sendEvent(text_button, &twice);
             settle();
-            require(window.canvas()->tool() == desktop::Tool::Note && window.canvas()->tool_locked(),
-                    "Double-clicking the note tool locks it");
-            require(note_tool->property("toolLocked").toBool() && note_tool->text() == "Note", "And the button is marked");
-            click_canvas(*window.canvas(), QPointF(700, 250));
-            window.canvas()->commit_rename();
-            click_canvas(*window.canvas(), QPointF(860, 250));
-            window.canvas()->commit_rename();
-            require(window.editor().project().notes.size() == count + 2, "A locked note tool keeps placing");
+            require(window.canvas()->tool() == desktop::Tool::Text && window.canvas()->tool_locked(),
+                    "Double-clicking the Text tool locks it");
+            require(text_tool->property("toolLocked").toBool() && text_tool->text() == "Text", "And the button is marked");
+            for (const QPointF at : {QPointF(700, 250), QPointF(860, 250)})
+            {
+                click_canvas(*window.canvas(), at);
+                child<QPlainTextEdit>(window, "inlineText")->setPlainText("Placed");
+                window.canvas()->commit_rename();
+            }
+            require(window.editor().project().notes.size() == count + 2, "A locked Text tool keeps placing");
             child<QAction>(window, "toolSelect")->trigger();
             settle();
-            child<QAction>(window, "undoCommand")->trigger();
-            child<QAction>(window, "undoCommand")->trigger();
+            for (int step = 0; step < 4; ++step)
+                child<QAction>(window, "undoCommand")->trigger();
             require(window.editor().project().notes.size() == count, "Both placings undo");
 
             auto *settings_menu = child<QMenu>(window, "navigationSettingsMenu");
@@ -13536,10 +13546,11 @@ int main(int argc, char **argv)
             // The conceptual workspace's own family, as the specification
             // names it, on the row it opens on.
             for (const char *conceptual : {"toolSelect", "toolEntity", "toolAttribute", "toolRelationship",
-                                           "toolIsa", "toolConnect", "toolNote", "toolText"})
+                                           "toolIsa", "toolConnect", "toolText"})
                 require(window.findChild<QAction *>(conceptual) != nullptr,
                         "The conceptual workspace offers Select, Entity, Attribute, Relationship, "
-                        "Specialization, Connect, Note and Text");
+                        "Specialization, Connect and Text");
+            require(!window.findChild<QAction *>("toolNote"), "And no Note (2026-10-15)");
             require(explorer_dock->isVisible(), "Leaving it brings them back");
             require(child<QToolBar>(window, "modelTools")->isVisible(), "The drawing tools with them");
             // Undo and redo stay beside the schema while it is open, sharing

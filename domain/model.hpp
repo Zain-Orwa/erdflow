@@ -343,8 +343,10 @@ struct Picture {
     std::vector<std::uint8_t> image;
     auto operator<=>(const Picture&) const = default;
 };
-// A note is free text: its name is drawn as a title and its description as
-// the text beneath, which is why it has the same two fields as everything else.
+// A note is one of two things put on the canvas beside the model: free text,
+// or a symbol. The titled card a note once was is gone (Zain, 2026-10-15); one
+// in an older file is read as free text holding its title and then its text.
+// The two fields are kept because the file has always carried them.
 struct Note {
     NoteId id;
     std::string name;

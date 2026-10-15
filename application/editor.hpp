@@ -123,11 +123,9 @@ public:
     // neither a supertype nor subtypes.
     EditResult create_specialization(std::string name, domain::Rect rect, domain::Inheritance direction);
     // Visual aids. A picture is inserted with the encoded bytes of its image,
-    // which are kept as given; a note with the text drawn beneath its title.
-    // Both are then named, described, moved, coloured, copied and deleted like
-    // any other element, through the same commands.
+    // which are kept as given. It is then named, described, moved, coloured,
+    // copied and deleted like any other element, through the same commands.
     EditResult create_picture(std::string name, domain::Rect rect, std::vector<std::uint8_t> image);
-    EditResult create_note(std::string name, domain::Rect rect, std::string text = {});
     // One character placed on the diagram on its own, drawn bare. It is a note
     // underneath, so everything that can be done to a note can be done to it;
     // it is a separate command only so that the history says "symbol".
