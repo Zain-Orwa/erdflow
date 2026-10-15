@@ -210,6 +210,14 @@ public:
     // companion to line_shapes: between them they are the whole of what the
     // schema looks like, which is otherwise knowable only by reading pixels.
     [[nodiscard]] std::vector<QRectF> table_boxes() const;
+    // What the table in hand has come into line with while it is carried (C7,
+    // 2026-10-14): a guide down and a guide across at most, each along the
+    // edge or middle of a table left standing that the carried table's own
+    // edge or middle has come within a few pixels of, and reaching past both.
+    // Nothing is snapped to them -- a carried table follows the hand exactly
+    // -- so a guide says what is lined up, or nearly, and moves nothing.
+    // Empty unless a table has been carried.
+    [[nodiscard]] std::vector<QLineF> alignment_guides() const;
     [[nodiscard]] ExportView export_view();
     // How wide a table is drawn with every column shown, before a hand has
     // said otherwise. The width is measured from the lettering, which each
@@ -701,6 +709,7 @@ private:
     };
     [[nodiscard]] bool is_marked(const domain::PreviewTable& table) const;
     void draw_band(QPainter& painter) const;
+    void draw_guides(QPainter& painter) const;
     [[nodiscard]] Columns columns_of(const domain::PreviewTable& table) const;
     [[nodiscard]] double natural_width(const domain::PreviewTable& table) const;
     // Everything a table's lettering measures, worked out once for each table

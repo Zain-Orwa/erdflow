@@ -223,6 +223,21 @@ read as still to do.
   1.3-6.8%, at 72, 300 and 1200 dpi, offscreen and on macOS; Apple's PDFKit
   draws it as the PNG and reads back every name whole, where it read 164
   cut short. Not yet seen on Windows or Linux.
+- **A carried Schema table shows what it lines up with** (C7, 2026-10-14,
+  built in the release laboratory, awaiting Zain's review): while a table is
+  carried, `SchemaView::alignment_guides` finds, among the tables left
+  standing, the edge or middle nearest to one of the carried table's own --
+  left, middle or right down the schema, top, middle or bottom across it --
+  and a guide is drawn along it, one down and one across at most, reaching 26
+  px past both tables in the theme's warning colour: the diagram's reach (7
+  px), choice and look. Unlike the diagram's, nothing is snapped: the table
+  goes exactly where the hand takes it, as a Schema table always has, so a
+  guide drawn on the standing table's line shows any gap still to close. The
+  guides are worked out from the carry as it is painted and are never kept,
+  so nothing reaches the project or its history before the table is let go,
+  letting go takes them away, and a picture never has them. On the 159-table
+  generated schema they cost about 1.3 µs a movement, against 123 ms for the
+  movement's routing.
 - **Desktop timeout risk reduced without weakening coverage** (committed in
   `7b12b70`): the old single `desktop` CTest entry is split into
   `desktop_export`, `desktop_relational` and `desktop_window` (the last since

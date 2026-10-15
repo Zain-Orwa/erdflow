@@ -4399,6 +4399,154 @@ namespace
         std::cout << "PASS relationships meeting at one key row are told apart there first, as the palette allows\n";
     }
 
+    // A table carried on the Schema shows what it has come into line with (C7,
+    // 2026-10-14): a guide along the edge or middle of a table left standing
+    // that its own edge or middle is within a few pixels of, in the theme's
+    // warning colour, on the canvas and never in a picture. Nothing is snapped
+    // -- the table goes exactly where the hand takes it -- nothing reaches the
+    // project or its history while it is carried, and letting go takes the
+    // guides away.
+    void schema_alignment_guide_tests(infrastructure::QtIdGenerator &ids)
+    {
+        application::Editor model(ids);
+        infrastructure::ErdxProjectStore store;
+        desktop::MainWindow window(model, store, ids);
+        window.resize(1440, 920);
+        window.show();
+        window.show_home(false);
+        settle();
+        child<QAction>(window, "fileTemplateRelational")->trigger();
+        window.set_theme(desktop::ThemeId::OfficeLight);
+        settle();
+        auto *view = window.schema();
+        // The template's two tables are of one width; one is made wider, so
+        // that its edges and middle are never met all at once.
+        require(view->preview().tables.size() == 2 && view->preview().tables[1].origin,
+                "The template has two tables to line up");
+        const auto first = view->table_boxes();
+        require(model.resize_schema_tables({{*view->preview().tables[1].origin,
+                                             domain::SchemaTableBox{first[1].width() + 94, first[1].height(), {}}}}).ok,
+                "One of them made wider");
+        view->refresh();
+        settle();
+        const auto boxes = view->table_boxes();
+        const auto standing = boxes[0];
+        const auto carried = boxes[1];
+        require(std::abs(standing.width() - carried.width()) >= 2 && std::abs(standing.height() - carried.height()) >= 2,
+                "Of different sizes, so an edge and a middle are never met at once");
+        const auto mouse = [&](QEvent::Type type, QPointF where, Qt::MouseButtons held)
+        {
+            QMouseEvent event(type, where, view->mapToGlobal(where.toPoint()),
+                              type == QEvent::MouseMove ? Qt::NoButton : Qt::LeftButton, held, Qt::NoModifier);
+            QApplication::sendEvent(view, &event);
+        };
+        const auto as_opened = model.project();
+        const auto steps = model.history().size();
+        const QPointF press(carried.center().x(), carried.top() + 13);
+        mouse(QEvent::MouseButtonPress, press, Qt::LeftButton);
+        require(view->alignment_guides().empty(), "A table pressed but not yet carried shows no guide");
+        // The table carried until its top left is at `corner`, and the one
+        // guide that is then shown, which must be there.
+        const auto carry = [&](QPointF corner)
+        {
+            mouse(QEvent::MouseMove, press + (corner - carried.topLeft()), Qt::LeftButton);
+            const auto now = view->table_boxes()[1];
+            require(std::abs(now.left() - corner.x()) < 1e-6 && std::abs(now.top() - corner.y()) < 1e-6,
+                    "A carried table goes exactly where the hand takes it, guide or none");
+            require(model.project() == as_opened && model.history().size() == steps,
+                    "And nothing reaches the project or its history while it is carried");
+            return view->alignment_guides();
+        };
+        const auto down_at = [&](QPointF corner, double x)
+        {
+            const auto guides = carry(corner);
+            const auto now = view->table_boxes()[1];
+            require(guides.size() == 1 && guides[0].x1() == x && guides[0].x2() == x,
+                    "One guide runs down the schema, along the standing table's edge or middle");
+            require(guides[0].y1() == std::min(standing.top(), now.top()) - 26 &&
+                        guides[0].y2() == std::max(standing.bottom(), now.bottom()) + 26,
+                    "Past both tables, by as much as the diagram's guides run past its shapes");
+        };
+        const auto across_at = [&](QPointF corner, double y)
+        {
+            const auto guides = carry(corner);
+            require(guides.size() == 1 && guides[0].y1() == y && guides[0].y2() == y,
+                    "One guide runs across the schema, along the standing table's edge or middle");
+            return guides[0];
+        };
+        // Below the standing table: lined up on its left, its middle, its right.
+        const auto below = standing.bottom() + 80;
+        down_at({standing.left(), below}, standing.left());
+        down_at({standing.left() + 3, below}, standing.left());
+        down_at({standing.center().x() - carried.width() / 2, below}, standing.center().x());
+        down_at({standing.right() - carried.width(), below}, standing.right());
+        // Just past a guide's reach: the first distance off the standing
+        // table's left at which none of the carried table's edges and middle
+        // is within 7 pixels of any of the standing table's.
+        double off = 8;
+        const auto clear = [&](double d)
+        {
+            for (const auto mine : {d, d + carried.width() / 2, d + carried.width()})
+                for (const auto theirs : {0.0, standing.width() / 2, standing.width()})
+                    if (std::abs(theirs - mine) <= 7)
+                        return false;
+            return true;
+        };
+        while (off < 40 && !clear(off))
+            ++off;
+        require(off < 40, "There is a place just past every guide's reach");
+        require(carry({standing.left() + off, below}).empty(), "Just past a guide's reach, no guide");
+        require(carry({standing.right() + 200, below}).empty(), "Nowhere near the standing table, no guide");
+        // Beside it: lined up on its top and its bottom.
+        const auto beside = standing.right() + 120;
+        across_at({beside, standing.bottom() - carried.height()}, standing.bottom());
+        const auto guide = across_at({beside, standing.top()}, standing.top());
+
+        // On the canvas the guide is in the theme's warning colour, where it
+        // runs past each table; a picture of the schema has none of it.
+        const auto &colours = desktop::theme(desktop::ThemeId::OfficeLight);
+        const auto distance = [](QColor a, QColor b)
+        { return std::abs(a.red() - b.red()) + std::abs(a.green() - b.green()) + std::abs(a.blue() - b.blue()); };
+        const auto shows_guide = [&](const QImage &image, QPointF at, double scale)
+        {
+            for (int dy = -1; dy <= 1; ++dy)
+            {
+                const QPoint pixel(static_cast<int>(at.x() * scale), static_cast<int>(at.y() * scale) + dy);
+                if (image.rect().contains(pixel) &&
+                    distance(image.pixelColor(pixel), colours.warning) < distance(colours.canvas, colours.warning) / 2)
+                    return true;
+            }
+            return false;
+        };
+        const auto canvas = view->grab().toImage();
+        const auto ratio = canvas.devicePixelRatio();
+        const QPointF past_standing(guide.x1() + 13, guide.y1());
+        const QPointF past_carried(guide.x2() - 13, guide.y1());
+        require(shows_guide(canvas, past_standing, ratio) && shows_guide(canvas, past_carried, ratio),
+                "The guide is drawn in the theme's warning colour past both tables");
+        desktop::PictureOptions options;
+        options.format = desktop::PictureFormat::Png;
+        options.background = desktop::PictureBackground::White;
+        options.carry_project = false;
+        QByteArray bytes;
+        require(desktop::draw_picture(view->export_view(), options, {}, bytes).ok, "A picture is drawn mid-carry");
+        QImage picture;
+        picture.loadFromData(bytes, "png");
+        const auto origin = view->export_view().bounds(desktop::PictureExtent::WholeDiagram).topLeft() -
+                            QPointF(options.margin, options.margin);
+        require(!shows_guide(picture, past_standing - origin, 1.0) && !shows_guide(picture, past_carried - origin, 1.0),
+                "A picture of the schema has no guide in it");
+
+        // Let go, the table stays where it was put and the guides are gone.
+        mouse(QEvent::MouseButtonRelease, press + (QPointF(beside, standing.top()) - carried.topLeft()), Qt::NoButton);
+        settle();
+        require(view->alignment_guides().empty(), "Let go, no guide is left behind");
+        require(view->table_boxes()[1].topLeft() == QPointF(beside, standing.top()) && model.history().size() == steps + 1,
+                "And the table stays where it was let go, as one move");
+        model.mark_saved(model.revision());
+        std::cout << "PASS a carried Schema table shows what it lines up with, and nothing is snapped\n";
+    }
+
     void schema_line_colour_rename_tests(infrastructure::QtIdGenerator &ids)
     {
         application::Editor editor(ids);
@@ -8632,6 +8780,7 @@ int main(int argc, char **argv)
             schema_line_colour_rename_tests(ids);
             schema_endpoint_separation_tests(ids);
             schema_shared_key_colour_tests(ids);
+            schema_alignment_guide_tests(ids);
         }
         if (relational_part)
         {

@@ -1550,6 +1550,60 @@ std::vector<QRectF> SchemaView::table_boxes() const {
     return boxes;
 }
 
+std::vector<QLineF> SchemaView::alignment_guides() const {
+    std::vector<QLineF> guides;
+    // Only once the table has been carried: a press that has not yet moved it
+    // has lined nothing up.
+    if (!dragging_ || dragging_at_.empty() || *dragging_ >= placed_.size()) return guides;
+    const auto& moving = placed_[*dragging_].box;
+    // As far as the diagram's own guides reach, and with the same few pixels
+    // between a table and a guide past its ends.
+    constexpr double reach = 7.0;
+    constexpr double overrun = 26.0;
+    struct Match {
+        bool found = false;
+        double gap = 0;
+        double line = 0;
+        double from = 0;
+        double to = 0;
+    };
+    Match down;
+    Match across;
+    const auto consider = [&](Match& best, double mine, double theirs, double from, double to) {
+        const auto gap = std::abs(theirs - mine);
+        if (gap > reach || (best.found && gap >= best.gap)) return;
+        best = Match{true, gap, theirs, from, to};
+    };
+    for (std::size_t t = 0; t < placed_.size() && t < preview_.tables.size(); ++t) {
+        // What is carried moves with the table in hand, so it is never what
+        // that table is lined up with.
+        const auto& origin = preview_.tables[t].origin;
+        if (t == *dragging_ || (origin && dragging_at_.contains(*origin))) continue;
+        const auto& other = placed_[t].box;
+        // A table can only line up down the schema if its own span across
+        // comes within reach of the carried one's, and across it if the same
+        // is true the other way; failing both, none of its eighteen
+        // comparisons can match, so it is passed over without making them.
+        const bool down_possible = other.left() <= moving.right() + reach && moving.left() <= other.right() + reach;
+        const bool across_possible = other.top() <= moving.bottom() + reach && moving.top() <= other.bottom() + reach;
+        if (!down_possible && !across_possible) continue;
+        const auto top = std::min(moving.top(), other.top());
+        const auto bottom = std::max(moving.bottom(), other.bottom());
+        const auto left = std::min(moving.left(), other.left());
+        const auto right = std::max(moving.right(), other.right());
+        for (const auto mine : {moving.left(), moving.center().x(), moving.right()})
+            for (const auto theirs : {other.left(), other.center().x(), other.right()})
+                consider(down, mine, theirs, top, bottom);
+        for (const auto mine : {moving.top(), moving.center().y(), moving.bottom()})
+            for (const auto theirs : {other.top(), other.center().y(), other.bottom()})
+                consider(across, mine, theirs, left, right);
+    }
+    if (down.found) guides.emplace_back(QPointF(down.line, down.from - overrun), QPointF(down.line, down.to + overrun));
+    if (across.found)
+        guides.emplace_back(QPointF(across.from - overrun, across.line), QPointF(across.to + overrun, across.line));
+    return guides;
+}
+
 std::optional<SchemaView::Answerable> SchemaView::type_cell_at(QPointF point) const {
     // The cells were measured where the rows were, so the pointer is tested
     // against what was actually drawn rather than against a guess at it.
@@ -4049,6 +4103,7 @@ void SchemaView::paint_schema(QPainter& painter, const QRectF& exposed, std::opt
     // what is being looked at. Before the hovered line's grips, which give up
     // early, so a band is drawn whether or not a line happens to be hovered.
     if (exporting) return;
+    draw_guides(painter);
     draw_band(painter);
     draw_linking(painter);
 
@@ -4330,6 +4385,17 @@ void SchemaView::draw_linking(QPainter& painter) const {
     painter.setBrush(theme_->accent);
     painter.drawEllipse(from, 3.5, 3.5);
     painter.setBrush(Qt::NoBrush);
+}
+
+// A carried table's guides, over the tables they run past. Thin and in the
+// theme's warning colour, as the diagram's are, so a guide is never taken for
+// part of the schema; never in a picture, which is of the schema and not of
+// the hand at work on it.
+void SchemaView::draw_guides(QPainter& painter) const {
+    const auto guides = alignment_guides();
+    if (guides.empty()) return;
+    painter.setPen(QPen(theme_->warning, 1.0));
+    for (const auto& guide : guides) painter.drawLine(guide);
 }
 
 void SchemaView::draw_band(QPainter& painter) const {
