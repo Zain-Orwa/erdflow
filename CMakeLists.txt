@@ -42,6 +42,7 @@ add_library(erdflow_desktop app/desktop/main_window.cpp app/desktop/schema_view.
                             app/desktop/notice.cpp
                             app/desktop/home_page.cpp app/desktop/home_live_demo.cpp app/desktop/home_demo_scenes.cpp app/desktop/home_demo_canvas.cpp app/desktop/conceptual_examples.cpp app/desktop/relational_examples.cpp app/desktop/app_top_bar.cpp app/desktop/home_sidebar.cpp app/desktop/home_learning_panel.cpp app/desktop/start_route_card.cpp app/desktop/project_details_form.cpp app/desktop/welcome_flow_illustration.cpp app/desktop/ribbon.cpp app/desktop/icons.cpp
                             app/desktop/symbols.cpp app/desktop/symbol_picker.cpp
+                            app/desktop/dr_icons.cpp app/desktop/dr_icon_picker.cpp
                             app/desktop/export_dialog.cpp app/desktop/search_bar.cpp)
 target_link_libraries(erdflow_desktop PUBLIC erdflow_canvas Qt6::Svg PRIVATE erdflow_warnings)
 # The Relational Schema's router is compiled optimised even in a Debug build.
@@ -141,6 +142,9 @@ qt_add_resources(erdflow_desktop "erdflow_icons_outline"
         assets/icons-outline/sparkles.svg
         # The schema's Arrange, in the header of a schema drawn by hand.
         assets/icons-outline/layers.svg
+        # The mark in either workspace's search field that opens the search's
+        # kinds and options (C8, 2026-10-14).
+        assets/icons-outline/filter.svg
         # The ribbon's tabs and the commands on the Design, Export, Import,
         # View and Help rows, named for what they stand for so another icon set
         # can draw its own under the same names.
@@ -163,9 +167,29 @@ qt_add_resources(erdflow_desktop "erdflow_icons_outline"
         assets/icons-outline/file.svg assets/icons-outline/insert.svg
         assets/icons-outline/no-panels.svg
 )
+# Dr.icons: illustrations put on the conceptual diagram as pictures, from
+# Insert (2026-10-14). Painted artwork, so shipped as the transparent PNGs it
+# is, 384 pixels square; each file is named by the icon's key.
+qt_add_resources(erdflow_desktop "erdflow_dr_icons"
+    PREFIX "/erdflow/dr-icons"
+    BASE "assets/dr-icons"
+    FILES
+        assets/dr-icons/student.png assets/dr-icons/course.png
+        assets/dr-icons/family.png assets/dr-icons/family_2.png
+        assets/dr-icons/identification_card.png
+        assets/dr-icons/order.png assets/dr-icons/product.png
+        assets/dr-icons/book.png assets/dr-icons/project.png
+        assets/dr-icons/employee.png assets/dr-icons/person.png
+        assets/dr-icons/seat.png assets/dr-icons/task.png
+        assets/dr-icons/car.png assets/dr-icons/mobile_line.png
+        assets/dr-icons/phone_ext.png assets/dr-icons/desk.png
+)
 
 add_executable(erdflow app/desktop/main.cpp)
 target_link_libraries(erdflow PRIVATE erdflow_desktop erdflow_infrastructure erdflow_warnings)
+# The application version is the project version above, and only that: the
+# program reports it, and every package carries it.
+target_compile_definitions(erdflow PRIVATE ERDFLOW_VERSION="${PROJECT_VERSION}")
 
 if(BUILD_TESTING)
     add_executable(editor_benchmark tests/editor_benchmark.cpp)
@@ -196,14 +220,18 @@ if(BUILD_TESTING)
     find_package(Qt6 REQUIRED COMPONENTS Test)
     add_executable(desktop_tests tests/desktop_tests.cpp)
     target_link_libraries(desktop_tests PRIVATE erdflow_desktop erdflow_infrastructure erdflow_warnings Qt6::Test)
-    # The desktop suite runs as five parts, each a process with its own
+    # The desktop suite runs as six parts, each a process with its own
     # timeout, rather than as one that had grown to within a few seconds of
     # its limit in Debug (2026-10-09). The main window's tools, each checked
     # in a window of its own, have run apart from the window carried through
-    # both workspaces since 2026-10-12. Together they are the whole suite;
-    # run with no part named, desktop_tests still runs all of it.
+    # both workspaces since 2026-10-12. The schema's line checks -- remembered
+    # routes, colours, ends and alignment guides -- have run apart from
+    # Relational Design's since 2026-10-15, when that part neared its limit on
+    # the macOS Intel runner. Together they are the whole suite; run with no
+    # part named, desktop_tests still runs all of it.
     add_test(NAME desktop_export COMMAND desktop_tests --export-state)
     add_test(NAME desktop_relational COMMAND desktop_tests --relational-part)
+    add_test(NAME desktop_relational_lines COMMAND desktop_tests --relational-lines-part)
     add_test(NAME desktop_window_tools COMMAND desktop_tests --window-tools-part)
     add_test(NAME desktop_window COMMAND desktop_tests --window-part)
     add_test(NAME desktop_new_projects COMMAND desktop_tests --new-projects-part)
@@ -224,12 +252,19 @@ if(BUILD_TESTING)
     if(WIN32)
         list(APPEND erdflow_offscreen_test_environment "QT_QPA_FONTDIR=C:/Windows/Fonts")
     endif()
-    set_tests_properties(canvas theme desktop_export desktop_relational desktop_window_tools desktop_window
-                         desktop_new_projects desktop_smoke visual
+    set_tests_properties(canvas theme desktop_export desktop_relational desktop_relational_lines
+                         desktop_window_tools desktop_window desktop_new_projects desktop_smoke visual
                          PROPERTIES ENVIRONMENT "${erdflow_offscreen_test_environment}" TIMEOUT 30)
     # The desktop suite drives the whole window through both workspaces and
     # outgrew 30 s in Debug with the Schema Explorer's tests (Zain, 2026-09-29).
     # Each of its parts keeps the limit the whole suite had.
-    set_tests_properties(desktop_export desktop_relational desktop_window_tools desktop_window
-                         desktop_new_projects PROPERTIES TIMEOUT 60)
+    set_tests_properties(desktop_export desktop_relational desktop_relational_lines desktop_window_tools
+                         desktop_window desktop_new_projects PROPERTIES TIMEOUT 60)
+endif()
+
+# Installable packages (packaging/README.md). Off for ordinary builds, which
+# stay exactly as they are; the package workflow turns it on.
+option(ERDFLOW_PACKAGING "Build ERDFlow as an installable application and prepare its packages" OFF)
+if(ERDFLOW_PACKAGING)
+    include(packaging/packaging.cmake)
 endif()

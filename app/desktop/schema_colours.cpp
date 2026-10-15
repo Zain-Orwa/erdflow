@@ -88,8 +88,31 @@ const std::vector<std::vector<double>>& distances(Palette palette) {
     return table;
 }
 
+// Which colours of a palette are of one family, worked out once.
+const std::vector<std::vector<int>>& families(Palette palette) {
+    static std::array<std::vector<std::vector<int>>, 3> worked;
+    auto& table = worked[static_cast<std::size_t>(palette)];
+    if (table.empty()) {
+        const auto& colours = colours_of(palette);
+        table.assign(colours.size(), std::vector<int>(colours.size(), 0));
+        for (std::size_t i = 0; i < colours.size(); ++i)
+            for (std::size_t j = 0; j < colours.size(); ++j) table[i][j] = kindred(colours[i], colours[j]) ? 1 : 0;
+    }
+    return table;
+}
+
 // Far enough apart that any two such colours are plainly different.
 constexpr double plainly_apart = 20.0;
+
+// Lines meeting at one row meet at one point, a few pixels apart at most, so
+// plainly different is not enough there: two colours 22 apart, a dark and a
+// light orange, are told apart side by side but not where their ends crowd
+// together. 30 is as far apart as the sixteen colours can keep the six or so
+// relationships of a busy key (2026-10-13: 32 for seven in light, 28 in
+// dark); asking for more would set every relationship at a row chasing the
+// farthest colour, and the relationships at its tables would no longer be
+// kept plainly apart.
+constexpr double apart_at_a_row = 30.0;
 
 // How far a colour has to be from those a relationship meets to be as good as
 // one farther: plainly apart, or, in a palette whose colours are not all that
@@ -103,6 +126,13 @@ double good_enough(Palette palette) {
     for (std::size_t i = 0; i < table.size(); ++i)
         for (std::size_t j = i + 1; j < table.size(); ++j) closest = std::min(closest, table[i][j]);
     return closest;
+}
+
+// And at a row: as far apart as a row asks, or, in the greys, as at a table
+// -- any grey but theirs -- for the reason above.
+double good_enough_at_a_row(Palette palette) {
+    const auto at_a_table = good_enough(palette);
+    return at_a_table < plainly_apart ? at_a_table : apart_at_a_row;
 }
 
 } // namespace
@@ -146,19 +176,38 @@ double distance(const QColor& one, const QColor& other) {
     return std::sqrt(std::pow(dl / sl, 2) + std::pow(dc / sc, 2) + std::pow(dhh / sh, 2) + rt * (dc / sc) * (dhh / sh));
 }
 
+bool kindred(const QColor& one, const QColor& other) {
+    const auto p = lab(one), q = lab(other);
+    // Below this a colour reads as a grey, whatever its hue.
+    constexpr double coloured = 20;
+    if (std::hypot(p.a, p.b) < coloured || std::hypot(q.a, q.b) < coloured) return false;
+    constexpr double degrees = 180 / 3.14159265358979323846;
+    auto hues = std::abs(std::atan2(p.b, p.a) - std::atan2(q.b, q.a)) * degrees;
+    if (hues > 180) hues = 360 - hues;
+    return hues < 25;
+}
+
 std::map<std::string, QColor> allocate(const std::vector<Line>& lines, Palette palette) {
     const auto& colours = colours_of(palette);
     const auto& apart = distances(palette);
+    const auto& kin = families(palette);
     const auto enough = good_enough(palette);
+    const auto enough_at_a_row = good_enough_at_a_row(palette);
     const auto count = static_cast<int>(colours.size());
 
     // Every relationship, the tables it meets, all its lines together, and
-    // what it says (its name where it has one, otherwise its identity).
+    // what it says (its name where it has one, otherwise its identity); and
+    // the rows its lines say they meet.
+    using Row = std::pair<std::size_t, std::size_t>;
     std::map<std::string, std::set<std::size_t>> tables_of;
+    std::map<std::string, std::set<Row>> rows_of;
     std::map<std::string, std::string> said;
     for (const auto& line : lines) {
         tables_of[line.identity].insert(line.from_table);
         tables_of[line.identity].insert(line.to_table);
+        auto& rows = rows_of[line.identity];
+        if (line.from_column != no_column) rows.insert({line.from_table, line.from_column});
+        if (line.to_column != no_column) rows.insert({line.to_table, line.to_column});
         said.emplace(line.identity, line.name.empty() ? line.identity : line.name);
     }
     // Taken in an order that depends on what they say alone.
@@ -178,24 +227,33 @@ std::map<std::string, QColor> allocate(const std::vector<Line>& lines, Palette p
         return std::tie(a.hash, *a.says, *a.identity) < std::tie(b.hash, *b.says, *b.identity);
     });
 
-    // How many relationships meet at each table, so each table's even share
-    // of a colour is known before any is given.
+    // How many relationships meet at each table and at each row, so each
+    // one's even share of a colour is known before any is given.
     std::map<std::size_t, int> meeting;
+    std::map<Row, int> meeting_row;
     for (const auto& [identity, tables] : tables_of) {
-        (void)identity;
         for (const auto table : tables) ++meeting[table];
+        for (const auto& row : rows_of.at(identity)) ++meeting_row[row];
     }
     std::map<std::size_t, std::vector<int>> given_at;
+    std::map<Row, std::vector<int>> given_row;
     std::map<std::string, int> chosen_of;
-    std::vector<int> met;
+    std::vector<int> met, met_row;
     for (const auto& [hash, says, identity] : order) {
         (void)says;
         const auto own = static_cast<int>(hash % static_cast<std::uint64_t>(count));
-        // The colours of the relationships already taken that meet it.
+        // The colours of the relationships already taken that meet it, and
+        // of those among them that meet it at one of its rows.
         met.clear();
         for (const auto table : tables_of.at(*identity)) {
             const auto found = given_at.find(table);
             if (found != given_at.end()) met.insert(met.end(), found->second.begin(), found->second.end());
+        }
+        met_row.clear();
+        const auto& rows = rows_of.at(*identity);
+        for (const auto& row : rows) {
+            const auto found = given_row.find(row);
+            if (found != given_row.end()) met_row.insert(met_row.end(), found->second.begin(), found->second.end());
         }
         int chosen = own;
         if (!met.empty()) {
@@ -215,9 +273,34 @@ std::map<std::string, QColor> allocate(const std::vector<Line>& lines, Palette p
             // relationship would take a third use at a crowded table to spare
             // its quiet other table a first (2026-10-13: Employee in Plain had
             // one grey three times and another once, now each twice).
-            auto best = std::make_tuple(-1.0, std::numeric_limits<int>::min(), std::numeric_limits<int>::min(),
+            //
+            // Ahead of all of it come the relationships meeting it at one of
+            // its rows (C3c-2, 2026-10-14), where the ends of their lines
+            // crowd into one point: how many of them have a colour of its
+            // family, how near it comes to theirs (as far apart as a row asks
+            // counting as well apart as any), and how far past its even share
+            // it would put the more crowded of its rows. Families are weighed
+            // first because two of one family can be farther apart than 30 --
+            // a dark olive and a mustard -- and still read as one colour where
+            // their ends meet.
+            auto best = std::make_tuple(std::numeric_limits<int>::min(), -1.0, std::numeric_limits<int>::min(), -1.0,
+                                        std::numeric_limits<int>::min(), std::numeric_limits<int>::min(),
                                         std::numeric_limits<int>::min(), std::numeric_limits<int>::min(), 0);
             for (int c = 0; c < count; ++c) {
+                const auto at = static_cast<std::size_t>(c);
+                int kindred_there = 0;
+                double nearest_there = enough_at_a_row;
+                for (const auto m : met_row) {
+                    kindred_there += kin[at][static_cast<std::size_t>(m)];
+                    nearest_there = std::min(nearest_there, apart[at][static_cast<std::size_t>(m)]);
+                }
+                int past_there = rows.empty() ? 0 : std::numeric_limits<int>::min();
+                for (const auto& row : rows) {
+                    const auto found = given_row.find(row);
+                    const auto has = found == given_row.end()
+                        ? 0 : static_cast<int>(std::count(found->second.begin(), found->second.end(), c));
+                    past_there = std::max(past_there, has + 1 - (meeting_row.at(row) + count - 1) / count);
+                }
                 double nearest = enough;
                 int uses = 0;
                 for (const auto m : met) {
@@ -234,7 +317,8 @@ std::map<std::string, QColor> allocate(const std::vector<Line>& lines, Palette p
                     most = std::max(most, has);
                 }
                 const auto step = std::abs(c - own);
-                const auto score = std::make_tuple(nearest, -past, -most, -uses, -std::min(step, count - step), -c);
+                const auto score = std::make_tuple(-kindred_there, nearest_there, -past_there, nearest, -past, -most,
+                                                   -uses, -std::min(step, count - step), -c);
                 if (score > best) {
                     best = score;
                     chosen = c;
@@ -243,6 +327,7 @@ std::map<std::string, QColor> allocate(const std::vector<Line>& lines, Palette p
         }
         chosen_of.emplace(*identity, chosen);
         for (const auto table : tables_of.at(*identity)) given_at[table].push_back(chosen);
+        for (const auto& row : rows) given_row[row].push_back(chosen);
     }
 
     // Taken one at a time, a relationship knows only those taken before it,
@@ -251,8 +336,9 @@ std::map<std::string, QColor> allocate(const std::vector<Line>& lines, Palette p
     // busy table at the other end had none left (2026-10-13: Programs in the
     // University example). So each is looked at again, in the same order,
     // knowing them all, and moves to another colour only where that is
-    // plainly better -- farther from those it meets, or less past an even
-    // share, or less used -- never merely to be nearer its own. Where every
+    // plainly better -- at its rows first, then at its tables: farther from
+    // those it meets, or less past an even share, or less used -- never
+    // merely to be nearer its own. Where every
     // table is already plainly apart nothing is better, and nothing moves. Of
     // 400 made-up schemas, 271 had a table given a grey more often than its
     // even share when uses were counted across both ends together, 210 when
@@ -264,7 +350,27 @@ std::map<std::string, QColor> allocate(const std::vector<Line>& lines, Palette p
         counted.assign(static_cast<std::size_t>(count), 0);
         for (const auto c : chosen) ++counted[static_cast<std::size_t>(c)];
     }
-    const auto weigh = [&](const std::set<std::size_t>& tables, int c) {
+    std::map<Row, std::vector<int>> uses_row;
+    for (const auto& [row, chosen] : given_row) {
+        auto& counted = uses_row[row];
+        counted.assign(static_cast<std::size_t>(count), 0);
+        for (const auto c : chosen) ++counted[static_cast<std::size_t>(c)];
+    }
+    // Weighed as the first time round: its rows first, then its tables.
+    const auto weigh = [&](const std::set<std::size_t>& tables, const std::set<Row>& rows, int c) {
+        const auto at = static_cast<std::size_t>(c);
+        int kindred_there = 0;
+        double nearest_there = enough_at_a_row;
+        int past_there = rows.empty() ? 0 : std::numeric_limits<int>::min();
+        for (const auto& row : rows) {
+            const auto& counted = uses_row.at(row);
+            for (int k = 0; k < count; ++k)
+                if (const auto has = counted[static_cast<std::size_t>(k)]; has > 0) {
+                    kindred_there += has * kin[at][static_cast<std::size_t>(k)];
+                    nearest_there = std::min(nearest_there, apart[at][static_cast<std::size_t>(k)]);
+                }
+            past_there = std::max(past_there, counted[at] + 1 - (meeting_row.at(row) + count - 1) / count);
+        }
         double nearest = enough;
         int past = std::numeric_limits<int>::min(), most = 0, uses = 0;
         for (const auto table : tables) {
@@ -277,7 +383,7 @@ std::map<std::string, QColor> allocate(const std::vector<Line>& lines, Palette p
             most = std::max(most, has);
             uses += has;
         }
-        return std::make_tuple(nearest, -past, -most, -uses);
+        return std::make_tuple(-kindred_there, nearest_there, -past_there, nearest, -past, -most, -uses);
     };
     // Each move makes one relationship's lot strictly better and can make
     // another's worse, so the passes are bounded rather than run until
@@ -289,12 +395,14 @@ std::map<std::string, QColor> allocate(const std::vector<Line>& lines, Palette p
             (void)hash;
             (void)says;
             const auto& tables = tables_of.at(*identity);
+            const auto& rows = rows_of.at(*identity);
             auto& chosen = chosen_of.at(*identity);
             for (const auto table : tables) --uses_at.at(table)[static_cast<std::size_t>(chosen)];
-            auto best = weigh(tables, chosen);
+            for (const auto& row : rows) --uses_row.at(row)[static_cast<std::size_t>(chosen)];
+            auto best = weigh(tables, rows, chosen);
             auto better = chosen;
             for (int c = 0; c < count; ++c) {
-                const auto weighed = weigh(tables, c);
+                const auto weighed = weigh(tables, rows, c);
                 if (weighed > best) {
                     best = weighed;
                     better = c;
@@ -303,6 +411,7 @@ std::map<std::string, QColor> allocate(const std::vector<Line>& lines, Palette p
             moved = moved || better != chosen;
             chosen = better;
             for (const auto table : tables) ++uses_at.at(table)[static_cast<std::size_t>(chosen)];
+            for (const auto& row : rows) ++uses_row.at(row)[static_cast<std::size_t>(chosen)];
         }
         if (!moved) break;
     }

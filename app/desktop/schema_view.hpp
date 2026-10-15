@@ -19,6 +19,7 @@
 #include <QWidget>
 
 class QLineEdit;
+class QPlainTextEdit;
 class QAbstractScrollArea;
 #include <functional>
 #include <map>
@@ -42,6 +43,31 @@ struct Theme;
 // other. Everything else is faded rather than removed, so the schema keeps its
 // shape and no line is left hanging from a table that is not there.
 enum class SchemaShowing { Everything, FromEntities, FromRelationships, FromAttributes };
+
+// What the schema's search looks among (C8, 2026-10-14; Zain): the diagram's
+// question of which kind (ADR-018), asked in the schema's own terms. A key is
+// a column of a primary or a foreign key; a relationship is a foreign key, by
+// the words the Schema Explorer lists it in, and brings both its tables.
+enum class SchemaSearchKind { Everything, Tables, Columns, Keys, Relationships };
+
+// The schema's search, with the diagram's two questions beside it (ADR-018):
+// how much to keep, and what becomes of the rest. Combined with the narrowing
+// by where tables came from rather than answering over it (Zain, 2026-10-14):
+// a table is kept when both keep it.
+struct SchemaSearch {
+    // Matched against names, without regard to case. Empty matches every
+    // object of the chosen kind.
+    QString text;
+    SchemaSearchKind kind = SchemaSearchKind::Everything;
+    // Also keep what a match is joined to, one step out both ways: the tables
+    // its foreign keys point at and the tables whose foreign keys point at it.
+    bool with_relatives = false;
+    // Take the rest away rather than fading it. A line goes with either of its
+    // tables, and a picture shows only what is left (Zain, 2026-10-14).
+    bool hide_the_rest = false;
+    [[nodiscard]] bool looking() const { return !text.isEmpty() || kind != SchemaSearchKind::Everything; }
+    bool operator==(const SchemaSearch&) const = default;
+};
 
 // How lines find their way between the tables.
 enum class SchemaRouting { AroundTables, Straight };
@@ -131,7 +157,17 @@ public:
     // the names are not always the same, since a table is named for the many
     // rows it holds and a bridge is named for the relationship behind it.
     void set_looking_for(const QString& looking_for);
-    [[nodiscard]] const QString& looking_for() const { return looking_for_; }
+    [[nodiscard]] const QString& looking_for() const { return search_.text; }
+    // The whole search: what to look for, among which kind, how much to keep
+    // and what becomes of the rest. set_looking_for changes its words alone.
+    void set_search(const SchemaSearch& search);
+    [[nodiscard]] const SchemaSearch& search() const { return search_; }
+    // How many tables a search keeps; nought while nothing is searched.
+    [[nodiscard]] std::size_t found() const;
+    // Which tables are taken away, in the preview's order: the ones neither
+    // kept by the search nor by the narrowing, while the rest is to be
+    // hidden. Empty when nothing is.
+    [[nodiscard]] std::vector<bool> hidden_tables() const;
     [[nodiscard]] SchemaShowing showing() const { return showing_; }
     // Which table is being asked about. Selecting one picks out what it is
     // joined to and fades the rest, because the question a reader has in front
@@ -210,6 +246,14 @@ public:
     // companion to line_shapes: between them they are the whole of what the
     // schema looks like, which is otherwise knowable only by reading pixels.
     [[nodiscard]] std::vector<QRectF> table_boxes() const;
+    // What the table in hand has come into line with while it is carried (C7,
+    // 2026-10-14): a guide down and a guide across at most, each along the
+    // edge or middle of a table left standing that the carried table's own
+    // edge or middle has come within a few pixels of, and reaching past both.
+    // Nothing is snapped to them -- a carried table follows the hand exactly
+    // -- so a guide says what is lined up, or nearly, and moves nothing.
+    // Empty unless a table has been carried.
+    [[nodiscard]] std::vector<QLineF> alignment_guides() const;
     [[nodiscard]] ExportView export_view();
     // How wide a table is drawn with every column shown, before a hand has
     // said otherwise. The width is measured from the lettering, which each
@@ -401,6 +445,35 @@ public:
     void set_placing(bool on);
     [[nodiscard]] bool placing() const { return placing_; }
     std::function<void(bool)> placing_changed;
+    // Text in hand (Zain, 2026-10-15): the Text tool in the header, as the
+    // diagram has it. While it is on, a press puts text where it lands and
+    // opens it for writing, and does nothing else a press would do; `wrote`
+    // says one was put down, for the tool to be put down after one use.
+    // Escape puts it down, and says so.
+    void set_writing(bool on);
+    [[nodiscard]] bool writing() const { return writing_; }
+    std::function<void(bool)> writing_changed;
+    std::function<void()> wrote;
+    // What is put on the schema: text, symbols and pictures (2026-10-15), the
+    // schema's own and never the diagram's. One is chosen at a time, apart
+    // from the tables: a press on one chooses it and puts the tables down,
+    // and a press anywhere else puts it down. A chosen picture or symbol is
+    // pulled by its handles, keeping its proportions; any of them is carried
+    // by a press inside it, written in by a double click if it is text, and
+    // taken away by Delete. Every one of those is one edit.
+    [[nodiscard]] std::optional<domain::ElementRef> chosen_figure() const { return chosen_figure_; }
+    void choose_figure(std::optional<domain::ElementRef> figure);
+    // Where something put on the schema from a menu goes: where the pointer
+    // last was over it, or else the middle of what is in view.
+    [[nodiscard]] QPointF put_place() const;
+    // Each thing put on the schema and the box it is drawn in.
+    [[nodiscard]] std::vector<std::pair<domain::ElementRef, QRectF>> figure_boxes() const;
+    // Opens text on the schema for writing, and closes it, writing what was
+    // typed unless it is cancelled. Text closed empty that was only just put
+    // down is taken away again, as on the diagram.
+    void begin_text(domain::NoteId id, bool just_made);
+    void finish_text(bool cancel);
+    [[nodiscard]] bool writing_text() const { return text_editing_.has_value(); }
     // Pan in hand (Zain, 2026-10-08): the floating controls' Pan, as the
     // diagram's. While it is on, a press takes hold of the view rather than
     // of anything drawn on it, and dragging scrolls the schema; nothing is
@@ -424,7 +497,9 @@ public:
 
 protected:
     void paintEvent(QPaintEvent* event) override;
-    void paint_schema(QPainter& painter, const QRectF& exposed, bool exporting = false);
+    // On screen, or into a picture standing on `export_ground` (which may be
+    // no colour at all).
+    void paint_schema(QPainter& painter, const QRectF& exposed, std::optional<QColor> export_ground = std::nullopt);
     void resizeEvent(QResizeEvent* event) override;
     void mousePressEvent(QMouseEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;
@@ -656,6 +731,16 @@ private:
     // Whether each table is being pointed out or faded back, worked out once
     // per paint from the selection and the narrowing together.
     [[nodiscard]] std::vector<bool> lit_tables() const;
+    // What the search finds, its relatives with it where they are asked for,
+    // before the narrowing has its say.
+    [[nodiscard]] std::vector<bool> found_tables() const;
+    // Whether the narrowing by where tables came from keeps this one.
+    [[nodiscard]] bool kept_by_showing(std::size_t table) const;
+    // The tables the search and the narrowing keep between them, or nothing
+    // while neither is asking anything.
+    [[nodiscard]] std::optional<std::vector<bool>> kept_tables() const;
+    // Whether a line goes with a table that has been taken away.
+    [[nodiscard]] static bool line_hidden(const std::vector<bool>& hidden, std::size_t from, std::size_t to);
     // Where a table came from, in words. The preview says what kind of thing
     // it was and which element it was, and the words are put together here
     // because what to call a thing belongs to whatever is showing it.
@@ -699,6 +784,7 @@ private:
     };
     [[nodiscard]] bool is_marked(const domain::PreviewTable& table) const;
     void draw_band(QPainter& painter) const;
+    void draw_guides(QPainter& painter) const;
     [[nodiscard]] Columns columns_of(const domain::PreviewTable& table) const;
     [[nodiscard]] double natural_width(const domain::PreviewTable& table) const;
     // Everything a table's lettering measures, worked out once for each table
@@ -814,6 +900,36 @@ private:
     [[nodiscard]] std::optional<domain::LinkSource> link_of(domain::ForeignKeyId key) const;
     bool connecting_ = false;
     bool placing_ = false;
+    bool writing_ = false;
+    // Whether the pointer has been over the schema, so that pointer_ is a
+    // place on it rather than where nothing has been yet.
+    bool pointer_seen_ = false;
+    std::optional<domain::ElementRef> chosen_figure_;
+    // A thing put on the schema being carried (no handle) or pulled by one of
+    // its handles, from the box it started in; drawn where the hand has it
+    // and written once, on letting go.
+    struct FigureDrag {
+        domain::ElementRef ref;
+        domain::Rect start;
+        QPointF grab;
+        int handle = -1;
+        domain::Rect now;
+    };
+    std::optional<FigureDrag> figure_drag_;
+    QPlainTextEdit* text_field_ = nullptr;
+    std::optional<domain::NoteId> text_editing_;
+    std::optional<std::uint64_t> text_made_at_;
+    // A picture's pixels, decoded once: its bytes never change once put down.
+    mutable std::map<domain::PictureId, QPixmap> figure_pixmaps_;
+    [[nodiscard]] QRectF figure_rect(const domain::ElementRef& ref) const;
+    [[nodiscard]] std::optional<domain::ElementRef> figure_at(QPointF point, bool pictures) const;
+    [[nodiscard]] std::vector<QRectF> figure_grips(const domain::ElementRef& ref) const;
+    [[nodiscard]] int figure_grip_at(QPointF point) const;
+    [[nodiscard]] const QPixmap& figure_pixmap(domain::PictureId id) const;
+    [[nodiscard]] QFont prose() const;
+    [[nodiscard]] QSizeF prose_size(const QString& text) const;
+    void paint_figures(QPainter& painter, bool pictures, bool exporting);
+    void place_text(QPointF at);
     bool panning_ = false;
     // Where a drag with Pan in hand was taken hold of, and where the schema
     // was scrolled to then.
@@ -857,7 +973,7 @@ private:
     [[nodiscard]] static domain::SchemaLine as_line(const Shape& shape);
     QPointF carried_from_;
     SchemaShowing showing_ = SchemaShowing::Everything;
-    QString looking_for_;
+    SchemaSearch search_;
     SchemaRouting routing_ = SchemaRouting::AroundTables;
     bool lines_give_way_ = false;
     bool tables_resizable_ = true;

@@ -49,7 +49,10 @@ enum class Glyph {
     FileTab, Home, Insert, Settings, NoPanels,
     // The header's Model menu: connected entities, the Home screen's own mark
     // for the conceptual model (Zain, 2026-10-07).
-    Model
+    Model,
+    // The mark in either workspace's search field that opens the search's
+    // kinds and options (C8, 2026-10-14; Zain). Line art in every set.
+    Filter
 };
 
 // Which set a glyph is taken from. Painted follows the theme's colours and

@@ -17,7 +17,7 @@
 int main(int argc, char* argv[]) {
     QApplication app(argc, argv);
     QCoreApplication::setApplicationName("ERDFlow");
-    QCoreApplication::setApplicationVersion("0.1.0");
+    QCoreApplication::setApplicationVersion(ERDFLOW_VERSION); // project(VERSION) in CMakeLists.txt
     QCoreApplication::setOrganizationName("ERDFlow");
     // The theme owns both the application palette and the diagram colours, so a
     // remembered choice is applied before any window is built.

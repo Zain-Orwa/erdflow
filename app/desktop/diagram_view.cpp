@@ -168,13 +168,19 @@ QPointF normal(const QPointF& delta) {
 // the moved line stays the same distance from every run of the original (Zain,
 // 2026-10-03, for the double line of a total participation). Its ends move
 // square to the runs they finish, so two lines moved either way leave a point
-// together. Anything not made only of straight runs is moved as a whole.
+// together. A curved line (2026-10-15) is followed as the short straight runs
+// it is drawn with, so the two lines keep their distance round every bend.
 QPainterPath alongside(const QPainterPath& path, qreal distance) {
     std::vector<QPointF> points;
     for (int i = 0; i < path.elementCount(); ++i) {
         const auto element = path.elementAt(i);
-        if (!element.isMoveTo() && !element.isLineTo()) return path.translated(normal(
-            path.pointAtPercent(1) - path.pointAtPercent(0)) * distance);
+        if (!element.isMoveTo() && !element.isLineTo()) {
+            const auto runs = path.toSubpathPolygons();
+            if (runs.isEmpty()) return path;
+            QPainterPath flat(runs.first().first());
+            for (qsizetype at = 1; at < runs.first().size(); ++at) flat.lineTo(runs.first()[at]);
+            return alongside(flat, distance);
+        }
         const QPointF at(element.x, element.y);
         if (points.empty() || std::hypot(at.x() - points.back().x(), at.y() - points.back().y()) > 0.01)
             points.push_back(at);
@@ -204,6 +210,22 @@ QPainterPath alongside(const QPainterPath& path, qreal distance) {
         else moved.lineTo(points[i] + by);
     }
     return moved;
+}
+
+// A line with corners, rounded off: onto the end of a path standing at its
+// start, it bends towards each corner in turn, passing midway between one
+// corner and the next, and arrives at the end from the last. It keeps inside
+// the corners, so it never hooks or loops however short a run between them.
+// Returns the point the line arrives from, which its end marks are laid along.
+QPointF round_off(QPainterPath& path, const std::vector<QPointF>& corners, const QPointF& end) {
+    if (corners.empty()) {
+        const auto from = path.currentPosition();
+        path.lineTo(end);
+        return from;
+    }
+    for (std::size_t at = 0; at < corners.size(); ++at)
+        path.quadTo(corners[at], at + 1 < corners.size() ? (corners[at] + corners[at + 1]) / 2 : end);
+    return corners.back();
 }
 
 QString minmax_label(bool many, bool mandatory, MinMaxDisplayMode mode) {
@@ -480,6 +502,20 @@ constexpr qreal head_spread = 5 * connector_scale;
 constexpr qreal head_ring_at = 20 * connector_scale;
 constexpr qreal head_dot_at = 9 * connector_scale;
 constexpr qreal dot_radius = 5 * connector_scale;
+
+// Where a participant end's marks need the paper to themselves: the ring that
+// says a side is optional, and Bachman's open dot. A picture drawn on no paper
+// keeps the line out of them instead of laying paper under them.
+QPainterPath participant_hollows(Notation notation, bool many, bool mandatory, const QPointF& end,
+                                 const QPointF& outward, qreal marks) {
+    QPainterPath hollows;
+    const auto out = [&](qreal along) { return end + outward * (along * marks); };
+    if (notation == Notation::CrowsFoot && !mandatory)
+        hollows.addEllipse(out(minimum_at), ring_radius * marks, ring_radius * marks);
+    else if (notation == Notation::Bachman && !many && !mandatory)
+        hollows.addEllipse(out(head_dot_at), dot_radius * marks, dot_radius * marks);
+    return hollows;
+}
 
 // One definition of how a participant end is drawn, used both by the canvas and
 // by the previews in the notation picker, so a picker can never show something
@@ -771,8 +807,20 @@ public:
         return std::holds_alternative<EntityId>(ref) || std::holds_alternative<AttributeId>(ref)
             || std::holds_alternative<RelationshipId>(ref);
     }
-    [[nodiscard]] bool sizeable() const { return (plain || boxed()) && isSelected(); }
-    [[nodiscard]] int handle_count() const { return boxed() ? 8 : 4; }
+    // A picture is pulled by every edge and corner too (Zain, 2026-10-15), but
+    // keeps its proportions whichever is pulled: see scaled_picture.
+    [[nodiscard]] bool pictured() const { return std::holds_alternative<PictureId>(ref); }
+    // How large this shape's handles are. A picture may be pulled down to a
+    // mark beside a name, smaller than eight full handles could sit on without
+    // hiding it, so below four handles' width its handles shrink with it, to a
+    // quarter of its shorter side and never under four, and what is chosen is
+    // still seen while it is made small. Everything else keeps the one size.
+    [[nodiscard]] qreal grip_size() const {
+        if (!pictured()) return grip;
+        return std::clamp(std::min(bounds_.width(), bounds_.height()) / 4, qreal(4), grip);
+    }
+    [[nodiscard]] bool sizeable() const { return (plain || boxed() || pictured()) && isSelected(); }
+    [[nodiscard]] int handle_count() const { return boxed() || pictured() ? 8 : 4; }
     // Which sides of the box each handle lies on. The four corners come first,
     // clockwise from the top left, so a corner's number still says which one
     // it is; then the four edges, in the same order round the box.
@@ -804,9 +852,13 @@ public:
             // target and everything else that reaches for a body measures that
             // box, and padding it would move all of them. A symbol has no such
             // furniture, and keeps the grips that straddle its corners.
-            const QPointF inward(!boxed() ? 0.0 : side.left ? grip / 2 : side.right ? -grip / 2 : 0.0,
-                                 !boxed() ? 0.0 : side.top ? grip / 2 : side.bottom ? -grip / 2 : 0.0);
-            rects[i] = QRectF(at - QPointF(grip / 2, grip / 2) + inward, QSizeF(grip, grip));
+            // A picture's handles sit inside it as an entity's do, so the box
+            // it is chosen and hit by stays the box it is drawn in.
+            const bool inside = boxed() || pictured();
+            const auto size = grip_size();
+            const QPointF inward(!inside ? 0.0 : side.left ? size / 2 : side.right ? -size / 2 : 0.0,
+                                 !inside ? 0.0 : side.top ? size / 2 : side.bottom ? -size / 2 : 0.0);
+            rects[i] = QRectF(at - QPointF(size / 2, size / 2) + inward, QSizeF(size, size));
         }
         return rects;
     }
@@ -911,6 +963,7 @@ public:
     // colour draws a frame, and the colour gives it a mount to sit on.
     void paint_picture(QPainter* painter) {
         const bool mounted = chosen_.has_value();
+        const auto given = painter->opacity();
         // A faded picture is the whole picture faded, mount and all.
         painter->setOpacity(1.0 - transparency_ / 100.0);
         if (mounted || isSelected()) {
@@ -921,16 +974,20 @@ public:
         if (image_.isNull()) {
             painter->setPen(text_);
             painter->drawText(bounds_, Qt::AlignCenter, QStringLiteral("Picture"));
-            return;
+        } else {
+            // Fitted to the body without being stretched, so resizing the body
+            // never distorts the picture, and drawn from the pixels themselves so
+            // zooming in shows more of them rather than a scaled copy.
+            const auto inset = mounted ? bounds_.adjusted(6, 6, -6, -6) : bounds_;
+            const auto size = QSizeF(image_.size()).scaled(inset.size(), Qt::KeepAspectRatio);
+            const QRectF target(inset.center() - QPointF(size.width() / 2, size.height() / 2), size);
+            painter->setRenderHint(QPainter::SmoothPixmapTransform);
+            painter->drawPixmap(target, image_, QRectF(QPointF(0, 0), QSizeF(image_.size())));
         }
-        // Fitted to the body without being stretched, so resizing the body
-        // never distorts the picture, and drawn from the pixels themselves so
-        // zooming in shows more of them rather than a scaled copy.
-        const auto inset = mounted ? bounds_.adjusted(6, 6, -6, -6) : bounds_;
-        const auto size = QSizeF(image_.size()).scaled(inset.size(), Qt::KeepAspectRatio);
-        const QRectF target(inset.center() - QPointF(size.width() / 2, size.height() / 2), size);
-        painter->setRenderHint(QPainter::SmoothPixmapTransform);
-        painter->drawPixmap(target, image_, QRectF(QPointF(0, 0), QSizeF(image_.size())));
+        // The handles at the strength the item is drawn at, not the picture's
+        // own fading, so a faded picture can still be seen to be pullable.
+        painter->setOpacity(given);
+        paint_grips(painter);
     }
     // A note: its title in bold across the top, and its text wrapped beneath.
     // A plain note: the character and nothing else, sized to the room it has,
@@ -990,31 +1047,11 @@ public:
             y += metrics.lineSpacing();
         }
     }
+    // A note is free text or a symbol; the titled card it once could be is
+    // gone (Zain, 2026-10-15).
     void paint_note(QPainter* painter) {
-        if (free_text) { paint_text(painter); return; }
-        if (plain) { paint_plain_note(painter); return; }
-        painter->setPen(QPen(isSelected() ? selection_ : border_, isSelected() ? 2.4 : 1.6));
-        painter->setBrush(fill_);
-        painter->drawPath(body_path());
-        const auto inner = bounds_.adjusted(10, 8, -10, -8);
-        painter->setClipRect(bounds_.adjusted(2, 2, -2, -2));
-        painter->setPen(text_);
-        auto font = painter->font();
-        qreal used = 0;
-        if (!label.isEmpty()) {
-            font = lettered(font, 12.5);
-            font.setWeight(QFont::Bold);
-            painter->setFont(font);
-            const QRectF title(inner.left(), inner.top(), inner.width(), QFontMetricsF(font).height() * 1.25);
-            painter->drawText(title, Qt::AlignLeft | Qt::AlignVCenter,
-                              QFontMetricsF(font).elidedText(label, Qt::ElideRight, title.width()));
-            used = title.height() + 3;
-        }
-        font = lettered(font, 11);
-        font.setWeight(QFont::Normal);
-        painter->setFont(font);
-        painter->drawText(QRectF(inner.left(), inner.top() + used, inner.width(), inner.height() - used),
-                          Qt::AlignLeft | Qt::AlignTop | Qt::TextWordWrap, body);
+        if (free_text) paint_text(painter);
+        else paint_plain_note(painter);
     }
     // The element's own shape, drawn small and without its name. Anything that
     // wants to show what this element is uses this, so what it shows and what
@@ -1321,8 +1358,12 @@ public:
     // the notation the work is done in, so it is the one a diagram should be
     // in before anyone has been asked.
     Notation notation = Notation::CrowsFoot;
+    // While a picture is drawn, what it stands on, which its labels and hollow
+    // marks are laid on in place of the canvas; no colour at all keeps the
+    // line out of them instead.
+    std::optional<QColor> picture_ground;
     MinMaxDisplayMode minmax_display_mode = MinMaxDisplayMode::CardinalityAndOrdinality;
-    LineStyle style = LineStyle::Elbow;
+    LineStyle style = LineStyle::Straight;
 
     // Every notation reads the same two values: the minimum from participation
     // and the maximum from cardinality.
@@ -1506,6 +1547,120 @@ public:
             corners.pop_back();
         return corners;
     }
+    // Which way is straight out of a shape at a point on it: up, down, left or
+    // right, along the axis that point's face runs squarely to.
+    [[nodiscard]] static QPointF square_out(const NodeItem* node, const QPointF& at) {
+        const auto centre = node->body_rect().translated(node->scenePos()).center();
+        return leaves_vertically(node, at) ? QPointF(0, at.y() < centre.y() ? -1 : 1)
+                                           : QPointF(at.x() < centre.x() ? -1 : 1, 0);
+    }
+    // An attribute's line at right angles (Zain, 2026-10-15): out of its
+    // owner's shared point square to that side, across at one level shared by
+    // every attribute on the side -- halfway out to the nearest of them -- and
+    // straight in to its own end. Where that last run would pass through a
+    // neighbour, the line goes round instead: across halfway towards the
+    // attribute, out level with it, and in at its near end from the side.
+    [[nodiscard]] std::vector<QPointF> attribute_route() const {
+        const auto* owner = target;
+        const auto* attribute = source;
+        const auto box_of = [](const NodeItem* node) { return node->body_rect().translated(node->scenePos()); };
+        const auto anchor = owner->attribute_exit(attribute, descriptor.owner_anchor);
+        const auto out = square_out(owner, anchor);
+        const bool upright = out.x() == 0;
+        const QPointF across = upright ? QPointF(1, 0) : QPointF(0, 1);
+        // Measured from the shared point: how far out from the side (x), and
+        // how far along it (y).
+        const auto local = [&](const QPointF& at) {
+            const auto from = at - anchor;
+            return QPointF(QPointF::dotProduct(from, out), QPointF::dotProduct(from, across));
+        };
+        const auto scene_at = [&](const QPointF& at) { return anchor + out * at.x() + across * at.y(); };
+        const auto reach_out = [&](const QRectF& box) { return (upright ? box.height() : box.width()) / 2; };
+        const auto reach_along = [&](const QRectF& box) { return (upright ? box.width() : box.height()) / 2; };
+        const auto box = box_of(attribute);
+        // The attributes this line shares its point with: every one on the
+        // same side, unless this line has been pinned somewhere of its own.
+        std::vector<const NodeItem*> neighbours;
+        if (!descriptor.owner_anchor) {
+            const auto side = owner->middle_facing(box.center());
+            for (const auto* each : owner->attribute_children)
+                if (each != attribute && owner->middle_facing(box_of(each).center()) == side) neighbours.push_back(each);
+        }
+        auto nearest = local(box.center()).x() - reach_out(box);
+        for (const auto* each : neighbours) {
+            const auto other = box_of(each);
+            nearest = std::min(nearest, local(other.center()).x() - reach_out(other));
+        }
+        constexpr qreal stub = 8 * connector_scale;
+        const auto level = std::max(nearest / 2, stub);
+        const auto centre = local(box.center());
+        // Where it goes in: its pinned point, or else the middle of its end
+        // that faces the owner (for the run straight in) or of the side that
+        // faces the shared point (for the way round).
+        const std::optional<QPointF> pinned = descriptor.child_anchor
+            ? std::optional(local(attribute->boundary_at(*descriptor.child_anchor))) : std::nullopt;
+        const bool pinned_end_on = pinned && leaves_vertically(attribute, scene_at(*pinned)) == upright;
+        const QPointF end_on = pinned ? *pinned : QPointF(centre.x() - reach_out(box), centre.y());
+        const QPointF side_on = pinned ? *pinned
+            : QPointF(centre.x(), centre.y() - std::copysign(reach_along(box), centre.y()));
+        // Whether a run between two points crosses another of the owner's
+        // attributes, on any side, with the line's own weight to spare.
+        // Attributes are drawn as ellipses.
+        const auto crosses = [&](const QPointF& a, const QPointF& b) {
+            const auto from = scene_at(a);
+            const auto to = scene_at(b);
+            constexpr qreal spare = 3 * connector_scale;
+            for (const auto* each : owner->attribute_children) {
+                if (each == attribute) continue;
+                const auto other = box_of(each);
+                const auto rx = other.width() / 2 + spare;
+                const auto ry = other.height() / 2 + spare;
+                const auto c = other.center();
+                if (std::abs(from.y() - to.y()) < 0.01) {
+                    const auto dy = (from.y() - c.y()) / ry;
+                    if (std::abs(dy) >= 1) continue;
+                    const auto half = rx * std::sqrt(1 - dy * dy);
+                    if (std::max(from.x(), to.x()) > c.x() - half && std::min(from.x(), to.x()) < c.x() + half) return true;
+                } else {
+                    const auto dx = (from.x() - c.x()) / rx;
+                    if (std::abs(dx) >= 1) continue;
+                    const auto half = ry * std::sqrt(1 - dx * dx);
+                    if (std::max(from.y(), to.y()) > c.y() - half && std::min(from.y(), to.y()) < c.y() + half) return true;
+                }
+            }
+            return false;
+        };
+        const auto blocked = [&](const std::vector<QPointF>& points) {
+            for (std::size_t i = 0; i + 1 < points.size(); ++i)
+                if (crosses(points[i], points[i + 1])) return true;
+            return false;
+        };
+        const std::vector<QPointF> straight_in{{0, 0}, {level, 0}, {level, end_on.y()}, end_on};
+        const auto middle = side_on.y() / 2;
+        const std::vector<QPointF> round{{0, 0}, {level, 0}, {level, middle}, {side_on.x(), middle}, side_on};
+        const bool can_go_straight_in = (!pinned || pinned_end_on) && end_on.x() > level + 0.5;
+        const bool can_go_round = (!pinned || !pinned_end_on) && std::abs(side_on.y()) > 0.5;
+        std::vector<QPointF> chosen;
+        if (can_go_straight_in && (!can_go_round || !blocked(straight_in) || blocked(round))) chosen = straight_in;
+        else if (can_go_round) chosen = round;
+        else return {};
+        // Only the corners the line actually turns at are kept: none where two
+        // fall together, none part-way along a straight run.
+        std::vector<QPointF> kept;
+        for (const auto& point : chosen)
+            if (kept.empty() || std::hypot(point.x() - kept.back().x(), point.y() - kept.back().y()) >= 0.5)
+                kept.push_back(point);
+        for (std::size_t i = 1; i + 1 < kept.size();) {
+            const auto before = kept[i] - kept[i - 1];
+            const auto after = kept[i + 1] - kept[i];
+            if (std::abs(before.x() * after.y() - before.y() * after.x()) < 0.01
+                && QPointF::dotProduct(before, after) > 0) kept.erase(kept.begin() + static_cast<std::ptrdiff_t>(i));
+            else ++i;
+        }
+        std::vector<QPointF> corners;
+        for (std::size_t i = 1; i + 1 < kept.size(); ++i) corners.push_back(scene_at(kept[i]));
+        return corners;
+    }
     // A relationship that meets the same entity twice is drawn the way it is
     // drawn by hand: the first side runs straight between the two shapes, and
     // every later one leaves the diamond by its far corner and comes back
@@ -1593,10 +1748,11 @@ public:
         const bool owned_attribute = std::holds_alternative<AttributeId>(descriptor.key)
             && std::holds_alternative<AttributeId>(descriptor.from);
         if (owned_attribute) {
-            // One straight line from its owner's point to the attribute, in
-            // every line style, so lines sharing a point leave it each on its
-            // own rather than running together and branching (Zain,
-            // 2026-09-26).
+            // One straight line from its owner's point to the attribute, so
+            // lines sharing a point leave it each on its own rather than
+            // running together and branching (Zain, 2026-09-26). Since
+            // 2026-10-15 that is the straight style's; the curved and
+            // right-angle styles shape it too, below.
             const auto anchor = target->attribute_exit(source, descriptor.owner_anchor);
             end = descriptor.child_anchor ? source->boundary_at(*descriptor.child_anchor)
                                           : source->boundary_toward(anchor);
@@ -1646,6 +1802,8 @@ public:
             if (descriptor.recursion > 0) computed_ = loop_route();
             else if (style == LineStyle::Elbow) computed_ = elbow_route();
         }
+        if (owned_attribute && style == LineStyle::Elbow && descriptor.waypoints.empty() && descriptor.offset == 0)
+            computed_ = attribute_route();
         // A route replaces whatever the automatic shape would have been. Each
         // end aims at the corner nearest it rather than at the far endpoint, so
         // the first and last segments leave and arrive along the route itself.
@@ -1664,12 +1822,64 @@ public:
             owner_join_ = start;
             child_join_ = end;
             path_ = QPainterPath(start);
-            for (const auto& corner : corners) path_.lineTo(corner);
-            path_.lineTo(end);
-            approach = corners.back();
+            if (style == LineStyle::Curved) {
+                // Curved, the corners stay where they are and the line is
+                // rounded off between them, bending towards each.
+                approach = round_off(path_, corners, end);
+            } else {
+                for (const auto& corner : corners) path_.lineTo(corner);
+                path_.lineTo(end);
+                approach = corners.back();
+            }
             bend = path_.pointAtPercent(0.5);
             midpoint_ = bend;
             perpendicular_ = normal(end - corners.back());
+        } else if (style == LineStyle::Curved && !inheritance) {
+            // Curved lines (Zain, 2026-10-15). A line nobody has shaped is the
+            // right-angle line rounded off: it leaves and arrives square to
+            // the faces the right-angle one would, and bends towards where
+            // that one turns, so two shapes standing in line still join by
+            // one straight run. A line bent by hand curves through its bend.
+            // An attribute's line leaves its owner's shared point halfway
+            // between square to the side and straight at the attribute, so
+            // lines sharing the point still part there, and comes in
+            // pointing at it.
+            if (owned_attribute) {
+                const auto chord = end - start;
+                const auto length = std::hypot(chord.x(), chord.y());
+                if (length > 0.5) {
+                    const auto toward = chord / length;
+                    auto leave = square_out(target, start) + toward;
+                    const auto lean = std::hypot(leave.x(), leave.y());
+                    leave = lean > 0.01 ? leave / lean : toward;
+                    path_ = QPainterPath(start);
+                    path_.cubicTo(start + leave * (length / 2), end - toward * (length / 3), end);
+                    bend = path_.pointAtPercent(0.5);
+                    midpoint_ = bend;
+                }
+            } else if (descriptor.offset == 0) {
+                auto* head = head_node();
+                auto* tail = tail_node();
+                const auto from = descriptor.owner_anchor
+                    ? head->boundary_at(*descriptor.owner_anchor)
+                    : facing_point(head, tail->scenePos() + tail->body_rect().center());
+                const auto to = descriptor.child_anchor
+                    ? tail->boundary_at(*descriptor.child_anchor)
+                    : facing_point(tail, head->scenePos() + head->body_rect().center());
+                start = from;
+                end = to;
+                owner_join_ = start;
+                child_join_ = end;
+                path_ = QPainterPath(start);
+                approach = round_off(path_, elbow_route(), end);
+                bend = path_.pointAtPercent(0.5);
+            } else {
+                // The one curve that passes through the bend, where its grip is.
+                const auto pull = bend * 2 - (start + end) / 2;
+                path_ = QPainterPath(start);
+                path_.quadTo(pull, end);
+                approach = pull;
+            }
         }
         // A routed line is shaped by its corners, so it shows a grip on each
         // instead of the single bend grip a plain one carries.
@@ -1910,6 +2120,19 @@ public:
         // double line, in every notation.
         const bool total_side = descriptor.relationship && descriptor.participation == Participation::Total;
         const bool doubled = std::holds_alternative<InheritanceKey>(descriptor.key) && descriptor.total;
+        const QColor paper = picture_ground.value_or(canvas_);
+        const bool no_paper = paper.alpha() == 0;
+        if (no_paper) {
+            QPainterPath marks;
+            if (descriptor.show_constraints && !end_label().isEmpty()) marks.addRoundedRect(cardinality_rect_, 3, 3);
+            if (!descriptor.role.isEmpty()) marks.addRoundedRect(role_rect_, 3, 3);
+            if (descriptor.show_constraints && descriptor.relationship)
+                marks.addPath(participant_hollows(notation, many(), mandatory(), end_, outward_, 1.0));
+            QPainterPath everywhere;
+            everywhere.addRect(boundingRect().adjusted(-8, -8, 8, 8));
+            painter->save();
+            painter->setClipPath(everywhere.subtracted(marks), Qt::IntersectClip);
+        }
         if (total_side) {
             const auto apart = (weight + 1.0 * connector_scale) / 2;
             painter->drawPath(alongside(path_, apart));
@@ -1924,12 +2147,13 @@ public:
         } else {
             painter->drawPath(path_);
         }
+        if (no_paper) painter->restore();
         auto font = painter->font();
         font = lettered(font, 10);
         painter->setFont(font);
         auto draw_label = [&](const QRectF& rect, const QString& text, ShapedLabel& shaped) {
             painter->setPen(Qt::NoPen);
-            painter->setBrush(canvas_);
+            painter->setBrush(paper);
             painter->drawRoundedRect(rect, 3, 3);
             painter->setPen(isSelected() ? selection_ : text_);
             if (shaped.source != text || shaped.room != rect.width()) {
@@ -1952,7 +2176,7 @@ public:
             if (const auto label = end_label(); !label.isEmpty()) draw_label(cardinality_rect_, label, cardinality_label_);
         }
         if (!descriptor.role.isEmpty()) draw_label(role_rect_, descriptor.role, role_label_);
-        if (descriptor.show_constraints) paint_end_symbols(painter, ink, canvas_);
+        if (descriptor.show_constraints) paint_end_symbols(painter, ink, paper);
         if (isSelected() && shapeable()) {
             painter->setPen(QPen(selection_, 1.4 * connector_scale));
             painter->setBrush(canvas_);
@@ -2141,7 +2365,9 @@ struct DiagramView::Impl {
     ThemeId theme_id = ThemeId::OfficeLight;
     Notation notation = Notation::CrowsFoot;
     MinMaxDisplayMode minmax_display_mode = MinMaxDisplayMode::CardinalityAndOrdinality;
-    LineStyle style = LineStyle::Elbow;
+    // Lines are drawn straight until another style is chosen (Zain,
+    // 2026-10-15; until then they broke at right angles).
+    LineStyle style = LineStyle::Straight;
     JoinMode join_mode = JoinMode::Automatic;
     bool tool_locked = false;
     // The element attributes placed are attached to, and the project it was
@@ -2524,6 +2750,44 @@ struct DiagramView::Impl {
             bottom = std::clamp(start.bottom() + travelled.y(), top + min_entity_height, top + max_entity_height);
         return Rect{left, top, right - left, bottom - top};
     }
+    // The box a picture's handle asks for (Zain, 2026-10-15). A picture is
+    // drawn fitted and never stretched, so a box pulled out of its proportions
+    // would only pad it with air and the picture would not grow: every handle,
+    // edge or corner, scales the whole picture and keeps its proportions. A
+    // corner travels with the hand while the corner opposite stays put. An
+    // edge travels with the hand while the edge opposite stays where it was,
+    // and the picture stays centred along it, so an icon stood level with its
+    // entity stays level with it.
+    [[nodiscard]] static Rect scaled_picture(const SizeDrag& drag, const QPointF& pointer) {
+        const auto& side = NodeItem::handle_sides[static_cast<std::size_t>(
+            std::clamp(drag.corner, 0, static_cast<int>(NodeItem::handle_sides.size()) - 1))];
+        const QRectF start(drag.start.x, drag.start.y, drag.start.width, drag.start.height);
+        if (start.width() < 0.1 || start.height() < 0.1) return drag.start;
+        // Measured by how far the hand has travelled since it took hold, not
+        // by where it is: a picture's handle sits inside its corner, and the
+        // picture must not jump to meet the hand when it is grabbed.
+        const auto travelled = pointer - drag.grab;
+        const auto across = side.right ? travelled.x() : side.left ? -travelled.x() : 0.0;
+        const auto down = side.bottom ? travelled.y() : side.top ? -travelled.y() : 0.0;
+        // How much larger the hand asks for. An edge asks along its own axis;
+        // a corner by whichever way the hand went further, so the picture
+        // follows it rather than lagging behind. A corner hauled back past
+        // the one opposite asks for the smallest, not for a picture turned
+        // inside out.
+        auto scale = drag.corner >= 4
+            ? (side.left || side.right ? (start.width() + across) / start.width() : (start.height() + down) / start.height())
+            : std::max((start.width() + across) / start.width(), (start.height() + down) / start.height());
+        const auto least = std::max(min_picture_size / start.width(), min_picture_size / start.height());
+        const auto most = std::min(max_picture_size / start.width(), max_picture_size / start.height());
+        scale = std::clamp(scale, std::min(least, most), std::max(least, most));
+        const auto width = start.width() * scale;
+        const auto height = start.height() * scale;
+        // The sides the handle lies on travel; the ones opposite stay; along
+        // an edge, the picture stays centred.
+        const auto x = side.right ? start.left() : side.left ? start.right() - width : start.center().x() - width / 2;
+        const auto y = side.bottom ? start.top() : side.top ? start.bottom() - height : start.center().y() - height / 2;
+        return Rect{x, y, width, height};
+    }
     // How large a name is drawn in a box being pulled from the one it started
     // at: from the size its lettering was set for, or, the first time it is
     // resized, from the size it started the pull at, which is what the edit
@@ -2540,6 +2804,7 @@ struct DiagramView::Impl {
     }
     // Which of the two the shape under the hand is pulled by.
     [[nodiscard]] static Rect hauled_box(const SizeDrag& drag, const QPointF& pointer) {
+        if (std::holds_alternative<PictureId>(drag.ref)) return scaled_picture(drag, pointer);
         return (std::holds_alternative<EntityId>(drag.ref) || std::holds_alternative<RelationshipId>(drag.ref)
                 || std::holds_alternative<AttributeId>(drag.ref))
             ? pulled_body(drag, pointer) : sized_box(drag, pointer);
@@ -2623,18 +2888,6 @@ struct DiagramView::Impl {
         mesh(grid_spacing * 5, 1.6);
         painter->restore();
     }
-    // A note put down centred on a point, selected and opened for its title,
-    // since a note is for writing on. Used by the tool and by the menus.
-    void place_note(QPointF centre) {
-        if (snap_enabled()) centre = {std::round(centre.x() / grid_spacing) * grid_spacing,
-                                      std::round(centre.y() / grid_spacing) * grid_spacing};
-        const auto result = editor.create_note("Note", centred(centre, note_body));
-        publish(result);
-        if (result && result.created) {
-            view.select_elements({*result.created});
-            begin_inline_edit(*result.created);
-        }
-    }
     void place_text(QPointF at) {
         if (snap_enabled()) at = {std::round(at.x() / grid_spacing) * grid_spacing,
                                  std::round(at.y() / grid_spacing) * grid_spacing};
@@ -2658,9 +2911,6 @@ struct DiagramView::Impl {
         auto* picture = insert->addAction("Picture…");
         picture->setObjectName("contextInsertPicture");
         QObject::connect(picture, &QAction::triggered, &view, [this, at] { if (view.on_insert_picture) view.on_insert_picture(at); });
-        auto* note = insert->addAction("Note");
-        note->setObjectName("contextInsertNote");
-        QObject::connect(note, &QAction::triggered, &view, [this, at] { place_note(at); });
     }
     void publish(const application::EditResult& result) {
         view.synchronize();
@@ -2689,7 +2939,20 @@ struct DiagramView::Impl {
     void refresh_incident(NodeItem* item) {
         if (synchronizing) return;
         const auto found = incident.find(item->ref);
-        if (found != incident.end()) for (auto* edge : found->second) edge->refresh();
+        if (found == incident.end()) return;
+        for (auto* edge : found->second) edge->refresh();
+        // At right angles the attributes on one side of an owner cross at one
+        // level, set by the nearest of them, so moving one can move the level
+        // its neighbours' lines cross at. An owner being carried with it
+        // redraws them all itself.
+        if (style != LineStyle::Elbow) return;
+        for (auto* edge : found->second) {
+            if (!edge->from_owner() || edge->source != item || drag_start.contains(edge->target->ref)) continue;
+            const auto owned = incident.find(edge->target->ref);
+            if (owned == incident.end()) continue;
+            for (auto* other : owned->second)
+                if (other != edge && other->from_owner()) other->refresh();
+        }
     }
     // Elements line up with their neighbours as they are dragged, the way a
     // page layout does: an edge or a middle that comes within a few pixels of
@@ -3667,7 +3930,6 @@ void DiagramView::set_tool(Tool tool, bool locked) {
         break;
     case Tool::Pan: impl_->status(QStringLiteral("Drag to pan. The middle mouse button pans in every tool.")); break;
     case Tool::Text: impl_->status(QStringLiteral("Place plain text on the Conceptual diagram. Click to place, then type.")); break;
-    case Tool::Note: impl_->status(QStringLiteral("Click the canvas to place a note, then type its title. Its text is written in Properties.")); break;
     }
 }
 bool DiagramView::tool_locked() const { return impl_->tool_locked; }
@@ -3739,7 +4001,8 @@ QRectF DiagramView::view_bounds() const { return mapToScene(viewport()->rect()).
 
 QColor DiagramView::canvas_colour() const { return theme(impl_->theme_id).canvas; }
 
-void DiagramView::render_diagram(QPainter& painter, const QRectF& target, const QRectF& source) {
+void DiagramView::render_diagram(QPainter& painter, const QRectF& target, const QRectF& source,
+                                 std::optional<QColor> ground) {
     // A picture is of the diagram, not of the editor that happens to be looking
     // at it. Selection rings, the grips that come with them and a connector's
     // padlock are all drawn because something is chosen, so what is chosen is
@@ -3754,7 +4017,15 @@ void DiagramView::render_diagram(QPainter& painter, const QRectF& target, const 
     painter.setRenderHint(QPainter::SmoothPixmapTransform);
     // The scene draws its items and nothing else: the paper and the editing
     // grid belong to the view's own background, which is not consulted here.
+    for (auto& [key, edge] : impl_->edges) {
+        (void)key;
+        edge->picture_ground = ground;
+    }
     impl_->scene->render(&painter, target, source, Qt::IgnoreAspectRatio);
+    for (auto& [key, edge] : impl_->edges) {
+        (void)key;
+        edge->picture_ground.reset();
+    }
     for (auto* item : chosen) item->setSelected(true);
     impl_->synchronizing = false;
 }
@@ -4464,7 +4735,7 @@ void DiagramView::mousePressEvent(QMouseEvent* event) {
         return;
     }
     if (impl_->active_tool == Tool::Entity || impl_->active_tool == Tool::Attribute
-        || impl_->active_tool == Tool::Relationship || impl_->active_tool == Tool::Note || impl_->active_tool == Tool::Text) {
+        || impl_->active_tool == Tool::Relationship || impl_->active_tool == Tool::Text) {
         auto center = mapToScene(event->position().toPoint());
         if (impl_->align_to_grid) center = {std::round(center.x() / grid_spacing) * grid_spacing, std::round(center.y() / grid_spacing) * grid_spacing};
         application::EditResult result;
@@ -4475,14 +4746,6 @@ void DiagramView::mousePressEvent(QMouseEvent* event) {
         } else if (impl_->active_tool == Tool::Text) {
             if (!impl_->tool_locked) set_tool(Tool::Select);
             impl_->place_text(center);
-            event->accept();
-            return;
-        } else if (impl_->active_tool == Tool::Note) {
-            // The tool hands back first, as the others do, and the note is
-            // then placed through the same path the menus use: handing back
-            // afterwards would close the title the note opens for.
-            if (!impl_->tool_locked) set_tool(Tool::Select);
-            impl_->place_note(center);
             event->accept();
             return;
         } else {
@@ -4943,7 +5206,9 @@ void DiagramView::mouseReleaseEvent(QMouseEvent* event) {
                     // one out ended in "Only a symbol can be resized".
                     : std::holds_alternative<AttributeId>(drag.ref)
                         ? impl_->editor.resize_attributes({{drag.ref, box}})
-                        : impl_->editor.resize_symbols({{drag.ref, box}});
+                        : std::holds_alternative<PictureId>(drag.ref)
+                            ? impl_->editor.resize_pictures({{drag.ref, box}})
+                            : impl_->editor.resize_symbols({{drag.ref, box}});
             if (!result) impl_->displayed_revision.reset(); // Put the stored size back after a refusal.
             impl_->publish(result);
         }

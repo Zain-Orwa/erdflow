@@ -1308,10 +1308,11 @@ void a_rename_widens_but_never_narrows() {
     // No wider than any element may be made.
     CHECK(editor.rename(student, "Wide", 5000));
     CHECK(editor.project().layout.at(student).width == max_entity_width);
-    // Nothing else is widened by its name.
-    const auto made = editor.create_note("Note", {0, 300, 200, 120});
+    // Nothing else is widened by its name: free text has none to fit, and the
+    // name a symbol is given is only the character it draws.
+    const auto made = editor.create_free_text("Some far longer words than fit", {0, 300, 200, 120});
     CHECK(made && made.created);
-    CHECK(editor.rename(*made.created, "A note with a far longer title", 900));
+    CHECK(editor.rename(*made.created, "A far longer name", 900));
     CHECK((editor.project().layout.at(*made.created) == Rect{0, 300, 200, 120}));
 }
 void lettering_follows_resizing_by_hand() {
@@ -1369,7 +1370,7 @@ void lettering_follows_resizing_by_hand() {
 
     // Only those three have lettering of their own.
     auto project = editor.project();
-    const auto note = editor.create_note("Note", {});
+    const auto note = editor.create_free_text("Text", {0, 0, 200, 120});
     CHECK(note && note.created);
     project = editor.project();
     project.lettering.emplace(*note.created, LetteringBase{200, 120});
@@ -1437,6 +1438,79 @@ void free_text_lifecycle() {
     (void)owner;
 }
 
+// Text, symbols and pictures put on the Relational Schema (Zain, 2026-10-15)
+// are the schema's own: made, written, moved, resized and deleted there, each
+// one step of history, and never touching the diagram's own.
+void schema_figures_are_the_schemas_own() {
+    TestIds ids;
+    Editor editor(ids);
+    const auto student = entity(editor, "Student");
+    const std::vector<std::uint8_t> png{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13};
+    const auto diagram = editor.project();
+
+    const auto text = editor.create_schema_text("Reviewed by the DBA", {40, 500, 180, 40});
+    CHECK(text && text.created && std::holds_alternative<NoteId>(*text.created));
+    CHECK(editor.undo_label() == "Insert text");
+    const auto symbol = editor.create_schema_symbol("⋈", {300, 500, 56, 56});
+    CHECK(symbol && symbol.created);
+    const auto picture = editor.create_schema_picture("Map", {400, 500, 77, 77}, png);
+    CHECK(picture && picture.created && std::holds_alternative<PictureId>(*picture.created));
+    const auto& project = editor.project();
+    CHECK(project.schema_notes.size() == 2 && project.schema_pictures.size() == 1 && project.schema_figures.size() == 3);
+    CHECK(project.schema_notes.at(std::get<NoteId>(*text.created)).free_text);
+    CHECK(project.schema_notes.at(std::get<NoteId>(*symbol.created)).plain);
+    CHECK((project.schema_figures.at(*picture.created) == Rect{400, 500, 77, 77}));
+    // Nothing of the diagram is touched.
+    CHECK(project.notes == diagram.notes && project.pictures == diagram.pictures && project.layout == diagram.layout);
+    CHECK(!blocks(project));
+
+    // Written, moved, resized.
+    CHECK(editor.edit_schema_text(std::get<NoteId>(*text.created), "Reviewed\nby the DBA", {40, 500, 120, 60}));
+    CHECK(editor.project().schema_notes.at(std::get<NoteId>(*text.created)).description == "Reviewed\nby the DBA");
+    CHECK(!editor.edit_schema_text(std::get<NoteId>(*symbol.created), "x", {0, 0, 10, 10}));
+    CHECK(editor.move_schema_figures({{*picture.created, {420, 520, 999, 999}}}));
+    CHECK((editor.project().schema_figures.at(*picture.created) == Rect{420, 520, 77, 77}));
+    CHECK(editor.undo_label() == "Move on the schema");
+    CHECK(editor.resize_schema_figures({{*picture.created, {420, 520, 2, 2}}}));
+    CHECK((editor.project().schema_figures.at(*picture.created) == Rect{420, 520, min_picture_size, min_picture_size}));
+    CHECK(editor.undo_label() == "Resize picture");
+    CHECK(editor.resize_schema_figures({{*symbol.created, {300, 500, 112, 112}}}));
+    CHECK(editor.undo_label() == "Resize symbol");
+    CHECK(!editor.resize_schema_figures({{*text.created, {40, 500, 400, 400}}}));
+    CHECK(!editor.move_schema_figures({{ElementRef{student}, {0, 0, 10, 10}}}));
+    // The diagram's own commands do not reach them.
+    CHECK(!editor.rename(*picture.created, "Elsewhere"));
+    CHECK(editor.project().layout == diagram.layout);
+
+    // Deleted together, and back with one undo.
+    const auto before = editor.project();
+    CHECK(editor.erase_schema_figures({*text.created, *picture.created}));
+    CHECK(editor.undo_label() == "Delete from the schema");
+    CHECK(editor.project().schema_notes.size() == 1 && editor.project().schema_pictures.empty()
+          && editor.project().schema_figures.size() == 1);
+    CHECK(editor.undo() && editor.project() == before);
+    CHECK(!editor.erase_schema_figures({ElementRef{student}}));
+
+    // What the model refuses.
+    auto broken = editor.project();
+    broken.schema_notes.at(std::get<NoteId>(*text.created)).free_text = false;
+    CHECK(has_issue(broken, "note.presentation.invalid"));
+    broken = editor.project();
+    broken.schema_figures.erase(*picture.created);
+    CHECK(has_issue(broken, "schema.figure.missing"));
+    broken = editor.project();
+    broken.schema_pictures.clear();
+    CHECK(has_issue(broken, "schema.figure.reference.missing"));
+    broken = editor.project();
+    broken.schema_figures.at(*picture.created).width = -1;
+    CHECK(has_issue(broken, "schema.figure.bounds.invalid"));
+    broken = editor.project();
+    const auto id = std::get<NoteId>(*symbol.created);
+    broken.notes.emplace(id, broken.schema_notes.at(id));
+    broken.layout.emplace(ElementRef{id}, Rect{0, 0, 56, 56});
+    CHECK(has_issue(broken, "identity.duplicate"));
+}
+
 void pictures_and_notes_are_placed_like_elements() {
     TestIds ids;
     Editor editor(ids);
@@ -1447,12 +1521,18 @@ void pictures_and_notes_are_placed_like_elements() {
     CHECK(editor.undo_label() == "Insert picture");
     CHECK(editor.project().pictures.at(picture).image == png);
     CHECK((editor.project().layout.at(*placed.created) == Rect{10, 20, 200, 120}));
-    const auto noted = editor.create_note("Assumptions", {300, 20, 200, 120}, "Each student enrols each term.");
+    // The titled Note is gone (2026-10-15); free text is the note placed here.
+    const auto noted = editor.create_free_text("Each student enrols each term.", {300, 20, 200, 120});
     CHECK(noted && noted.created);
     const auto note = std::get<NoteId>(*noted.created);
-    CHECK(editor.undo_label() == "Insert note");
-    CHECK(name(editor.project(), *noted.created) == "Assumptions");
+    CHECK(editor.undo_label() == "Insert text");
     CHECK(description(editor.project(), *noted.created) == "Each student enrols each term.");
+    {
+        // The model admits free text and symbols, and no titled card.
+        auto card = editor.project();
+        card.notes.at(note).free_text = false;
+        CHECK(has_issue(card, "note.presentation.invalid"));
+    }
 
     CHECK(editor.rename(*placed.created, "Campus map"));
     CHECK(editor.project().pictures.at(picture).name == "Campus map");
@@ -2171,7 +2251,7 @@ void the_model_says_what_it_becomes() {
     CHECK(editor.set_schema_comment(ElementRef{id}, "Permanent identifier."));
     CHECK(editor.project().attributes.at(id).comment == "Permanent identifier.");
     CHECK(editor.set_schema_comment(ElementRef{student}, "A registered person."));
-    const auto note = editor.create_note("Note", {400, 400, 200, 120});
+    const auto note = editor.create_free_text("Text", {400, 400, 200, 120});
     CHECK(note);
     CHECK(!editor.set_schema_comment(*note.created, "Nobody will ever read this."));
 
@@ -2911,7 +2991,7 @@ void boxes_are_pulled_by_any_of_their_edges() {
     CHECK(editor.project().layout.at(ref).height == max_entity_height);
 
     // And nothing else on the diagram is pulled about this way.
-    const auto note = editor.create_note("Note", {0, 0, 200, 120}, "");
+    const auto note = editor.create_free_text("Text", {0, 0, 200, 120});
     CHECK(note && note.created);
     CHECK(!editor.resize_entities({{*note.created, {0, 0, 300, 200}}}));
     CHECK((editor.project().layout.at(*note.created) == Rect{0, 0, 200, 120}));
@@ -5115,6 +5195,7 @@ int main() {
         {"connections can be pinned as they are made", connections_can_be_pinned_as_they_are_made},
         {"free text lifecycle", free_text_lifecycle},
         {"pictures and notes are placed like elements", pictures_and_notes_are_placed_like_elements},
+        {"schema figures are the schema's own", schema_figures_are_the_schemas_own},
         {"lettering follows resizing by hand", lettering_follows_resizing_by_hand},
         {"a rename widens but never narrows", a_rename_widens_but_never_narrows},
         {"history tells what was done", history_tells_what_was_done},

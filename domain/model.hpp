@@ -343,8 +343,10 @@ struct Picture {
     std::vector<std::uint8_t> image;
     auto operator<=>(const Picture&) const = default;
 };
-// A note is free text: its name is drawn as a title and its description as
-// the text beneath, which is why it has the same two fields as everything else.
+// A note is one of two things put on the canvas beside the model: free text,
+// or a symbol. The titled card a note once was is gone (Zain, 2026-10-15); one
+// in an older file is read as free text holding its title and then its text.
+// The two fields are kept because the file has always carried them.
 struct Note {
     NoteId id;
     std::string name;
@@ -754,6 +756,15 @@ struct Project {
     SchemaOverrides schema;
     // Where the schema has been arranged by hand, beside the diagram's own.
     SchemaLayout schema_layout;
+    // Text, symbols and pictures put on the Relational Schema (Zain,
+    // 2026-10-15). They are the schema's own, never the diagram's: placed in
+    // the schema's coordinates, and drawn, saved and undone with it. A note
+    // here is free text or a symbol, as on the diagram, and a picture keeps
+    // its bytes as a diagram picture does. Each stands where schema_figures
+    // says, keyed as the diagram's layout is.
+    std::map<NoteId, Note> schema_notes;
+    std::map<PictureId, Picture> schema_pictures;
+    std::map<ElementRef, Rect> schema_figures;
     std::map<ElementRef, Rect> layout;
     // How the user has shaped each connector they have touched. An absent entry
     // means the connector is bent and joined entirely automatically.
@@ -822,6 +833,11 @@ inline constexpr double max_coordinate = 100000;
 // it is drawn on. Between them a symbol can be enlarged and shrunk freely.
 inline constexpr double min_symbol_size = 16;
 inline constexpr double max_symbol_size = 4000;
+// A picture is drawn fitted to its box, never stretched, so the box is how big
+// it is drawn. It is pulled by any edge or corner (Zain, 2026-10-15) between the
+// same bounds as a symbol: down to a mark beside a name, up to a region's head.
+inline constexpr double min_picture_size = min_symbol_size;
+inline constexpr double max_picture_size = max_symbol_size;
 // How small and how large an entity's box may be pulled. Small enough for a
 // compact diagram of short names, large enough to hold a long one without
 // shortening it, and bounded at both ends so a pull that runs away cannot

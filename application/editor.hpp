@@ -123,17 +123,28 @@ public:
     // neither a supertype nor subtypes.
     EditResult create_specialization(std::string name, domain::Rect rect, domain::Inheritance direction);
     // Visual aids. A picture is inserted with the encoded bytes of its image,
-    // which are kept as given; a note with the text drawn beneath its title.
-    // Both are then named, described, moved, coloured, copied and deleted like
-    // any other element, through the same commands.
+    // which are kept as given. It is then named, described, moved, coloured,
+    // copied and deleted like any other element, through the same commands.
     EditResult create_picture(std::string name, domain::Rect rect, std::vector<std::uint8_t> image);
-    EditResult create_note(std::string name, domain::Rect rect, std::string text = {});
     // One character placed on the diagram on its own, drawn bare. It is a note
     // underneath, so everything that can be done to a note can be done to it;
     // it is a separate command only so that the history says "symbol".
     EditResult create_symbol(std::string character, domain::Rect rect);
     EditResult create_free_text(std::string text, domain::Rect rect);
     EditResult edit_free_text(domain::NoteId id, std::string text, domain::Rect rect);
+    // Text, a symbol or a picture put on the Relational Schema (2026-10-15):
+    // the schema's own, kept apart from the diagram's, in the schema's
+    // coordinates. Made, written, moved, resized and deleted only through
+    // these, each one step of history.
+    EditResult create_schema_text(std::string text, domain::Rect rect);
+    EditResult create_schema_symbol(std::string character, domain::Rect rect);
+    EditResult create_schema_picture(std::string name, domain::Rect rect, std::vector<std::uint8_t> image);
+    EditResult edit_schema_text(domain::NoteId id, std::string text, domain::Rect rect);
+    // A place for each, its size kept; and a size for each picture or symbol,
+    // clamped to a picture's bounds. Text is as large as its words.
+    EditResult move_schema_figures(const std::map<domain::ElementRef, domain::Rect>& places);
+    EditResult resize_schema_figures(const std::map<domain::ElementRef, domain::Rect>& boxes);
+    EditResult erase_schema_figures(const std::vector<domain::ElementRef>& figures);
     EditResult set_supertype(domain::SpecializationId specialization, std::optional<domain::EntityId> supertype);
     EditResult set_inheritance_direction(domain::SpecializationId specialization, domain::Inheritance direction);
     EditResult attach_subtype(domain::SpecializationId specialization, domain::EntityId subtype);
@@ -390,6 +401,11 @@ public:
     // symbols is enlarged together, and it refuses anything that is not a
     // symbol so the command cannot quietly reshape the rest of the diagram.
     EditResult resize_symbols(const std::map<domain::ElementRef, domain::Rect>& boxes);
+    // A picture's box is how big the picture is drawn, so its size is a
+    // property of it as a symbol's is: its own named edit, refusing anything
+    // that is not a picture, with a pull on a left or top edge writing the new
+    // place and the new size together.
+    EditResult resize_pictures(const std::map<domain::ElementRef, domain::Rect>& boxes);
     // An entity's box is pulled by its own edges and corners, each of which
     // moves one side and leaves the opposite one where it was. Its own named
     // edit rather than a move that happens to change a size, so the history

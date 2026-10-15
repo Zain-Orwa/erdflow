@@ -1,0 +1,394 @@
+name: Desktop Packages
+
+# Builds the four ERDFlow installers as downloadable workflow artifacts:
+#
+#   ERDFlow-<version>-windows-x86_64-setup.exe   (Inno Setup, per-user)
+#   ERDFlow-<version>-macos-arm64.dmg            (Apple silicon)
+#   ERDFlow-<version>-macos-x86_64.dmg           (Intel)
+#   ERDFlow-<version>-linux-x86_64.AppImage
+#   SHA256SUMS
+#
+# with, for each package, its SHA-256 and an inventory of what it contains
+# (ERDFlow-<version>-<platform>-inventory.json).
+#
+# It runs when started by hand, and when a release/** branch is pushed, so a
+# release candidate's packages are built before it is merged (a run started
+# by hand needs the workflow on the default branch). It creates no release and
+# no tag, and publishes nothing; the packages are unsigned test candidates. See
+# packaging/README.md. The ordinary CI (ci.yml) is separate and unchanged.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - 'release/**'
+
+concurrency:
+  group: desktop-packages-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows x86-64
+            id: windows-x86_64
+            runner: windows-2025
+            qt-arch: win64_msvc2022_64
+          - name: Linux x86-64
+            id: linux-x86_64
+            runner: ubuntu-24.04
+            qt-arch: linux_gcc_64
+          - name: macOS Apple Silicon
+            id: macos-arm64
+            runner: macos-15
+            qt-arch: clang_64
+            osx-arch: arm64
+          - name: macOS Intel
+            id: macos-x86_64
+            runner: macos-15-intel
+            qt-arch: clang_64
+            osx-arch: x86_64
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Check out the source
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730 # v4.3.1
+        with:
+          version: 6.11.2
+          arch: ${{ matrix.qt-arch }}
+          # Pin the upstream fix for Qt 6.11 Windows repository paths.
+          aqtsource: ${{ runner.os == 'Windows' && 'git+https://github.com/miurahr/aqtinstall.git@7e5a5c3d95cf962cfc2f36c86ffa0d2c07f1a0d4' || '' }}
+          cache: true
+
+      # The package notices are made from the SBOMs that come with the official
+      # Qt binaries; without them the packages cannot be built.
+      - name: Check the Qt SBOMs
+        run: ls "$QT_ROOT_DIR"/sbom/qtbase-*.spdx.json "$QT_ROOT_DIR"/sbom/qtsvg-*.spdx.json
+
+      # macOS: the oldest macOS the app claims to support is the one the Qt
+      # libraries it ships were built for.
+      - name: Configure (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          minos=$(vtool -show-build "$QT_ROOT_DIR/lib/QtCore.framework/QtCore" | awk '/minos/ { print $2; exit }')
+          test -n "$minos"
+          echo "Deployment target: macOS $minos"
+          cmake -S . -B build/package \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TESTING=ON \
+            -DERDFLOW_PACKAGING=ON \
+            -DCMAKE_OSX_ARCHITECTURES=${{ matrix.osx-arch }} \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET="$minos"
+
+      - name: Configure (Windows)
+        if: runner.os == 'Windows'
+        run: >-
+          cmake -S . -B build/package
+          -A x64
+          -DCMAKE_BUILD_TYPE=Release
+          -DBUILD_TESTING=ON
+          -DERDFLOW_PACKAGING=ON
+
+      - name: Install runtime test dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 libxcb-image0 \
+            libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-shape0 \
+            libxcb-xinerama0 libxcb-xkb1 libxcb-glx0 libegl1 libgl1 \
+            libfontconfig1 libdbus-1-3 xvfb
+
+      - name: Configure (Linux)
+        if: runner.os == 'Linux'
+        run: >-
+          cmake -S . -B build/package
+          -DCMAKE_BUILD_TYPE=Release
+          -DBUILD_TESTING=ON
+          -DERDFLOW_PACKAGING=ON
+          -DCMAKE_INSTALL_PREFIX=/usr
+
+      # The version comes from project(VERSION) in CMakeLists.txt, through CMake.
+      - name: Read the version
+        run: |
+          version=$(tr -d '\r\n' < build/package/packaging/erdflow-version.txt)
+          test -n "$version"
+          echo "ERDFLOW_VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Test notice generator
+        run: python3 -m unittest discover -s packaging/notices -p 'test_*.py'
+
+      - name: Build
+        run: cmake --build build/package --config Release --parallel
+
+      - name: Test
+        run: ctest --test-dir build/package --build-config Release --output-on-failure --timeout 120
+
+      # ---- macOS: ERDFlow.app in a disk image ---------------------------------
+
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        run: cpack --config build/package/CPackConfig.cmake
+
+      - name: Verify (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          dmg="build/package/dist/ERDFlow-$ERDFLOW_VERSION-macos-${{ matrix.osx-arch }}.dmg"
+          hdiutil verify "$dmg"
+          mnt="$RUNNER_TEMP/erdflow-dmg"
+          mkdir -p "$mnt"
+          hdiutil attach -readonly -nobrowse -mountpoint "$mnt" "$dmg"
+          trap 'hdiutil detach "$mnt"' EXIT
+          app="$mnt/ERDFlow.app"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          lipo -archs "$app/Contents/MacOS/ERDFlow" | grep -qw "${{ matrix.osx-arch }}"
+          # The identity and version the system and the program report.
+          plist="$app/Contents/Info.plist"
+          test "$(plutil -extract CFBundleIdentifier raw "$plist")" = "app.erdflow.ERDFlow"
+          test "$(plutil -extract CFBundleShortVersionString raw "$plist")" = "$ERDFLOW_VERSION"
+          test "$(plutil -extract CFBundleVersion raw "$plist")" = "$ERDFLOW_VERSION"
+          echo "Minimum macOS: $(plutil -extract LSMinimumSystemVersion raw "$plist")"
+          "$app/Contents/MacOS/ERDFlow" --version | tee "$RUNNER_TEMP/version.txt"
+          grep -qx "ERDFlow $ERDFLOW_VERSION" "$RUNNER_TEMP/version.txt"
+          # Every library the bundle loads is in the bundle or part of macOS.
+          status=0
+          while IFS= read -r file; do
+            file -b "$file" | grep -q Mach-O || continue
+            own=$(otool -D "$file" | sed -n 2p)
+            while IFS= read -r lib; do
+              [ "$lib" = "$own" ] && continue
+              case "$lib" in
+                /System/*|/usr/lib/*|@*) ;;
+                *) echo "::error::$file loads $lib from outside the bundle"; status=1 ;;
+              esac
+            done < <(otool -L "$file" | sed -nE '/^[[:space:]]+.* \(compatibility version/ { s/ \(compatibility.*//; s/^[[:space:]]+//; p; }')
+          done < <(find "$app/Contents" -type f)
+          if find "$app" | grep -iE 'virtualkeyboard'; then
+            echo "::error::Qt Virtual Keyboard (GPL-only) is in the bundle"; status=1
+          fi
+          licences="$app/Contents/Resources/Licenses"
+          for notice in LICENSE LICENSE-lucide.txt THIRD-PARTY-NOTICES.md THIRD-PARTY-LICENSES.txt \
+                        QT-LGPL-INFORMATION.md LGPL-3.0.txt GPL-3.0.txt; do
+            test -f "$licences/$notice" || { echo "::error::$notice is missing"; status=1; }
+          done
+          if grep -q '^INCOMPLETE' "$licences/THIRD-PARTY-LICENSES.txt"; then
+            echo "::error::THIRD-PARTY-LICENSES.txt is marked incomplete"; status=1
+          fi
+          echo "== Inventory"
+          ls "$app/Contents/Frameworks"
+          (cd "$app/Contents/PlugIns" && find . -type f | sort)
+          du -sh "$app"
+          "$app/Contents/MacOS/ERDFlow" --example --smoke-test
+          exit $status
+
+      # ---- Windows: per-user Inno Setup installer -----------------------------
+
+      - name: Stage (Windows)
+        if: runner.os == 'Windows'
+        run: cmake --install build/package --config Release --prefix build/package/stage
+
+      - name: Install Inno Setup
+        if: runner.os == 'Windows'
+        run: choco install innosetup --version=6.7.1 --yes --no-progress
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          stage=build/package/stage
+          echo "== Inventory"
+          (cd "$stage" && find . -type f | sort)
+          status=0
+          if find "$stage" | grep -iE 'virtualkeyboard|opengl32sw|d3dcompiler|dxcompiler|dxil\.dll'; then
+            echo "::error::A component that should not be in the package was staged (listed above)"; status=1
+          fi
+          for notice in LICENSE LICENSE-lucide.txt THIRD-PARTY-NOTICES.md THIRD-PARTY-LICENSES.txt \
+                        QT-LGPL-INFORMATION.md LGPL-3.0.txt GPL-3.0.txt; do
+            test -f "$stage/licenses/$notice" || { echo "::error::$notice is missing"; status=1; }
+          done
+          if grep -q '^INCOMPLETE' "$stage/licenses/THIRD-PARTY-LICENSES.txt"; then
+            echo "::error::THIRD-PARTY-LICENSES.txt is marked incomplete"; status=1
+          fi
+          [ $status -eq 0 ] || exit $status
+          iscc build/package/packaging/erdflow.iss
+
+      - name: Verify (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $setup = "build/package/dist/ERDFlow-$env:ERDFLOW_VERSION-windows-x86_64-setup.exe"
+          $install = Start-Process -FilePath $setup -Wait -PassThru `
+            -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/CURRENTUSER', "/LOG=$env:RUNNER_TEMP\erdflow-setup.log"
+          if ($install.ExitCode -ne 0) { Get-Content "$env:RUNNER_TEMP\erdflow-setup.log"; throw "Setup failed: $($install.ExitCode)" }
+          $app = Join-Path $env:LOCALAPPDATA 'Programs\ERDFlow'
+          $exe = Join-Path $app 'bin\erdflow.exe'
+          if (-not (Test-Path $exe)) { throw "erdflow.exe was not installed at $exe" }
+          # The version in the program file and in Windows' list of installed programs.
+          $fileVersion = (Get-Item $exe).VersionInfo
+          Write-Host "erdflow.exe: product $($fileVersion.ProductVersion), file $($fileVersion.FileVersion)"
+          if ($fileVersion.ProductVersion -ne $env:ERDFLOW_VERSION) { throw "erdflow.exe reports version $($fileVersion.ProductVersion)" }
+          $entry = Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{A5A5C30E-6D62-457C-98AD-F0F6F3275E13}_is1'
+          Write-Host "Installed programs: $($entry.DisplayName) $($entry.DisplayVersion) ($($entry.Publisher))"
+          if ($entry.DisplayVersion -ne $env:ERDFLOW_VERSION) { throw "The installer registered version $($entry.DisplayVersion)" }
+          $run = Start-Process -FilePath $exe -ArgumentList '--example', '--smoke-test' -Wait -PassThru
+          if ($run.ExitCode -ne 0) { throw "Smoke test failed: $($run.ExitCode)" }
+          $remove = Start-Process -FilePath (Join-Path $app 'unins000.exe') -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait -PassThru
+          if ($remove.ExitCode -ne 0) { throw "Uninstall failed: $($remove.ExitCode)" }
+          Start-Sleep -Seconds 5
+          if (Test-Path $exe) { throw "Uninstall left erdflow.exe behind" }
+          if (Test-Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{A5A5C30E-6D62-457C-98AD-F0F6F3275E13}_is1') {
+            throw 'Uninstall left its registry entry behind'
+          }
+
+      # ---- Linux: AppImage ----------------------------------------------------
+
+      - name: Install AppImage tools (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          tools="$RUNNER_TEMP/appimage-tools"
+          mkdir -p "$tools"
+          curl --fail --location --silent --show-error --output "$tools/linuxdeploy-x86_64.AppImage" \
+            https://github.com/linuxdeploy/linuxdeploy/releases/download/1-alpha-20251107-1/linuxdeploy-x86_64.AppImage
+          curl --fail --location --silent --show-error --output "$tools/linuxdeploy-plugin-qt-x86_64.AppImage" \
+            https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/1-alpha-20250213-1/linuxdeploy-plugin-qt-x86_64.AppImage
+          # The AppImage runtime goes into the package, so it is pinned too
+          # rather than fetched by appimagetool from a moving release.
+          curl --fail --location --silent --show-error --output "$tools/runtime-x86_64" \
+            https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-x86_64
+          (cd "$tools" && sha256sum --check --strict) <<'SUMS'
+          c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d  linuxdeploy-x86_64.AppImage
+          15106be885c1c48a021198e7e1e9a48ce9d02a86dd0a1848f00bdbf3c1c92724  linuxdeploy-plugin-qt-x86_64.AppImage
+          2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d  runtime-x86_64
+          SUMS
+          chmod +x "$tools"/*.AppImage
+          echo "$tools" >> "$GITHUB_PATH"
+          echo "LDAI_RUNTIME_FILE=$tools/runtime-x86_64" >> "$GITHUB_ENV"
+
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: 1
+        run: |
+          appdir="$PWD/build/package/AppDir"
+          DESTDIR="$appdir" cmake --install build/package --config Release
+          export QMAKE="$QT_ROOT_DIR/bin/qmake"
+          export LD_LIBRARY_PATH="$QT_ROOT_DIR/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          # 1. The Qt libraries and plugins, and the libraries they need.
+          linuxdeploy-x86_64.AppImage \
+            --appdir "$appdir" \
+            --desktop-file "$appdir/usr/share/applications/erdflow.desktop" \
+            --icon-file "$appdir/usr/share/icons/hicolor/512x512/apps/erdflow.png" \
+            --plugin qt
+          # 2. The licences of everything now in the AppDir.
+          cmake -D ERDFLOW_NOTICES_ROOT="$appdir" -P build/package/packaging/write-notices.cmake
+          # 3. The AppImage.
+          mkdir -p build/package/dist
+          cd build/package/dist
+          LDAI_OUTPUT="ERDFlow-$ERDFLOW_VERSION-linux-x86_64.AppImage" \
+          LINUXDEPLOY_OUTPUT_VERSION="$ERDFLOW_VERSION" \
+            linuxdeploy-x86_64.AppImage --appdir "$appdir" --output appimage
+
+      - name: Verify (Linux)
+        if: runner.os == 'Linux'
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: 1
+        run: |
+          image="$PWD/build/package/dist/ERDFlow-$ERDFLOW_VERSION-linux-x86_64.AppImage"
+          chmod +x "$image"
+          check="$RUNNER_TEMP/appimage-check"
+          mkdir -p "$check"
+          (cd "$check" && "$image" --appimage-extract > /dev/null)
+          root="$check/squashfs-root"
+          echo "== Inventory"
+          (cd "$root" && find . -type f | sort)
+          du -sh "$root"
+          status=0
+          if find "$root" | grep -iE 'virtualkeyboard'; then
+            echo "::error::Qt Virtual Keyboard (GPL-only) is in the AppImage"; status=1
+          fi
+          licences="$root/usr/share/doc/erdflow"
+          for notice in LICENSE LICENSE-lucide.txt THIRD-PARTY-NOTICES.md THIRD-PARTY-LICENSES.txt \
+                        QT-LGPL-INFORMATION.md LGPL-3.0.txt GPL-3.0.txt; do
+            test -f "$licences/$notice" || { echo "::error::$notice is missing"; status=1; }
+          done
+          if grep -q '^INCOMPLETE' "$licences/THIRD-PARTY-LICENSES.txt"; then
+            echo "::error::THIRD-PARTY-LICENSES.txt is marked incomplete"; status=1
+          fi
+          [ $status -eq 0 ] || exit $status
+          xvfb-run --auto-servernum "$image" --version | tee "$RUNNER_TEMP/version.txt"
+          grep -qx "ERDFlow $ERDFLOW_VERSION" "$RUNNER_TEMP/version.txt"
+          xvfb-run --auto-servernum "$image" --example --smoke-test
+
+      # ---- Every platform: checksum, inventory and upload ---------------------
+
+      - name: Checksum
+        working-directory: build/package/dist
+        run: |
+          for package in ERDFlow-*.dmg ERDFlow-*.exe ERDFlow-*.AppImage; do
+            [ -f "$package" ] || continue
+            if command -v sha256sum > /dev/null; then
+              sha256sum "$package" > "$package.sha256"
+            else
+              shasum -a 256 "$package" > "$package.sha256"
+            fi
+            cat "$package.sha256"
+          done
+          cp ../packaging/inventory.json "ERDFlow-$ERDFLOW_VERSION-${{ matrix.id }}-inventory.json"
+
+      - name: Upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: erdflow-${{ matrix.id }}
+          path: |
+            build/package/dist/ERDFlow-*.dmg
+            build/package/dist/ERDFlow-*.exe
+            build/package/dist/ERDFlow-*.AppImage
+            build/package/dist/ERDFlow-*.sha256
+            build/package/dist/ERDFlow-*-inventory.json
+          if-no-files-found: error
+          retention-days: 14
+
+  checksums:
+    name: SHA256SUMS
+    needs: package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Download the packages
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: erdflow-*
+          path: packages
+          merge-multiple: true
+
+      - name: Check and combine the checksums
+        working-directory: packages
+        run: |
+          sha256sum --check --strict *.sha256
+          sha256sum ERDFlow-*.dmg ERDFlow-*.exe ERDFlow-*.AppImage > SHA256SUMS
+          cat SHA256SUMS
+          test "$(wc -l < SHA256SUMS)" -eq 4
+
+      - name: Upload SHA256SUMS
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: erdflow-SHA256SUMS
+          path: packages/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 14

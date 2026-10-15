@@ -26,7 +26,7 @@ namespace erdflow::desktop {
 // first, then name the entity that generalises them.
 // Note places a card and Text places prose; a picture comes
 // from a file, so it is an action of the window rather than a tool.
-enum class Tool { Select, Entity, Attribute, Relationship, Specialization, Generalization, Connect, Pan, Note, Text };
+enum class Tool { Select, Entity, Attribute, Relationship, Specialization, Generalization, Connect, Pan, Text };
 
 // How each participant end is drawn. The model is the same in every notation:
 // participation supplies the minimum (0 or 1) and cardinality the maximum
@@ -81,7 +81,6 @@ inline constexpr BodySize entity_body{133, 77};
 inline constexpr BodySize attribute_body{135, 54};
 inline constexpr BodySize relationship_body{171, 99};
 inline constexpr BodySize isa_body{96, 74};
-inline constexpr BodySize note_body{200, 120};
 
 // What is drawn *on* the diagram rather than sized by it, at its own scale.
 //
@@ -205,8 +204,11 @@ public:
     // Draws the diagram, and none of the editor looking at it: no grid, no
     // selection rings, no handles and no paper. The background an exported
     // picture stands on is the caller's choice, so it is painted by the
-    // caller before this is called rather than assumed here.
-    void render_diagram(QPainter& painter, const QRectF& target, const QRectF& source);
+    // caller before this is called rather than assumed here; given as
+    // `ground` (which may be no colour at all), it is also what the marks
+    // that need paper of their own are laid on, in place of the canvas.
+    void render_diagram(QPainter& painter, const QRectF& target, const QRectF& source,
+                        std::optional<QColor> ground = std::nullopt);
     // The canvas colour of the theme in use, for a picture asked to stand on it.
     [[nodiscard]] QColor canvas_colour() const;
     void actual_size();

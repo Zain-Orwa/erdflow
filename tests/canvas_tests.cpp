@@ -1334,24 +1334,17 @@ void figure_tests() {
     view.centerOn(0, 0);
     QApplication::processEvents();
 
-    // The note tool puts a note where the canvas is clicked and opens it for
-    // its title, since a note is for writing on.
-    view.set_tool(desktop::Tool::Note);
-    click(view, QPointF(200, 150));
-    require(editor.project().notes.size() == 1, "A click places a note");
-    const domain::ElementRef note = editor.project().notes.begin()->first;
-    require(view.tool() == desktop::Tool::Select, "The note tool is one use, like the others");
-    require(view.selected_elements() == std::vector<domain::ElementRef>{note}, "The new note is selected");
-    require(view.renaming(), "And opens for its title at once");
-    auto* field = view.findChild<QLineEdit*>("inlineName");
-    require(field && field->isVisible(), "With the title field on screen");
-    field->setText("Assumptions");
-    key_to(field, Qt::Key_Return);
-    require(editor.project().notes.begin()->second.name == "Assumptions", "Typing gives the note its title");
-    require(editor.describe(note, "Each student enrols each term."), "Its text is its description");
+    // The titled Note is gone (Zain, 2026-10-15): there is no Note tool, and
+    // the note put beside the model is free text.
+    const auto made = editor.create_free_text("Assumptions\nEach student enrols each term.", {150, 120, 200, 60});
+    require(made && made.created, "Free text is placed beside the model");
+    const domain::ElementRef note = *made.created;
     view.synchronize();
     QApplication::processEvents();
-    require(find_node(view, "Assumptions") != nullptr, "The note is a node like any other");
+    const auto note_centre = [&] {
+        const auto& at = editor.project().layout.at(note);
+        return QPointF(at.x + at.width / 2, at.y + at.height / 2);
+    };
 
 
     // A picture draws its own pixels: a solid red image comes out red.
@@ -1377,9 +1370,9 @@ void figure_tests() {
     // Nothing connects to a figure: Connect refuses the pair.
     view.set_tool(desktop::Tool::Connect);
     const auto revision = editor.revision();
-    click(view, find_node(view, "Assumptions")->sceneBoundingRect().center());
+    click(view, note_centre());
     click(view, find_node(view, "Student")->sceneBoundingRect().center());
-    require(editor.revision() == revision, "A note and an entity do not connect");
+    require(editor.revision() == revision, "Text and an entity do not connect");
     require(view.tool() == desktop::Tool::Select, "The refused pair spends the tool");
 
     // The right-click menu offers to insert either, at the point clicked.
@@ -1407,20 +1400,33 @@ void figure_tests() {
         QApplication::processEvents();
         view.activateWindow();
     };
-    right_click(QPointF(-300, 200), "contextInsertNote");
-    require(editor.project().notes.size() == 2, "Insert → Note from the menu places a note");
-    const auto latest = editor.project().layout.at(editor.project().notes.rbegin()->first);
-    require(std::abs(latest.x + latest.width / 2 + 300) < 1 && std::abs(latest.y + latest.height / 2 - 200) < 1,
-            "Centred where the canvas was clicked");
-    require(opened_for_title, "And opened for its title");
-    view.cancel_interaction();
+    // What a right-click's Insert offers: Text and Picture, and no Note.
+    const auto offered = [&](const QPointF& scene_point) {
+        QStringList names;
+        QTimer::singleShot(0, [&] {
+            auto* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+            require(menu != nullptr, "A right-click opens a menu");
+            for (auto* action : menu->findChildren<QAction*>()) names << action->objectName();
+            menu->close();
+        });
+        const auto position = view.mapFromScene(scene_point);
+        QContextMenuEvent event(QContextMenuEvent::Mouse, position, view.viewport()->mapToGlobal(position));
+        QApplication::sendEvent(view.viewport(), &event);
+        QApplication::processEvents();
+        view.activateWindow();
+        return names;
+    };
+    const auto on_canvas = offered(QPointF(-300, 200));
+    require(on_canvas.contains("contextInsertText") && on_canvas.contains("contextInsertPicture"),
+            "Insert on the canvas offers Text and Picture");
+    require(!on_canvas.contains("contextInsertNote"), "And no Note");
+    (void)opened_for_title;
     right_click(QPointF(120, -80), "contextInsertPicture");
     require(asked_for == QPointF(120, -80), "Insert → Picture asks the window for a file, for that point");
     // The same entries sit at the end of an element's own menu.
-    right_click(find_node(view, "Student")->sceneBoundingRect().center(), "contextInsertNote");
-    require(editor.project().notes.size() == 3, "An element's menu offers Insert as well");
-    view.cancel_interaction();
-    require(editor.undo() && editor.undo(), "Take the two menu notes away again");
+    const auto on_element = offered(find_node(view, "Student")->sceneBoundingRect().center());
+    require(on_element.contains("contextInsertText") && !on_element.contains("contextInsertNote"),
+            "An element's menu offers Insert as well, without a Note");
     view.synchronize();
 
     // Both go with the rest of a selection, and come back with one undo.
@@ -1452,7 +1458,12 @@ void figure_tests() {
                     if ((image.pixel(x, y) | 0xff000000u) == wanted) ++found;
             return found;
         };
-        require(carded(shot()) > 0, "An ordinary note is drawn on a card");
+        // The titled card is gone (2026-10-15), so nothing on the diagram is
+        // drawn on one any longer; the colour is still told apart where it is.
+        QImage swatch(8, 8, QImage::Format_RGB32);
+        swatch.fill(surface);
+        require(carded(swatch) > 0, "The card's colour is recognised where it is drawn");
+        require(carded(shot()) == 0, "And nothing on the diagram is drawn on a card");
         const domain::Rect where{120, -220, 56, 56};
         const auto symbol = editor.create_symbol("⋈", where);
         require(symbol && symbol.created, "A symbol is placed");
@@ -3048,7 +3059,10 @@ void attribute_owner_tests() {
 
     // Every one is unlocked, and leaves Mentor from the middle of the side
     // facing it: here Mentor's top point, shared by all three, each by its
-    // own straight line (Zain, 2026-09-26).
+    // own straight line (Zain, 2026-09-26) -- in the straight style, since
+    // 2026-10-15 the one that draws attribute lines straight.
+    const auto style_before = view.line_style();
+    view.set_line_style(desktop::LineStyle::Straight);
     const auto& mentor_body = editor.project().layout.at(mentor);
     const QPointF top_of_mentor(mentor_body.x + mentor_body.width / 2, mentor_body.y);
     // A line from the point, running straight towards the attribute.
@@ -3067,6 +3081,7 @@ void attribute_owner_tests() {
         require(!editor.project().connectors.contains(domain::ConnectorRef{id}), "Each line is unlocked");
         require(leaves_from(domain::ElementRef{id}, top_of_mentor), "And leaves from Mentor's top point");
     }
+    view.set_line_style(style_before);
     // Placing one is still one step of history.
     const auto placed = editor.project().attributes.size();
     require(editor.undo(), "The last placement undone");
@@ -3148,8 +3163,10 @@ void attribute_owner_tests() {
     view.set_attribute_owner(mentor);
     click(view, QPointF(-200, -330));
     QApplication::processEvents();
+    view.set_line_style(desktop::LineStyle::Straight);
     require(leaves_from(view.selected_elements().front(), top_of_mentor),
             "Mentor locked again, a new attribute above leaves from the same point");
+    view.set_line_style(style_before);
     view.set_attribute_owner(std::nullopt);
 
     // The lock goes with its owner, and stays gone when the owner comes back.
@@ -3585,7 +3602,7 @@ void attribute_trunk_and_line_style_tests() {
     view.set_grid_visible(false);
     view.fit_diagram();
     QApplication::processEvents();
-    require(view.line_style() == desktop::LineStyle::Elbow, "Lines break at right angles unless told otherwise");
+    require(view.line_style() == desktop::LineStyle::Straight, "Lines are straight unless told otherwise");
     view.set_line_style(desktop::LineStyle::Curved);
 
     const auto edge_for = [&](const QString& attribute) {
@@ -3638,7 +3655,12 @@ void attribute_trunk_and_line_style_tests() {
     view.set_line_style(desktop::LineStyle::Straight);
     require(view.line_style() == desktop::LineStyle::Straight, "The chosen style is kept");
     const auto straight = render();
-    require(curved == straight, "An attribute's line is straight in every line style, from its shared point");
+    // Straight only in the straight style since 2026-10-15 (Zain): the other
+    // two shape an attribute's line as they shape every other.
+    require(curved != straight, "An attribute's line curves in the curved style");
+    view.set_line_style(desktop::LineStyle::Elbow);
+    const auto square = render();
+    require(square != straight && square != curved, "And turns at right angles in the right-angle style");
     view.set_line_style(desktop::LineStyle::Curved);
     require(render() == curved, "Returning to a style reproduces its drawing");
 
@@ -3650,6 +3672,213 @@ void attribute_trunk_and_line_style_tests() {
     auto* link = edge_for(QStringLiteral("Last"));
     require(link->shape().contains(link->mapFromScene(QPointF(moved.center().x(), moved.top()))),
             "The exit point moves with the owner");
+}
+
+// Each of the three line styles shapes every line Connect draws, attribute
+// lines included, and choosing one redraws the diagram at once, before,
+// during or after drawing it (Zain, 2026-10-15). Nothing about the choice is
+// written into the project.
+void line_style_tests() {
+    SequentialIds ids;
+    application::Editor editor(ids);
+    // A relationship below and to the right of its entity, so not in line.
+    const auto person = std::get<domain::EntityId>(*editor.create_entity("Person", {200, 400, 160, 80}).created);
+    const auto owns = std::get<domain::RelationshipId>(*editor.create_relationship("Owns", {700, 600, 190, 110}).created);
+    const auto participant = *editor.connect(owns, person).participant;
+    // Three attributes above, and one up to the right, beyond the last of
+    // them, which a run into its end would have to pass through.
+    const auto owner = domain::AttributeOwner{domain::ElementRef{person}};
+    editor.create_attribute("Alpha", {60, 200, 130, 54}, owner);
+    const auto beta = std::get<domain::AttributeId>(*editor.create_attribute("Beta", {215, 230, 130, 54}, owner).created);
+    editor.create_attribute("Gamma", {470, 210, 130, 54}, owner);
+    editor.create_attribute("Delta", {655, 210, 130, 54}, owner);
+
+    desktop::DiagramView view(editor);
+    view.resize(1000, 800);
+    view.show();
+    view.set_grid_visible(false);
+    view.actual_size();
+    view.centerOn(470, 430);
+    QApplication::processEvents();
+    const auto revision = editor.revision();
+    // An attribute's own line: the one lifted when the attribute is chosen,
+    // so a line passing over a neighbour is never taken for the neighbour's.
+    const auto line_to = [&](const QString& name) {
+        auto* node = find_node(view, name);
+        view.scene()->clearSelection();
+        node->setSelected(true);
+        QGraphicsItem* found = nullptr;
+        for (auto* item : view.scene()->items())
+            if (item->zValue() < 0 && item->zValue() > -1 && item->toolTip().startsWith("Attribute")) found = item;
+        view.scene()->clearSelection();
+        if (!found) throw std::runtime_error("Missing attribute line");
+        return found;
+    };
+    const auto passes = [](QGraphicsItem* line, const QPointF& point) {
+        return line->shape().contains(line->mapFromScene(point));
+    };
+    auto* relationship_line = find_edge(view);
+    const QPointF owner_point{280, 400};        // the middle of Person's top
+    const QPointF right_angle_corner{530, 440}; // halfway across, level with Person's right
+    const QPointF straight_on{460.9, 515.5};    // a quarter of the way along the straight line
+    const QPointF rounded_on{460.9, 454.1};     // as far across, on the right-angle line rounded off
+
+    // Lines start straight (Zain, 2026-10-15). Right angles first.
+    require(view.line_style() == desktop::LineStyle::Straight, "Lines are straight unless told otherwise");
+    view.set_line_style(desktop::LineStyle::Elbow);
+    require(passes(relationship_line, right_angle_corner), "A relationship's line turns square");
+    // The three above cross at one level, halfway out to the nearest of them
+    // (Beta, whose foot is 116 above Person), and each goes straight up into it.
+    const qreal level = 400 - 116.0 / 2;
+    for (const auto& [name, middle, foot] : {std::tuple{"Alpha", 125.0, 254.0}, std::tuple{"Beta", 280.0, 284.0},
+                                             std::tuple{"Gamma", 535.0, 264.0}}) {
+        auto* line = line_to(name);
+        require(passes(line, owner_point) && passes(line, {280, level}) && passes(line, {middle, level}),
+                "An attribute above leaves the shared point, up to the level the three share and across");
+        require(passes(line, {middle, foot + 3}), "And goes straight up into the middle of its foot");
+    }
+    require(!passes(line_to("Alpha"), {202.5, 313.5}), "It is not the straight line to it");
+    // Delta is to the right. A run into its end would cross Gamma, so its line
+    // goes round instead and up into its foot.
+    auto* delta = line_to("Delta");
+    QPainterPath gamma;
+    gamma.addEllipse(QRectF(471, 211, 128, 52));
+    require(!delta->shape().translated(delta->scenePos()).intersects(gamma), "A line never runs through a neighbour");
+    require(passes(delta, {363, 440}) && passes(delta, {720, 267}),
+            "It leaves the side's point and goes round into the attribute's foot");
+
+    // Curved, at once, with nothing synchronised.
+    view.set_line_style(desktop::LineStyle::Curved);
+    require(!passes(relationship_line, right_angle_corner) && passes(relationship_line, rounded_on)
+                && !passes(relationship_line, straight_on),
+            "A relationship's line is the right-angle line rounded off");
+    require(passes(relationship_line, {363, 440}) && passes(relationship_line, {697, 655}),
+            "Leaving and arriving square to the same faces");
+    for (const auto* name : {"Alpha", "Gamma", "Delta"}) {
+        auto* line = line_to(name);
+        require(passes(line, line == delta ? QPointF(363, 440) : owner_point), "A curved attribute line leaves the shared point");
+    }
+    require(!passes(line_to("Alpha"), {125, level}) && !passes(line_to("Alpha"), {202.5, 313.5}),
+            "Neither turning square nor straight");
+    // Lines that share a point part there: one step out, Alpha's and Gamma's
+    // lines are already apart.
+    {
+        const auto alpha = line_to("Alpha")->shape().translated(line_to("Alpha")->scenePos());
+        const auto gamma_line = line_to("Gamma")->shape().translated(line_to("Gamma")->scenePos());
+        QPainterPath step;
+        step.addRect(QRectF(260, 360, 40, 6));
+        require(!alpha.intersected(step).intersects(gamma_line.intersected(step)),
+                "Two attribute lines sharing a point part at once rather than running together");
+    }
+
+    // Straight.
+    view.set_line_style(desktop::LineStyle::Straight);
+    require(passes(relationship_line, straight_on) && !passes(relationship_line, rounded_on)
+                && !passes(relationship_line, right_angle_corner),
+            "A relationship's line runs straight");
+    require(passes(line_to("Alpha"), owner_point) && passes(line_to("Alpha"), {202.5, 313.5}),
+            "An attribute's line runs straight from the shared point");
+
+    // Back again: each style draws exactly what it drew before.
+    const auto shot = [&] {
+        QApplication::processEvents();
+        return view.viewport()->grab().toImage();
+    };
+    const auto straight = shot();
+    view.set_line_style(desktop::LineStyle::Curved);
+    const auto curved = shot();
+    view.set_line_style(desktop::LineStyle::Elbow);
+    const auto square = shot();
+    view.set_line_style(desktop::LineStyle::Straight);
+    require(shot() == straight && straight != curved && curved != square && square != straight,
+            "Three different drawings, each returned to exactly");
+    require(editor.revision() == revision && editor.project().connectors.empty(),
+            "A style is how lines are drawn, not something written into the project");
+
+    // A line shaped by hand keeps its corners in every style. Straight and at
+    // right angles it turns at each; curved, it is rounded off between them,
+    // bending towards each and passing midway from one to the next.
+    const std::vector<domain::Point> route{{280, 560}, {800, 560}};
+    require(editor.route_connector(participant, route), "Route the relationship's line");
+    view.synchronize();
+    for (const auto style : {desktop::LineStyle::Straight, desktop::LineStyle::Elbow}) {
+        view.set_line_style(style);
+        require(passes(relationship_line, {280, 560}) && passes(relationship_line, {800, 560}),
+                "A routed line turns at every corner it was given");
+    }
+    view.set_line_style(desktop::LineStyle::Curved);
+    require(passes(relationship_line, {540, 560}) && !passes(relationship_line, {280, 560})
+                && !passes(relationship_line, {800, 560}),
+            "Curved, it is rounded off between its corners");
+    require(editor.project().connectors.at(domain::ConnectorRef{participant}).waypoints == route,
+            "And the corners stay where they were put");
+    require(editor.undo(), "Unroute it");
+    view.synchronize();
+
+    // A line bent by hand curves through its bend.
+    require(editor.bend_connector(participant, 60), "Bend the relationship's line");
+    view.synchronize();
+    // The bend is 60 to one side of the middle between the two shapes.
+    const auto aside = QPointF(215, -515) / std::hypot(215.0, 515.0) * 60;
+    view.set_line_style(desktop::LineStyle::Straight);
+    const auto bend = passes(relationship_line, QPointF(537.5, 547.5) + aside) ? QPointF(537.5, 547.5) + aside
+                                                                               : QPointF(537.5, 547.5) - aside;
+    require(passes(relationship_line, bend) && !passes(relationship_line, {537.5, 547.5}),
+            "A bent straight line turns at its bend");
+    view.set_line_style(desktop::LineStyle::Curved);
+    require(passes(relationship_line, bend), "Curved, it passes through its bend too");
+    require(editor.undo(), "Straighten it");
+    view.synchronize();
+
+    // Carrying one attribute moves the level its neighbours cross at while it
+    // is still being carried. Beta was nearest; lifted clear, Gamma is, and
+    // the level is halfway out to Gamma.
+    view.set_line_style(desktop::LineStyle::Elbow);
+    // Found before the press, so nothing is chosen while Beta is carried.
+    auto* alpha_line = line_to("Alpha");
+    auto* gamma_line = line_to("Gamma");
+    view.select_elements({});
+    QApplication::processEvents();
+    const auto grip = view.mapFromScene(QPointF(280, 257));
+    mouse(view, QEvent::MouseButtonPress, grip, Qt::LeftButton, Qt::LeftButton);
+    mouse(view, QEvent::MouseMove, grip + QPoint(0, -50), Qt::NoButton, Qt::LeftButton);
+    mouse(view, QEvent::MouseMove, grip + QPoint(0, -100), Qt::NoButton, Qt::LeftButton);
+    const qreal lifted = 400 - 136.0 / 2;
+    require(passes(alpha_line, {125, lifted}) && !passes(alpha_line, {125, level}),
+            "A neighbour's line follows the new level while the attribute is still being carried");
+    mouse(view, QEvent::MouseButtonRelease, grip + QPoint(0, -100), Qt::LeftButton, Qt::NoButton);
+    require(editor.project().layout.at(domain::ElementRef{beta}).y == 130, "Beta was carried");
+    require(passes(line_to("Alpha"), {125, lifted}) && passes(line_to("Gamma"), {535, lifted})
+                && line_to("Alpha") == alpha_line && line_to("Gamma") == gamma_line,
+            "And the level holds once it is let go");
+
+    // A total participation's double line keeps its two lines apart round a
+    // curve. Where the curved line stands upright, halfway across, a row of
+    // pixels meets two lines, not one thick one.
+    require(editor.update_participant(owns, participant, domain::Cardinality::Many, domain::Participation::Total, ""),
+            "Make Person's side total");
+    view.synchronize();
+    view.set_line_style(desktop::LineStyle::Curved);
+    view.select_elements({});
+    view.actual_size();
+    while (view.zoom_factor() < 2.99) view.zoom_in();
+    view.centerOn(530, 547.5);
+    QApplication::processEvents();
+    const auto picture = view.viewport()->grab().toImage();
+    const auto paper = desktop::theme(view.theme_id()).canvas;
+    const auto inked = [&](const QPointF& scene_point) {
+        const auto pixel = picture.pixelColor(device_point(picture, view.mapFromScene(scene_point)));
+        return std::abs(pixel.red() - paper.red()) + std::abs(pixel.green() - paper.green())
+                   + std::abs(pixel.blue() - paper.blue()) > 120;
+    };
+    int lines = 0;
+    bool in_line = false;
+    for (qreal x = 515; x <= 545; x += 0.1) {
+        const bool now = inked({x, 547.5});
+        if (now && !in_line) ++lines;
+        in_line = now;
+    }
+    require(lines == 2, "Round a curve, a double line is still two lines");
 }
 
 // Selecting an element must show what it connects to, so its links are drawn
@@ -4209,6 +4438,159 @@ void attribute_resize_tests() {
     require(editor.undo() && editor.undo(), "Both pulls undone");
     require(std::abs(lettering_height() - ordinary) <= 1, "And the name is back to its ordinary size");
     require(editor.project().lettering.empty(), "With nothing kept for it");
+}
+
+// A picture -- a Dr.icon above all -- is pulled by any of its eight handles
+// (Zain, 2026-10-15), as small as a symbol may be and as large. It is never
+// stretched, so whichever handle is pulled the whole picture is scaled and
+// keeps its proportions: a corner from the corner opposite, an edge from the
+// edge opposite, staying centred along the edge. One pull is one step of
+// history, called what it is.
+void picture_resize_tests() {
+    SequentialIds ids;
+    application::Editor editor(ids);
+    QImage art(64, 64, QImage::Format_ARGB32);
+    art.fill(Qt::transparent);
+    {
+        QPainter painter(&art);
+        painter.setBrush(QColor(40, 110, 220));
+        painter.setPen(Qt::NoPen);
+        painter.drawEllipse(QRectF(8, 8, 48, 48));
+    }
+    QByteArray png;
+    QBuffer buffer(&png);
+    buffer.open(QIODevice::WriteOnly);
+    art.save(&buffer, "PNG");
+    const std::vector<std::uint8_t> bytes(png.begin(), png.end());
+    const domain::ElementRef icon = *editor.create_picture("Icon", {0, 0, 80, 80}, bytes).created;
+    const domain::ElementRef wide = *editor.create_picture("Banner", {400, 0, 160, 80}, bytes).created;
+    const domain::ElementRef entity = *editor.create_entity("Student", {0, 300, 133, 77}).created;
+    desktop::DiagramView view(editor);
+    QString refused;
+    view.on_edit = [&](const application::EditResult& result) { if (!result) refused = QString::fromStdString(result.error); };
+    view.resize(1000, 700);
+    view.show();
+    view.actual_size();
+    view.centerOn(200, 100);
+    QApplication::processEvents();
+    const auto box_of = [&](const domain::ElementRef& ref) { return editor.project().layout.at(ref); };
+    // A handle sits just inside the picture, half a grip in from the edge or
+    // corner it stands on; `grip` is that point in the picture's own terms.
+    const auto haul = [&](const domain::ElementRef& ref, QPointF grip, QPoint by) {
+        view.select_elements({ref});
+        QApplication::processEvents();
+        const auto& at = box_of(ref);
+        const auto start = view.mapFromScene(QPointF(at.x, at.y) + grip);
+        mouse(view, QEvent::MouseButtonPress, start, Qt::LeftButton, Qt::LeftButton);
+        mouse(view, QEvent::MouseMove, start + by, Qt::NoButton, Qt::LeftButton);
+        mouse(view, QEvent::MouseButtonRelease, start + by, Qt::LeftButton, Qt::NoButton);
+        view.synchronize();
+        return box_of(ref);
+    };
+    const auto undo = [&] {
+        require(editor.undo(), "The pull undoes");
+        view.synchronize();
+        QApplication::processEvents();
+    };
+
+    // The right edge: the left stays, the picture grows to the right and
+    // keeps its proportions, centred where it was down the edge.
+    auto box = haul(icon, {75.5, 40}, {40, 0});
+    require(refused.isEmpty(), "Pulling a picture is not refused");
+    require(box == domain::Rect{0, -20, 120, 120}, "The right edge scales the whole picture, from the left edge");
+    require(editor.undo_label() == "Resize picture", "It is its own step of history");
+    undo();
+    require(box_of(icon) == domain::Rect{0, 0, 80, 80}, "And it undoes to the size it was");
+
+    // The left and top edges move the picture as well as sizing it, in the
+    // same one step.
+    box = haul(icon, {4.5, 40}, {-40, 0});
+    require(box == domain::Rect{-40, -20, 120, 120}, "The left edge scales it from the right edge");
+    undo();
+    box = haul(icon, {40, 4.5}, {0, -40});
+    require(box == domain::Rect{-20, -40, 120, 120}, "The top edge scales it from the bottom edge");
+    undo();
+    box = haul(icon, {40, 75.5}, {0, 20});
+    require(box == domain::Rect{-10, 0, 100, 100}, "The bottom edge scales it from the top edge");
+    undo();
+
+    // A corner, from the corner opposite.
+    box = haul(icon, {75.5, 75.5}, {60, 60});
+    require(box == domain::Rect{0, 0, 140, 140}, "The bottom right corner scales it from the top left");
+    undo();
+    box = haul(icon, {4.5, 4.5}, {-20, -20});
+    require(box == domain::Rect{-20, -20, 100, 100}, "The top left corner scales it from the bottom right");
+    undo();
+
+    // Down to a mark beside a name, and no further; up to the largest.
+    box = haul(icon, {75.5, 40}, {-400, 0});
+    require(box.width == domain::min_picture_size && box.height == domain::min_picture_size && box.x == 0,
+            "Pulled past the smallest, it stops there, square still and its left edge where it was");
+    // Made that small, its handles shrink with it, so it is still seen and
+    // still taken hold of: its middle carries it, its corner pulls it out.
+    {
+        view.select_elements({icon});
+        QApplication::processEvents();
+        const auto small = box_of(icon);
+        const auto middle = view.mapFromScene(QPointF(small.x + small.width / 2, small.y + small.height / 2));
+        mouse(view, QEvent::MouseButtonPress, middle, Qt::LeftButton, Qt::LeftButton);
+        mouse(view, QEvent::MouseMove, middle + QPoint(30, 0), Qt::NoButton, Qt::LeftButton);
+        mouse(view, QEvent::MouseButtonRelease, middle + QPoint(30, 0), Qt::LeftButton, Qt::NoButton);
+        view.synchronize();
+        const auto carried = box_of(icon);
+        require(carried.width == small.width && carried.height == small.height && carried.x > small.x + 20,
+                "A picture made its smallest is carried by its middle, not pulled");
+        undo();
+        // Its top left handle is four wide, two in from the corner.
+        box = haul(icon, {2, 2}, {-24, -24});
+        require(box == domain::Rect{small.x - 24, small.y - 24, 40, 40},
+                "And its corner, small as its handle is, pulls it out again");
+        undo();
+    }
+    undo();
+    box = haul(icon, {75.5, 40}, {9000, 0});
+    require(box.width == domain::max_picture_size && box.height == domain::max_picture_size,
+            "Pulled past the largest, it stops there");
+    undo();
+    box = haul(icon, {75.5, 75.5}, {-300, -300});
+    require(box.width == domain::min_picture_size && box.height == domain::min_picture_size && box.x == 0 && box.y == 0,
+            "A corner pulled past the opposite one stops at the smallest");
+    undo();
+
+    // A picture that is not square keeps its own proportions.
+    box = haul(wide, {155.5, 40}, {80, 0});
+    require(box == domain::Rect{400, -20, 240, 120}, "A wide picture pulled by its edge stays twice as wide as it is tall");
+    undo();
+
+    // Pressed and let go where it was, nothing is written; Escape abandons a
+    // pull in progress.
+    view.select_elements({icon});
+    QApplication::processEvents();
+    const auto before_click = editor.revision();
+    const auto grip = view.mapFromScene(QPointF(75.5, 40));
+    mouse(view, QEvent::MouseButtonPress, grip, Qt::LeftButton, Qt::LeftButton);
+    mouse(view, QEvent::MouseButtonRelease, grip, Qt::LeftButton, Qt::NoButton);
+    require(editor.revision() == before_click, "A handle clicked and let go writes nothing");
+    mouse(view, QEvent::MouseButtonPress, grip, Qt::LeftButton, Qt::LeftButton);
+    mouse(view, QEvent::MouseMove, grip + QPoint(100, 0), Qt::NoButton, Qt::LeftButton);
+    // A picture's item is found where it stands, since nothing is written on it.
+    const auto drawn_width = [&] {
+        // The picture alone stands there; it lies beneath the diagram's
+        // shapes, so it is not looked for among them.
+        const auto here = view.scene()->items(QPointF(40, 40));
+        if (here.isEmpty()) throw std::runtime_error("Missing picture");
+        return here.front()->boundingRect().width();
+    };
+    require(drawn_width() > 150, "A picture being pulled is drawn at the size asked for");
+    require(box_of(icon) == domain::Rect{0, 0, 80, 80}, "Though nothing is written until it is let go");
+    view.cancel_interaction();
+    QApplication::processEvents();
+    require(box_of(icon) == domain::Rect{0, 0, 80, 80} && editor.revision() == before_click, "Escape abandons the pull");
+    require(drawn_width() < 100, "And the picture is drawn at its stored size again");
+
+    // The edit is for pictures alone.
+    require(!editor.resize_pictures({{entity, domain::Rect{0, 300, 200, 200}}}), "An entity is not resized as a picture");
+    require(refused.isEmpty(), "And nothing pulled on the canvas was refused");
 }
 
 void relationship_resize_tests() {
@@ -6027,6 +6409,7 @@ int main(int argc, char** argv) {
         notation_tests();
         minmax_display_mode_tests();
         attribute_trunk_and_line_style_tests();
+        line_style_tests();
         selection_highlight_tests();
         tool_locking_tests();
         attribute_owner_tests();
@@ -6047,6 +6430,7 @@ int main(int argc, char** argv) {
         saved_sizes_are_kept_tests();
         fitted_shapes_tests();
         attribute_resize_tests();
+        picture_resize_tests();
         edge_scroll_tests();
         std::cout << "Canvas tests passed\n";
     } catch (const std::exception& exception) {
