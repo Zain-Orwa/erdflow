@@ -415,6 +415,17 @@ read as still to do.
   rise now use `settle_motion`; those that covered the 320 ms step to a
   full-window schema wait for it (`settle_schema_full`), which also removes a
   race where a 300 ms wait could end just before that step.
+- **The schema's line checks run as a part of their own** (Zain, 2026-10-15,
+  for the release candidate): `desktop_relational` had grown to about 20 s
+  locally, and at the slowdown seen on the macOS Intel runner it would reach
+  its 60 s TIMEOUT. Route memory, line colours, endpoint separation,
+  shared-key colours and alignment guides now run as
+  `desktop_relational_lines` (`desktop_tests --relational-lines-part`, about
+  9 s locally); Relational Design, drawing and open routing stay in
+  `desktop_relational` (about 12 s). The six desktop entries keep their 60 s
+  TIMEOUT; no assertion was removed or changed, production code was not
+  changed, and `desktop_tests` with no part named still runs every check in
+  the same order.
 
 **Column reordering is not built.** Task 4A is complete. Task 4B is
 complete as a foundation: a derived table can be listed in a stored order,
@@ -3258,6 +3269,19 @@ Not built yet, though some of it is on screen:
 | Usable | Focused property editing, named undo actions, usable example, warnings that permit unfinished drafts, protected open/save. | Screen-reader support, broader keyboard/high-DPI/device checks, and production polish remain unverified. |
 
 ## Verification
+
+**2026-10-15**, on `release/0.1.0-rc1`: `desktop_relational` is split over
+the same `desktop_tests` binary, so the desktop entries are six, each with a
+60 s TIMEOUT; the new one is `desktop_relational_lines
+--relational-lines-part`. No timeout was raised and no assertion was removed
+or changed. Counting the distinct checks each run executes, the two parts
+together execute exactly the 1,215 the single part did; the no-flag run
+executes the same 3,274 as before, and every other part the same as before.
+Local Release: `desktop_relational` 20.3 s before, now 11.6 s, and
+`desktop_relational_lines` 8.4 s; Debug 33.2 s before, now 14.0 s and 18.6 s.
+The two pass side by side (`ctest -j2`). All functional suites pass in Debug
+and Release; `visual` differs on the same six reference pictures as before,
+and none was retaken.
 
 **2026-10-12**, at `fix/desktop-window-timeout`, after painting on request
 and the relational and new-project waits: executed assertions are identical

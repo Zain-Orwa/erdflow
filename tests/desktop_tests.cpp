@@ -9491,9 +9491,13 @@ void converted_shapes_fit_their_names_tests(infrastructure::QtIdGenerator &ids)
 int main(int argc, char **argv)
 {
     QApplication app(argc, argv);
-    // CTest runs the suite in five parts, each a process of its own with a
+    // CTest runs the suite in six parts, each a process of its own with a
     // timeout of its own (2026-10-09): Export's commands; Relational Design's
-    // checks, which each make their own window; the main window's tools --
+    // checks, which each make their own window; the schema's lines -- their
+    // remembered routes, colours, ends and the guides of a carried table --
+    // which each make their own window too (split off 2026-10-15, when the
+    // Relational Design part neared its limit on the macOS Intel runner);
+    // the main window's tools --
     // fitting, Free Text, terminology, hover, navigation, the menu bar and the
     // tool lock -- which each make their own window too (split off 2026-10-12);
     // the main window's, which carry one window through both workspaces; and
@@ -9509,15 +9513,18 @@ int main(int argc, char **argv)
     const bool entity_kind_only = arguments.contains("--entity-kind-only");
     const bool export_part = arguments.contains("--export-state");
     const bool relational_part = arguments.contains("--relational-part");
+    const bool relational_lines_part = arguments.contains("--relational-lines-part");
     const bool window_tools_part = arguments.contains("--window-tools-part");
     const bool window_part = arguments.contains("--window-part");
     const bool new_projects_part = arguments.contains("--new-projects-part");
-    const bool whole = !export_part && !relational_part && !window_tools_part && !window_part && !new_projects_part;
+    const bool whole = !export_part && !relational_part && !relational_lines_part && !window_tools_part && !window_part &&
+                       !new_projects_part;
     // The window remembers the chosen theme. Point that at a throwaway domain so
     // running the tests cannot disturb the real preferences -- a domain for
     // each part, so that parts run side by side cannot disturb each other's.
     QCoreApplication::setOrganizationName("ERDFlowTests");
     QCoreApplication::setApplicationName(appearance_only ? "ERDFlowTests-AppearanceHover" : navigation_only ? "ERDFlowTests-Navigation" : relational_part     ? "ERDFlowTests-Relational"
+                                         : relational_lines_part ? "ERDFlowTests-RelationalLines"
                                          : window_tools_part ? "ERDFlowTests-WindowTools"
                                          : window_part       ? "ERDFlowTests-Window"
                                          : new_projects_part ? "ERDFlowTests-NewProjects"
@@ -9569,6 +9576,14 @@ int main(int argc, char **argv)
             }
             schema_drawing_tests(ids);
             schema_open_routing_tests(ids);
+        }
+        if (relational_part)
+        {
+            std::cout << "Relational Design desktop tests passed\n";
+            return 0;
+        }
+        if (whole || relational_lines_part)
+        {
             route_memory_router_tests();
             route_memory_view_tests(ids);
             schema_colour_allocation_tests();
@@ -9578,9 +9593,9 @@ int main(int argc, char **argv)
             schema_shared_key_colour_tests(ids);
             schema_alignment_guide_tests(ids);
         }
-        if (relational_part)
+        if (relational_lines_part)
         {
-            std::cout << "Relational Design desktop tests passed\n";
+            std::cout << "Schema line desktop tests passed\n";
             return 0;
         }
         if (whole || window_tools_part)
