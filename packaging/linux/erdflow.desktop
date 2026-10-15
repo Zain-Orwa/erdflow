@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=ERDFlow
+Comment=Design conceptual ER diagrams and relational schemas
+Exec=erdflow %f
+Icon=erdflow
+Terminal=false
+Categories=Development;Database;

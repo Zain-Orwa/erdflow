@@ -1,0 +1,49 @@
+; ERDFlow's Windows installer (Inno Setup 6). Configured by
+; packaging/packaging.cmake into the build folder, then compiled with iscc after
+; `cmake --install` has staged the application, its Qt libraries and notices.
+;
+; A per-user installer: it needs no administrator rights and installs into
+; %LOCALAPPDATA%\Programs\ERDFlow. Uninstalling removes only what it installed;
+; ERDFlow projects saved elsewhere are never touched.
+;
+; AppId identifies ERDFlow across versions so that a newer installer upgrades
+; an older one. It must never change.
+
+#define AppVersion "@PROJECT_VERSION@"
+
+[Setup]
+AppId={{A5A5C30E-6D62-457C-98AD-F0F6F3275E13}
+AppName=ERDFlow
+AppVersion={#AppVersion}
+AppVerName=ERDFlow {#AppVersion}
+AppPublisher=ERDFlow
+AppCopyright=@ERDFLOW_COPYRIGHT@
+AppPublisherURL=https://erdflow.app
+AppSupportURL=https://github.com/Zain-Orwa/erdflow/issues
+VersionInfoVersion=@PROJECT_VERSION@.0
+DefaultDirName={autopf}\ERDFlow
+DisableProgramGroupPage=yes
+PrivilegesRequired=lowest
+ArchitecturesAllowed=x64compatible
+ArchitecturesInstallIn64BitMode=x64compatible
+OutputDir=@ERDFLOW_PACKAGE_OUTPUT_DIR_NATIVE@
+OutputBaseFilename=ERDFlow-{#AppVersion}-windows-x86_64-setup
+SetupIconFile=@ERDFLOW_WINDOWS_ICON_NATIVE@
+UninstallDisplayIcon={app}\bin\erdflow.exe
+UninstallDisplayName=ERDFlow
+Compression=lzma2
+SolidCompression=yes
+WizardStyle=modern
+
+[Tasks]
+Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+
+[Files]
+Source: "@ERDFLOW_STAGE_DIR_NATIVE@\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+[Icons]
+Name: "{autoprograms}\ERDFlow"; Filename: "{app}\bin\erdflow.exe"
+Name: "{autodesktop}\ERDFlow"; Filename: "{app}\bin\erdflow.exe"; Tasks: desktopicon
+
+[Run]
+Filename: "{app}\bin\erdflow.exe"; Description: "{cm:LaunchProgram,ERDFlow}"; Flags: nowait postinstall skipifsilent

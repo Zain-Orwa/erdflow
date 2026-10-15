@@ -187,6 +187,9 @@ qt_add_resources(erdflow_desktop "erdflow_dr_icons"
 
 add_executable(erdflow app/desktop/main.cpp)
 target_link_libraries(erdflow PRIVATE erdflow_desktop erdflow_infrastructure erdflow_warnings)
+# The application version is the project version above, and only that: the
+# program reports it, and every package carries it.
+target_compile_definitions(erdflow PRIVATE ERDFLOW_VERSION="${PROJECT_VERSION}")
 
 if(BUILD_TESTING)
     add_executable(editor_benchmark tests/editor_benchmark.cpp)
@@ -253,4 +256,11 @@ if(BUILD_TESTING)
     # Each of its parts keeps the limit the whole suite had.
     set_tests_properties(desktop_export desktop_relational desktop_window_tools desktop_window
                          desktop_new_projects PROPERTIES TIMEOUT 60)
+endif()
+
+# Installable packages (packaging/README.md). Off for ordinary builds, which
+# stay exactly as they are; the package workflow turns it on.
+option(ERDFLOW_PACKAGING "Build ERDFlow as an installable application and prepare its packages" OFF)
+if(ERDFLOW_PACKAGING)
+    include(packaging/packaging.cmake)
 endif()

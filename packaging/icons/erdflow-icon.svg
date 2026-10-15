@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
+<title>ERDFlow</title>
+<defs>
+<linearGradient id="strand" gradientUnits="userSpaceOnUse" x1="4" y1="0" x2="26" y2="0"><stop offset="0" stop-color="#0769EF"/><stop offset="0.5" stop-color="#2E8CFF"/><stop offset="1" stop-color="#5DB4FF"/></linearGradient>
+<radialGradient id="dot-core"><stop offset="0" stop-color="#F2FBFF"/><stop offset="1" stop-color="#6CB6FF"/></radialGradient>
+<radialGradient id="dot-halo"><stop offset="0" stop-color="#4DA6FF" stop-opacity="0.45"/><stop offset="1" stop-color="#4DA6FF" stop-opacity="0"/></radialGradient>
+</defs>
+<rect width="32" height="32" rx="7" fill="#0B1526"/>
+<g fill="none" stroke="url(#strand)" stroke-width="2.4" stroke-linecap="round">
+<path d="M5 19C10.5 19 11.5 9.5 17 9.5S22.5 10 25 7.5"/>
+<path d="M5 20.5C10.5 20.5 12.5 14 17.5 15S22.5 17.5 25 16"/>
+<path d="M5 22C10.5 22 12.5 20.5 17.5 22.5S22.5 26 25 24.5"/>
+</g>
+<g>
+<circle cx="25" cy="7.5" r="4.2" fill="url(#dot-halo)"/><circle cx="25" cy="7.5" r="2.3" fill="url(#dot-core)"/>
+<circle cx="25" cy="16" r="4.2" fill="url(#dot-halo)"/><circle cx="25" cy="16" r="2.3" fill="url(#dot-core)"/>
+<circle cx="25" cy="24.5" r="4.2" fill="url(#dot-halo)"/><circle cx="25" cy="24.5" r="2.3" fill="url(#dot-core)"/>
+</g>
+</svg>

@@ -1,0 +1,74 @@
+# Qt in ERDFlow @PROJECT_VERSION@
+
+ERDFlow @PROJECT_VERSION@ uses Qt @ERDFLOW_QT_VERSION@, copyright The Qt Company Ltd.
+and other contributors, under the GNU Lesser General Public License version 3
+(`LGPL-3.0.txt`, which refers to the GNU General Public License version 3 in
+`GPL-3.0.txt`).
+
+- ERDFlow links to Qt dynamically. The Qt libraries and plugins are separate
+  files in this package.
+- They are the official Qt @ERDFLOW_QT_VERSION@ binaries from The Qt Company.
+  Their code is unmodified; the packaging tools only set where they look for
+  one another and, on macOS, sign them. `THIRD-PARTY-LICENSES.txt` lists each
+  of them, the exact Qt source revisions they were built from, and the
+  compiler used.
+- Nothing in ERDFlow's licence or terms limits your rights under the LGPL. In
+  particular, you may replace the Qt libraries in this package with modified
+  versions of your own, and reverse engineering for the purpose of debugging
+  such modifications is permitted.
+
+## Source code of Qt
+
+@ERDFLOW_QT_SOURCE_TEXT@
+
+ERDFlow's own source code is available under the MIT licence at
+<https://github.com/Zain-Orwa/erdflow>.
+
+## Replacing the Qt libraries
+
+Use builds of Qt @ERDFLOW_QT_VERSION_MAJOR@ that are binary compatible with the
+ones supplied: the same or a later Qt @ERDFLOW_QT_VERSION_MAJOR@ version, for
+the same operating system and processor, built with a compatible compiler (see
+`THIRD-PARTY-LICENSES.txt`). Replace a library together with the plugins that
+belong to it.
+
+### Windows
+
+ERDFlow is installed in `%LOCALAPPDATA%\Programs\ERDFlow` unless another folder
+was chosen during installation.
+
+- Qt libraries: `bin\Qt6*.dll`, beside `erdflow.exe`.
+- Qt plugins: the folders under `plugins\` (for example
+  `plugins\platforms\qwindows.dll`).
+- `bin\qt.conf` tells Qt where the plugins are.
+
+Close ERDFlow, replace the files, and start ERDFlow again.
+
+### macOS
+
+- Qt libraries: `ERDFlow.app/Contents/Frameworks/Qt*.framework`.
+- Qt plugins: the folders under `ERDFlow.app/Contents/PlugIns/`.
+- `ERDFlow.app/Contents/Resources/qt.conf` tells Qt where they are.
+
+Replacing a file inside `ERDFlow.app` invalidates the application's signature,
+and an Apple silicon Mac will not start it until it is signed again. Signing it
+yourself, for your own use, is enough:
+
+    codesign --force --deep --sign - /Applications/ERDFlow.app
+
+### Linux (AppImage)
+
+Unpack the AppImage, replace the files, and start the unpacked copy:
+
+    ./ERDFlow-@PROJECT_VERSION@-linux-x86_64.AppImage --appimage-extract
+    # Qt libraries:  squashfs-root/usr/lib/libQt6*.so.6
+    # Qt plugins:    squashfs-root/usr/plugins/
+    ./squashfs-root/AppRun
+
+The unpacked folder can be packed into a new AppImage with `appimagetool`
+from the AppImage project.
+
+### Building ERDFlow against another Qt
+
+ERDFlow can also be built from source against any Qt @ERDFLOW_QT_VERSION_MAJOR@
+installation; `docs/DEVELOPMENT.md` in the ERDFlow source describes how.
