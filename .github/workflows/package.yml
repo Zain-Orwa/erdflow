@@ -62,6 +62,27 @@ jobs:
       run:
         shell: bash
 
+    env:
+      # Where the Qt source code is offered (packaging/README.md): published,
+      # with the build information, on each release's GitHub page.
+      # @PROJECT_VERSION@ and @ERDFLOW_QT_VERSION@ are filled in by CMake.
+      ERDFLOW_QT_SOURCE_OFFER: >-
+        The complete source code of the Qt @ERDFLOW_QT_VERSION@ libraries and
+        plugins in this package, unmodified, is published with ERDFlow
+        @PROJECT_VERSION@ on its release page, free of charge:
+        <https://github.com/Zain-Orwa/erdflow/releases/tag/v@PROJECT_VERSION@>.
+        It is there as the official qtbase-everywhere-src-@ERDFLOW_QT_VERSION@.tar.xz
+        and qtsvg-everywhere-src-@ERDFLOW_QT_VERSION@.tar.xz archives, with the
+        build information The Qt Company published for these binaries, and it
+        stays there for as long as this version of ERDFlow is offered.
+      # The release owner's sign-off (docs/RELEASE_0.1.0.md): the repository
+      # variable ERDFLOW_REDISTRIBUTION_APPROVED set to true. Without it every
+      # package says it is a test candidate.
+      ERDFLOW_APPROVED: ${{ vars.ERDFLOW_REDISTRIBUTION_APPROVED == 'true' && 'ON' || 'OFF' }}
+      # Signing runs only where its secrets are set (packaging/README.md).
+      HAS_MACOS_SIGNING: ${{ secrets.MACOS_SIGNING_IDENTITY != '' && secrets.MACOS_CERTIFICATE_P12_BASE64 != '' }}
+      HAS_NOTARIZATION: ${{ secrets.APPLE_API_KEY_ID != '' && secrets.APPLE_API_KEY_P8_BASE64 != '' }}
+
     steps:
       - name: Check out the source
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
@@ -95,7 +116,9 @@ jobs:
             -DBUILD_TESTING=ON \
             -DERDFLOW_PACKAGING=ON \
             -DCMAKE_OSX_ARCHITECTURES=${{ matrix.osx-arch }} \
-            -DCMAKE_OSX_DEPLOYMENT_TARGET="$minos"
+            -DCMAKE_OSX_DEPLOYMENT_TARGET="$minos" \
+            -DERDFLOW_QT_SOURCE_OFFER="$ERDFLOW_QT_SOURCE_OFFER" \
+            -DERDFLOW_REDISTRIBUTION_APPROVED="$ERDFLOW_APPROVED"
 
       - name: Configure (Windows)
         if: runner.os == 'Windows'
@@ -105,6 +128,8 @@ jobs:
           -DCMAKE_BUILD_TYPE=Release
           -DBUILD_TESTING=ON
           -DERDFLOW_PACKAGING=ON
+          -DERDFLOW_QT_SOURCE_OFFER="$ERDFLOW_QT_SOURCE_OFFER"
+          -DERDFLOW_REDISTRIBUTION_APPROVED="$ERDFLOW_APPROVED"
 
       - name: Install runtime test dependencies (Linux)
         if: runner.os == 'Linux'
@@ -124,6 +149,8 @@ jobs:
           -DBUILD_TESTING=ON
           -DERDFLOW_PACKAGING=ON
           -DCMAKE_INSTALL_PREFIX=/usr
+          -DERDFLOW_QT_SOURCE_OFFER="$ERDFLOW_QT_SOURCE_OFFER"
+          -DERDFLOW_REDISTRIBUTION_APPROVED="$ERDFLOW_APPROVED"
 
       # The version comes from project(VERSION) in CMakeLists.txt, through CMake.
       - name: Read the version
@@ -143,9 +170,68 @@ jobs:
 
       # ---- macOS: ERDFlow.app in a disk image ---------------------------------
 
+      # With a Developer ID (secrets MACOS_CERTIFICATE_P12_BASE64,
+      # MACOS_CERTIFICATE_PASSWORD, MACOS_SIGNING_IDENTITY), in a keychain of
+      # this run's own; packaging/macos/finish-bundle.cmake signs with it.
+      - name: Import the signing certificate (macOS)
+        if: runner.os == 'macOS' && env.HAS_MACOS_SIGNING == 'true'
+        env:
+          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          keychain="$RUNNER_TEMP/erdflow-signing.keychain-db"
+          password=$(openssl rand -hex 24)
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          printf '%s' "$MACOS_CERTIFICATE_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/erdflow-signing.p12"
+          security import "$RUNNER_TEMP/erdflow-signing.p12" -k "$keychain" \
+            -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/erdflow-signing.p12"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$password" "$keychain"
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+
       - name: Package (macOS)
         if: runner.os == 'macOS'
+        env:
+          ERDFLOW_CODESIGN_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
         run: cpack --config build/package/CPackConfig.cmake
+
+      # Apple's notary service (secrets APPLE_API_KEY_ID, APPLE_API_ISSUER_ID,
+      # APPLE_API_KEY_P8_BASE64: an App Store Connect API key), then the ticket
+      # stapled to the disk image so Gatekeeper accepts it offline.
+      - name: Sign and notarize the disk image (macOS)
+        if: runner.os == 'macOS' && env.HAS_MACOS_SIGNING == 'true'
+        env:
+          MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          APPLE_API_KEY_P8_BASE64: ${{ secrets.APPLE_API_KEY_P8_BASE64 }}
+        run: |
+          dmg="build/package/dist/ERDFlow-$ERDFLOW_VERSION-macos-${{ matrix.osx-arch }}.dmg"
+          codesign --force --timestamp --sign "$MACOS_SIGNING_IDENTITY" "$dmg"
+          codesign --verify --strict --verbose=2 "$dmg"
+          if [ "$HAS_NOTARIZATION" != true ]; then
+            echo "::warning::Signed but not notarized: the notarization secrets are not set"
+            exit 0
+          fi
+          key="$RUNNER_TEMP/erdflow-notary.p8"
+          printf '%s' "$APPLE_API_KEY_P8_BASE64" | base64 --decode > "$key"
+          result=$(xcrun notarytool submit "$dmg" --key "$key" --key-id "$APPLE_API_KEY_ID" \
+                     --issuer "$APPLE_API_ISSUER_ID" --wait --timeout 30m --output-format json)
+          echo "$result"
+          status=$(printf '%s' "$result" | python3 -c 'import json, sys; print(json.load(sys.stdin).get("status", ""))')
+          if [ "$status" != Accepted ]; then
+            id=$(printf '%s' "$result" | python3 -c 'import json, sys; print(json.load(sys.stdin).get("id", ""))')
+            [ -n "$id" ] && xcrun notarytool log "$id" --key "$key" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER_ID"
+            rm -f "$key"
+            echo "::error::Notarization ended as '$status'"
+            exit 1
+          fi
+          rm -f "$key"
+          xcrun stapler staple "$dmg"
+          xcrun stapler validate "$dmg"
+          spctl --assess --type open --context context:primary-signature --verbose=2 "$dmg"
 
       - name: Verify (macOS)
         if: runner.os == 'macOS'
@@ -198,6 +284,36 @@ jobs:
           "$app/Contents/MacOS/ERDFlow" --example --smoke-test
           exit $status
 
+      # Installed as a person installs it: dragged from the disk image into
+      # /Applications, started there, then removed.
+      - name: Install, start and remove (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          dmg="build/package/dist/ERDFlow-$ERDFLOW_VERSION-macos-${{ matrix.osx-arch }}.dmg"
+          mnt="$RUNNER_TEMP/erdflow-install"
+          mkdir -p "$mnt"
+          hdiutil attach -readonly -nobrowse -mountpoint "$mnt" "$dmg"
+          ditto "$mnt/ERDFlow.app" /Applications/ERDFlow.app
+          hdiutil detach "$mnt"
+          app=/Applications/ERDFlow.app
+          codesign --verify --deep --strict --verbose=2 "$app"
+          "$app/Contents/MacOS/ERDFlow" --version | grep -qx "ERDFlow $ERDFLOW_VERSION"
+          "$app/Contents/MacOS/ERDFlow" --example --smoke-test
+          if [ "$HAS_MACOS_SIGNING" = true ] && [ "$HAS_NOTARIZATION" = true ]; then
+            spctl --assess --type execute --verbose=2 "$app"
+          else
+            spctl --assess --type execute --verbose=2 "$app" ||
+              echo "::notice::Gatekeeper refuses this build, as it does any app without a notarized Developer ID signature"
+          fi
+          # Replacing a Qt library, as QT-LGPL-INFORMATION.md describes: Qt SVG
+          # from the Qt installation, signed for one's own use, started again.
+          cp "$QT_ROOT_DIR/lib/QtSvg.framework/Versions/A/QtSvg" "$app/Contents/Frameworks/QtSvg.framework/Versions/A/QtSvg"
+          codesign --force --deep --sign - "$app"
+          "$app/Contents/MacOS/ERDFlow" --example --smoke-test
+          echo "Started again with Qt SVG replaced"
+          rm -rf "$app"
+          test ! -e "$app"
+
       # ---- Windows: per-user Inno Setup installer -----------------------------
 
       - name: Stage (Windows)
@@ -219,7 +335,7 @@ jobs:
             echo "::error::A component that should not be in the package was staged (listed above)"; status=1
           fi
           for notice in LICENSE LICENSE-lucide.txt THIRD-PARTY-NOTICES.md THIRD-PARTY-LICENSES.txt \
-                        QT-LGPL-INFORMATION.md LGPL-3.0.txt GPL-3.0.txt; do
+                        QT-LGPL-INFORMATION.md LGPL-3.0.txt GPL-3.0.txt Inno-Setup-6.7.1-license.txt; do
             test -f "$stage/licenses/$notice" || { echo "::error::$notice is missing"; status=1; }
           done
           if grep -q '^INCOMPLETE' "$stage/licenses/THIRD-PARTY-LICENSES.txt"; then
@@ -255,6 +371,55 @@ jobs:
           if (Test-Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{A5A5C30E-6D62-457C-98AD-F0F6F3275E13}_is1') {
             throw 'Uninstall left its registry entry behind'
           }
+
+      # Installed twice, the second over the first as an upgrade installs, then
+      # every program and library in it checked to load only from the package
+      # or from Windows itself -- in particular never a Visual C++ runtime the
+      # machine happens to have -- and removed again.
+      - name: Reinstall, audit and remove (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $setup = "build/package/dist/ERDFlow-$env:ERDFLOW_VERSION-windows-x86_64-setup.exe"
+          foreach ($round in 'first', 'over-the-first') {
+            $log = "$env:RUNNER_TEMP\erdflow-setup-$round.log"
+            $install = Start-Process -FilePath $setup -Wait -PassThru `
+              -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/CURRENTUSER', "/LOG=$log"
+            if ($install.ExitCode -ne 0) { Get-Content $log; throw "Setup ($round) failed: $($install.ExitCode)" }
+          }
+          $app = Join-Path $env:LOCALAPPDATA 'Programs\ERDFlow'
+          $exe = Join-Path $app 'bin\erdflow.exe'
+          if ((Get-Item $exe).VersionInfo.ProductVersion -ne $env:ERDFLOW_VERSION) { throw 'The reinstalled program has another version' }
+          $run = Start-Process -FilePath $exe -ArgumentList '--example', '--smoke-test' -Wait -PassThru
+          if ($run.ExitCode -ne 0) { throw "Smoke test after reinstalling failed: $($run.ExitCode)" }
+          # Replacing a Qt library, as QT-LGPL-INFORMATION.md describes: Qt SVG
+          # from the Qt installation, then started again.
+          Copy-Item -Force (Join-Path $env:QT_ROOT_DIR 'bin\Qt6Svg.dll') (Join-Path $app 'bin\Qt6Svg.dll')
+          $run = Start-Process -FilePath $exe -ArgumentList '--example', '--smoke-test' -Wait -PassThru
+          if ($run.ExitCode -ne 0) { throw "Smoke test with Qt SVG replaced failed: $($run.ExitCode)" }
+          Write-Host 'Started again with Qt SVG replaced'
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          $dumpbin = Get-ChildItem "$vs\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe" | Select-Object -First 1
+          $files = Get-ChildItem -Path $app -Recurse -Include *.dll, *.exe
+          $local = @{}
+          foreach ($file in $files) { $local[$file.Name.ToLower()] = $true }
+          $problems = @()
+          foreach ($file in $files) {
+            $imports = & $dumpbin.FullName /nologo /dependents $file.FullName |
+              Where-Object { $_ -match '^\s+\S+\.dll\s*$' } | ForEach-Object { $_.Trim().ToLower() }
+            foreach ($import in $imports) {
+              if ($local.ContainsKey($import) -or $import -match '^(api|ext)-ms-') { continue }
+              if ($import -match '^(msvcp|vcruntime|concrt|vccorlib)') { $problems += "$($file.Name) needs $import, which is not in the package"; continue }
+              if (-not (Test-Path (Join-Path $env:SystemRoot "System32\$import"))) { $problems += "$($file.Name) needs $import, found neither in the package nor in Windows" }
+            }
+          }
+          if ($problems) { $problems | ForEach-Object { Write-Host "::error::$_" }; throw 'Imports the package does not provide' }
+          Write-Host "All $($files.Count) programs and libraries load only from the package or from Windows"
+          $remove = Start-Process -FilePath (Join-Path $app 'unins000.exe') -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait -PassThru
+          if ($remove.ExitCode -ne 0) { throw "Uninstall failed: $($remove.ExitCode)" }
+          Start-Sleep -Seconds 5
+          if (Test-Path $app) { Get-ChildItem -Recurse $app | Select-Object -ExpandProperty FullName; throw 'Uninstall left the program folder behind' }
+          if (Test-Path "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\ERDFlow.lnk") { throw 'Uninstall left the Start menu entry behind' }
 
       # ---- Linux: AppImage ----------------------------------------------------
 
@@ -295,6 +460,10 @@ jobs:
             --desktop-file "$appdir/usr/share/applications/erdflow.desktop" \
             --icon-file "$appdir/usr/share/icons/hicolor/512x512/apps/erdflow.png" \
             --plugin qt
+          # Qt's own translations stay out, as they do on macOS and Windows:
+          # ERDFlow is in English, and they would add qttranslations' source to
+          # what must be offered (2026-10-15).
+          rm -rf "$appdir/usr/translations"
           # 2. The licences of everything now in the AppDir.
           cmake -D ERDFLOW_NOTICES_ROOT="$appdir" -P build/package/packaging/write-notices.cmake
           # 3. The AppImage.
@@ -324,9 +493,13 @@ jobs:
           fi
           licences="$root/usr/share/doc/erdflow"
           for notice in LICENSE LICENSE-lucide.txt THIRD-PARTY-NOTICES.md THIRD-PARTY-LICENSES.txt \
-                        QT-LGPL-INFORMATION.md LGPL-3.0.txt GPL-3.0.txt; do
+                        QT-LGPL-INFORMATION.md LGPL-3.0.txt GPL-3.0.txt \
+                        appimage-runtime/libfuse-3.15.0-LGPL2.txt appimage-runtime/linuxdeploy-plugin-qt-LICENSE.txt; do
             test -f "$licences/$notice" || { echo "::error::$notice is missing"; status=1; }
           done
+          if [ -e "$root/usr/translations" ]; then
+            echo "::error::Qt's translations are in the AppImage"; status=1
+          fi
           if grep -q '^INCOMPLETE' "$licences/THIRD-PARTY-LICENSES.txt"; then
             echo "::error::THIRD-PARTY-LICENSES.txt is marked incomplete"; status=1
           fi
@@ -334,6 +507,49 @@ jobs:
           xvfb-run --auto-servernum "$image" --version | tee "$RUNNER_TEMP/version.txt"
           grep -qx "ERDFlow $ERDFLOW_VERSION" "$RUNNER_TEMP/version.txt"
           xvfb-run --auto-servernum "$image" --example --smoke-test
+          # Replacing a Qt library, as QT-LGPL-INFORMATION.md describes: Qt SVG
+          # from the Qt installation in the unpacked AppImage, started from there.
+          cp -L "$QT_ROOT_DIR/lib/libQt6Svg.so.6" "$root/usr/lib/libQt6Svg.so.6"
+          xvfb-run --auto-servernum "$root/AppRun" --example --smoke-test
+          echo "Started again with Qt SVG replaced"
+
+      # The source packages of the Ubuntu libraries in the AppImage, at the
+      # versions it carries, to publish with the release: some are under the
+      # LGPL (THIRD-PARTY-NOTICES.md).
+      - name: Collect the system libraries' source (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/ubuntu.sources
+          sudo apt-get update
+          out="$PWD/build/package/system-library-sources"
+          mkdir -p "$out"
+          python3 - build/package/packaging/inventory.json > "$RUNNER_TEMP/binary-packages.txt" <<'PY'
+          import json, sys
+          for name, record in sorted(json.load(open(sys.argv[1]))["system_libraries"].items()):
+              print(name, record["version"])
+          PY
+          : > "$RUNNER_TEMP/source-packages.txt"
+          while read -r package version; do
+            installed=$(dpkg-query -W -f='${Version}' "$package")
+            if [ "$installed" != "$version" ]; then
+              echo "::error::$package is $installed here but $version in the AppImage"; exit 1
+            fi
+            dpkg-query -W -f='${source:Package} ${source:Version}\n' "$package" >> "$RUNNER_TEMP/source-packages.txt"
+          done < "$RUNNER_TEMP/binary-packages.txt"
+          sort -u "$RUNNER_TEMP/source-packages.txt" > "$out/SOURCE-PACKAGES.txt"
+          cat "$out/SOURCE-PACKAGES.txt"
+          (cd "$out" && while read -r source version; do apt-get source --download-only "$source=$version"; done < SOURCE-PACKAGES.txt)
+          ls -la "$out"
+          tar -C build/package -cf "build/package/ERDFlow-$ERDFLOW_VERSION-linux-x86_64-system-library-sources.tar" system-library-sources
+
+      - name: Upload the system libraries' source (Linux)
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sources-linux-system-libraries
+          path: build/package/ERDFlow-*-linux-x86_64-system-library-sources.tar
+          if-no-files-found: error
+          retention-days: 14
 
       # ---- Every platform: checksum, inventory and upload ---------------------
 
@@ -351,6 +567,28 @@ jobs:
           done
           cp ../packaging/inventory.json "ERDFlow-$ERDFLOW_VERSION-${{ matrix.id }}-inventory.json"
 
+      # An SPDX bill of materials of the finished package, checked with the
+      # SPDX project's own tools, and the build information The Qt Company
+      # published for the Qt binaries in it (its SPDX SBOMs).
+      - name: Bill of materials
+        run: |
+          dist=build/package/dist
+          sbom="$dist/ERDFlow-$ERDFLOW_VERSION-${{ matrix.id }}.spdx.json"
+          for package in "$dist"/ERDFlow-*.dmg "$dist"/ERDFlow-*.exe "$dist"/ERDFlow-*.AppImage; do
+            [ -f "$package" ] || continue
+            python3 packaging/notices/inventory_to_spdx.py --inventory build/package/packaging/inventory.json \
+              --package "$package" --version "$ERDFLOW_VERSION" \
+              --copyright "$(grep -m1 '^Copyright' LICENSE)" --output "$sbom"
+          done
+          python3 -m venv "$RUNNER_TEMP/spdx"
+          py="$RUNNER_TEMP/spdx/bin/python"; [ -f "$py" ] || py="$RUNNER_TEMP/spdx/Scripts/python.exe"
+          "$py" -m pip install --quiet spdx-tools==0.8.3
+          "$py" -c 'from spdx_tools.spdx.clitools.pyspdxtools import main; main()' -i "$sbom"
+          qt=$(basename "$(dirname "$QT_ROOT_DIR")")
+          mkdir -p "build/package/Qt-$qt-${{ matrix.id }}-build-information"
+          cp "$QT_ROOT_DIR"/sbom/*.spdx.json "build/package/Qt-$qt-${{ matrix.id }}-build-information/"
+          tar -C build/package -czf "$dist/Qt-$qt-${{ matrix.id }}-build-information.tar.gz" "Qt-$qt-${{ matrix.id }}-build-information"
+
       - name: Upload
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -361,14 +599,108 @@ jobs:
             build/package/dist/ERDFlow-*.AppImage
             build/package/dist/ERDFlow-*.sha256
             build/package/dist/ERDFlow-*-inventory.json
+            build/package/dist/ERDFlow-*.spdx.json
+            build/package/dist/Qt-*-build-information.tar.gz
           if-no-files-found: error
           retention-days: 14
+
+  # The source code published with each release beside the packages: Qt's,
+  # and the AppImage runtime's with what it is linked from
+  # (packaging/release/SOURCES.md). Each archive is checked against its
+  # published or pinned hash.
+  sources:
+    name: Source archives
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out the source
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          persist-credentials: false
+
+      - name: Collect and check the source archives
+        run: |
+          out="$PWD/sources"
+          mkdir -p "$out"
+          cd "$out"
+          get() { curl --fail --location --silent --show-error --output "$1" "$2"; }
+          qt=https://download.qt.io/official_releases/qt/6.11/6.11.2/submodules
+          get qtbase-everywhere-src-6.11.2.tar.xz "$qt/qtbase-everywhere-src-6.11.2.tar.xz"
+          get qtsvg-everywhere-src-6.11.2.tar.xz "$qt/qtsvg-everywhere-src-6.11.2.tar.xz"
+          get fuse-3.15.0.tar.xz https://github.com/libfuse/libfuse/releases/download/fuse-3.15.0/fuse-3.15.0.tar.xz
+          get squashfuse-0.5.2.tar.gz https://github.com/vasi/squashfuse/archive/0.5.2.tar.gz
+          sha256sum --check --strict <<'SUMS'
+          5b2e00eccaf5a4d8c14134ffa0ea8dfd0a35ae1ffc7f8d87fa4305a1ed23cf22  qtbase-everywhere-src-6.11.2.tar.xz
+          d594337feca84c26fb67fe87b85e6a5c12fda404b611d905f9d138210c311876  qtsvg-everywhere-src-6.11.2.tar.xz
+          70589cfd5e1cff7ccd6ac91c86c01be340b227285c5e200baa284e401eea2ca0  fuse-3.15.0.tar.xz
+          db0238c5981dabbd80ee09ae15387f390091668ca060a7bc38047912491443d3  squashfuse-0.5.2.tar.gz
+          SUMS
+          git clone --quiet --depth 1 --branch 20251108 https://github.com/AppImage/type2-runtime.git "$RUNNER_TEMP/type2-runtime"
+          test "$(git -C "$RUNNER_TEMP/type2-runtime" rev-parse HEAD)" = dd6cebedcbddde9c82f89b011e8e1d40b6e43868
+          git -C "$RUNNER_TEMP/type2-runtime" archive --format=tar.gz --prefix=type2-runtime-20251108/ \
+            --output "$out/type2-runtime-20251108.tar.gz" HEAD
+          cp ../packaging/release/SOURCES.md .
+          sha256sum ./*.tar.* > SHA256SUMS-sources
+          cat SHA256SUMS-sources
+
+      - name: Upload the source archives
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sources-qt-and-appimage-runtime
+          path: sources/
+          if-no-files-found: error
+          retention-days: 14
+
+  # The AppImage started on fresh, minimal systems other than the one it was
+  # built on, with only what a desktop always has installed.
+  linux-distributions:
+    name: Linux ${{ matrix.image }}
+    needs: package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ['ubuntu:24.04', 'debian:13', 'fedora:42']
+    container: ${{ matrix.image }}
+    steps:
+      - name: Download the AppImage
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: erdflow-linux-x86_64
+          path: package
+
+      - name: Start it
+        shell: bash
+        run: |
+          if command -v apt-get > /dev/null; then
+            apt-get update
+            DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends \
+              xvfb xauth libgl1 libegl1 libfontconfig1 fonts-dejavu-core libx11-6 libx11-xcb1 \
+              libxcb1 libxext6 libxrender1 libsm6 libice6 libstdc++6
+          else
+            dnf install --assumeyes xorg-x11-server-Xvfb mesa-libGL mesa-libEGL fontconfig \
+              dejavu-sans-fonts libX11 libX11-xcb libxcb libXext libXrender libSM libICE libstdc++ findutils
+          fi
+          image=$(ls package/ERDFlow-*-linux-x86_64.AppImage)
+          chmod +x "$image"
+          Xvfb :99 -screen 0 1440x1080x24 &
+          sleep 3
+          export DISPLAY=:99 APPIMAGE_EXTRACT_AND_RUN=1
+          "$image" --version
+          if ! "$image" --example --smoke-test; then
+            "$image" --appimage-extract > /dev/null
+            find squashfs-root -name '*.so*' -exec ldd {} \; 2>/dev/null | grep 'not found' | sort -u || true
+            exit 1
+          fi
 
   checksums:
     name: SHA256SUMS
     needs: package
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    env:
+      HAS_GPG_SIGNING: ${{ secrets.ERDFLOW_GPG_PRIVATE_KEY != '' }}
     steps:
       - name: Download the packages
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -385,10 +717,28 @@ jobs:
           cat SHA256SUMS
           test "$(wc -l < SHA256SUMS)" -eq 4
 
+      # A detached OpenPGP signature of SHA256SUMS, which covers every package
+      # (secrets ERDFLOW_GPG_PRIVATE_KEY and ERDFLOW_GPG_PASSPHRASE).
+      - name: Sign SHA256SUMS
+        if: env.HAS_GPG_SIGNING == 'true'
+        working-directory: packages
+        env:
+          ERDFLOW_GPG_PRIVATE_KEY: ${{ secrets.ERDFLOW_GPG_PRIVATE_KEY }}
+          ERDFLOW_GPG_PASSPHRASE: ${{ secrets.ERDFLOW_GPG_PASSPHRASE }}
+        run: |
+          export GNUPGHOME="$RUNNER_TEMP/gnupg"
+          mkdir -m 700 -p "$GNUPGHOME"
+          printf '%s\n' "$ERDFLOW_GPG_PRIVATE_KEY" | gpg --batch --import
+          gpg --batch --yes --pinentry-mode loopback --passphrase "$ERDFLOW_GPG_PASSPHRASE" \
+            --armor --detach-sign --output SHA256SUMS.asc SHA256SUMS
+          gpg --batch --verify SHA256SUMS.asc SHA256SUMS
+
       - name: Upload SHA256SUMS
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: erdflow-SHA256SUMS
-          path: packages/SHA256SUMS
+          path: |
+            packages/SHA256SUMS
+            packages/SHA256SUMS.asc
           if-no-files-found: error
           retention-days: 14
