@@ -29,12 +29,6 @@ jobs:
           - name: Linux x86-64
             runner: ubuntu-24.04
             qt-arch: linux_gcc_64
-          - name: macOS Apple Silicon
-            runner: macos-15
-            qt-arch: clang_64
-          - name: macOS Intel
-            runner: macos-15-intel
-            qt-arch: clang_64
 
     steps:
       - name: Check out the source
@@ -56,7 +50,29 @@ jobs:
           -DBUILD_TESTING=ON
 
       - name: Build
-        run: cmake --build build/ci --config Release --parallel
+        run: cmake --build build/ci --config Release --parallel --target desktop_tests
 
-      - name: Test
-        run: ctest --test-dir build/ci --build-config Release --output-on-failure --timeout 120
+      # Diagnostic branch only (never merged): the line-colour check isolated
+      # and in its original combined order, and the header's widths.
+      - name: Diagnose
+        shell: bash
+        env:
+          QT_QPA_PLATFORM: offscreen
+          QT_QPA_FONTDIR: ${{ runner.os == 'Windows' && 'C:/Windows/Fonts' || '' }}
+          ERDFLOW_DIAG_DIR: ${{ runner.temp }}/diag
+        run: |
+          mkdir -p "$ERDFLOW_DIAG_DIR"
+          exe=build/ci/desktop_tests; [ -f build/ci/Release/desktop_tests.exe ] && exe=build/ci/Release/desktop_tests.exe
+          for mode in --relational-lines-part --old-relational-part --new-projects-part; do
+            echo "===== $mode"
+            "$exe" $mode > "$ERDFLOW_DIAG_DIR/out$mode.txt" 2>&1; echo "exit $?"
+            grep -E "DIAG|passed|failed" "$ERDFLOW_DIAG_DIR/out$mode.txt" || true
+          done
+
+      - name: Keep the pictures
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: diag-${{ runner.os }}
+          path: ${{ runner.temp }}/diag
+          retention-days: 14

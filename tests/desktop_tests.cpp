@@ -5100,13 +5100,25 @@ namespace
                 const QPoint at(static_cast<int>((middle.x() - source.left()) * scale),
                                 static_cast<int>((middle.y() - source.top()) * scale));
                 bool seen = false;
-                for (int dy = -3; dy <= 3 && !seen; ++dy)
-                    for (int dx = -3; dx <= 3 && !seen; ++dx)
-                        if (image.valid(at + QPoint(dx, dy)) &&
-                            colour_distance(image.pixelColor(at + QPoint(dx, dy)), drawn[i]) < 4.0)
-                            seen = true;
+                double nearest = 1e9;
+                QColor nearest_colour;
+                for (int dy = -3; dy <= 3; ++dy)
+                    for (int dx = -3; dx <= 3; ++dx)
+                        if (image.valid(at + QPoint(dx, dy)))
+                        {
+                            const auto d = colour_distance(image.pixelColor(at + QPoint(dx, dy)), drawn[i]);
+                            if (d < nearest) { nearest = d; nearest_colour = image.pixelColor(at + QPoint(dx, dy)); }
+                            if (d < 4.0) seen = true;
+                        }
                 found += seen ? 1 : 0;
+                std::cerr << "DIAG line " << i << (seen ? " ok" : " MISSING") << " expected=" << drawn[i].name().toStdString()
+                          << " nearest=" << nearest_colour.name().toStdString() << " d=" << nearest << " at=" << at.x() << "," << at.y()
+                          << " run=" << shapes[i][longest - 1].x() << "," << shapes[i][longest - 1].y() << "->" << shapes[i][longest].x() << "," << shapes[i][longest].y()
+                          << " points=" << shapes[i].size() << "\n";
             }
+            std::cerr << "DIAG picture " << image.width() << "x" << image.height() << " scale=" << scale << " source=" << source.left() << "," << source.top() << " " << source.width() << "x" << source.height() << " looked=" << looked << " found=" << found << "\n";
+            if (const auto dir = qEnvironmentVariable("ERDFLOW_DIAG_DIR"); !dir.isEmpty())
+                QFile::copy(picture, dir + "/colours-" + QCoreApplication::arguments().value(1, "whole").remove('-') + ".png");
             require(looked > 10 && found == looked, "Every line in the picture is drawn in its relationship's colour");
         }
         editor.mark_saved(editor.revision());
@@ -9518,7 +9530,7 @@ int main(int argc, char **argv)
     const bool window_part = arguments.contains("--window-part");
     const bool new_projects_part = arguments.contains("--new-projects-part");
     const bool whole = !export_part && !relational_part && !relational_lines_part && !window_tools_part && !window_part &&
-                       !new_projects_part;
+                       !new_projects_part && !arguments.contains("--old-relational-part");
     // The window remembers the chosen theme. Point that at a throwaway domain so
     // running the tests cannot disturb the real preferences -- a domain for
     // each part, so that parts run side by side cannot disturb each other's.
@@ -9562,6 +9574,20 @@ int main(int argc, char **argv)
                 return 0;
         }
         infrastructure::QtIdGenerator ids;
+        if (arguments.contains("--old-relational-part"))
+        {
+            painting_on_request.reset();
+            relational_design_tests(ids);
+            painting_on_request.emplace();
+            schema_drawing_tests(ids);
+            schema_open_routing_tests(ids);
+            route_memory_router_tests();
+            route_memory_view_tests(ids);
+            schema_colour_allocation_tests();
+            schema_line_colour_tests(ids);
+            std::cout << "Old relational order passed the line colours\n";
+            return 0;
+        }
         if (whole || relational_part)
         {
             // Relational Design's own checks look at what the schema really
@@ -16327,8 +16353,17 @@ int main(int argc, char **argv)
                 // room enough in macOS's, not in the wider letters of Linux
                 // (2026-10-15), so a window 4K wide.
                 const int roomy = 3840;
-                window.resize(roomy, size_was.height());
-                settle();
+                for (const int w : {1900, 2560, roomy})
+                {
+                    window.resize(w, size_was.height());
+                    settle();
+                    std::cerr << "DIAG header window=" << window.width()
+                              << " header=" << header_tools->parentWidget()->width()
+                              << " natural=" << header_tools->parentWidget()->sizeHint().width() << " worded=";
+                    for (const char *n : {"schemaSelect", "schemaAddTable", "schemaConnect", "schemaText", "schemaInsert", "schemaTopArrange", "schemaTopAppearance"})
+                        std::cerr << (child<QToolButton>(window, n)->toolButtonStyle() == Qt::ToolButtonTextBesideIcon ? 1 : 0);
+                    std::cerr << "\n";
+                }
                 const std::vector<const char *> tools{"schemaSelect", "schemaAddTable", "schemaConnect", "schemaText",
                                                       "schemaInsert", "schemaTopArrange", "schemaTopAppearance"};
                 require(window.width() == roomy && std::all_of(tools.begin(), tools.end(), worded),
