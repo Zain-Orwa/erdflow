@@ -426,6 +426,22 @@ read as still to do.
   TIMEOUT; no assertion was removed or changed, production code was not
   changed, and `desktop_tests` with no part named still runs every check in
   the same order.
+- **Help -> Licences, and the packages made ready for release** (2026-10-15,
+  release preparation for 0.1.0): Help gains *Licences* after *About
+  ERDFlow*, which is unchanged. It names ERDFlow's MIT licence and its holder
+  (read from `LICENSE`), the Qt version and the LGPL terms ERDFlow uses it
+  under, and the folder the package installed the licence files in
+  (`installed_licences_folder`: `Contents/Resources/Licenses`, `licenses`
+  beside `bin`, or `share/doc/erdflow`), with *Show Licence Files* and *About
+  Qt*. The packages carry the Qt source offer (published with each release),
+  the AppImage runtime's component licences, the Inno Setup licence and the
+  exact Visual C++ runtime versions; the AppImage no longer carries Qt's
+  translations, as macOS and Windows never did. Each package gets an SPDX
+  bill of materials, checked with the SPDX tools. macOS Developer ID signing
+  and notarization and an OpenPGP signature of `SHA256SUMS` run once their
+  secrets are set, and every package says it is a test candidate until the
+  release owner sets `ERDFLOW_REDISTRIBUTION_APPROVED`. The record and what
+  remains: `docs/RELEASE_0.1.0.md`.
 
 **Column reordering is not built.** Task 4A is complete. Task 4B is
 complete as a foundation: a derived table can be listed in a stored order,

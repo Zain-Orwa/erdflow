@@ -15,10 +15,13 @@ Qt stays dynamically linked. Each package carries the shared Qt libraries and
 plugins ERDFlow uses, the notices in `notices/`, and nothing from the test
 suite.
 
-**Status: unsigned test candidates.** No package is signed with a Developer ID
-or a Windows code-signing certificate, the macOS packages are not notarized,
-and redistribution obligations remain open (`notices/THIRD-PARTY-NOTICES.md`).
-None of them is ready to publish.
+**Status: release preparation (2026-10-15).** Every package says it is a test
+candidate until the release owner approves distribution (the repository
+variable `ERDFLOW_REDISTRIBUTION_APPROVED`, below). The macOS packages are
+signed with a Developer ID and notarized, and `SHA256SUMS` carries an OpenPGP
+signature, once the secrets for them are set; until then they are signed ad
+hoc and not notarized. Windows code signing is not yet set up. What is done and
+what remains is in `docs/RELEASE_0.1.0.md`.
 
 ## Layout
 
@@ -52,10 +55,36 @@ packaging/
 The package workflow is `.github/workflows/package.yml`. It runs when
 started by hand from the Actions tab, and when a `release/**` branch is
 pushed, so a release candidate's packages are built before it is merged. It
-builds and tests on each platform, packages, checks the package, installs or
-launches it, and uploads it with its SHA-256 checksum as a workflow artifact.
-A last job checks the four checksums and writes `SHA256SUMS`. It creates no
-release and no tag, and publishes nothing.
+builds and tests on each platform, packages, checks the package, installs,
+starts and removes it, and uploads it with its SHA-256 checksum, its SPDX bill
+of materials and the Qt build information as a workflow artifact. On Windows
+it also installs over the installed copy, as an upgrade does, and checks that
+every program and library loads only from the package or from Windows. The
+AppImage is also started on fresh Ubuntu 24.04, Debian 13 and Fedora 42
+systems. A sources job collects and checks the source archives published with
+the release (`release/SOURCES.md`), and the Linux job the source packages of
+the Ubuntu libraries in the AppImage. A last job checks the four checksums,
+writes `SHA256SUMS` and, with a key set, signs it. It creates no release and no
+tag, and publishes nothing; `release/assemble-release.sh` gathers a run's
+files for a release.
+
+### Signing, notarization and approval
+
+Each runs only when its repository secrets or variable are set (Settings ->
+Secrets and variables -> Actions):
+
+| Secret or variable | What it is |
+| --- | --- |
+| `MACOS_CERTIFICATE_P12_BASE64`, `MACOS_CERTIFICATE_PASSWORD` | A Developer ID Application certificate and its private key, exported as a `.p12` and base64-encoded, and its password |
+| `MACOS_SIGNING_IDENTITY` | Its name, such as `Developer ID Application: Zain Orwa (TEAMID)` |
+| `APPLE_API_KEY_ID`, `APPLE_API_ISSUER_ID`, `APPLE_API_KEY_P8_BASE64` | An App Store Connect API key for the notary service: its key ID, issuer ID and base64-encoded `.p8` file |
+| `ERDFLOW_GPG_PRIVATE_KEY`, `ERDFLOW_GPG_PASSPHRASE` | An OpenPGP private key (ASCII-armoured) and its passphrase, to sign `SHA256SUMS` |
+| variable `ERDFLOW_REDISTRIBUTION_APPROVED` = `true` | The release owner's sign-off. Every package then says it was approved, and the notices refuse to say so while a release blocker remains. |
+
+The macOS app is signed with the hardened runtime and a secure timestamp, the
+disk image is signed, notarized and stapled, and Gatekeeper's verdict is
+checked. Signing does not stop anyone replacing the Qt libraries:
+`QT-LGPL-INFORMATION.md` says how to sign a modified copy for one's own use.
 
 ## What `ERDFLOW_PACKAGING` changes
 
@@ -139,6 +168,7 @@ linuxdeploy-x86_64.AppImage --appdir build/package/AppDir \
   --desktop-file build/package/AppDir/usr/share/applications/erdflow.desktop \
   --icon-file build/package/AppDir/usr/share/icons/hicolor/512x512/apps/erdflow.png \
   --plugin qt
+rm -rf build/package/AppDir/usr/translations   # Qt's translations stay out
 cmake -D ERDFLOW_NOTICES_ROOT="$PWD/build/package/AppDir" \
   -P build/package/packaging/write-notices.cmake
 # Use the runtime and tool hashes pinned in .github/workflows/package.yml.
@@ -181,6 +211,9 @@ Binary hashes are recorded before signing/container assembly. Scripts, outer
 installer/runtime code and final-container changes require separate review.
 
 ## Before a public release
+
+The current state of each item below is recorded, with its evidence, in
+`docs/RELEASE_0.1.0.md`.
 
 - Provide exact corresponding Qt source and build information under ERDFlow's
   control; set `ERDFLOW_QT_SOURCE_OFFER` only to the reviewed delivery terms.
