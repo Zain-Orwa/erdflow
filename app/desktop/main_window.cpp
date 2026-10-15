@@ -2565,6 +2565,16 @@ namespace erdflow::desktop
         schema_search_mark_->setObjectName("schemaSearchMark");
         action_glyphs_[schema_search_mark_] = Glyph::Search;
         schema_search_mark_->setVisible(false);
+        // Its kinds and options a press away, with nothing typed (C8,
+        // 2026-10-14; Zain): the mark at the field's far end opens the
+        // schema's search bar.
+        schema_search_filters_ = schema_search_->addAction(QIcon(), QLineEdit::TrailingPosition);
+        schema_search_filters_->setObjectName("schemaSearchFilters");
+        schema_search_filters_->setToolTip("Search options: which kind to look among -- tables, columns, keys or "
+                                           "relationships -- what to keep, and whether the rest fades or goes.");
+        action_glyphs_[schema_search_filters_] = Glyph::Filter;
+        connect(schema_search_filters_, &QAction::triggered, this, [this]
+                { open_schema_search(); });
         connect(schema_search_, &QLineEdit::textChanged, this, [this](const QString &looking_for)
                 {
         if (schema_) schema_->set_looking_for(looking_for); });
@@ -2997,10 +3007,28 @@ namespace erdflow::desktop
                 schema_chips_[i]->setChecked(static_cast<SchemaShowing>(i) == which);
             // Asking about a kind of table is a different question from asking
             // about one table, so it puts any selection down first.
-            if (schema_) schema_->select(std::nullopt); });
+            if (schema_) schema_->select(std::nullopt);
+            // A search is answered together with the narrowing, so what it
+            // says it found is counted again.
+            if (schema_search_bar_ && schema_search_bar_->isVisible()) search_schema(); });
         }
         narrow_layout->addStretch(1);
         panel_layout->addWidget(narrowing);
+
+        // The schema's search bar (C8, 2026-10-14; Zain): the diagram's bar,
+        // over the schema's own kinds and in its words, dropped in above the
+        // tables when the filter mark in the schema's search field asks for it,
+        // and taking no room when it is not. The field stays the schema's own:
+        // typing there searches at once, as it always has, and the bar keeps
+        // the kind, the options, the count and the way to close it.
+        schema_search_bar_ = new SearchBar(schema_panel_, SearchSubject::Schema);
+        schema_search_bar_->hide();
+        schema_search_bar_->use_text(schema_search_, false);
+        schema_search_bar_->on_changed = [this]
+        { search_schema(); };
+        schema_search_bar_->on_closed = [this]
+        { close_schema_search(); };
+        panel_layout->addWidget(schema_search_bar_);
 
         schema_scroll_ = new QScrollArea(schema_panel_);
         schema_scroll_->setObjectName("schemaScroll");
@@ -4221,6 +4249,16 @@ namespace erdflow::desktop
             conceptual_search_mark_ = field->addAction(QIcon(), QLineEdit::LeadingPosition);
             conceptual_search_mark_->setObjectName("conceptualSearchMark");
             action_glyphs_[conceptual_search_mark_] = Glyph::Search;
+            // Its kinds and options a press away, with nothing typed (C8,
+            // 2026-10-14; Zain): the mark at the field's far end opens the bar,
+            // as the Search button that stood here did.
+            conceptual_search_filters_ = field->addAction(QIcon(), QLineEdit::TrailingPosition);
+            conceptual_search_filters_->setObjectName("conceptualSearchFilters");
+            conceptual_search_filters_->setToolTip("Search options: which kind to look among, what to keep, and "
+                                                   "whether the rest fades or goes.");
+            action_glyphs_[conceptual_search_filters_] = Glyph::Filter;
+            connect(conceptual_search_filters_, &QAction::triggered, this, [this]
+                    { open_search(); });
             conceptual_search_ = field;
             search_bar_->use_text(field);
         }
@@ -7833,6 +7871,47 @@ namespace erdflow::desktop
         // would be a diagram missing pieces for no visible reason.
         canvas_->set_search({});
         canvas_->setFocus();
+    }
+
+    void MainWindow::open_schema_search()
+    {
+        if (!schema_search_bar_)
+            return;
+        schema_search_bar_->show();
+        if (schema_search_)
+            schema_search_->setFocus();
+        search_schema();
+    }
+
+    void MainWindow::search_schema()
+    {
+        if (!schema_ || !schema_search_bar_)
+            return;
+        schema_->set_search({schema_search_bar_->text(), static_cast<SchemaSearchKind>(schema_search_bar_->kind()),
+                             schema_search_bar_->with_relatives(), schema_search_bar_->hide_the_rest()});
+        schema_search_bar_->report(static_cast<int>(schema_->found()));
+    }
+
+    void MainWindow::close_schema_search()
+    {
+        if (!schema_search_bar_)
+            return;
+        schema_search_bar_->hide();
+        // Closing puts the whole schema back, as closing the diagram's does: the
+        // bar's answers go back to their defaults, and the words in the field
+        // go with them, so nothing is left narrowing the schema behind a bar
+        // nobody can see.
+        schema_search_bar_->reset();
+        if (schema_search_)
+        {
+            const QSignalBlocker quiet(schema_search_);
+            schema_search_->clear();
+        }
+        if (schema_)
+        {
+            schema_->set_search({});
+            schema_->setFocus();
+        }
     }
 
     bool MainWindow::export_project_file(const QString &location_given)

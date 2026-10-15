@@ -238,6 +238,28 @@ read as still to do.
   letting go takes them away, and a picture never has them. On the 159-table
   generated schema they cost about 1.3 µs a movement, against 123 ms for the
   movement's routing.
+- **Each workspace's search opens its kinds and options from its field** (C8,
+  2026-10-14, built in the release laboratory, awaiting Zain's review; his
+  four answers of that day). Since the diagram's search became a field in its
+  row (2026-10-08) its bar -- the kind, What to keep, Fade it or Hide it, the
+  count -- came only once something was typed, or from Find. A filter mark
+  (Lucide's funnel, line art in every icon set) now stands at the far end of
+  both search fields and opens that workspace's bar with nothing typed. The
+  Relational Schema has the bar too (`SearchBar` with `SearchSubject::Schema`,
+  between the narrowing chips and the tables): the same two questions, over
+  All kinds, Tables, Columns, Keys and Relationships (a key is a column of a
+  primary or foreign key; a relationship is a foreign key in the words the
+  Schema Explorer lists it in, and brings both its tables), with "what it
+  touches" one step out along foreign keys both ways. A search is now
+  answered together with the narrowing by where tables came from rather than
+  over it. Hidden tables, and every line with one at either end, are not
+  drawn, pressed, banded, chosen by Select All or framed in a picture; faded
+  ones are drawn as before, in a picture too. Typing in the schema's field
+  searches at once as it always did, without opening the bar; closing the bar
+  puts the whole schema back and clears the field, as closing the diagram's
+  does. `SchemaView::set_search` carries the whole search, `set_looking_for`
+  its words alone. On the 159-table generated schema, working out what is
+  hidden costs 13-113 µs and a repaint with most of it hidden 0.4-0.6 ms.
 - **Desktop timeout risk reduced without weakening coverage** (committed in
   `7b12b70`): the old single `desktop` CTest entry is split into
   `desktop_export`, `desktop_relational` and `desktop_window` (the last since

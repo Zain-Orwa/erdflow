@@ -922,8 +922,9 @@ Qt::CursorShape SchemaView::cursor_for(Pull pull) {
 
 std::optional<SchemaView::Resizing> SchemaView::edge_at(QPointF point) const {
     if (!tables_resizable_ || names_only_) return std::nullopt;
+    const auto hidden = hidden_tables();
     for (std::size_t i = placed_.size(); i-- > 0;) {
-        if (!preview_.tables[i].origin) continue;
+        if (!preview_.tables[i].origin || (i < hidden.size() && hidden[i])) continue;
         const auto& box = placed_[i].box;
         if (!box.adjusted(-resize_grip, -resize_grip, resize_grip, resize_grip).contains(point)) continue;
         const auto left = std::abs(point.x() - box.left()) <= resize_grip;
@@ -991,12 +992,19 @@ void SchemaView::set_showing(SchemaShowing showing) {
 }
 
 void SchemaView::set_looking_for(const QString& looking_for) {
-    const auto wanted = looking_for.trimmed();
-    if (looking_for_ == wanted) return;
-    looking_for_ = wanted;
+    auto wanted = search_;
+    wanted.text = looking_for;
+    set_search(wanted);
+}
+
+void SchemaView::set_search(const SchemaSearch& search) {
+    auto wanted = search;
+    wanted.text = wanted.text.trimmed();
+    if (search_ == wanted) return;
+    search_ = wanted;
     // Looking for something is a broader question than asking about one
     // table, so it puts down whatever was being asked about.
-    if (!looking_for_.isEmpty()) {
+    if (search_.looking()) {
         selected_.clear();
         picked_.reset();
     }
@@ -1033,10 +1041,16 @@ void SchemaView::toggle_mark(const domain::ElementRef& table) {
 }
 
 void SchemaView::select_all() {
+    // Everything there is to see: a table a search has taken away is not
+    // chosen with the rest, as a hidden shape on the diagram is not.
+    const auto hidden = hidden_tables();
     std::vector<domain::ElementRef> every;
-    for (const auto& table : preview_.tables)
+    for (std::size_t t = 0; t < preview_.tables.size(); ++t) {
+        const auto& table = preview_.tables[t];
+        if (t < hidden.size() && hidden[t]) continue;
         if (table.origin && std::find(every.begin(), every.end(), *table.origin) == every.end())
             every.push_back(*table.origin);
+    }
     if (selected_ == every && !picked_) return;
     selected_ = std::move(every);
     picked_.reset();
@@ -1111,22 +1125,106 @@ std::optional<std::size_t> SchemaView::selected_table() const {
     return std::nullopt;
 }
 
+std::vector<bool> SchemaView::found_tables() const {
+    const auto count = preview_.tables.size();
+    std::vector<bool> found(count, false);
+    const auto named = [&](const std::string& what) {
+        return search_.text.isEmpty() || QString::fromStdString(what).contains(search_.text, Qt::CaseInsensitive);
+    };
+    const auto counted = [](const domain::PreviewColumn& column) { return !column.ignored; };
+    if (search_.kind == SchemaSearchKind::Relationships) {
+        // A foreign key in the words the Explorer lists it in, which name both
+        // its tables; found, it brings both, since either alone says nothing.
+        for (const auto& key : gather_keys(preview_)) {
+            if (!named(key_words(preview_, key, true).toStdString())) continue;
+            found[key.table] = true;
+            const auto& first = preview_.tables[key.table].columns[key.rows.front()];
+            if (first.references && *first.references < count) found[*first.references] = true;
+        }
+    } else {
+        for (std::size_t t = 0; t < count; ++t) {
+            const auto& table = preview_.tables[t];
+            const auto& columns = table.columns;
+            switch (search_.kind) {
+            case SchemaSearchKind::Everything:
+                found[t] = named(table.name) || std::any_of(columns.begin(), columns.end(), [&](const auto& column) {
+                               return named(column.name);
+                           });
+                break;
+            case SchemaSearchKind::Tables: found[t] = named(table.name); break;
+            case SchemaSearchKind::Columns:
+                found[t] = std::any_of(columns.begin(), columns.end(),
+                                       [&](const auto& column) { return counted(column) && named(column.name); });
+                break;
+            case SchemaSearchKind::Keys:
+                found[t] = std::any_of(columns.begin(), columns.end(), [&](const auto& column) {
+                    return counted(column) && (column.primary_key || column.foreign_key) && named(column.name);
+                });
+                break;
+            case SchemaSearchKind::Relationships: break;
+            }
+        }
+    }
+    if (!search_.with_relatives) return found;
+    // One step out, both ways, as a table that is pressed is answered: what a
+    // match points at, and what points at it.
+    auto kept = found;
+    for (std::size_t t = 0; t < count; ++t)
+        for (const auto& column : preview_.tables[t].columns) {
+            if (!column.references || *column.references >= count) continue;
+            if (found[t]) kept[*column.references] = true;
+            if (found[*column.references]) kept[t] = true;
+        }
+    return kept;
+}
+
+bool SchemaView::kept_by_showing(std::size_t table) const {
+    switch (preview_.tables[table].origin_kind) {
+    case domain::TableOrigin::Entity:
+    case domain::TableOrigin::Subtype: return showing_ == SchemaShowing::FromEntities;
+    case domain::TableOrigin::Bridge:
+    case domain::TableOrigin::Associative: return showing_ == SchemaShowing::FromRelationships;
+    case domain::TableOrigin::Multivalued: return showing_ == SchemaShowing::FromAttributes;
+    }
+    return true;
+}
+
+std::optional<std::vector<bool>> SchemaView::kept_tables() const {
+    const bool narrowing = showing_ != SchemaShowing::Everything;
+    if (!search_.looking() && !narrowing) return std::nullopt;
+    auto kept = search_.looking() ? found_tables() : std::vector<bool>(preview_.tables.size(), true);
+    if (narrowing)
+        for (std::size_t t = 0; t < kept.size(); ++t) kept[t] = kept[t] && kept_by_showing(t);
+    return kept;
+}
+
+std::size_t SchemaView::found() const {
+    if (!search_.looking()) return 0;
+    const auto kept = kept_tables();
+    return kept ? static_cast<std::size_t>(std::count(kept->begin(), kept->end(), true)) : 0;
+}
+
+std::vector<bool> SchemaView::hidden_tables() const {
+    if (!search_.hide_the_rest) return {};
+    const auto kept = kept_tables();
+    if (!kept) return {};
+    std::vector<bool> hidden(kept->size());
+    for (std::size_t t = 0; t < kept->size(); ++t) hidden[t] = !(*kept)[t];
+    return hidden;
+}
+
+bool SchemaView::line_hidden(const std::vector<bool>& hidden, std::size_t from, std::size_t to) {
+    return (from < hidden.size() && hidden[from]) || (to < hidden.size() && hidden[to]);
+}
+
 std::vector<bool> SchemaView::lit_tables() const {
     std::vector<bool> lit(preview_.tables.size(), true);
     // A search is the most particular question of the three, so it answers
-    // first: somebody who has typed a name is looking for that name.
-    if (!looking_for_.isEmpty()) {
-        for (std::size_t t = 0; t < preview_.tables.size(); ++t) {
-            const auto& table = preview_.tables[t];
-            const auto named = [&](const std::string& what) {
-                return QString::fromStdString(what).contains(looking_for_, Qt::CaseInsensitive);
-            };
-            lit[t] = named(table.name)
-                  || std::any_of(table.columns.begin(), table.columns.end(),
-                                 [&](const domain::PreviewColumn& column) { return named(column.name); });
-        }
-        return lit;
-    }
+    // first: somebody who has typed a name is looking for that name. It is
+    // answered together with the narrowing by where tables came from (Zain,
+    // 2026-10-14), so a search among the tables from relationships keeps only
+    // those it finds there.
+    if (search_.looking()) return *kept_tables();
     // Several marked together means exactly those: a band was drawn round them
     // or they were pressed one by one, and neither says anything about what
     // they are joined to. One marked is the older question -- what does this
@@ -1158,21 +1256,7 @@ std::vector<bool> SchemaView::lit_tables() const {
         }
     }
     if (showing_ == SchemaShowing::Everything) return lit;
-    for (std::size_t t = 0; t < preview_.tables.size(); ++t) {
-        switch (preview_.tables[t].origin_kind) {
-        case domain::TableOrigin::Entity:
-        case domain::TableOrigin::Subtype:
-            lit[t] = showing_ == SchemaShowing::FromEntities;
-            break;
-        case domain::TableOrigin::Bridge:
-        case domain::TableOrigin::Associative:
-            lit[t] = showing_ == SchemaShowing::FromRelationships;
-            break;
-        case domain::TableOrigin::Multivalued:
-            lit[t] = showing_ == SchemaShowing::FromAttributes;
-            break;
-        }
-    }
+    for (std::size_t t = 0; t < preview_.tables.size(); ++t) lit[t] = kept_by_showing(t);
     return lit;
 }
 
@@ -1607,8 +1691,9 @@ std::vector<QLineF> SchemaView::alignment_guides() const {
 std::optional<SchemaView::Answerable> SchemaView::type_cell_at(QPointF point) const {
     // The cells were measured where the rows were, so the pointer is tested
     // against what was actually drawn rather than against a guess at it.
+    const auto hidden = hidden_tables();
     for (std::size_t table = 0; table < placed_.size(); ++table) {
-        if (!placed_[table].box.contains(point)) continue;
+        if (!placed_[table].box.contains(point) || (table < hidden.size() && hidden[table])) continue;
         // The outermost pixels belong to the edge that pulls the table. Once
         // the constraints have folded away the type column reaches the border
         // itself, and a cell answers before the table it sits in, so without
@@ -1629,8 +1714,9 @@ std::optional<SchemaView::Answerable> SchemaView::type_cell_at(QPointF point) co
 }
 
 std::optional<SchemaView::Constrained> SchemaView::rules_at(QPointF point) const {
+    const auto hidden = hidden_tables();
     for (std::size_t table = 0; table < placed_.size(); ++table) {
-        if (!placed_[table].box.contains(point)) continue;
+        if (!placed_[table].box.contains(point) || (table < hidden.size() && hidden[table])) continue;
         // The outermost pixels belong to the edge that pulls the table. The
         // last mark's column runs right up to the border, which is what makes
         // the row read as a table; but a mark answers before the table it
@@ -1685,8 +1771,10 @@ QStringList SchemaView::answers_to(const domain::OpenDecision& decision) const {
 }
 
 std::optional<std::pair<std::size_t, SchemaView::Chip>> SchemaView::chip_at(QPointF point) const {
+    const auto hidden = hidden_tables();
     for (std::size_t t = 0; t < placed_.size(); ++t)
-        for (const auto& chip : placed_[t].chips)
+        if (!(t < hidden.size() && hidden[t]))
+            for (const auto& chip : placed_[t].chips)
             if (chip.box.contains(point)) return std::pair{t, chip};
     return std::nullopt;
 }
@@ -1749,8 +1837,10 @@ QColor SchemaView::edge_for(const domain::PreviewTable& table) const {
 }
 
 std::optional<std::size_t> SchemaView::table_at(QPointF point) const {
+    // A table a search has taken away is not there to be pressed.
+    const auto hidden = hidden_tables();
     for (std::size_t i = placed_.size(); i-- > 0;)
-        if (placed_[i].box.contains(point)) return i;
+        if (placed_[i].box.contains(point) && !(i < hidden.size() && hidden[i])) return i;
     return std::nullopt;
 }
 
@@ -2210,9 +2300,10 @@ void SchemaView::mouseReleaseEvent(QMouseEvent* event) {
         const bool adding = (event->modifiers() & (Qt::ShiftModifier | Qt::ControlModifier)) != 0;
         if (!adding) selected_.clear();
         picked_.reset();
+        const auto hidden = hidden_tables();
         for (std::size_t t = 0; t < placed_.size() && t < preview_.tables.size(); ++t) {
             const auto& table = preview_.tables[t];
-            if (!table.origin || !placed_[t].box.intersects(caught)) continue;
+            if (!table.origin || !placed_[t].box.intersects(caught) || (t < hidden.size() && hidden[t])) continue;
             if (std::find(selected_.begin(), selected_.end(), *table.origin) == selected_.end())
                 selected_.push_back(*table.origin);
         }
@@ -3261,8 +3352,9 @@ std::optional<SchemaView::Shaping> SchemaView::grip_at(QPointF point) const {
     // earlier rather than the one being pointed at.
     std::optional<Shaping> nearest;
     auto closest = static_cast<double>(handle_size);
+    const auto hidden = hidden_tables();
     for (const auto& routed : routes_) {
-        if (!routed.link) continue;
+        if (!routed.link || line_hidden(hidden, routed.from_table, routed.to_table)) continue;
         const std::array<std::pair<QPointF, Grip>, 2> ends{
             std::pair{routed.from, Grip::FromEnd}, std::pair{routed.to, Grip::ToEnd}};
         for (const auto& [at, which] : ends) {
@@ -3282,8 +3374,10 @@ std::optional<SchemaView::Shaping> SchemaView::line_at(QPointF point) const {
     if (auto grip = grip_at(point)) return grip;
     std::optional<Shaping> nearest;
     auto closest = grab_reach;
+    const auto hidden = hidden_tables();
     for (const auto& routed : routes_) {
-        if (!routed.link || routed.corners.size() < 2) continue;
+        if (!routed.link || routed.corners.size() < 2 || line_hidden(hidden, routed.from_table, routed.to_table))
+            continue;
         const auto [run, gap] = run_nearest(routed.corners, point);
         if (gap > closest) continue;
         closest = gap;
@@ -3317,9 +3411,13 @@ ExportView SchemaView::export_view() {
     result.bounds = [this](PictureExtent extent) {
         if (preview_.tables.empty()) return QRectF{};
         if (extent == PictureExtent::CurrentView) return QRectF(visibleRegion().boundingRect());
+        // A picture is of what is left once a search has taken the rest away,
+        // so what it frames is that too (C8, 2026-10-14).
+        const auto hidden = hidden_tables();
         QRectF bounds;
         for (std::size_t t = 0; t < placed_.size(); ++t) {
             if (extent == PictureExtent::Selection && !is_marked(preview_.tables[t])) continue;
+            if (t < hidden.size() && hidden[t]) continue;
             bounds = bounds.united(placed_[t].box.adjusted(-12, -12, 12, 12));
             for (const auto& chip : placed_[t].chips) bounds = bounds.united(chip.box);
         }
@@ -3328,6 +3426,7 @@ ExportView SchemaView::export_view() {
                 std::holds_alternative<domain::ForeignKeyId>(*picked_) &&
                 link_of(std::get<domain::ForeignKeyId>(*picked_)) == route.link;
             if (extent == PictureExtent::Selection && !chosen) continue;
+            if (line_hidden(hidden, route.from_table, route.to_table)) continue;
             bounds = bounds.united(route.path.boundingRect().adjusted(-56, -56, 56, 56));
         }
         return bounds;
@@ -3394,11 +3493,15 @@ void SchemaView::paint_schema(QPainter& painter, const QRectF& exposed, std::opt
     // whose mitred corners reach up to twice that width past the corner; and
     // the symbols at its ends, which stand as far from them as a Chen or
     // min-max label does.
+    // What a search has taken away is not drawn at all, on screen or in a
+    // picture (C8, 2026-10-14): a table, and every line with it at either end.
+    const auto hidden = hidden_tables();
     std::vector<char> line_on_view(routes_.size());
     for (std::size_t i = 0; i < routes_.size(); ++i) {
         constexpr double pen_reach = 16;
         constexpr double symbol_reach = 56;
         const auto& routed = routes_[i];
+        if (line_hidden(hidden, routed.from_table, routed.to_table)) continue;
         auto reach = routed.path.boundingRect().adjusted(-pen_reach, -pen_reach, pen_reach, pen_reach);
         for (const auto at : {routed.from, routed.to})
             reach = reach.united(QRectF(at.x() - symbol_reach, at.y() - symbol_reach, 2 * symbol_reach,
@@ -3578,6 +3681,7 @@ void SchemaView::paint_schema(QPainter& painter, const QRectF& exposed, std::opt
     // nothing about the next.
     const auto table_on_view = [&](std::size_t t) {
         constexpr double edge_reach = 12;
+        if (t < hidden.size() && hidden[t]) return false;
         auto reach = placed_[t].box;
         for (const auto& chip : placed_[t].chips) reach = reach.united(chip.box);
         if (hovered_table_ && *hovered_table_ == t) reach = reach.united(add_slot(t));

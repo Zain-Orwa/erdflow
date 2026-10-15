@@ -140,6 +140,12 @@ namespace erdflow::desktop
         // Opens the search bar, or closes it and puts the whole diagram back.
         void open_search(const QString &looking_for = {});
         void close_search();
+        // The schema's search bar (C8, 2026-10-14; Zain): opened from the
+        // filter mark in the schema's search field, applied to the schema as
+        // its answers change, and closed with the whole schema put back.
+        void open_schema_search();
+        void search_schema();
+        void close_schema_search();
         // Leaves a remark on the given things, asking for the words. With text
         // supplied it asks nothing, which is how anything that already has the
         // words drives it. One remark covers everything it is given at once.
@@ -392,6 +398,10 @@ namespace erdflow::desktop
         // written anywhere.
         bool schema_properties_rebuilding_ = false;
         QAction *schema_search_mark_ = nullptr;
+        // The filter mark at the far end of each search field, which opens that
+        // workspace's search bar without anything typed (C8, 2026-10-14; Zain).
+        QAction *schema_search_filters_ = nullptr;
+        QAction *conceptual_search_filters_ = nullptr;
         // The diagram's search field, in its row as the schema's is in its header
         // (Zain, 2026-10-08): the search bar's own text box, moved up.
         QLineEdit *conceptual_search_ = nullptr;
@@ -629,6 +639,7 @@ namespace erdflow::desktop
         std::vector<QDockWidget *> hidden_panels_;
         Ribbon *ribbon_ = nullptr;
         SearchBar *search_bar_ = nullptr;
+        SearchBar *schema_search_bar_ = nullptr;
         SymbolPicker *symbols_ = nullptr;
         // The text field a picked character goes into: the last one that was being
         // written in. Committing an edit rebuilds the properties panel and takes

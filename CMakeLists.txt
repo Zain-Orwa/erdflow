@@ -141,6 +141,9 @@ qt_add_resources(erdflow_desktop "erdflow_icons_outline"
         assets/icons-outline/sparkles.svg
         # The schema's Arrange, in the header of a schema drawn by hand.
         assets/icons-outline/layers.svg
+        # The mark in either workspace's search field that opens the search's
+        # kinds and options (C8, 2026-10-14).
+        assets/icons-outline/filter.svg
         # The ribbon's tabs and the commands on the Design, Export, Import,
         # View and Help rows, named for what they stand for so another icon set
         # can draw its own under the same names.

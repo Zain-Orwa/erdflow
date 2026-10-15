@@ -7812,6 +7812,238 @@ namespace
         }
     }
 
+    // Each workspace's search keeps its kinds and options a press away (C8,
+    // 2026-10-14; Zain). A filter mark at the far end of either search field
+    // opens that workspace's bar with nothing typed. The Schema's bar asks the
+    // diagram's questions (ADR-018) in the schema's terms: tables, columns,
+    // keys or relationships; only what matches or what it is joined to as
+    // well; the rest faded or taken away, from the canvas, from what can be
+    // pressed or chosen, and from a picture. A search is answered together
+    // with the narrowing by where tables came from. Closing puts the whole
+    // schema back, and none of it reaches the project or its history.
+    void search_filter_tests(infrastructure::QtIdGenerator &ids)
+    {
+        application::Editor model(ids);
+        infrastructure::ErdxProjectStore store;
+        desktop::MainWindow window(model, store, ids);
+        window.resize(1440, 920);
+        window.show();
+        window.show_home(false);
+        settle();
+        window.load_example();
+        window.set_theme(desktop::ThemeId::OfficeLight);
+        settle();
+        const auto as_opened = model.project();
+        const auto steps = model.history().size();
+
+        // The diagram: its mark opens the bar, and a kind chosen with nothing
+        // typed keeps every element of that kind.
+        auto *diagram_filters = window.findChild<QAction *>("conceptualSearchFilters");
+        auto *diagram_bar = window.findChild<QWidget *>("searchBar");
+        require(diagram_filters && !diagram_filters->icon().isNull() && diagram_bar && !diagram_bar->isVisible(),
+                "The diagram's search field carries a filter mark, and its bar is put away");
+        diagram_filters->trigger();
+        settle();
+        require(diagram_bar->isVisible() && window.findChild<QLineEdit *>("conceptualSearch")->text().isEmpty(),
+                "The mark opens the diagram's search bar with nothing typed");
+        diagram_bar->findChild<QComboBox *>("searchKind")->setCurrentIndex(1);
+        settle();
+        require(diagram_bar->findChild<QLabel *>("searchCount")->text() ==
+                    QString("%1 found").arg(as_opened.entities.size()),
+                "Entities chosen with nothing typed finds every entity");
+        diagram_bar->findChild<QToolButton *>("searchClose")->click();
+        settle();
+        require(!diagram_bar->isVisible(), "And the bar closes as it always has");
+
+        // The schema: typing searches at once, as it always has, and leaves its
+        // bar put away; the mark opens the bar.
+        window.open_schema(true);
+        settle();
+        auto *view = window.schema();
+        const auto &preview = view->preview();
+        const auto tables = preview.tables.size();
+        require(tables >= 4, "The University schema has tables enough to search among");
+        auto *field = window.findChild<QLineEdit *>("schemaSearch");
+        auto *filters = window.findChild<QAction *>("schemaSearchFilters");
+        auto *bar = window.findChild<QWidget *>("schemaSearchBar");
+        require(field && filters && !filters->icon().isNull() && bar && !bar->isVisible(),
+                "The schema's search field carries a filter mark, and its bar is put away");
+        const auto first = QString::fromStdString(preview.tables[0].name);
+        field->setText(first);
+        require(view->looking_for() == first && !bar->isVisible(), "Typing in the schema's field searches at once, bar or none");
+        field->clear();
+        filters->trigger();
+        settle();
+        require(bar->isVisible() && field->text().isEmpty(), "The mark opens the schema's search bar with nothing typed");
+        auto *kind = bar->findChild<QComboBox *>("searchKind");
+        QAction *relatives = nullptr;
+        QAction *hide = nullptr;
+        QAction *fade = nullptr;
+        QAction *only = nullptr;
+        for (auto *action : bar->findChildren<QAction *>())
+        {
+            if (action->objectName() == "searchRelatives") relatives = action;
+            if (action->objectName() == "searchHideRest") hide = action;
+            if (action->objectName() == "searchFadeRest") fade = action;
+            if (action->objectName() == "searchKeepMatches") only = action;
+        }
+        require(kind && kind->count() == 5 && kind->itemText(1) == "Tables" && kind->itemText(2) == "Columns" &&
+                    kind->itemText(3) == "Keys" && kind->itemText(4) == "Relationships" && relatives && hide && fade && only,
+                "The schema's bar offers its own kinds, and the diagram's two questions");
+
+        // What the view keeps, table by table, read through the rest being hidden.
+        hide->trigger();
+        settle();
+        const auto kept = [&]
+        {
+            const auto hidden = view->hidden_tables();
+            std::vector<bool> kept(tables, true);
+            for (std::size_t t = 0; t < hidden.size(); ++t) kept[t] = !hidden[t];
+            return kept;
+        };
+        const auto expect = [&](const std::function<bool(std::size_t)> &keeps, const char *what)
+        {
+            const auto now = kept();
+            std::size_t count = 0;
+            for (std::size_t t = 0; t < tables; ++t)
+            {
+                require(now[t] == keeps(t), what);
+                count += keeps(t) ? 1 : 0;
+            }
+            require(view->found() == count, "And says how many it found");
+        };
+        const auto contains = [](const std::string &name, const QString &part)
+        { return part.isEmpty() || QString::fromStdString(name).contains(part, Qt::CaseInsensitive); };
+        kind->setCurrentIndex(1);
+        settle();
+        expect([](std::size_t) { return true; }, "Tables, with nothing typed, keeps every table");
+        field->setText(first.left(4));
+        expect([&](std::size_t t) { return contains(preview.tables[t].name, first.left(4)); },
+               "Tables keeps the tables whose names hold what is typed");
+        // A column, a key and a relationship to look for, taken from the schema.
+        std::optional<std::pair<std::size_t, std::size_t>> plain, foreign;
+        for (std::size_t t = 0; t < tables; ++t)
+            for (std::size_t c = 0; c < preview.tables[t].columns.size(); ++c)
+            {
+                const auto &column = preview.tables[t].columns[c];
+                if (column.ignored) continue;
+                if (!plain && !column.primary_key && !column.foreign_key) plain = std::pair{t, c};
+                if (!foreign && column.foreign_key && column.references) foreign = std::pair{t, c};
+            }
+        require(plain && foreign, "The schema has an ordinary column and a foreign key to look for");
+        const auto column_name = [&](std::pair<std::size_t, std::size_t> at)
+        { return QString::fromStdString(preview.tables[at.first].columns[at.second].name); };
+        const auto any_column = [&](std::size_t t, const QString &part, bool keys)
+        {
+            return std::any_of(preview.tables[t].columns.begin(), preview.tables[t].columns.end(), [&](const auto &column)
+                               { return !column.ignored && (!keys || column.primary_key || column.foreign_key) &&
+                                        contains(column.name, part); });
+        };
+        kind->setCurrentIndex(2);
+        field->setText(column_name(*plain));
+        expect([&](std::size_t t) { return any_column(t, column_name(*plain), false); },
+               "Columns keeps the tables holding a column of that name");
+        kind->setCurrentIndex(3);
+        field->setText(column_name(*foreign));
+        expect([&](std::size_t t) { return any_column(t, column_name(*foreign), true); },
+               "Keys keeps the tables holding a key column of that name");
+        // Relationships, with nothing typed: every table a foreign key is held
+        // in or points at; and with the name of the table one points at, at
+        // least that key's two tables.
+        kind->setCurrentIndex(4);
+        field->clear();
+        const auto joined = [&](std::size_t t)
+        {
+            for (std::size_t o = 0; o < tables; ++o)
+                for (const auto &column : preview.tables[o].columns)
+                    if (column.foreign_key && column.references && (o == t || *column.references == t))
+                        return true;
+            return false;
+        };
+        expect(joined, "Relationships, with nothing typed, keeps every table a foreign key joins");
+        const auto holder = foreign->first;
+        const auto target = *preview.tables[holder].columns[foreign->second].references;
+        field->setText(QString::fromStdString(preview.tables[target].name));
+        require(kept()[holder] && kept()[target], "A relationship found brings both its tables");
+
+        // What a match is joined to, one step out both ways.
+        kind->setCurrentIndex(1);
+        field->setText(QString::fromStdString(preview.tables[holder].name));
+        const auto named_holder = [&](std::size_t t)
+        { return contains(preview.tables[t].name, QString::fromStdString(preview.tables[holder].name)); };
+        relatives->trigger();
+        settle();
+        expect([&](std::size_t t)
+               {
+            if (named_holder(t)) return true;
+            for (std::size_t o = 0; o < tables; ++o)
+                for (const auto &column : preview.tables[o].columns)
+                    if (column.references && ((named_holder(o) && *column.references == t) ||
+                                              (o == t && named_holder(*column.references))))
+                        return true;
+            return false; },
+               "What a match touches is kept too, one step out both ways");
+        only->trigger();
+        settle();
+
+        // Hidden is gone: not drawn, not pressed, not chosen, not in a picture.
+        const auto hidden = view->hidden_tables();
+        const auto gone = static_cast<std::size_t>(std::find(hidden.begin(), hidden.end(), true) - hidden.begin());
+        require(gone < tables, "Something is hidden to check");
+        const auto boxes = view->table_boxes();
+        const auto canvas = view->grab().toImage();
+        const auto ratio = canvas.devicePixelRatio();
+        const auto middle = boxes[gone].center();
+        require(canvas.pixelColor(static_cast<int>(middle.x() * ratio), static_cast<int>(middle.y() * ratio)) ==
+                    desktop::theme(desktop::ThemeId::OfficeLight).canvas,
+                "A hidden table is not drawn");
+        QMouseEvent press(QEvent::MouseButtonPress, QPointF(middle.x(), boxes[gone].top() + 13),
+                          view->mapToGlobal(QPoint(static_cast<int>(middle.x()), static_cast<int>(boxes[gone].top() + 13))),
+                          Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(view, &press);
+        QMouseEvent release(QEvent::MouseButtonRelease, press.position(), press.globalPosition(), Qt::LeftButton,
+                            Qt::NoButton, Qt::NoModifier);
+        QApplication::sendEvent(view, &release);
+        settle();
+        require(!view->selected(), "Nor can it be pressed");
+        view->select_all();
+        require(view->selection().size() == view->found(), "Nor is it chosen with everything else");
+        view->select(std::nullopt);
+        const auto framed = view->export_view().bounds(desktop::PictureExtent::WholeDiagram);
+        require(!framed.intersects(boxes[gone]), "Nor is it in a picture, whose frame is drawn round what is left");
+        fade->trigger();
+        settle();
+        require(view->hidden_tables().empty() &&
+                    view->export_view().bounds(desktop::PictureExtent::WholeDiagram).intersects(boxes[gone]),
+                "Faded instead, everything is there again");
+
+        // The narrowing by where tables came from and a search together.
+        kind->setCurrentIndex(1);
+        field->clear();
+        hide->trigger();
+        settle();
+        window.findChild<QPushButton *>("schemaShowFromentities")->click();
+        settle();
+        expect([&](std::size_t t)
+               { return preview.tables[t].origin_kind == domain::TableOrigin::Entity ||
+                        preview.tables[t].origin_kind == domain::TableOrigin::Subtype; },
+               "A search among the tables from entities keeps only those");
+        window.findChild<QPushButton *>("schemaShowEverything")->click();
+        settle();
+
+        // Closing puts the whole schema back, and nothing was ever written.
+        field->setText(first);
+        bar->findChild<QToolButton *>("searchClose")->click();
+        settle();
+        require(!bar->isVisible() && field->text().isEmpty() && view->search() == desktop::SchemaSearch{} &&
+                    view->hidden_tables().empty() && kind->currentIndex() == 0 && fade->isChecked() && only->isChecked(),
+                "Closing the bar puts the whole schema back, and its answers to their defaults");
+        require(model.project() == as_opened && model.history().size() == steps,
+                "None of it reaches the project or its history");
+        model.mark_saved(model.revision());
+        std::cout << "PASS each workspace's search opens its kinds and options from its field\n";
+    }
+
     // File, Home and Settings are the window's only top navigation (Zain,
     // 2026-10-10; ADR-022 section 9.1). Where the menu bar is not the system's
     // it is put away, and every command it carried still answers its keys:
@@ -8791,6 +9023,7 @@ int main(int argc, char **argv)
         {
             menu_bar_shortcut_tests(ids);
             tool_lock_mark_tests(ids);
+            search_filter_tests(ids);
         }
         if (window_tools_part)
         {

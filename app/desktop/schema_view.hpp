@@ -43,6 +43,31 @@ struct Theme;
 // shape and no line is left hanging from a table that is not there.
 enum class SchemaShowing { Everything, FromEntities, FromRelationships, FromAttributes };
 
+// What the schema's search looks among (C8, 2026-10-14; Zain): the diagram's
+// question of which kind (ADR-018), asked in the schema's own terms. A key is
+// a column of a primary or a foreign key; a relationship is a foreign key, by
+// the words the Schema Explorer lists it in, and brings both its tables.
+enum class SchemaSearchKind { Everything, Tables, Columns, Keys, Relationships };
+
+// The schema's search, with the diagram's two questions beside it (ADR-018):
+// how much to keep, and what becomes of the rest. Combined with the narrowing
+// by where tables came from rather than answering over it (Zain, 2026-10-14):
+// a table is kept when both keep it.
+struct SchemaSearch {
+    // Matched against names, without regard to case. Empty matches every
+    // object of the chosen kind.
+    QString text;
+    SchemaSearchKind kind = SchemaSearchKind::Everything;
+    // Also keep what a match is joined to, one step out both ways: the tables
+    // its foreign keys point at and the tables whose foreign keys point at it.
+    bool with_relatives = false;
+    // Take the rest away rather than fading it. A line goes with either of its
+    // tables, and a picture shows only what is left (Zain, 2026-10-14).
+    bool hide_the_rest = false;
+    [[nodiscard]] bool looking() const { return !text.isEmpty() || kind != SchemaSearchKind::Everything; }
+    bool operator==(const SchemaSearch&) const = default;
+};
+
 // How lines find their way between the tables.
 enum class SchemaRouting { AroundTables, Straight };
 
@@ -131,7 +156,17 @@ public:
     // the names are not always the same, since a table is named for the many
     // rows it holds and a bridge is named for the relationship behind it.
     void set_looking_for(const QString& looking_for);
-    [[nodiscard]] const QString& looking_for() const { return looking_for_; }
+    [[nodiscard]] const QString& looking_for() const { return search_.text; }
+    // The whole search: what to look for, among which kind, how much to keep
+    // and what becomes of the rest. set_looking_for changes its words alone.
+    void set_search(const SchemaSearch& search);
+    [[nodiscard]] const SchemaSearch& search() const { return search_; }
+    // How many tables a search keeps; nought while nothing is searched.
+    [[nodiscard]] std::size_t found() const;
+    // Which tables are taken away, in the preview's order: the ones neither
+    // kept by the search nor by the narrowing, while the rest is to be
+    // hidden. Empty when nothing is.
+    [[nodiscard]] std::vector<bool> hidden_tables() const;
     [[nodiscard]] SchemaShowing showing() const { return showing_; }
     // Which table is being asked about. Selecting one picks out what it is
     // joined to and fades the rest, because the question a reader has in front
@@ -666,6 +701,16 @@ private:
     // Whether each table is being pointed out or faded back, worked out once
     // per paint from the selection and the narrowing together.
     [[nodiscard]] std::vector<bool> lit_tables() const;
+    // What the search finds, its relatives with it where they are asked for,
+    // before the narrowing has its say.
+    [[nodiscard]] std::vector<bool> found_tables() const;
+    // Whether the narrowing by where tables came from keeps this one.
+    [[nodiscard]] bool kept_by_showing(std::size_t table) const;
+    // The tables the search and the narrowing keep between them, or nothing
+    // while neither is asking anything.
+    [[nodiscard]] std::optional<std::vector<bool>> kept_tables() const;
+    // Whether a line goes with a table that has been taken away.
+    [[nodiscard]] static bool line_hidden(const std::vector<bool>& hidden, std::size_t from, std::size_t to);
     // Where a table came from, in words. The preview says what kind of thing
     // it was and which element it was, and the words are put together here
     // because what to call a thing belongs to whatever is showing it.
@@ -868,7 +913,7 @@ private:
     [[nodiscard]] static domain::SchemaLine as_line(const Shape& shape);
     QPointF carried_from_;
     SchemaShowing showing_ = SchemaShowing::Everything;
-    QString looking_for_;
+    SchemaSearch search_;
     SchemaRouting routing_ = SchemaRouting::AroundTables;
     bool lines_give_way_ = false;
     bool tables_resizable_ = true;
