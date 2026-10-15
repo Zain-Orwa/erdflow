@@ -3278,7 +3278,7 @@ ExportView SchemaView::export_view() {
         }
         return bounds;
     };
-    result.paint = [this](QPainter& painter, const QRectF& target, const QRectF& source) {
+    result.paint = [this](QPainter& painter, const QRectF& target, const QRectF& source, const QColor& ground) {
         // Remove only transient interaction decoration for the export. Restore
         // every value before returning, without an edit, signal or on-screen repaint.
         QScopedValueRollback<decltype(selected_)> selected(selected_, {});
@@ -3294,7 +3294,7 @@ ExportView SchemaView::export_view() {
         painter.translate(target.topLeft());
         painter.scale(target.width() / source.width(), target.height() / source.height());
         painter.translate(-source.topLeft());
-        paint_schema(painter, source, true);
+        paint_schema(painter, source, ground);
         painter.restore();
     };
     return result;
@@ -3305,10 +3305,18 @@ void SchemaView::paintEvent(QPaintEvent* event) {
     paint_schema(painter, event->rect());
 }
 
-void SchemaView::paint_schema(QPainter& painter, const QRectF& exposed, bool exporting) {
+void SchemaView::paint_schema(QPainter& painter, const QRectF& exposed, std::optional<QColor> export_ground) {
     painted_.tables.clear();
     painted_.lines.clear();
     if (!theme_) return;
+    const bool exporting = export_ground.has_value();
+    // What the schema stands on: its canvas on screen, and in a picture
+    // whatever the picture is drawn on, which may be nothing at all. A mark
+    // that needs the ground to itself -- the hollow of an optional end, a
+    // label clear of the tables -- is laid in it, never in the canvas, which
+    // in a picture on any other ground would show as a patch.
+    const auto mark_ground = export_ground.value_or(theme_->canvas);
+    const bool no_ground = mark_ground.alpha() == 0;
     painter.setRenderHint(QPainter::Antialiasing, true);
     if (!exporting) painter.fillRect(rect(), theme_->canvas);
     painter.setBrush(Qt::NoBrush);
@@ -3352,14 +3360,52 @@ void SchemaView::paint_schema(QPainter& painter, const QRectF& exposed, bool exp
         return std::nullopt;
     }();
 
-    // Every line is routed before any is drawn, then all the knockouts, then
-    // all the lines. The order matters: a knockout laid down after a line would
-    // erase the line it crossed, which is how a line comes to vanish halfway
-    // along while another appears to run straight through it.
-    for (const auto& routed : routes_) {
-        if (!on_view(routed)) continue;
-        painter.setPen(QPen(theme_->canvas, 6, Qt::SolidLine, Qt::FlatCap, Qt::MiterJoin));
-        painter.drawPath(routed.path);
+    // Nothing is laid under the lines. Each used to stand on a stroke of the
+    // canvas, drawn for every line before any line was: on the canvas it could
+    // not be seen, and in a picture on any other ground it drew a halo round
+    // every line (2026-10-12: 13,939 such pixels in Company relational).
+
+    // Where an end's mark stands: `along` out from its table along the line,
+    // `side` across it.
+    const auto end_point = [](QPointF at, QPointF step, double along, double side) {
+        const QPointF across(-step.y(), step.x());
+        return QPointF(at.x() + step.x() * along + across.x() * side, at.y() + step.y() * along + across.y() * side);
+    };
+    // A Chen or min-max label stands beside the line rather than on it, on
+    // whichever side of it is clear of the tables -- and whether it found such
+    // room, and so stands on the ground.
+    const auto label_beside = [&](QPointF at, QPointF step) {
+        const auto beside = [&](double side) {
+            const auto at_side = end_point(at, step, minimum_at + 12, side);
+            return QRectF(at_side.x() - 16, at_side.y() - 8, 32, 16);
+        };
+        const auto clear = [&](const QRectF& candidate) {
+            return std::none_of(placed_.begin(), placed_.end(),
+                                [&](const Placed& one) { return one.box.intersects(candidate); });
+        };
+        auto box = beside(-12);
+        const bool room = clear(box) || (box = beside(12), clear(box));
+        return std::pair{box, room};
+    };
+    const bool labelled = notation_ == Notation::Chen || notation_ == Notation::MinMax;
+    constexpr double hollow_radius = 4.2;
+    // A picture drawn on no ground has nothing to lay under a mark, so there
+    // the lines are kept out of the places the marks need to themselves.
+    std::optional<QPainterPath> kept_off;
+    if (no_ground) {
+        QPainterPath marks;
+        for (const auto& routed : routes_) {
+            if (!on_view(routed)) continue;
+            if (labelled) {
+                for (const auto& [at, step] : {std::pair{routed.from, routed.from_step}, std::pair{routed.to, routed.to_step}})
+                    if (const auto [box, room] = label_beside(at, step); room) marks.addRect(box);
+            } else if (routed.optional) {
+                marks.addEllipse(end_point(routed.from, routed.from_step, minimum_at, 0), hollow_radius, hollow_radius);
+            }
+        }
+        QPainterPath everywhere;
+        everywhere.addRect(exposed);
+        kept_off = everywhere.subtracted(marks);
     }
     // The line chosen is picked out as the one under the pointer is.
     const auto chosen_line = [this]() -> std::optional<domain::LinkSource> {
@@ -3390,6 +3436,10 @@ void SchemaView::paint_schema(QPainter& painter, const QRectF& exposed, bool exp
     // along the lines says what it reaches, which is the question that was
     // asked by pressing it. Laid before the lines, so the colours still sit
     // on top and crossings still read.
+    if (kept_off) {
+        painter.save();
+        painter.setClipPath(*kept_off, Qt::IntersectClip);
+    }
     if (const auto asking = selected_table()) {
         painter.setPen(QPen(theme_->text, 6.0, Qt::SolidLine, Qt::FlatCap, Qt::MiterJoin));
         for (const auto& routed : routes_) {
@@ -3407,37 +3457,23 @@ void SchemaView::paint_schema(QPainter& painter, const QRectF& exposed, bool exp
                             Qt::SolidLine, Qt::FlatCap, Qt::MiterJoin));
         painter.drawPath(routed.path);
     }
+    if (kept_off) painter.restore();
 
     // The ends. The foot opens onto the table's edge and the minimum sits
     // outside it, both drawn wholly clear of the row they belong to, and turned
     // to face whichever side the line arrives on.
     const auto draw_ends = [&](const Routed& routed) {
         const auto draw_end = [&](QPointF at, QPointF step, bool many, bool optional) {
-            const QPointF across(-step.y(), step.x());
-            const auto point = [&](double along, double side) {
-                return QPointF(at.x() + step.x() * along + across.x() * side,
-                               at.y() + step.y() * along + across.y() * side);
-            };
+            const auto point = [&](double along, double side) { return end_point(at, step, along, side); };
             painter.setPen(QPen(dim(routed.colour, line_shown(routed)), 2.2));
             painter.setBrush(Qt::NoBrush);
-            if (notation_ == Notation::Chen || notation_ == Notation::MinMax) {
-                // The label stands beside the line rather than on it, on
-                // whichever side of it is clear of the tables. It is given the
-                // canvas to sit on so the line does not run through the middle
-                // of it -- but only where that canvas is its own, because a
-                // patch laid over a table would rub out the table's own words.
-                const auto beside = [&](double side) {
-                    const auto at_side = point(minimum_at + 12, side);
-                    return QRectF(at_side.x() - 16, at_side.y() - 8, 32, 16);
-                };
-                auto box = beside(-12);
-                const auto clear = [&](const QRectF& candidate) {
-                    return std::none_of(placed_.begin(), placed_.end(), [&](const Placed& one) {
-                        return one.box.intersects(candidate);
-                    });
-                };
-                const bool room = clear(box) || (box = beside(12), clear(box));
-                if (room) painter.fillRect(box, theme_->canvas);
+            if (labelled) {
+                // The label is given the ground to sit on so the line does not
+                // run through the middle of it -- but only where that ground is
+                // its own, because a patch laid over a table would rub out the
+                // table's own words. On no ground the lines were kept off it.
+                const auto [box, room] = label_beside(at, step);
+                if (room && !no_ground) painter.fillRect(box, mark_ground);
                 painter.drawText(box, Qt::AlignCenter,
                                  notation_ == Notation::Chen
                                      ? (many ? "M" : "1")
@@ -3457,8 +3493,8 @@ void SchemaView::paint_schema(QPainter& painter, const QRectF& exposed, bool exp
                 painter.drawLine(point(7, -foot_spread), point(7, foot_spread));
             }
             if (optional) {
-                painter.setBrush(theme_->canvas);
-                painter.drawEllipse(point(minimum_at, 0), 4.2, 4.2);
+                painter.setBrush(no_ground ? QBrush(Qt::NoBrush) : QBrush(mark_ground));
+                painter.drawEllipse(point(minimum_at, 0), hollow_radius, hollow_radius);
                 painter.setBrush(Qt::NoBrush);
             } else if (notation_ != Notation::Bachman) {
                 painter.drawLine(point(minimum_at, -foot_spread), point(minimum_at, foot_spread));

@@ -189,8 +189,8 @@ QRectF picture_extent(const DiagramView& view, PictureExtent extent) {
 
 ExportView::ExportView(DiagramView& view)
     : bounds([&view](PictureExtent extent) { return picture_extent(view, extent); }),
-      paint([&view](QPainter& painter, const QRectF& target, const QRectF& source) {
-          view.render_diagram(painter, target, source);
+      paint([&view](QPainter& painter, const QRectF& target, const QRectF& source, const QColor& ground) {
+          view.render_diagram(painter, target, source, ground);
       }), background(view.canvas_colour()) {}
 
 QRectF picture_extent(const ExportView& view, PictureExtent extent) { return view.bounds(extent); }
@@ -236,7 +236,7 @@ PictureResult draw_picture(ExportView view, const PictureOptions& options,
             QPainter painter(&generator);
             const auto colour = background_colour(view, options, info.keeps_transparency);
             if (colour.alpha() != 0) painter.fillRect(target, colour);
-            view.paint(painter, target, source);
+            view.paint(painter, target, source, colour);
         }
         buffer.close();
     } else if (options.format == PictureFormat::Pdf) {
@@ -253,16 +253,17 @@ PictureResult draw_picture(ExportView view, const PictureOptions& options,
             const QRectF target(0, 0, writer.width(), writer.height());
             const auto colour = background_colour(view, options, info.keeps_transparency);
             if (colour.alpha() != 0) painter.fillRect(target, colour);
-            view.paint(painter, target, source);
+            view.paint(painter, target, source, colour);
         }
         buffer.close();
     } else {
         QImage image(pixels, QImage::Format_ARGB32_Premultiplied);
         if (image.isNull()) return {false, "There was not enough memory for a picture that size.", {}, false, pixels};
-        image.fill(background_colour(view, options, info.keeps_transparency));
+        const auto colour = background_colour(view, options, info.keeps_transparency);
+        image.fill(colour);
         {
             QPainter painter(&image);
-            view.paint(painter, QRectF(QPointF(0, 0), QSizeF(pixels)), source);
+            view.paint(painter, QRectF(QPointF(0, 0), QSizeF(pixels)), source, colour);
         }
         // The project goes in before the file is encoded rather than being cut
         // back into it afterwards, so a PNG is written once.

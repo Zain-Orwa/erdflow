@@ -30,11 +30,15 @@ enum class PictureExtent { WholeDiagram, Selection, CurrentView };
 
 // The active workspace supplies drawing and bounds; file encoding is shared.
 // Callbacks are used synchronously while that workspace remains alive.
+// Drawing is told the ground the picture stands on -- the colour laid down
+// under it, or no colour at all -- so that whatever a workspace lays under a
+// mark to keep the lines off it is laid in that ground rather than in its own
+// canvas, which would otherwise show in the picture as a halo.
 struct ExportView {
     ExportView() = default;
     ExportView(DiagramView& view);
     std::function<QRectF(PictureExtent)> bounds;
-    std::function<void(QPainter&, const QRectF&, const QRectF&)> paint;
+    std::function<void(QPainter&, const QRectF& target, const QRectF& source, const QColor& ground)> paint;
     QColor background;
     const domain::SchemaPreview* schema = nullptr;
     std::function<QString(const domain::PreviewColumn&)> column_type;

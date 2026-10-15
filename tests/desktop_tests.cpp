@@ -77,6 +77,7 @@
 #include <QSlider>
 #include <QWidgetAction>
 #include <QStandardItemModel>
+#include <QSvgRenderer>
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QToolBar>
@@ -699,6 +700,166 @@ namespace
 
 namespace
 {
+    // An exported picture carries no halo (C4, 2026-10-14). Whatever a
+    // workspace lays under a mark to keep a line off it -- a patch under a
+    // label, the fill of a hollow end -- is laid in the ground the picture
+    // stands on, and the Schema's lines no longer stand on a stroke of the
+    // canvas at all; so a picture on no ground, or on white from a dark theme,
+    // has nothing in the canvas colour where it does not belong, as PNG and as
+    // SVG. A hollow end stays hollow, the line kept out of it, and on the
+    // theme's own colour it is filled with that colour, as the canvas draws it.
+    void export_halo_tests()
+    {
+        infrastructure::QtIdGenerator ids;
+        // A picture as pixels -- a PNG read back, or an SVG drawn -- with the
+        // part of the diagram it shows and its scale.
+        struct Picture
+        {
+            QImage image;
+            QRectF source;
+            double scale = 1;
+            [[nodiscard]] QPoint at(QPointF point) const
+            {
+                return {static_cast<int>((point.x() - source.left()) * scale), static_cast<int>((point.y() - source.top()) * scale)};
+            }
+        };
+        const auto picture = [](const desktop::ExportView &view, desktop::PictureFormat format,
+                                desktop::PictureBackground ground, double scale)
+        {
+            desktop::PictureOptions options;
+            options.format = format;
+            options.background = ground;
+            options.scale = scale;
+            options.carry_project = false;
+            QByteArray bytes;
+            const auto result = desktop::draw_picture(view, options, {}, bytes);
+            require(result.ok, "The picture is drawn");
+            Picture drawn;
+            if (format == desktop::PictureFormat::Svg)
+            {
+                QSvgRenderer renderer(bytes);
+                drawn.image = QImage(result.pixels, QImage::Format_ARGB32_Premultiplied);
+                drawn.image.fill(Qt::transparent);
+                QPainter painter(&drawn.image);
+                renderer.render(&painter);
+            }
+            else
+                drawn.image.loadFromData(bytes, "png");
+            drawn.image = drawn.image.convertToFormat(QImage::Format_ARGB32);
+            drawn.source = view.bounds(desktop::PictureExtent::WholeDiagram)
+                               .adjusted(-options.margin, -options.margin, options.margin, options.margin);
+            drawn.scale = drawn.image.width() / drawn.source.width();
+            return drawn;
+        };
+        const auto alike = [](QRgb pixel, const QColor &colour)
+        {
+            return std::abs(qRed(pixel) - colour.red()) <= 6 && std::abs(qGreen(pixel) - colour.green()) <= 6 &&
+                   std::abs(qBlue(pixel) - colour.blue()) <= 6;
+        };
+        // How many nearly opaque pixels of a picture are in `colour`, leaving
+        // out the boxes given (in the diagram's own coordinates).
+        const auto in_colour = [&](const Picture &drawn, const QColor &colour, const std::vector<QRectF> &boxes)
+        {
+            std::vector<QRect> left_out;
+            for (const auto &box : boxes)
+                left_out.push_back(QRect(drawn.at(box.topLeft()), drawn.at(box.bottomRight())).adjusted(-3, -3, 3, 3));
+            long found = 0;
+            for (int y = 0; y < drawn.image.height(); ++y)
+            {
+                const auto *row = reinterpret_cast<const QRgb *>(drawn.image.constScanLine(y));
+                for (int x = 0; x < drawn.image.width(); ++x)
+                    if (qAlpha(row[x]) >= 200 && alike(row[x], colour) &&
+                        std::none_of(left_out.begin(), left_out.end(), [&](const QRect &box) { return box.contains(x, y); }))
+                        ++found;
+            }
+            return found;
+        };
+        const auto light = desktop::theme(desktop::ThemeId::OfficeLight).canvas;
+        const auto dark = desktop::theme(desktop::ThemeId::Dracula).canvas;
+
+        // The Schema: the Company example, whose optional foreign keys end hollow.
+        {
+            application::Editor editor(ids);
+            infrastructure::ErdxProjectStore store;
+            desktop::MainWindow window(editor, store, ids);
+            window.resize(1440, 920);
+            window.show();
+            window.show_home(false);
+            settle();
+            window.load_company_database_relational();
+            settle();
+            window.open_schema(true);
+            window.set_theme(desktop::ThemeId::OfficeLight);
+            settle();
+            auto *view = window.schema();
+            for (const auto format : {desktop::PictureFormat::Png, desktop::PictureFormat::Svg})
+                require(in_colour(picture(view->export_view(), format, desktop::PictureBackground::Transparent, 1.0), light,
+                                  view->table_boxes()) == 0,
+                        "A Schema picture on no ground has nothing in the canvas colour outside its tables");
+            // Each line's end 21 px out from its foreign key, where an optional
+            // end has its hollow: filled with the theme's colour on that colour,
+            // empty on no ground, and never crossed by the line.
+            const auto on_theme = picture(view->export_view(), desktop::PictureFormat::Png, desktop::PictureBackground::ThemeColour, 1.0);
+            const auto on_nothing = picture(view->export_view(), desktop::PictureFormat::Png, desktop::PictureBackground::Transparent, 1.0);
+            int hollow = 0;
+            for (const auto &shape : view->line_shapes())
+            {
+                require(shape.size() >= 2, "Every line has a run");
+                const QLineF first(shape[0], shape[1]);
+                const auto centre = first.pointAt(21.0 / first.length());
+                const bool filled = alike(on_theme.image.pixel(on_theme.at(centre)), light);
+                const bool empty = qAlpha(on_nothing.image.pixel(on_nothing.at(centre))) == 0;
+                require(filled == empty, "An end hollow on the theme's colour is empty on no ground, and only such an end");
+                hollow += empty ? 1 : 0;
+            }
+            require(hollow > 0, "The Company schema's optional foreign keys end hollow");
+            window.set_theme(desktop::ThemeId::Dracula);
+            settle();
+            require(in_colour(picture(view->export_view(), desktop::PictureFormat::Png, desktop::PictureBackground::White, 1.0), dark,
+                              view->table_boxes()) == 0,
+                    "A Schema picture on white from a dark theme has no dark halo");
+            view->set_notation(desktop::Notation::Chen);
+            settle();
+            require(in_colour(picture(view->export_view(), desktop::PictureFormat::Png, desktop::PictureBackground::Transparent, 1.0), dark,
+                              view->table_boxes()) == 0,
+                    "In Chen notation the Schema's labels stand on no patch of the canvas");
+            view->set_notation(desktop::Notation::CrowsFoot);
+            window.set_theme(desktop::ThemeId::OfficeLight);
+            settle();
+            editor.mark_saved(editor.revision());
+        }
+
+        // The diagram: the Company example, its labels in Chen and its hollow
+        // ends in crow's foot, drawn at half size to keep the test quick.
+        {
+            application::Editor model(ids);
+            infrastructure::ErdxProjectStore store;
+            desktop::MainWindow window(model, store, ids);
+            window.resize(1440, 920);
+            window.show();
+            window.show_home(false);
+            settle();
+            window.load_company_database();
+            window.set_theme(desktop::ThemeId::OfficeLight);
+            settle();
+            auto *canvas = window.canvas();
+            canvas->set_notation(desktop::Notation::Chen);
+            settle();
+            for (const auto format : {desktop::PictureFormat::Png, desktop::PictureFormat::Svg})
+                require(in_colour(picture(desktop::ExportView(*canvas), format, desktop::PictureBackground::Transparent, 0.5), light, {}) == 0,
+                        "A diagram picture on no ground lays no patch of the canvas under its labels");
+            canvas->set_notation(desktop::Notation::CrowsFoot);
+            window.set_theme(desktop::ThemeId::Dracula);
+            settle();
+            require(in_colour(picture(desktop::ExportView(*canvas), desktop::PictureFormat::Png, desktop::PictureBackground::White, 0.5), dark, {}) == 0,
+                    "A diagram picture on white from a dark theme fills no hollow end with the dark canvas");
+            window.set_theme(desktop::ThemeId::OfficeLight);
+            settle();
+            model.mark_saved(model.revision());
+        }
+        std::cout << "PASS exported pictures carry no halo, on any ground, and hollow ends stay hollow\n";
+    }
+
     void export_state_tests()
     {
         infrastructure::QtIdGenerator ids;
@@ -8337,6 +8498,7 @@ int main(int argc, char **argv)
         if (whole || export_part)
         {
             export_state_tests();
+            export_halo_tests();
             if (export_part)
                 return 0;
         }

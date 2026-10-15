@@ -481,6 +481,20 @@ constexpr qreal head_ring_at = 20 * connector_scale;
 constexpr qreal head_dot_at = 9 * connector_scale;
 constexpr qreal dot_radius = 5 * connector_scale;
 
+// Where a participant end's marks need the paper to themselves: the ring that
+// says a side is optional, and Bachman's open dot. A picture drawn on no paper
+// keeps the line out of them instead of laying paper under them.
+QPainterPath participant_hollows(Notation notation, bool many, bool mandatory, const QPointF& end,
+                                 const QPointF& outward, qreal marks) {
+    QPainterPath hollows;
+    const auto out = [&](qreal along) { return end + outward * (along * marks); };
+    if (notation == Notation::CrowsFoot && !mandatory)
+        hollows.addEllipse(out(minimum_at), ring_radius * marks, ring_radius * marks);
+    else if (notation == Notation::Bachman && !many && !mandatory)
+        hollows.addEllipse(out(head_dot_at), dot_radius * marks, dot_radius * marks);
+    return hollows;
+}
+
 // One definition of how a participant end is drawn, used both by the canvas and
 // by the previews in the notation picker, so a picker can never show something
 // the diagram does not draw. The canvas draws the marks at their own size; a
@@ -1321,6 +1335,10 @@ public:
     // the notation the work is done in, so it is the one a diagram should be
     // in before anyone has been asked.
     Notation notation = Notation::CrowsFoot;
+    // While a picture is drawn, what it stands on, which its labels and hollow
+    // marks are laid on in place of the canvas; no colour at all keeps the
+    // line out of them instead.
+    std::optional<QColor> picture_ground;
     MinMaxDisplayMode minmax_display_mode = MinMaxDisplayMode::CardinalityAndOrdinality;
     LineStyle style = LineStyle::Elbow;
 
@@ -1910,6 +1928,19 @@ public:
         // double line, in every notation.
         const bool total_side = descriptor.relationship && descriptor.participation == Participation::Total;
         const bool doubled = std::holds_alternative<InheritanceKey>(descriptor.key) && descriptor.total;
+        const QColor paper = picture_ground.value_or(canvas_);
+        const bool no_paper = paper.alpha() == 0;
+        if (no_paper) {
+            QPainterPath marks;
+            if (descriptor.show_constraints && !end_label().isEmpty()) marks.addRoundedRect(cardinality_rect_, 3, 3);
+            if (!descriptor.role.isEmpty()) marks.addRoundedRect(role_rect_, 3, 3);
+            if (descriptor.show_constraints && descriptor.relationship)
+                marks.addPath(participant_hollows(notation, many(), mandatory(), end_, outward_, 1.0));
+            QPainterPath everywhere;
+            everywhere.addRect(boundingRect().adjusted(-8, -8, 8, 8));
+            painter->save();
+            painter->setClipPath(everywhere.subtracted(marks), Qt::IntersectClip);
+        }
         if (total_side) {
             const auto apart = (weight + 1.0 * connector_scale) / 2;
             painter->drawPath(alongside(path_, apart));
@@ -1924,12 +1955,13 @@ public:
         } else {
             painter->drawPath(path_);
         }
+        if (no_paper) painter->restore();
         auto font = painter->font();
         font = lettered(font, 10);
         painter->setFont(font);
         auto draw_label = [&](const QRectF& rect, const QString& text, ShapedLabel& shaped) {
             painter->setPen(Qt::NoPen);
-            painter->setBrush(canvas_);
+            painter->setBrush(paper);
             painter->drawRoundedRect(rect, 3, 3);
             painter->setPen(isSelected() ? selection_ : text_);
             if (shaped.source != text || shaped.room != rect.width()) {
@@ -1952,7 +1984,7 @@ public:
             if (const auto label = end_label(); !label.isEmpty()) draw_label(cardinality_rect_, label, cardinality_label_);
         }
         if (!descriptor.role.isEmpty()) draw_label(role_rect_, descriptor.role, role_label_);
-        if (descriptor.show_constraints) paint_end_symbols(painter, ink, canvas_);
+        if (descriptor.show_constraints) paint_end_symbols(painter, ink, paper);
         if (isSelected() && shapeable()) {
             painter->setPen(QPen(selection_, 1.4 * connector_scale));
             painter->setBrush(canvas_);
@@ -3739,7 +3771,8 @@ QRectF DiagramView::view_bounds() const { return mapToScene(viewport()->rect()).
 
 QColor DiagramView::canvas_colour() const { return theme(impl_->theme_id).canvas; }
 
-void DiagramView::render_diagram(QPainter& painter, const QRectF& target, const QRectF& source) {
+void DiagramView::render_diagram(QPainter& painter, const QRectF& target, const QRectF& source,
+                                 std::optional<QColor> ground) {
     // A picture is of the diagram, not of the editor that happens to be looking
     // at it. Selection rings, the grips that come with them and a connector's
     // padlock are all drawn because something is chosen, so what is chosen is
@@ -3754,7 +3787,15 @@ void DiagramView::render_diagram(QPainter& painter, const QRectF& target, const 
     painter.setRenderHint(QPainter::SmoothPixmapTransform);
     // The scene draws its items and nothing else: the paper and the editing
     // grid belong to the view's own background, which is not consulted here.
+    for (auto& [key, edge] : impl_->edges) {
+        (void)key;
+        edge->picture_ground = ground;
+    }
     impl_->scene->render(&painter, target, source, Qt::IgnoreAspectRatio);
+    for (auto& [key, edge] : impl_->edges) {
+        (void)key;
+        edge->picture_ground.reset();
+    }
     for (auto* item : chosen) item->setSelected(true);
     impl_->synchronizing = false;
 }

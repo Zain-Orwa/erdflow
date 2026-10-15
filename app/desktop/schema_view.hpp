@@ -424,7 +424,9 @@ public:
 
 protected:
     void paintEvent(QPaintEvent* event) override;
-    void paint_schema(QPainter& painter, const QRectF& exposed, bool exporting = false);
+    // On screen, or into a picture standing on `export_ground` (which may be
+    // no colour at all).
+    void paint_schema(QPainter& painter, const QRectF& exposed, std::optional<QColor> export_ground = std::nullopt);
     void resizeEvent(QResizeEvent* event) override;
     void mousePressEvent(QMouseEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;

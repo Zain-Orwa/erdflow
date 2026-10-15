@@ -205,8 +205,11 @@ public:
     // Draws the diagram, and none of the editor looking at it: no grid, no
     // selection rings, no handles and no paper. The background an exported
     // picture stands on is the caller's choice, so it is painted by the
-    // caller before this is called rather than assumed here.
-    void render_diagram(QPainter& painter, const QRectF& target, const QRectF& source);
+    // caller before this is called rather than assumed here; given as
+    // `ground` (which may be no colour at all), it is also what the marks
+    // that need paper of their own are laid on, in place of the canvas.
+    void render_diagram(QPainter& painter, const QRectF& target, const QRectF& source,
+                        std::optional<QColor> ground = std::nullopt);
     // The canvas colour of the theme in use, for a picture asked to stand on it.
     [[nodiscard]] QColor canvas_colour() const;
     void actual_size();

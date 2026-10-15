@@ -183,9 +183,28 @@ read as still to do.
   pair can stay between 26 and 30 apart although the palette could hold them
   farther: each relationship is placed one at a time. It recolours, once, up to
   14 of an example's 25 or 26 relationships (Company relational in light; in
-  Plain at most 5); one relationship added can recolour a few further away (8
-  of 100 made-up schemas, at most 3; at tables alone 4 and 2). Lines whose rows no other line shares keep exactly C3a's colours. Routes,
-  hover, selection and line drawing are unchanged.
+  Plain at most 5); one relationship added can recolour a few further away (4
+  of 50 made-up schemas, at most 3; at tables alone 2 and 1). Lines whose rows
+  no other line shares keep exactly C3a's colours. Routes, hover, selection
+  and line drawing are unchanged.
+- **Exported pictures carry no halo** (C4, 2026-10-14, built in the release
+  laboratory, awaiting Zain's review): a picture's drawing is now told the
+  ground it stands on (`ExportView::paint` takes it; `PictureBackground`
+  decides it), and whatever a workspace lays under a mark to keep a line off
+  it is laid in that ground instead of in the theme's canvas -- the Schema's
+  Chen and min-max label patches and the hollow of an optional end, the
+  diagram's cardinality and role label patches and its hollow ends
+  (`participant_hollows`, beside the shared `draw_participant_end`). On no
+  ground at all nothing is laid: the line is clipped out of those places
+  instead. The canvas-coloured stroke every Schema line stood on is gone: it
+  was drawn under all the lines before any line, so it could never be seen
+  on the canvas, and in a transparent picture it was a white or dark halo
+  round every line. Measured on the Company examples: canvas-coloured pixels
+  where they do not belong went from 18,413 to 0 (Schema, transparent PNG and
+  SVG), 17,611 to 0 (Schema, white from a dark theme), and 5,238-23,675 to 0
+  (diagram, transparent, crow's foot and Chen). A picture on the theme's own
+  colour is byte for byte what it was, and the canvas on screen is unchanged
+  (every visual-suite picture identical).
 - **Desktop timeout risk reduced without weakening coverage** (committed in
   `7b12b70`): the old single `desktop` CTest entry is split into
   `desktop_export`, `desktop_relational` and `desktop_window` (the last since
