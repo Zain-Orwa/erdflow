@@ -33,6 +33,7 @@ import hashlib
 import json
 import os
 import re
+import struct
 import subprocess
 import sys
 from pathlib import Path
@@ -177,6 +178,17 @@ def common_licence_references(text):
         r"/usr/share/common-licenses/[A-Za-z0-9.+-]+", text)})
 
 
+def file_version(path):
+    """The file version in a Windows program's or library's version resource
+    (its VS_FIXEDFILEINFO), such as 14.44.35211.0; None if it has none."""
+    data = path.read_bytes()
+    at = data.find(b"\xbd\x04\xef\xfe")
+    if at < 0 or at + 16 > len(data):
+        return None
+    most, least = struct.unpack_from("<II", data, at + 8)
+    return f"{most >> 16}.{most & 0xFFFF}.{least >> 16}.{least & 0xFFFF}"
+
+
 def debian_package_of(name):
     result = subprocess.run(["dpkg", "-S", f"*/{name}"], capture_output=True, text=True)
     for line in result.stdout.splitlines():
@@ -230,6 +242,9 @@ def main():
                         help="write the file even if something is unaccounted for (local tests only)")
     parser.add_argument("--release-blocker", action="append", default=[],
                         help="unresolved redistribution obligation recorded in notices and inventory")
+    parser.add_argument("--redistribution-approved", action="store_true",
+                        help="the release owner has signed off the package for distribution; refused "
+                             "while a release blocker or an unaccounted-for component remains")
     args = parser.parse_args()
 
     root = Path(args.root)
@@ -273,6 +288,8 @@ def main():
                          None)
             if match:
                 match["files"].append(rel)
+                if filename.lower().endswith((".dll", ".exe")) and (version := file_version(path)):
+                    match.setdefault("versions", {})[rel] = version
                 continue
             if args.debian_system_libraries:
                 package, version, text = debian_package_of(filename)
@@ -353,12 +370,18 @@ def main():
     out(f"{args.title} - third-party components and their licences")
     out("=" * 72)
     out("")
-    out("TEST CANDIDATE - REDISTRIBUTION HAS NOT BEEN APPROVED.")
-    out("A complete binary inventory does not establish licence compliance.")
-    out("Source delivery, replacement instructions, and final package review")
-    out("must satisfy docs/QT_LGPL_COMPLIANCE.md before distribution.")
-    for blocker in args.release_blocker:
-        out(f"  Release blocker: {blocker}")
+    approved = args.redistribution_approved and not args.release_blocker and not problems
+    if approved:
+        out("This package was approved for distribution by ERDFlow's release owner.")
+        out("Where to get the source code of the LGPL-covered components, and how to")
+        out("replace them, is in QT-LGPL-INFORMATION.md and THIRD-PARTY-NOTICES.md.")
+    else:
+        out("TEST CANDIDATE - REDISTRIBUTION HAS NOT BEEN APPROVED.")
+        out("A complete binary inventory does not establish licence compliance.")
+        out("Source delivery, replacement instructions, and final package review")
+        out("must satisfy docs/QT_LGPL_COMPLIANCE.md before distribution.")
+        for blocker in args.release_blocker:
+            out(f"  Release blocker: {blocker}")
     out("")
     if problems:
         out("INCOMPLETE - THIS PACKAGE MUST NOT BE DISTRIBUTED.")
@@ -434,7 +457,8 @@ def main():
             if d.get("note"):
                 out(f"  {d['note']}")
             for f in d.get("files", []):
-                out(f"    {f}")
+                version = d.get("versions", {}).get(f)
+                out(f"    {f}" + (f"  (version {version})" if version else ""))
             out("")
         for package in sorted(system):
             record = system[package]
@@ -466,7 +490,7 @@ def main():
         Path(args.inventory).parent.mkdir(parents=True, exist_ok=True)
         Path(args.inventory).write_text(json.dumps({
             "inventory_complete": not problems,
-            "redistribution_approved": False,
+            "redistribution_approved": approved,
             "release_blockers": args.release_blocker,
             "scope": "Native binaries identified by filename against the build Qt SBOM; not a final-package SPDX SBOM or proof of provenance. Hashes precede signing and final container assembly.",
             "binary_sha256": binary_hashes,
@@ -478,6 +502,13 @@ def main():
             "system_libraries": {k: {"version": v["version"], "files": v["files"]} for k, v in system.items()},
         }, indent=2) + "\n", encoding="utf-8")
 
+    if args.redistribution_approved and not approved:
+        print("package_notices: distribution cannot be approved while a release blocker or an "
+              "unaccounted-for component remains", file=sys.stderr)
+        for blocker in args.release_blocker:
+            print(f"  * Release blocker: {blocker}", file=sys.stderr)
+        if not problems:
+            return 1
     if problems:
         stream = sys.stderr
         print("package_notices: the package contains components whose licences are not established:",

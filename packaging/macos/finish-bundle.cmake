@@ -17,8 +17,10 @@
 #   5. writes THIRD-PARTY-LICENSES.txt for what is left in the bundle
 #      (ERDFLOW_WRITE_NOTICES, generated from notices/write-notices.cmake.in),
 #      before signing, since the signature covers it; and
-#   6. signs the bundle ad hoc, as Apple silicon requires before it will run
-#      it, and checks the signature. This is not a Developer ID signature.
+#   6. signs the bundle and checks the signature: with the Developer ID named
+#      by the ERDFLOW_CODESIGN_IDENTITY environment variable, with the hardened
+#      runtime and a secure timestamp, as notarization needs (2026-10-15); with
+#      none named, ad hoc, as Apple silicon requires before it will run it.
 
 if(NOT ERDFLOW_BUNDLE OR NOT IS_DIRECTORY "${ERDFLOW_BUNDLE}")
     message(FATAL_ERROR "finish-bundle: no bundle at '${ERDFLOW_BUNDLE}'")
@@ -169,13 +171,21 @@ if(ERDFLOW_WRITE_NOTICES)
     include("${ERDFLOW_WRITE_NOTICES}")
 endif()
 
-# 6. Ad hoc signature, then check it.
-execute_process(COMMAND codesign --force --deep --sign - "${ERDFLOW_BUNDLE}" RESULT_VARIABLE status)
+# 6. The signature, then check it.
+set(identity "$ENV{ERDFLOW_CODESIGN_IDENTITY}")
+if(identity)
+    execute_process(COMMAND codesign --force --deep --options runtime --timestamp --sign "${identity}"
+                            "${ERDFLOW_BUNDLE}" RESULT_VARIABLE status)
+    set(signed "with ${identity}")
+else()
+    execute_process(COMMAND codesign --force --deep --sign - "${ERDFLOW_BUNDLE}" RESULT_VARIABLE status)
+    set(signed "ad hoc")
+endif()
 if(NOT status EQUAL 0)
-    message(FATAL_ERROR "finish-bundle: ad hoc signing failed")
+    message(FATAL_ERROR "finish-bundle: signing ${signed} failed")
 endif()
 execute_process(COMMAND codesign --verify --deep --strict "${ERDFLOW_BUNDLE}" RESULT_VARIABLE status)
 if(NOT status EQUAL 0)
     message(FATAL_ERROR "finish-bundle: the signature of ERDFlow.app does not verify")
 endif()
-message(STATUS "finish-bundle: ERDFlow.app finished and signed ad hoc")
+message(STATUS "finish-bundle: ERDFlow.app finished and signed ${signed}")

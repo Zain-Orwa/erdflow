@@ -10,6 +10,7 @@
 #include "dr_icons.hpp"
 #include "relational_examples.hpp"
 #include "export_dialog.hpp"
+#include "licences.hpp"
 #include "ribbon.hpp"
 #include "schema_explorer.hpp"
 #include "schema_facts.hpp"
@@ -28,6 +29,7 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QContextMenuEvent>
+#include <QDesktopServices>
 #include <QCursor>
 #include <QDockWidget>
 #include <QAbstractSpinBox>
@@ -57,6 +59,7 @@
 #include <QMenu>
 #include <QColorDialog>
 #include <QMessageBox>
+#include <QUrl>
 #include <QMimeData>
 #include <QPaintEvent>
 #include <QPainter>
@@ -4692,6 +4695,23 @@ namespace erdflow::desktop
                         { QMessageBox::about(this, "ERDFlow", "ERDFlow 0.1 · Conceptual editor foundation\n\n"
                                                               "Draw once, progressively refine.\nC++20 · Qt 6 · Local project files"); })
             ->setObjectName("aboutErdflow");
+        // The licences ERDFlow is distributed under, Qt's among them, and the way
+        // to the notice files its package installs (docs/QT_LGPL_COMPLIANCE.md,
+        // section 3). Beside About, which is left as it was (2026-10-15).
+        help->addAction("Licences", this, [this]
+                        {
+            const auto folder = installed_licences_folder(QCoreApplication::applicationDirPath());
+            QMessageBox box(QMessageBox::Information, "Licences",
+                            licences_text(QCoreApplication::applicationVersion(), QString::fromLatin1(qVersion()), folder),
+                            QMessageBox::Close, this);
+            auto *files = folder.isEmpty() ? nullptr : box.addButton("Show Licence Files", QMessageBox::ActionRole);
+            auto *about_qt = box.addButton("About Qt", QMessageBox::ActionRole);
+            box.exec();
+            if (files && box.clickedButton() == files)
+                QDesktopServices::openUrl(QUrl::fromLocalFile(folder));
+            else if (box.clickedButton() == about_qt)
+                QMessageBox::aboutQt(this, "About Qt"); })
+            ->setObjectName("licencesErdflow");
 
         // The header's undo and redo were built with the shell, before any of
         // these actions existed. They are the same two actions, so they are
