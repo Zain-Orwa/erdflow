@@ -168,6 +168,15 @@ class QtSbom:
         return found
 
 
+def common_licence_references(text):
+    """The base system's licence texts a Debian copyright file refers to. A
+    reference that ends a sentence does not take its full stop with it (as in
+    libbz2-1.0's "... /usr/share/common-licenses/GPL-2."): no text there is
+    named with one at the end."""
+    return sorted({reference.rstrip(".") for reference in re.findall(
+        r"/usr/share/common-licenses/[A-Za-z0-9.+-]+", text)})
+
+
 def debian_package_of(name):
     result = subprocess.run(["dpkg", "-S", f"*/{name}"], capture_output=True, text=True)
     for line in result.stdout.splitlines():
@@ -181,8 +190,7 @@ def debian_package_of(name):
                 text = copyright_file.read_text(encoding="utf-8")
                 # Debian copyright files often refer to texts supplied by the
                 # base system. An AppImage recipient may not have that system.
-                for reference in sorted(set(re.findall(
-                        r"/usr/share/common-licenses/[A-Za-z0-9.+-]+", text))):
+                for reference in common_licence_references(text):
                     referenced = Path(reference)
                     if not referenced.is_file():
                         raise ValueError(f"{package}: missing referenced licence {reference}")

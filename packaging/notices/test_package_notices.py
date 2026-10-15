@@ -74,6 +74,13 @@ class NoticeTests(unittest.TestCase):
         self.assertFalse(data['inventory_complete'])
         self.assertIn('INCOMPLETE', self.output.read_text())
 
+    def test_licence_reference_ending_a_sentence(self):
+        text = ('On Debian systems the GPL is in /usr/share/common-licenses/GPL-2.\n'
+                'See /usr/share/common-licenses/LGPL-2.1 and /usr/share/common-licenses/Apache-2.0.')
+        self.assertEqual(notices.common_licence_references(text),
+                         ['/usr/share/common-licenses/Apache-2.0', '/usr/share/common-licenses/GPL-2',
+                          '/usr/share/common-licenses/LGPL-2.1'])
+
     def test_parenthesized_licence_alternatives(self):
         self.assertEqual(notices.split_or('(MIT OR BSD-2-Clause) OR (GPL-3.0-only)'),
                          ['(MIT OR BSD-2-Clause)', '(GPL-3.0-only)'])
