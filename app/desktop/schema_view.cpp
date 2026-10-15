@@ -3131,7 +3131,9 @@ std::string SchemaView::colour_identity(const Routed& routed) const {
 // made, where a key's identity is made afresh each time an example is opened.
 // The colours are given again only when the relationships, what they join or
 // the palette change; a table moving changes none of that, so a drag routes the
-// lines again and gives no line a new colour.
+// lines again and gives no line a new colour. Each line says the rows it
+// leaves and lands on, so the relationships whose ends meet at one key are
+// told apart there first.
 void SchemaView::colour_lines(schema_colours::Palette palette) {
     const auto named = [&](std::size_t table, std::size_t column) {
         if (table >= preview_.tables.size()) return std::string();
@@ -3158,7 +3160,8 @@ void SchemaView::colour_lines(schema_colours::Palette palette) {
     std::vector<schema_colours::Line> lines;
     lines.reserve(routes_.size());
     for (std::size_t i = 0; i < routes_.size(); ++i)
-        lines.push_back({identities[i], routes_[i].from_table, routes_[i].to_table, says.at(identities[i])});
+        lines.push_back({identities[i], routes_[i].from_table, routes_[i].to_table, says.at(identities[i]),
+                         routes_[i].from_column, routes_[i].to_column});
     std::sort(lines.begin(), lines.end());
     if (!colour_palette_ || *colour_palette_ != palette || lines != colour_lines_) {
         colour_of_ = schema_colours::allocate(lines, palette);

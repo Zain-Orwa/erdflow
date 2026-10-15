@@ -3799,6 +3799,338 @@ namespace
         std::cout << "PASS ends landing on one key's row are fanned on each side apart, and every end stays on its row\n";
     }
 
+    // Relationships whose lines meet at one row -- several foreign keys
+    // referring to one key -- are told apart there first (C3c-2, 2026-10-14):
+    // no two of one colour or of one family while the palette has enough, and
+    // as far apart as a row's few colours can be; in Plain, a grey repeated
+    // only as often as sharing five out evenly asks. Lines whose rows nobody
+    // shares are given what C3a gives them; every line of one relationship,
+    // a key of several columns among them, has its one colour; and the
+    // colours do not hang on the order the lines are listed in.
+    void schema_shared_key_colour_tests(infrastructure::QtIdGenerator &ids)
+    {
+        using namespace desktop::schema_colours;
+        // `count` relationships from tables of their own, all landing on table
+        // 0's key row, named from `seed`.
+        const auto hub = [](int count, unsigned seed)
+        {
+            std::mt19937 random(seed);
+            std::vector<Line> lines;
+            for (int i = 0; i < count; ++i)
+                lines.push_back({"r" + std::to_string(random()), static_cast<std::size_t>(i + 1), 0,
+                                 "T" + std::to_string(random() % 100000) + ".ID>Hub.ID|", 1, 0});
+            return lines;
+        };
+        // Among some colours: the least distance, the pairs of one family and
+        // the pairs of one colour.
+        struct Apart
+        {
+            double least = 1e9;
+            int kindred = 0;
+            int same = 0;
+        };
+        const auto apart = [](const std::vector<QColor> &colours)
+        {
+            Apart found;
+            for (std::size_t a = 0; a < colours.size(); ++a)
+                for (std::size_t b = a + 1; b < colours.size(); ++b)
+                {
+                    found.least = std::min(found.least, distance(colours[a], colours[b]));
+                    found.kindred += kindred(colours[a], colours[b]) ? 1 : 0;
+                    found.same += colours[a] == colours[b] ? 1 : 0;
+                }
+            return found;
+        };
+        // The fewest pairs of one grey `count` relationships can have among five.
+        const auto fewest_alike = [](int count)
+        {
+            const int each = count / 5, more = count % 5;
+            return more * (each + 1) * each / 2 + (5 - more) * each * (each - 1) / 2;
+        };
+        const auto given_to = [](const std::vector<Line> &lines, const std::map<std::string, QColor> &given)
+        {
+            std::vector<QColor> colours;
+            for (const auto &line : lines)
+                colours.push_back(given.at(line.identity));
+            return colours;
+        };
+
+        // One key row shared by two to nine relationships, under twenty sets of
+        // names each (names decide each relationship's own colour and the order
+        // they are taken in). The bounds are the least measured under 300 sets
+        // (2026-10-14): up to four, every two at least 30 apart (30.9 in light,
+        // 31.6 in dark); up to nine, 22 (22.8, 22.7).
+        for (const auto palette : {Palette::Light, Palette::Dark})
+            for (int count = 2; count <= 9; ++count)
+                for (unsigned seed = 1; seed <= 20; ++seed)
+                {
+                    const auto lines = hub(count, seed * 7919U + static_cast<unsigned>(count));
+                    const auto found = apart(given_to(lines, allocate(lines, palette)));
+                    require(found.same == 0 && found.kindred == 0,
+                            (std::to_string(count) + " relationships at one key row: no two of one colour or one family").c_str());
+                    require(found.least >= (count <= 4 ? 30.0 : 22.0),
+                            (std::to_string(count) + " relationships at one key row are " + (count <= 4 ? "30" : "22") +
+                             " apart or more (" + std::to_string(found.least) + ")")
+                                .c_str());
+                }
+        for (int count = 2; count <= 10; ++count)
+            for (unsigned seed = 1; seed <= 20; ++seed)
+            {
+                const auto lines = hub(count, seed * 7919U + static_cast<unsigned>(count));
+                require(apart(given_to(lines, allocate(lines, Palette::Grey))).same == fewest_alike(count),
+                        (std::to_string(count) + " relationships at one key row in Plain repeat a grey only as often as "
+                                                 "sharing five out evenly asks")
+                            .c_str());
+            }
+
+        // Where no row is shared, nothing is given otherwise than without rows:
+        // C3a's colours, exactly.
+        for (int seed = 1; seed <= 20; ++seed)
+        {
+            std::mt19937 random(static_cast<unsigned>(seed));
+            const auto tables = 6 + static_cast<int>(random() % 30);
+            std::vector<std::size_t> next(static_cast<std::size_t>(tables), 0);
+            std::vector<Line> unshared, without;
+            for (int r = 0; r < 2 * tables; ++r)
+            {
+                const auto from = static_cast<std::size_t>(random() % static_cast<unsigned>(tables));
+                const auto to = static_cast<std::size_t>(random() % static_cast<unsigned>(tables));
+                const auto leaves = next[from]++;
+                const auto lands = next[to]++;
+                unshared.push_back({"r" + std::to_string(r), from, to, {}, leaves, lands});
+                without.push_back({"r" + std::to_string(r), from, to, {}, no_column, no_column});
+            }
+            for (const auto palette : {Palette::Light, Palette::Dark, Palette::Grey})
+                require(allocate(unshared, palette) == allocate(without, palette),
+                        "Lines meeting no other at their rows are given exactly what they are given at their tables alone");
+        }
+
+        // A key of several columns: each relationship referring to it lands on
+        // both its rows, in one colour, and is told apart at both. And a key's
+        // row that is also a foreign key is met by the line leaving it as much
+        // as by the lines arriving at it.
+        {
+            std::vector<Line> lines;
+            for (int i = 0; i < 3; ++i)
+                for (std::size_t column = 0; column < 2; ++column)
+                    lines.push_back({"refers " + std::to_string(i), static_cast<std::size_t>(i + 1), 0,
+                                     "Refers" + std::to_string(i) + ">Invoice|", column + 1, column});
+            lines.push_back({"leaves its key", 10, 11, "Item.ID>Order.ID|", 0, 0});
+            lines.push_back({"arrives a", 12, 10, "Note.ItemID>Item.ID|", 1, 0});
+            lines.push_back({"arrives b", 13, 10, "Tag.ItemID>Item.ID|", 1, 0});
+            for (const auto palette : {Palette::Light, Palette::Dark})
+            {
+                const auto given = allocate(lines, palette);
+                require(given.size() == 6, "Every line of a key of several is one relationship");
+                const auto composite = apart({given.at("refers 0"), given.at("refers 1"), given.at("refers 2")});
+                require(composite.same == 0 && composite.kindred == 0 && composite.least >= 30.0,
+                        "The relationships referring to a key of several are told apart at its rows");
+                const auto both_ways = apart({given.at("leaves its key"), given.at("arrives a"), given.at("arrives b")});
+                require(both_ways.same == 0 && both_ways.kindred == 0 && both_ways.least >= 30.0,
+                        "At a key that is also a foreign key, the line leaving it and those arriving are told apart");
+                auto shuffled = lines;
+                std::reverse(shuffled.begin(), shuffled.end());
+                std::rotate(shuffled.begin(), shuffled.begin() + 4, shuffled.end());
+                require(allocate(shuffled, palette) == given, "And none of it hangs on the order the lines are listed in");
+            }
+        }
+
+        // One relationship added to each of 50 made-up schemas of 20 to 80
+        // tables, whose keys have one to three columns: as at C3a it can move
+        // relationships it meets onto other colours, and through them, now and
+        // then, a few it does not meet -- more often than C3a, since a row is
+        // weighed before a table. Measured (2026-10-14): in colour in 4 of the
+        // 50, never more than 3 (at their tables alone, 2 and 1). The bounds are
+        // those figures, so that anything making it reach further fails.
+        {
+            long reaching = 0, furthest = 0;
+            for (int seed = 1; seed <= 50; ++seed)
+            {
+                std::mt19937 random(static_cast<unsigned>(seed));
+                const auto tables = 20 + static_cast<int>(random() % 60);
+                std::vector<int> keys;
+                std::vector<std::size_t> next;
+                for (int t = 0; t < tables; ++t)
+                {
+                    keys.push_back(1 + static_cast<int>(random() % 3));
+                    next.push_back(static_cast<std::size_t>(keys.back()));
+                }
+                const auto relationship = [&](const std::string &identity)
+                {
+                    const auto from = static_cast<std::size_t>(random() % static_cast<unsigned>(tables));
+                    const auto to = static_cast<std::size_t>(random() % static_cast<unsigned>(tables));
+                    const auto key = static_cast<std::size_t>(random() % static_cast<unsigned>(keys[to]));
+                    return Line{identity, from, to, {}, next[from]++, key};
+                };
+                std::vector<Line> lines;
+                const auto relations = tables + static_cast<int>(random() % static_cast<unsigned>(tables));
+                for (int r = 0; r < relations; ++r)
+                    lines.push_back(relationship("relationship " + std::to_string(seed) + "." + std::to_string(r)));
+                const auto added = relationship("added " + std::to_string(seed));
+                const auto before = allocate(lines, Palette::Light);
+                auto more = lines;
+                more.push_back(added);
+                const auto after = allocate(more, Palette::Light);
+                long further = 0;
+                for (const auto &line : lines)
+                {
+                    const bool meets = line.from_table == added.from_table || line.from_table == added.to_table ||
+                                       line.to_table == added.from_table || line.to_table == added.to_table;
+                    if (!meets && before.at(line.identity) != after.at(line.identity))
+                        ++further;
+                }
+                reaching += further > 0 ? 1 : 0;
+                furthest = std::max(furthest, further);
+            }
+            require(furthest <= 3, "One relationship added recolours at most 3 relationships it does not meet, rows weighed");
+            require(reaching <= 4, "And only in some schemas: no more than 4 of the 50");
+        }
+
+        // On the schema: seven relationships land on Employee's key in the
+        // Company example (2026-10-14: the closest two of them 32.4 apart in
+        // light and 26.4 in dark, no two of one family; under C3a 23.6 and
+        // 22.5, with five pairs of one family in light).
+        application::Editor editor(ids);
+        infrastructure::ErdxProjectStore store;
+        desktop::MainWindow window(editor, store, ids);
+        window.resize(1440, 920);
+        window.show();
+        window.show_home(false);
+        settle();
+        window.load_company_database_relational();
+        settle();
+        window.open_schema(true);
+        settle();
+        // Every relationship on a schema: the rows its lines meet, and the
+        // colour each of its lines is drawn in, checked to be one colour.
+        using Rows = std::set<std::pair<std::size_t, std::size_t>>;
+        const auto relationships = [](desktop::SchemaView &view)
+        {
+            std::map<domain::ForeignKeyId, std::pair<Rows, std::vector<QColor>>> found;
+            const auto &preview = view.preview();
+            for (std::size_t t = 0; t < preview.tables.size(); ++t)
+                for (std::size_t c = 0; c < preview.tables[t].columns.size(); ++c)
+                {
+                    const auto &column = preview.tables[t].columns[c];
+                    if (!column.key_id || !column.references)
+                        continue;
+                    auto &rows = found[*column.key_id].first;
+                    rows.insert({t, c});
+                    rows.insert({*column.references, column.references_column});
+                }
+            const auto keys = view.line_keys();
+            const auto drawn = view.line_colours();
+            for (std::size_t i = 0; i < keys.size(); ++i)
+                if (keys[i])
+                    found[*keys[i]].second.push_back(drawn[i]);
+            for (const auto &[key, met] : found)
+                require(!met.second.empty() && std::all_of(met.second.begin(), met.second.end(),
+                                                           [&](const QColor &colour) { return colour == met.second.front(); }),
+                        "Every line of a relationship is drawn in its one colour, from its foreign key to its key");
+            return found;
+        };
+        // The colours of the relationships meeting at one table's row, by name.
+        const auto at_row = [&](desktop::SchemaView &view, const std::string &table, const std::string &column)
+        {
+            const auto &preview = view.preview();
+            std::optional<std::pair<std::size_t, std::size_t>> row;
+            for (std::size_t t = 0; t < preview.tables.size(); ++t)
+                if (preview.tables[t].name == table)
+                    for (std::size_t c = 0; c < preview.tables[t].columns.size(); ++c)
+                        if (preview.tables[t].columns[c].name == column)
+                            row = std::pair{t, c};
+            require(row.has_value(), ("The schema has " + table + "." + column).c_str());
+            std::vector<QColor> colours;
+            for (const auto &[key, met] : relationships(view))
+                if (met.first.contains(*row))
+                    colours.push_back(met.second.front());
+            return colours;
+        };
+        auto *view = window.schema();
+        const auto light = at_row(*view, "Employee", "EmployeeID");
+        require(light.size() == 7, "Seven relationships meet at Employee's key");
+        const auto in_light = apart(light);
+        require(in_light.same == 0 && in_light.kindred == 0 && in_light.least >= 22.0,
+                "At Employee's key no two relationships are of one colour or one family, and every two are 22 apart or more");
+        window.set_theme(desktop::ThemeId::Dracula);
+        settle();
+        const auto in_dark = apart(at_row(*view, "Employee", "EmployeeID"));
+        require(in_dark.same == 0 && in_dark.kindred == 0 && in_dark.least >= 22.0,
+                "In a dark theme too, Employee's key has no two of one colour or one family");
+        window.set_theme(desktop::ThemeId::Plain);
+        settle();
+        require(apart(at_row(*view, "Employee", "EmployeeID")).same == fewest_alike(7),
+                "In Plain, Employee's key repeats a grey only as often as seven among five asks");
+        window.set_theme(desktop::ThemeId::OfficeLight);
+        settle();
+        require(at_row(*view, "Employee", "EmployeeID") == light, "Back in the first theme, Employee's key has its colours again");
+        editor.mark_saved(editor.revision());
+
+        // A key of two columns referred to three times, drawn: each of the
+        // three is one colour on both of its lines, and the three are told
+        // apart at both rows.
+        {
+            application::Editor model(ids);
+            double placed = 0;
+            const auto entity = [&](const std::string &name, const std::vector<std::string> &keys)
+            {
+                placed += 400;
+                const auto made = std::get<domain::EntityId>(*model.create_entity(name, domain::Rect{placed, 0, 148, 86}).created);
+                for (const auto &key : keys)
+                {
+                    const auto attribute = model.create_attribute(key, domain::Rect{placed, 200, 150, 60}, domain::ElementRef{made});
+                    require(attribute.ok && model.set_attribute_kind(std::get<domain::AttributeId>(*attribute.created),
+                                                                     domain::AttributeKind::Key)
+                                                .ok,
+                            "A key");
+                }
+                return made;
+            };
+            const auto invoice = entity("Invoice", {"InvoiceNo", "Year"});
+            for (const auto &name : {"Shipment", "Refund", "Payment"})
+            {
+                const auto referring = entity(name, {std::string(name) + "No"});
+                const auto relationship = std::get<domain::RelationshipId>(
+                    *model.create_relationship(std::string("Covers ") + name, domain::Rect{placed, 400, 190, 110}).created);
+                const auto one = model.connect(relationship, invoice);
+                const auto many = model.connect(relationship, referring);
+                require(one.ok && one.participant && many.ok && many.participant &&
+                            model.update_participant(relationship, *one.participant, domain::Cardinality::One,
+                                                     domain::Participation::Partial, "")
+                                .ok &&
+                            model.update_participant(relationship, *many.participant, domain::Cardinality::Many,
+                                                     domain::Participation::Partial, "")
+                                .ok,
+                        "Each refers to the invoice");
+            }
+            infrastructure::ErdxProjectStore composite_store;
+            desktop::MainWindow composite(model, composite_store, ids);
+            composite.resize(1440, 920);
+            composite.show();
+            composite.show_home(false);
+            settle();
+            composite.open_schema(true);
+            settle();
+            auto *drawn = composite.schema();
+            const auto found = relationships(*drawn);
+            require(found.size() == 3 && std::all_of(found.begin(), found.end(), [](const auto &one) { return one.second.second.size() == 2; }),
+                    "Each of the three draws two lines, one for each column of the key");
+            // The table the schema works out from Invoice, whatever it names it.
+            std::string invoices;
+            for (const auto &table : drawn->preview().tables)
+                if (table.name.rfind("Invoice", 0) == 0)
+                    invoices = table.name;
+            for (const auto &column : {"InvoiceNo", "Year"})
+            {
+                const auto there = apart(at_row(*drawn, invoices, column));
+                require(there.same == 0 && there.kindred == 0 && there.least >= 30.0,
+                        "At each row of a key of several, the relationships referring to it are told apart");
+            }
+            model.mark_saved(model.revision());
+        }
+        std::cout << "PASS relationships meeting at one key row are told apart there first, as the palette allows\n";
+    }
+
     void schema_line_colour_rename_tests(infrastructure::QtIdGenerator &ids)
     {
         application::Editor editor(ids);
@@ -8029,6 +8361,7 @@ int main(int argc, char **argv)
             schema_line_colour_tests(ids);
             schema_line_colour_rename_tests(ids);
             schema_endpoint_separation_tests(ids);
+            schema_shared_key_colour_tests(ids);
         }
         if (relational_part)
         {

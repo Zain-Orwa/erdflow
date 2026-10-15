@@ -162,6 +162,30 @@ read as still to do.
   within 0.6 % on the examples; in the University example the line from
   Students.ProfessorID now leaves to the left and runs round the top), and
   the route memory still takes again only what a fresh search finds.
+- **Relationships meeting at one key are told apart there first** (C3c-2,
+  2026-10-14, built in the release laboratory, awaiting Zain's review): where
+  several foreign keys land on one key's row their ends crowd into one point,
+  and C3a kept them only as far apart as any two relationships meeting at a
+  table (at Employee's key in the Company example the closest two were 23.6
+  apart, with five pairs of one family). Each line now says the rows it leaves
+  and lands on (`schema_colours::Line::from_column`, `to_column`), and the
+  relationships meeting at a row are weighed before those meeting at a table:
+  first a colour of a family none of them has (hues within 25 degrees,
+  `schema_colours::kindred`), then one at least 30 apart from theirs (in Plain,
+  any grey but theirs), then the row's even share; C3a's table rule follows
+  unchanged. On the examples, no two relationships at a shared key row are of
+  one colour or one family in light or dark; the closest two at Employee are
+  32.4 apart in light and 26.4 in dark (from 23.6 and 22.5); every table keeps
+  its relationships 22 apart or more; Plain repeats a grey at a row only as
+  often as the row's size asks. Up to four relationships at a row are always
+  30 apart or more, and up to nine 22 apart and never of one family; past that
+  families repeat as seldom as the palette allows. At rows of five to seven a
+  pair can stay between 26 and 30 apart although the palette could hold them
+  farther: each relationship is placed one at a time. It recolours, once, up to
+  14 of an example's 25 or 26 relationships (Company relational in light; in
+  Plain at most 5); one relationship added can recolour a few further away (8
+  of 100 made-up schemas, at most 3; at tables alone 4 and 2). Lines whose rows no other line shares keep exactly C3a's colours. Routes,
+  hover, selection and line drawing are unchanged.
 - **Desktop timeout risk reduced without weakening coverage** (committed in
   `7b12b70`): the old single `desktop` CTest entry is split into
   `desktop_export`, `desktop_relational` and `desktop_window` (the last since

@@ -29,6 +29,13 @@ enum class Palette { Light, Dark, Grey };
 // How far apart two colours look (CIEDE2000): under about 10 two thin lines
 // are hard to tell apart, from 20 they are plainly different.
 [[nodiscard]] double distance(const QColor& one, const QColor& other);
+// Whether two colours are of one family -- two greens, two oranges -- however
+// far apart their lightness puts them: both plainly coloured, and their hues
+// within 25 degrees of each other. Greys are of no family.
+[[nodiscard]] bool kindred(const QColor& one, const QColor& other);
+
+// A line that does not say which row of a table it leaves or lands on.
+inline constexpr std::size_t no_column = static_cast<std::size_t>(-1);
 
 // One line to be given a colour: what is the same for every line of one
 // relationship and different for every other relationship; the two tables it
@@ -37,16 +44,23 @@ enum class Palette { Light, Dark, Grey };
 // which is what its colour is worked out from. A name is the same every time
 // a schema is made, where an identity may be new each time an example is
 // opened, and the colour has to be the same every time too. Without a name the
-// identity stands in for it.
+// identity stands in for it. Last, the rows it leaves and lands on, by their
+// places among their tables' columns: where several lines meet at one row --
+// foreign keys referring to one key -- they meet at one point, and are kept
+// apart there first. A line that does not say its rows is kept apart at its
+// tables alone.
 struct Line {
     std::string identity;
     std::size_t from_table = 0;
     std::size_t to_table = 0;
     std::string name;
+    std::size_t from_column = no_column;
+    std::size_t to_column = no_column;
     bool operator==(const Line& other) const = default;
     bool operator<(const Line& other) const {
-        return std::tie(identity, from_table, to_table, name)
-             < std::tie(other.identity, other.from_table, other.to_table, other.name);
+        return std::tie(identity, from_table, to_table, name, from_column, to_column)
+             < std::tie(other.identity, other.from_table, other.to_table, other.name, other.from_column,
+                        other.to_column);
     }
 };
 
@@ -63,6 +77,13 @@ struct Line {
 // palette. What a relationship is given therefore depends on the
 // relationships it meets at its tables, never on where tables stand or the
 // order the lines are listed in.
+//
+// Before any of that, the relationships meeting it at one of its rows are
+// weighed (C3c-2, 2026-10-14): a colour of a family none of them has, then
+// one as far from theirs as a row's few colours can be (30, where the
+// palette has room; in the greys any grey but theirs), then one that takes
+// none of its rows past an even share. At a busy key the relationships
+// arriving at its row are told apart before the rest of the table's.
 [[nodiscard]] std::map<std::string, QColor> allocate(const std::vector<Line>& lines, Palette palette);
 
 } // namespace erdflow::desktop::schema_colours
