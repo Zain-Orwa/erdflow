@@ -1363,7 +1363,7 @@ public:
     // line out of them instead.
     std::optional<QColor> picture_ground;
     MinMaxDisplayMode minmax_display_mode = MinMaxDisplayMode::CardinalityAndOrdinality;
-    LineStyle style = LineStyle::Elbow;
+    LineStyle style = LineStyle::Straight;
 
     // Every notation reads the same two values: the minimum from participation
     // and the maximum from cardinality.
@@ -2365,7 +2365,9 @@ struct DiagramView::Impl {
     ThemeId theme_id = ThemeId::OfficeLight;
     Notation notation = Notation::CrowsFoot;
     MinMaxDisplayMode minmax_display_mode = MinMaxDisplayMode::CardinalityAndOrdinality;
-    LineStyle style = LineStyle::Elbow;
+    // Lines are drawn straight until another style is chosen (Zain,
+    // 2026-10-15; until then they broke at right angles).
+    LineStyle style = LineStyle::Straight;
     JoinMode join_mode = JoinMode::Automatic;
     bool tool_locked = false;
     // The element attributes placed are attached to, and the project it was

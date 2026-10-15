@@ -367,10 +367,12 @@ read as still to do.
   attributes, goes round and in at the attribute's near side
   (`EdgeItem::attribute_route`). Carrying an attribute moves its neighbours'
   level as it goes. A total participation's double line keeps its distance
-  round every curve. Because Right-angle is the style a diagram is drawn in
-  until another is chosen, and the choice is not saved, every diagram now
-  opens with its attribute lines at right angles. Nothing is written into the
-  project and the file format is unchanged.
+  round every curve. Lines are drawn Straight until another style is chosen
+  (Zain, 2026-10-15; until then the starting style was Right-angle), so a
+  diagram opens with every line straight, as does the Home screen's
+  Conceptual card. The chosen style is what every picture, PDF and document
+  exported carries, since each is drawn from the canvas as it stands. Nothing
+  is written into the project and the file format is unchanged.
 - **Desktop timeout risk reduced without weakening coverage** (committed in
   `7b12b70`): the old single `desktop` CTest entry is split into
   `desktop_export`, `desktop_relational` and `desktop_window` (the last since

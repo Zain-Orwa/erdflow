@@ -8964,11 +8964,13 @@ void appearance_hover_tests()
     const auto original = window.canvas()->line_style();
     const auto line_revision = editor.revision();
     lines->popup(window.mapToGlobal(QPoint(200, 100))); settle();
-    child<QAction>(window, "lineStraight")->activate(QAction::Hover);
-    require(window.canvas()->line_style() == desktop::LineStyle::Straight && editor.revision() == line_revision,
+    // Lines start straight (Zain, 2026-10-15), so it is right angles that are
+    // previewed and then chosen.
+    child<QAction>(window, "lineElbow")->activate(QAction::Hover);
+    require(window.canvas()->line_style() == desktop::LineStyle::Elbow && editor.revision() == line_revision,
             "Line hover previews without project edits");
-    require(child<QAction>(window, "lineElbow")->isChecked(), "Hover preserves the committed line choice");
-    settle(); capture("lines-straight");
+    require(child<QAction>(window, "lineStraight")->isChecked(), "Hover preserves the committed line choice");
+    settle(); capture("lines-right-angle");
     require(window.canvas()->viewport()->grab().toImage() != committed_paper, "Line hover visibly redraws existing connectors");
     child<QAction>(window, "lineCurved")->activate(QAction::Hover); settle();
     require(window.canvas()->line_style() == desktop::LineStyle::Curved, "Moving between Lines options updates the preview");
@@ -8978,21 +8980,21 @@ void appearance_hover_tests()
     require(editor.project().background.style == domain::BackgroundStyle::Squares && !editor.dirty() && editor.revision() == line_revision,
             "Canceling Lines keeps the independently committed Background and creates no project edit");
     lines->popup(window.mapToGlobal(QPoint(200, 100))); settle();
-    child<QAction>(window, "lineStraight")->activate(QAction::Hover);
+    child<QAction>(window, "lineElbow")->activate(QAction::Hover);
     QTest::keyClick(lines, Qt::Key_Escape); settle();
     require(!lines->isVisible() && window.canvas()->line_style() == original, "Escape restores committed Lines");
     lines->popup(window.mapToGlobal(QPoint(200, 100))); settle();
-    child<QAction>(window, "lineStraight")->activate(QAction::Hover);
-    child<QAction>(window, "lineStraight")->trigger(); lines->hide();
-    require(window.canvas()->line_style() == desktop::LineStyle::Straight && child<QAction>(window, "lineStraight")->isChecked(),
+    child<QAction>(window, "lineElbow")->activate(QAction::Hover);
+    child<QAction>(window, "lineElbow")->trigger(); lines->hide();
+    require(window.canvas()->line_style() == desktop::LineStyle::Elbow && child<QAction>(window, "lineElbow")->isChecked(),
             "Clicking Lines keeps the selected style after the menu closes");
     settle(); capture("lines-committed");
     lines->popup(window.mapToGlobal(QPoint(200, 100))); settle();
     child<QAction>(window, "lineCurved")->activate(QAction::Hover); lines->hide();
-    require(window.canvas()->line_style() == desktop::LineStyle::Straight, "A later canceled preview restores the newly committed style");
+    require(window.canvas()->line_style() == desktop::LineStyle::Elbow, "A later canceled preview restores the newly committed style");
     background->popup(window.mapToGlobal(QPoint(200, 100))); settle();
     child<QAction>(window, "backgroundDots")->activate(QAction::Hover); background->hide(); settle();
-    require(window.canvas()->line_style() == desktop::LineStyle::Straight && editor.project().background.style == domain::BackgroundStyle::Squares,
+    require(window.canvas()->line_style() == desktop::LineStyle::Elbow && editor.project().background.style == domain::BackgroundStyle::Squares,
             "Canceling Background keeps the independently committed Lines choice");
     require(!editor.dirty() && editor.revision() == line_revision, "Line previews and selections preserve existing project history behavior");
     require(editor.undo().ok, "The chosen paper has one Undo step"); window.canvas()->synchronize();
@@ -11796,27 +11798,27 @@ int main(int argc, char **argv)
 
         // The line style sits on the Connect button's own arrow, with each
         // option drawn rather than only named.
-        require(window.canvas()->line_style() == desktop::LineStyle::Elbow,
-                "Lines break at right angles unless told otherwise");
+        require(window.canvas()->line_style() == desktop::LineStyle::Straight,
+                "Lines are straight unless told otherwise");
         auto *straight = child<QAction>(window, "lineStraight");
         auto *curved = child<QAction>(window, "lineCurved");
         auto *elbow = child<QAction>(window, "lineElbow");
         require(!straight->icon().isNull() && !curved->icon().isNull() && !elbow->icon().isNull(),
                 "Each line style is drawn, not just named");
-        require(elbow->isChecked() && !curved->isChecked() && !straight->isChecked(),
+        require(straight->isChecked() && !curved->isChecked() && !elbow->isChecked(),
                 "The menu marks the style in use");
-        straight->trigger();
+        elbow->trigger();
         settle();
-        require(window.canvas()->line_style() == desktop::LineStyle::Straight, "The menu changes the line style");
-        require(straight->isChecked() && !curved->isChecked() && !elbow->isChecked(), "The mark follows the choice");
+        require(window.canvas()->line_style() == desktop::LineStyle::Elbow, "The menu changes the line style");
+        require(elbow->isChecked() && !curved->isChecked() && !straight->isChecked(), "The mark follows the choice");
         // Choosing a style must not silently change which tool is active.
         const auto tool_before = window.canvas()->tool();
         curved->trigger();
         settle();
         require(window.canvas()->line_style() == desktop::LineStyle::Curved, "And the other two are offered too");
-        elbow->trigger();
+        straight->trigger();
         settle();
-        require(window.canvas()->line_style() == desktop::LineStyle::Elbow, "And back again");
+        require(window.canvas()->line_style() == desktop::LineStyle::Straight, "And back again");
         require(window.canvas()->tool() == tool_before, "Choosing a line style leaves the active tool alone");
         // The button still behaves like a tool, including its double-click lock.
         auto *connect_button = child<QToolButton>(window, "connectButton");

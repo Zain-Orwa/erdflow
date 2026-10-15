@@ -3602,7 +3602,7 @@ void attribute_trunk_and_line_style_tests() {
     view.set_grid_visible(false);
     view.fit_diagram();
     QApplication::processEvents();
-    require(view.line_style() == desktop::LineStyle::Elbow, "Lines break at right angles unless told otherwise");
+    require(view.line_style() == desktop::LineStyle::Straight, "Lines are straight unless told otherwise");
     view.set_line_style(desktop::LineStyle::Curved);
 
     const auto edge_for = [&](const QString& attribute) {
@@ -3723,8 +3723,9 @@ void line_style_tests() {
     const QPointF straight_on{460.9, 515.5};    // a quarter of the way along the straight line
     const QPointF rounded_on{460.9, 454.1};     // as far across, on the right-angle line rounded off
 
-    // Right angles, the style lines start in.
-    require(view.line_style() == desktop::LineStyle::Elbow, "Lines break at right angles unless told otherwise");
+    // Lines start straight (Zain, 2026-10-15). Right angles first.
+    require(view.line_style() == desktop::LineStyle::Straight, "Lines are straight unless told otherwise");
+    view.set_line_style(desktop::LineStyle::Elbow);
     require(passes(relationship_line, right_angle_corner), "A relationship's line turns square");
     // The three above cross at one level, halfway out to the nearest of them
     // (Beta, whose foot is 116 above Person), and each goes straight up into it.
