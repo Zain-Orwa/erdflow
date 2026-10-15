@@ -346,6 +346,31 @@ read as still to do.
   its least, which also ends a defect older than this: between about 1500 and
   1750 wide, Model and Theme kept their words and had them cut to an
   ellipsis, because a row short of room squeezes every button in it.
+- **The three line styles shape every line** (2026-10-15, built in the release
+  laboratory at Zain's request, awaiting his review): Connect's Right-angle,
+  Curved and Straight lines now each draw what they name, and choosing one
+  redraws the diagram at once, before, while or after it is drawn. Curved had
+  never been built for anything but a specialization's lines, and attribute
+  lines were straight in every style (Zain, 2026-09-26); asked, Zain chose
+  that they follow the style too. Straight is unchanged. Curved: a line nobody
+  has shaped is the right-angle line rounded off (it leaves and arrives square
+  to the same faces and bends towards where that one turns, so shapes standing
+  in line still join by one straight run); one bent by hand curves through its
+  bend; one routed by hand, or a recursive loop, keeps its corners and is
+  rounded off between them; an attribute's line leaves its owner's shared
+  point halfway between square to the side and straight at the attribute, so
+  lines sharing the point part there, and arrives pointing at it. Right-angle:
+  relationship lines as before; an attribute's line leaves the shared point
+  square to the side, crosses at one level shared by every attribute on that
+  side (halfway out to the nearest of them) and goes straight into its own
+  end, or, where that last run would pass through another of the owner's
+  attributes, goes round and in at the attribute's near side
+  (`EdgeItem::attribute_route`). Carrying an attribute moves its neighbours'
+  level as it goes. A total participation's double line keeps its distance
+  round every curve. Because Right-angle is the style a diagram is drawn in
+  until another is chosen, and the choice is not saved, every diagram now
+  opens with its attribute lines at right angles. Nothing is written into the
+  project and the file format is unchanged.
 - **Desktop timeout risk reduced without weakening coverage** (committed in
   `7b12b70`): the old single `desktop` CTest entry is split into
   `desktop_export`, `desktop_relational` and `desktop_window` (the last since

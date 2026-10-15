@@ -168,13 +168,19 @@ QPointF normal(const QPointF& delta) {
 // the moved line stays the same distance from every run of the original (Zain,
 // 2026-10-03, for the double line of a total participation). Its ends move
 // square to the runs they finish, so two lines moved either way leave a point
-// together. Anything not made only of straight runs is moved as a whole.
+// together. A curved line (2026-10-15) is followed as the short straight runs
+// it is drawn with, so the two lines keep their distance round every bend.
 QPainterPath alongside(const QPainterPath& path, qreal distance) {
     std::vector<QPointF> points;
     for (int i = 0; i < path.elementCount(); ++i) {
         const auto element = path.elementAt(i);
-        if (!element.isMoveTo() && !element.isLineTo()) return path.translated(normal(
-            path.pointAtPercent(1) - path.pointAtPercent(0)) * distance);
+        if (!element.isMoveTo() && !element.isLineTo()) {
+            const auto runs = path.toSubpathPolygons();
+            if (runs.isEmpty()) return path;
+            QPainterPath flat(runs.first().first());
+            for (qsizetype at = 1; at < runs.first().size(); ++at) flat.lineTo(runs.first()[at]);
+            return alongside(flat, distance);
+        }
         const QPointF at(element.x, element.y);
         if (points.empty() || std::hypot(at.x() - points.back().x(), at.y() - points.back().y()) > 0.01)
             points.push_back(at);
@@ -204,6 +210,22 @@ QPainterPath alongside(const QPainterPath& path, qreal distance) {
         else moved.lineTo(points[i] + by);
     }
     return moved;
+}
+
+// A line with corners, rounded off: onto the end of a path standing at its
+// start, it bends towards each corner in turn, passing midway between one
+// corner and the next, and arrives at the end from the last. It keeps inside
+// the corners, so it never hooks or loops however short a run between them.
+// Returns the point the line arrives from, which its end marks are laid along.
+QPointF round_off(QPainterPath& path, const std::vector<QPointF>& corners, const QPointF& end) {
+    if (corners.empty()) {
+        const auto from = path.currentPosition();
+        path.lineTo(end);
+        return from;
+    }
+    for (std::size_t at = 0; at < corners.size(); ++at)
+        path.quadTo(corners[at], at + 1 < corners.size() ? (corners[at] + corners[at + 1]) / 2 : end);
+    return corners.back();
 }
 
 QString minmax_label(bool many, bool mandatory, MinMaxDisplayMode mode) {
@@ -1525,6 +1547,120 @@ public:
             corners.pop_back();
         return corners;
     }
+    // Which way is straight out of a shape at a point on it: up, down, left or
+    // right, along the axis that point's face runs squarely to.
+    [[nodiscard]] static QPointF square_out(const NodeItem* node, const QPointF& at) {
+        const auto centre = node->body_rect().translated(node->scenePos()).center();
+        return leaves_vertically(node, at) ? QPointF(0, at.y() < centre.y() ? -1 : 1)
+                                           : QPointF(at.x() < centre.x() ? -1 : 1, 0);
+    }
+    // An attribute's line at right angles (Zain, 2026-10-15): out of its
+    // owner's shared point square to that side, across at one level shared by
+    // every attribute on the side -- halfway out to the nearest of them -- and
+    // straight in to its own end. Where that last run would pass through a
+    // neighbour, the line goes round instead: across halfway towards the
+    // attribute, out level with it, and in at its near end from the side.
+    [[nodiscard]] std::vector<QPointF> attribute_route() const {
+        const auto* owner = target;
+        const auto* attribute = source;
+        const auto box_of = [](const NodeItem* node) { return node->body_rect().translated(node->scenePos()); };
+        const auto anchor = owner->attribute_exit(attribute, descriptor.owner_anchor);
+        const auto out = square_out(owner, anchor);
+        const bool upright = out.x() == 0;
+        const QPointF across = upright ? QPointF(1, 0) : QPointF(0, 1);
+        // Measured from the shared point: how far out from the side (x), and
+        // how far along it (y).
+        const auto local = [&](const QPointF& at) {
+            const auto from = at - anchor;
+            return QPointF(QPointF::dotProduct(from, out), QPointF::dotProduct(from, across));
+        };
+        const auto scene_at = [&](const QPointF& at) { return anchor + out * at.x() + across * at.y(); };
+        const auto reach_out = [&](const QRectF& box) { return (upright ? box.height() : box.width()) / 2; };
+        const auto reach_along = [&](const QRectF& box) { return (upright ? box.width() : box.height()) / 2; };
+        const auto box = box_of(attribute);
+        // The attributes this line shares its point with: every one on the
+        // same side, unless this line has been pinned somewhere of its own.
+        std::vector<const NodeItem*> neighbours;
+        if (!descriptor.owner_anchor) {
+            const auto side = owner->middle_facing(box.center());
+            for (const auto* each : owner->attribute_children)
+                if (each != attribute && owner->middle_facing(box_of(each).center()) == side) neighbours.push_back(each);
+        }
+        auto nearest = local(box.center()).x() - reach_out(box);
+        for (const auto* each : neighbours) {
+            const auto other = box_of(each);
+            nearest = std::min(nearest, local(other.center()).x() - reach_out(other));
+        }
+        constexpr qreal stub = 8 * connector_scale;
+        const auto level = std::max(nearest / 2, stub);
+        const auto centre = local(box.center());
+        // Where it goes in: its pinned point, or else the middle of its end
+        // that faces the owner (for the run straight in) or of the side that
+        // faces the shared point (for the way round).
+        const std::optional<QPointF> pinned = descriptor.child_anchor
+            ? std::optional(local(attribute->boundary_at(*descriptor.child_anchor))) : std::nullopt;
+        const bool pinned_end_on = pinned && leaves_vertically(attribute, scene_at(*pinned)) == upright;
+        const QPointF end_on = pinned ? *pinned : QPointF(centre.x() - reach_out(box), centre.y());
+        const QPointF side_on = pinned ? *pinned
+            : QPointF(centre.x(), centre.y() - std::copysign(reach_along(box), centre.y()));
+        // Whether a run between two points crosses another of the owner's
+        // attributes, on any side, with the line's own weight to spare.
+        // Attributes are drawn as ellipses.
+        const auto crosses = [&](const QPointF& a, const QPointF& b) {
+            const auto from = scene_at(a);
+            const auto to = scene_at(b);
+            constexpr qreal spare = 3 * connector_scale;
+            for (const auto* each : owner->attribute_children) {
+                if (each == attribute) continue;
+                const auto other = box_of(each);
+                const auto rx = other.width() / 2 + spare;
+                const auto ry = other.height() / 2 + spare;
+                const auto c = other.center();
+                if (std::abs(from.y() - to.y()) < 0.01) {
+                    const auto dy = (from.y() - c.y()) / ry;
+                    if (std::abs(dy) >= 1) continue;
+                    const auto half = rx * std::sqrt(1 - dy * dy);
+                    if (std::max(from.x(), to.x()) > c.x() - half && std::min(from.x(), to.x()) < c.x() + half) return true;
+                } else {
+                    const auto dx = (from.x() - c.x()) / rx;
+                    if (std::abs(dx) >= 1) continue;
+                    const auto half = ry * std::sqrt(1 - dx * dx);
+                    if (std::max(from.y(), to.y()) > c.y() - half && std::min(from.y(), to.y()) < c.y() + half) return true;
+                }
+            }
+            return false;
+        };
+        const auto blocked = [&](const std::vector<QPointF>& points) {
+            for (std::size_t i = 0; i + 1 < points.size(); ++i)
+                if (crosses(points[i], points[i + 1])) return true;
+            return false;
+        };
+        const std::vector<QPointF> straight_in{{0, 0}, {level, 0}, {level, end_on.y()}, end_on};
+        const auto middle = side_on.y() / 2;
+        const std::vector<QPointF> round{{0, 0}, {level, 0}, {level, middle}, {side_on.x(), middle}, side_on};
+        const bool can_go_straight_in = (!pinned || pinned_end_on) && end_on.x() > level + 0.5;
+        const bool can_go_round = (!pinned || !pinned_end_on) && std::abs(side_on.y()) > 0.5;
+        std::vector<QPointF> chosen;
+        if (can_go_straight_in && (!can_go_round || !blocked(straight_in) || blocked(round))) chosen = straight_in;
+        else if (can_go_round) chosen = round;
+        else return {};
+        // Only the corners the line actually turns at are kept: none where two
+        // fall together, none part-way along a straight run.
+        std::vector<QPointF> kept;
+        for (const auto& point : chosen)
+            if (kept.empty() || std::hypot(point.x() - kept.back().x(), point.y() - kept.back().y()) >= 0.5)
+                kept.push_back(point);
+        for (std::size_t i = 1; i + 1 < kept.size();) {
+            const auto before = kept[i] - kept[i - 1];
+            const auto after = kept[i + 1] - kept[i];
+            if (std::abs(before.x() * after.y() - before.y() * after.x()) < 0.01
+                && QPointF::dotProduct(before, after) > 0) kept.erase(kept.begin() + static_cast<std::ptrdiff_t>(i));
+            else ++i;
+        }
+        std::vector<QPointF> corners;
+        for (std::size_t i = 1; i + 1 < kept.size(); ++i) corners.push_back(scene_at(kept[i]));
+        return corners;
+    }
     // A relationship that meets the same entity twice is drawn the way it is
     // drawn by hand: the first side runs straight between the two shapes, and
     // every later one leaves the diamond by its far corner and comes back
@@ -1612,10 +1748,11 @@ public:
         const bool owned_attribute = std::holds_alternative<AttributeId>(descriptor.key)
             && std::holds_alternative<AttributeId>(descriptor.from);
         if (owned_attribute) {
-            // One straight line from its owner's point to the attribute, in
-            // every line style, so lines sharing a point leave it each on its
-            // own rather than running together and branching (Zain,
-            // 2026-09-26).
+            // One straight line from its owner's point to the attribute, so
+            // lines sharing a point leave it each on its own rather than
+            // running together and branching (Zain, 2026-09-26). Since
+            // 2026-10-15 that is the straight style's; the curved and
+            // right-angle styles shape it too, below.
             const auto anchor = target->attribute_exit(source, descriptor.owner_anchor);
             end = descriptor.child_anchor ? source->boundary_at(*descriptor.child_anchor)
                                           : source->boundary_toward(anchor);
@@ -1665,6 +1802,8 @@ public:
             if (descriptor.recursion > 0) computed_ = loop_route();
             else if (style == LineStyle::Elbow) computed_ = elbow_route();
         }
+        if (owned_attribute && style == LineStyle::Elbow && descriptor.waypoints.empty() && descriptor.offset == 0)
+            computed_ = attribute_route();
         // A route replaces whatever the automatic shape would have been. Each
         // end aims at the corner nearest it rather than at the far endpoint, so
         // the first and last segments leave and arrive along the route itself.
@@ -1683,12 +1822,64 @@ public:
             owner_join_ = start;
             child_join_ = end;
             path_ = QPainterPath(start);
-            for (const auto& corner : corners) path_.lineTo(corner);
-            path_.lineTo(end);
-            approach = corners.back();
+            if (style == LineStyle::Curved) {
+                // Curved, the corners stay where they are and the line is
+                // rounded off between them, bending towards each.
+                approach = round_off(path_, corners, end);
+            } else {
+                for (const auto& corner : corners) path_.lineTo(corner);
+                path_.lineTo(end);
+                approach = corners.back();
+            }
             bend = path_.pointAtPercent(0.5);
             midpoint_ = bend;
             perpendicular_ = normal(end - corners.back());
+        } else if (style == LineStyle::Curved && !inheritance) {
+            // Curved lines (Zain, 2026-10-15). A line nobody has shaped is the
+            // right-angle line rounded off: it leaves and arrives square to
+            // the faces the right-angle one would, and bends towards where
+            // that one turns, so two shapes standing in line still join by
+            // one straight run. A line bent by hand curves through its bend.
+            // An attribute's line leaves its owner's shared point halfway
+            // between square to the side and straight at the attribute, so
+            // lines sharing the point still part there, and comes in
+            // pointing at it.
+            if (owned_attribute) {
+                const auto chord = end - start;
+                const auto length = std::hypot(chord.x(), chord.y());
+                if (length > 0.5) {
+                    const auto toward = chord / length;
+                    auto leave = square_out(target, start) + toward;
+                    const auto lean = std::hypot(leave.x(), leave.y());
+                    leave = lean > 0.01 ? leave / lean : toward;
+                    path_ = QPainterPath(start);
+                    path_.cubicTo(start + leave * (length / 2), end - toward * (length / 3), end);
+                    bend = path_.pointAtPercent(0.5);
+                    midpoint_ = bend;
+                }
+            } else if (descriptor.offset == 0) {
+                auto* head = head_node();
+                auto* tail = tail_node();
+                const auto from = descriptor.owner_anchor
+                    ? head->boundary_at(*descriptor.owner_anchor)
+                    : facing_point(head, tail->scenePos() + tail->body_rect().center());
+                const auto to = descriptor.child_anchor
+                    ? tail->boundary_at(*descriptor.child_anchor)
+                    : facing_point(tail, head->scenePos() + head->body_rect().center());
+                start = from;
+                end = to;
+                owner_join_ = start;
+                child_join_ = end;
+                path_ = QPainterPath(start);
+                approach = round_off(path_, elbow_route(), end);
+                bend = path_.pointAtPercent(0.5);
+            } else {
+                // The one curve that passes through the bend, where its grip is.
+                const auto pull = bend * 2 - (start + end) / 2;
+                path_ = QPainterPath(start);
+                path_.quadTo(pull, end);
+                approach = pull;
+            }
         }
         // A routed line is shaped by its corners, so it shows a grip on each
         // instead of the single bend grip a plain one carries.
@@ -2746,7 +2937,20 @@ struct DiagramView::Impl {
     void refresh_incident(NodeItem* item) {
         if (synchronizing) return;
         const auto found = incident.find(item->ref);
-        if (found != incident.end()) for (auto* edge : found->second) edge->refresh();
+        if (found == incident.end()) return;
+        for (auto* edge : found->second) edge->refresh();
+        // At right angles the attributes on one side of an owner cross at one
+        // level, set by the nearest of them, so moving one can move the level
+        // its neighbours' lines cross at. An owner being carried with it
+        // redraws them all itself.
+        if (style != LineStyle::Elbow) return;
+        for (auto* edge : found->second) {
+            if (!edge->from_owner() || edge->source != item || drag_start.contains(edge->target->ref)) continue;
+            const auto owned = incident.find(edge->target->ref);
+            if (owned == incident.end()) continue;
+            for (auto* other : owned->second)
+                if (other != edge && other->from_owner()) other->refresh();
+        }
     }
     // Elements line up with their neighbours as they are dragged, the way a
     // page layout does: an edge or a middle that comes within a few pixels of
