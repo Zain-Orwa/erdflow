@@ -1,0 +1,112 @@
+name: "Feature Request"
+description: "Propose a new capability or a meaningful enhancement to ERDFlow."
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for helping shape ERDFlow!
+
+        ERDFlow's principle is **"Draw once. Progressively refine."** The most useful
+        requests start with the **problem**: what you are trying to do, and where
+        ERDFlow gets in the way. Please explain the problem first, rather than only
+        prescribing a particular button or screen.
+
+        Before submitting, search existing issues for similar requests. Small
+        wording or layout suggestions fit the **UI / UX Improvement** form better.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Feature Area
+      description: Which part of ERDFlow does this belong to?
+      options:
+        - Conceptual Design
+        - Relational Schema
+        - Conversion / synchronization
+        - Import / Export
+        - Examples / Templates
+        - Project / persistence (`.erdx`)
+        - Workspace / UI
+        - Accessibility
+        - Performance
+        - Future workspace / architecture
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / Use Case
+      description: What are you trying to do, and what makes it hard or impossible today?
+      placeholder: "When I model an M:M relationship with its own attributes, I have to..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed Behavior
+      description: How should ERDFlow behave? Describe the outcome rather than a specific implementation.
+    validations:
+      required: true
+
+  - type: textarea
+    id: fit
+    attributes:
+      label: Why This Belongs in ERDFlow
+      description: |
+        How does this fit a desktop-first visual database design tool that keeps the
+        Conceptual Design and the Relational Schema connected?
+    validations:
+      required: true
+
+  - type: textarea
+    id: workflow
+    attributes:
+      label: Example Workflow
+      description: Walk through how someone would use it, step by step.
+      placeholder: |
+        1. In Conceptual Design, I draw...
+        2. I convert to Schema...
+        3. I expect to see...
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: Other approaches or workarounds you have tried or considered, and why they fall short.
+    validations:
+      required: true
+
+  - type: textarea
+    id: mockups
+    attributes:
+      label: Screenshots or Mockups
+      description: Optional sketches, mockups, or screenshots. Do not include private database data.
+    validations:
+      required: false
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional Context
+      description: Links, references, or anything else that helps.
+    validations:
+      required: false
+
+  - type: dropdown
+    id: contribute
+    attributes:
+      label: Willingness to Contribute
+      description: Would you like to help build this?
+      options:
+        - "Yes, I would like to implement it (I will open a Contribution Proposal first for larger changes)"
+        - "I could help with testing or feedback"
+        - "No, I am only suggesting it"
+    validations:
+      required: false

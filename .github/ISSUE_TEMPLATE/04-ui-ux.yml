@@ -1,0 +1,101 @@
+name: "UI / UX Improvement"
+description: "Suggest a change that makes ERDFlow clearer, easier, or more comfortable to use."
+title: "[UI/UX]: "
+labels: ["ui/ux"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for helping make ERDFlow easier to use!
+
+        Please start from a **specific usability problem**: what you were trying to
+        do, and what got in the way. Focused improvements are much easier to agree
+        on than broad redesigns. If you have a larger idea, describe the problem
+        here first, or use the **Feature Request** form for a new capability.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Workspace / Area
+      options:
+        - Home
+        - Conceptual Design
+        - Relational Schema
+        - Explorer
+        - Properties
+        - Ribbon (File / Home / Settings)
+        - Floating view controls (Full, Fit, Pan, Zoom, Panels)
+        - Search
+        - Themes / appearance
+        - Dialogs (Import / Export, Save / Load)
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: current
+    attributes:
+      label: Current Behavior
+      description: What does ERDFlow do today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Usability Problem
+      description: What makes this hard, slow, confusing, or error-prone?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed Improvement
+      description: What would you change?
+    validations:
+      required: true
+
+  - type: textarea
+    id: benefit
+    attributes:
+      label: Why It Improves the Workflow
+      description: Who benefits, and how does their work get easier?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: operating-system
+    attributes:
+      label: Operating System
+      options:
+        - macOS (Apple Silicon)
+        - macOS (Intel)
+        - Windows
+        - Linux
+        - Other
+    validations:
+      required: false
+
+  - type: textarea
+    id: mockups
+    attributes:
+      label: Screenshot or Mockup
+      description: Optional, but often helpful. Do not include private database data.
+    validations:
+      required: false
+
+  - type: textarea
+    id: accessibility
+    attributes:
+      label: Accessibility Considerations
+      description: Keyboard use, contrast, text size, screen readers, colour-only meaning, and so on.
+    validations:
+      required: false
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional Context
+    validations:
+      required: false

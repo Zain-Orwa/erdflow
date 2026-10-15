@@ -1,0 +1,176 @@
+name: "Performance Issue"
+description: "Report something in ERDFlow that is slow, stutters, freezes, or uses too much memory."
+title: "[Performance]: "
+labels: ["performance"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for helping keep ERDFlow fast!
+
+        Diagrams can grow to many entities, attributes, relationships and Schema
+        tables, so the size of the project and the exact operation matter a lot.
+        Measurements are very welcome, but a clear description is useful too.
+
+        **Do not upload confidential database designs or project information.**
+        If a sample `.erdx` file is needed, share one you are free to make public,
+        or describe its size and shape instead.
+
+  - type: dropdown
+    id: workspace
+    attributes:
+      label: Affected Workspace
+      options:
+        - Conceptual Design
+        - Relational Schema
+        - Conversion (Conceptual ↔ Schema)
+        - Home
+        - Import / Export
+        - Save / Load
+        - Startup
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: operation
+    attributes:
+      label: Slow Operation
+      description: What exactly is slow?
+      placeholder: "Example: dragging a table on the Relational Schema"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: operating-system
+    attributes:
+      label: Operating System
+      options:
+        - macOS (Apple Silicon)
+        - macOS (Intel)
+        - Windows
+        - Linux
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: ERDFlow Version
+      description: Version or commit hash, if known (for a source build, `git rev-parse --short HEAD`).
+      placeholder: "Example: commit abc1234"
+    validations:
+      required: false
+
+  - type: dropdown
+    id: build-type
+    attributes:
+      label: Build Type
+      description: Debug builds are much slower than Release builds, so this matters.
+      options:
+        - Release build
+        - Debug build
+        - Not sure
+    validations:
+      required: true
+
+  - type: input
+    id: entities
+    attributes:
+      label: Approximate Entity / Table Count
+      placeholder: "Example: 40 entities, 55 tables"
+    validations:
+      required: false
+
+  - type: input
+    id: attributes
+    attributes:
+      label: Approximate Attribute / Column Count
+      placeholder: "Example: about 300 columns"
+    validations:
+      required: false
+
+  - type: input
+    id: relationships
+    attributes:
+      label: Approximate Relationship / Foreign Key Count
+      description: Fill in what you know.
+      placeholder: "Example: 25 relationships, 30 foreign keys"
+    validations:
+      required: false
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to Reproduce
+      description: Exact steps, starting from opening ERDFlow.
+      placeholder: |
+        1. Open a project with about 50 tables.
+        2. Show the Relational Schema.
+        3. Drag a table downward...
+    validations:
+      required: true
+
+  - type: textarea
+    id: observed
+    attributes:
+      label: Observed Behavior
+      description: What happens? For example lag, a pause, a freeze, or growing memory use.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: What would feel acceptable?
+    validations:
+      required: true
+
+  - type: textarea
+    id: timings
+    attributes:
+      label: Timing Measurements
+      description: Any measurements you have, such as seconds per operation, frame stutter, or memory use.
+    validations:
+      required: false
+
+  - type: dropdown
+    id: repeatable
+    attributes:
+      label: Is It Repeatable?
+      options:
+        - "Yes, every time"
+        - "Sometimes"
+        - "It happened once"
+    validations:
+      required: true
+
+  - type: textarea
+    id: profiling
+    attributes:
+      label: Logs or Profiling Information
+      description: Profiler output, logs, or system monitor readings, if you have them.
+    validations:
+      required: false
+
+  - type: textarea
+    id: sample
+    attributes:
+      label: Sample Project
+      description: |
+        Attach or link a sample `.erdx` file only if it is safe to share publicly.
+        Never attach confidential database designs.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: confirmation
+    attributes:
+      label: Submission Checklist
+      options:
+        - label: I searched for existing reports of this issue.
+          required: true
+        - label: I did not include confidential database or project information.
+          required: true
