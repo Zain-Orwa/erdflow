@@ -37,6 +37,27 @@ the hashes match the `.sha256` files published there.
   `type2-runtime` at tag `20251108`
   (<https://github.com/AppImage/type2-runtime/blob/20251108/LICENSE>).
 
+## Beside these, installed as they are
+
+Unedited copies, installed into the package as files of their own rather than
+merged into `THIRD-PARTY-LICENSES.txt` (2026-10-15):
+
+- `../windows/Inno-Setup-6.7.1-license.txt`: `license.txt` of Inno Setup at tag
+  `is-6_7_1` (<https://github.com/jrsoftware/issrc/blob/is-6_7_1/license.txt>);
+  it covers the uninstaller installed beside `erdflow.exe`.
+- `../appimage-runtime/`, the components the AppImage runtime `20251108` is
+  statically linked with (its `scripts/common/install-dependencies.sh` and the
+  versions embedded in the runtime binary), and linuxdeploy-plugin-qt:
+  - `libfuse-3.15.0-LGPL2.txt`: `LGPL2.txt` of libfuse at tag `fuse-3.15.0`;
+  - `squashfuse-0.5.2-LICENSE.txt`: `LICENSE` of squashfuse at tag `0.5.2`;
+  - `zstd-1.5.6-LICENSE.txt`: `LICENSE` of zstd at tag `v1.5.6`;
+  - `zlib-1.3.1-LICENSE.txt`: `LICENSE` of zlib at tag `v1.3.1`;
+  - `mimalloc-2.1.7-LICENSE.txt`: `LICENSE` of mimalloc at tag `v2.1.7` (the
+    runtime takes mimalloc 2 from Alpine Linux 3.21; the terms are the same);
+  - `musl-1.2.5-COPYRIGHT.txt`: `COPYRIGHT` of musl at tag `v1.2.5`;
+  - `linuxdeploy-plugin-qt-LICENSE.txt`: `LICENSE.txt` of linuxdeploy-plugin-qt
+    at tag `1-alpha-20250213-1`, for the start-up hook it adds.
+
 ## When Qt is updated
 
 A different Qt version can bring different components and licences. Download

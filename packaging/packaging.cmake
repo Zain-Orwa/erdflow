@@ -27,11 +27,17 @@ set(ERDFLOW_BUNDLE_IDENTIFIER "app.erdflow.ERDFlow" CACHE STRING
 
 # Where the source code of the Qt libraries in the packages is offered. Until
 # it is set, QT-LGPL-INFORMATION.md in every package says the package must not
-# be distributed (docs/QT_LGPL_COMPLIANCE.md, section 4).
+# be distributed (docs/QT_LGPL_COMPLIANCE.md, section 4). @PROJECT_VERSION@ in
+# it stands for the version, so it can name the release it is published with.
 set(ERDFLOW_QT_SOURCE_OFFER "" CACHE STRING
     "Text for QT-LGPL-INFORMATION.md saying where the Qt source code is offered")
 option(ERDFLOW_ALLOW_INCOMPLETE_NOTICES
     "Package even when a component's licence is not established; for local test builds only" OFF)
+# Whether the release owner has signed these packages off for distribution
+# (docs/RELEASE_0.1.0.md). Off, every package says it is a test candidate; the
+# notices refuse it while a release blocker remains (2026-10-15).
+option(ERDFLOW_REDISTRIBUTION_APPROVED
+    "The release owner has approved these packages for distribution" OFF)
 
 # The copyright line comes from LICENSE, so there is one source for it.
 file(STRINGS "${CMAKE_SOURCE_DIR}/LICENSE" erdflow_copyright_lines REGEX "^Copyright")
@@ -70,7 +76,7 @@ endif()
 set(ERDFLOW_QT_VERSION "${Qt6_VERSION}")
 set(ERDFLOW_QT_VERSION_MAJOR "${Qt6_VERSION_MAJOR}")
 if(ERDFLOW_QT_SOURCE_OFFER)
-    set(ERDFLOW_QT_SOURCE_TEXT "${ERDFLOW_QT_SOURCE_OFFER}")
+    string(CONFIGURE "${ERDFLOW_QT_SOURCE_OFFER}" ERDFLOW_QT_SOURCE_TEXT @ONLY)
 else()
     set(ERDFLOW_QT_SOURCE_TEXT
         "**Not yet provided. This package is a test build and must not be distributed.**\nBefore ERDFlow is distributed, the complete source code of the Qt libraries\nin it will be made available from a location under ERDFlow's control, named\nhere.")
@@ -100,8 +106,10 @@ if(APPLE)
 elseif(WIN32)
     set(ERDFLOW_NOTICES_DIR "licenses")
     set(ERDFLOW_NOTICES_APPLICATION "erdflow.exe")
+    # The Visual C++ runtime's terms and the Inno Setup notices are in
+    # THIRD-PARTY-NOTICES.md; the release owner confirms the entitlement when
+    # approving distribution (docs/RELEASE_0.1.0.md).
     string(APPEND ERDFLOW_NOTICES_ARGUMENTS
-        " --release-blocker \"Verify the exact Visual C++ runtime versions, redistribution entitlement and terms, and the final Inno Setup installer components.\""
         " --declared \"msvcp140*.dll,vcruntime140*.dll,concrt140.dll,vccorlib140.dll|Microsoft Visual C++ runtime|-|Terms: see THIRD-PARTY-NOTICES.md.\"")
 else()
     set(ERDFLOW_NOTICES_DIR "usr/${CMAKE_INSTALL_DATADIR}/doc/erdflow")
@@ -109,14 +117,19 @@ else()
     # ICU comes with Qt for Linux. The pattern names the version whose licence
     # text is in notices/licenses, so a Qt with another ICU stops the build
     # until that text is checked.
+    # The AppImage runtime's own components have their notices in
+    # notices/appimage-runtime, and their source is published with each release
+    # (THIRD-PARTY-NOTICES.md); linuxdeploy's additions were audited 2026-10-15.
     string(APPEND ERDFLOW_NOTICES_ARGUMENTS
-        " --release-blocker \"AppImage runtime static dependencies, source/relinking obligations, AppRun and final linuxdeploy-added files still require audit.\""
         " --declared \"libicu*.so.73*|ICU 73.2, from the Qt binary package for Linux|LicenseRef-ICU-73.2|\""
         " --component \"AppImage runtime (AppImage type2-runtime 20251108)|LicenseRef-AppImage-type2-runtime|Starts the AppImage. See THIRD-PARTY-NOTICES.md for the libraries it contains.\""
         " --debian-system-libraries")
 endif()
 if(ERDFLOW_ALLOW_INCOMPLETE_NOTICES)
     string(APPEND ERDFLOW_NOTICES_ARGUMENTS " --allow-incomplete")
+endif()
+if(ERDFLOW_REDISTRIBUTION_APPROVED)
+    string(APPEND ERDFLOW_NOTICES_ARGUMENTS " --redistribution-approved")
 endif()
 configure_file("${CMAKE_CURRENT_LIST_DIR}/notices/write-notices.cmake.in"
                "${CMAKE_BINARY_DIR}/packaging/write-notices.cmake" @ONLY)
@@ -157,6 +170,9 @@ elseif(WIN32)
 
     install(TARGETS erdflow RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
     install(FILES ${erdflow_notices} DESTINATION licenses)
+    # The uninstaller Inno Setup puts beside ERDFlow is Inno Setup's own code.
+    install(FILES "${CMAKE_CURRENT_LIST_DIR}/notices/windows/Inno-Setup-6.7.1-license.txt"
+            DESTINATION licenses)
 
     # The Visual C++ runtime goes beside erdflow.exe, so a per-user install
     # needs no administrator rights. The Universal CRT is part of Windows 10
@@ -181,6 +197,10 @@ else()
     install(FILES "${CMAKE_CURRENT_LIST_DIR}/icons/erdflow.png"
             DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/512x512/apps)
     install(FILES ${erdflow_notices} DESTINATION ${CMAKE_INSTALL_DATADIR}/doc/erdflow)
+    # The licences of what the AppImage runtime is built from, and of the
+    # start-up hook linuxdeploy-plugin-qt adds (THIRD-PARTY-NOTICES.md).
+    install(DIRECTORY "${CMAKE_CURRENT_LIST_DIR}/notices/appimage-runtime"
+            DESTINATION ${CMAKE_INSTALL_DATADIR}/doc/erdflow)
 endif()
 
 # macOS and Windows: Qt's deployment script runs macdeployqt or windeployqt on

@@ -41,50 +41,61 @@ of those icons derive from Feather, under the MIT licence; see
 ## Windows package: Microsoft Visual C++ runtime
 
 The Windows package contains Microsoft Visual C++ runtime libraries
-(`msvcp140*.dll`, `vcruntime140*.dll` and related files) beside
-`erdflow.exe`. They are copyright Microsoft Corporation and are redistributed
-subject to the Microsoft Software License Terms for the Visual Studio edition
-used to build ERDFlow. Redistribution requires a valid licence and the files
-must be eligible unmodified redistributables. Exact versions, the applicable
-terms and the distributor's entitlement still require verification on Windows;
-this is a release blocker. They are not covered by ERDFlow's MIT licence.
-See <https://learn.microsoft.com/en-us/visualstudio/releases/2022/redistribution>.
+(`msvcp140*.dll`, `vcruntime140*.dll`, `concrt140.dll`) beside `erdflow.exe`,
+from the Microsoft Visual C++ 2015-2022 Redistributable that came with the
+Visual Studio 2022 used to build ERDFlow. They are copyright Microsoft
+Corporation, unmodified, and redistributed as Distributable Code under the
+Microsoft Software License Terms for Visual Studio 2022 (see
+<https://learn.microsoft.com/en-us/visualstudio/releases/2022/redistribution>).
+They are not covered by ERDFlow's MIT licence. Their exact versions are listed
+in `THIRD-PARTY-LICENSES.txt` and in the package's inventory.
 
-The installer and uninstaller use Inno Setup 6.7.1 by Jordan Russell and
-Martijn Laan. Preserve its embedded copyright notices and website addresses.
-The version-specific terms are at
-<https://github.com/jrsoftware/issrc/blob/is-6_7_1/license.txt>.
-The final installer engine and embedded compression/runtime components still
-require an inventory and applicable notices review; staging erdflow.exe alone
-does not cover them.
+The installer and the uninstaller beside `erdflow.exe` (`unins000.exe`) are
+made with Inno Setup 6.7.1, copyright Jordan Russell and Martijn Laan, under
+the Inno Setup License (`Inno-Setup-6.7.1-license.txt`). Their copyright
+notices and web site addresses are kept as Inno Setup places them.
 
 ## Linux package
 
 **ICU.** The Linux package contains the ICU libraries that come with Qt for
 Linux, under the Unicode licence; its text is in `THIRD-PARTY-LICENSES.txt`.
 
-**Operating-system libraries.** Some libraries are copied from the Ubuntu
-system the package was built on. Each is listed in `THIRD-PARTY-LICENSES.txt`
-with the Ubuntu package it came from and that package's copyright file.
+**Operating-system libraries.** Some libraries are copied, unmodified, from
+the Ubuntu 24.04 system the package was built on. Each is listed in
+`THIRD-PARTY-LICENSES.txt` with the Ubuntu package and version it came from
+and that package's copyright file. Some of them (GLib, libgcrypt and
+libsystemd among them) are under the GNU Lesser General Public License version
+2.1; the source packages of all of them, at the exact versions in this
+AppImage, are published with each ERDFlow release on its GitHub Releases page.
 
 **AppImage runtime.** An AppImage begins with a small program, the AppImage
 runtime, that mounts and starts the application inside it. ERDFlow uses the
 `type2-runtime` from the AppImage project, release `20251108`, under the MIT
-licence (text in `THIRD-PARTY-LICENSES.txt`). According to its build files the
-runtime is statically linked with libfuse 3.15.0 (with a patch from the
-AppImage project), squashfuse 0.5.2, zstd, zlib, mimalloc and the musl C
-library. Its source code and build files are at
-<https://github.com/AppImage/type2-runtime/tree/20251108>. The notices for the
-libraries inside the runtime are not yet complete. In particular, statically
-linked LGPL code needs its own source/relinking review; the runtime's MIT
-licence does not replace its dependencies' licences. This blocks release.
+licence (text in `THIRD-PARTY-LICENSES.txt`). It is statically linked with:
 
-AppRun, hooks and other files added by linuxdeploy must also be audited after
-the final AppImage is extracted. The native-binary scanner cannot identify
-licensing of shell scripts or code statically embedded in an outer runtime.
+| Component | Version | Licence | Text in `appimage-runtime/` |
+| --- | --- | --- | --- |
+| libfuse, with the AppImage project's patch to `mount.c` | 3.15.0 | LGPL-2.1 (the library) | `libfuse-3.15.0-LGPL2.txt` |
+| squashfuse | 0.5.2 | BSD-2-Clause | `squashfuse-0.5.2-LICENSE.txt` |
+| zstd | 1.5.6 | BSD-3-Clause | `zstd-1.5.6-LICENSE.txt` |
+| zlib | 1.3.1 | Zlib | `zlib-1.3.1-LICENSE.txt` |
+| mimalloc | 2, as packaged by Alpine Linux 3.21 | MIT | `mimalloc-2.1.7-LICENSE.txt` |
+| musl C library | 1.2.5 | MIT | `musl-1.2.5-COPYRIGHT.txt` |
+
+The complete source of the runtime, of libfuse 3.15.0 with the patch, and of
+squashfuse 0.5.2, from which the runtime can be rebuilt and relinked with a
+modified libfuse, is published with each ERDFlow release on its GitHub
+Releases page. The runtime's own source and build files are also at
+<https://github.com/AppImage/type2-runtime/tree/20251108>.
+
+**Added by linuxdeploy.** `AppRun` starts `usr/bin/erdflow`, and
+`apprun-hooks/linuxdeploy-plugin-qt-hook.sh` is a start-up script from
+linuxdeploy-plugin-qt, under the MIT licence
+(`appimage-runtime/linuxdeploy-plugin-qt-LICENSE.txt`). `usr/bin/qt.conf`
+tells Qt where its plugins are. Nothing else is added.
 
 ## Status
 
-ERDFlow packages built so far are unsigned test builds. They are not to be
-distributed until the release checks in the project's
-`docs/QT_LGPL_COMPLIANCE.md` are complete.
+Unless `THIRD-PARTY-LICENSES.txt` says this package was approved for
+distribution by ERDFlow's release owner, it is a test build and is not to be
+distributed (`docs/QT_LGPL_COMPLIANCE.md` in ERDFlow's source).
