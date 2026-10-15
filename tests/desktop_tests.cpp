@@ -5084,10 +5084,29 @@ namespace
             const double scale = image.width() / source.width();
             const auto shapes = view->line_shapes();
             const auto drawn = view->line_colours();
+            // How near a point comes to a line's path.
+            const auto distance_to = [](const QPointF &p, const auto &path)
+            {
+                double nearest = std::numeric_limits<double>::max();
+                for (std::size_t k = 1; k < static_cast<std::size_t>(path.size()); ++k)
+                {
+                    const QPointF a = path[k - 1], ab = path[k] - path[k - 1];
+                    const double along = QPointF::dotProduct(ab, ab);
+                    const double t = along > 0 ? std::clamp(QPointF::dotProduct(p - a, ab) / along, 0.0, 1.0) : 0.0;
+                    nearest = std::min(nearest, QLineF(p, a + ab * t).length());
+                }
+                return nearest;
+            };
             int found = 0, looked = 0;
             for (std::size_t i = 0; i < shapes.size(); ++i)
             {
-                // The middle of the line's longest run, where it is drawn whole.
+                // The middle of the line's longest run, where it is drawn whole --
+                // unless a line of another colour shares that stretch of channel
+                // and is drawn over it there, as the routes laid out in Windows'
+                // lettering have one do (2026-10-15). Then the nearest point
+                // along its runs that no line of another colour passes over (a
+                // line is at most 3.4 wide and lanes are 10 apart), kept clear of
+                // each run's ends. A line with no such point is not seen.
                 std::size_t longest = 1;
                 for (std::size_t k = 1; k < shapes[i].size(); ++k)
                     if (QLineF(shapes[i][k - 1], shapes[i][k]).length() >
@@ -5096,7 +5115,32 @@ namespace
                 if (shapes[i].size() < 2 || QLineF(shapes[i][longest - 1], shapes[i][longest]).length() < 40)
                     continue;
                 ++looked;
-                const auto middle = (shapes[i][longest - 1] + shapes[i][longest]) / 2;
+                const auto alone = [&](const QPointF &p)
+                {
+                    for (std::size_t j = 0; j < shapes.size(); ++j)
+                        if (j != i && colour_distance(drawn[j], drawn[i]) >= 4.0 && distance_to(p, shapes[j]) < 5.0)
+                            return false;
+                    return true;
+                };
+                std::optional<QPointF> sample;
+                const auto look_along = [&](std::size_t k)
+                {
+                    const QLineF run(shapes[i][k - 1], shapes[i][k]);
+                    if (run.length() < 40)
+                        return;
+                    const double reach = std::max(0.0, run.length() / 2 - 24);
+                    for (double off = 0; off <= reach && !sample; off += 4)
+                        for (const double side : {1.0, -1.0})
+                            if (const auto p = run.pointAt(0.5 + side * off / run.length()); !sample && alone(p))
+                                sample = p;
+                };
+                look_along(longest);
+                for (std::size_t k = 1; k < shapes[i].size() && !sample; ++k)
+                    if (k != longest)
+                        look_along(k);
+                if (!sample)
+                    continue;
+                const auto middle = *sample;
                 const QPoint at(static_cast<int>((middle.x() - source.left()) * scale),
                                 static_cast<int>((middle.y() - source.top()) * scale));
                 bool seen = false;
