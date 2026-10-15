@@ -346,12 +346,26 @@ namespace erdflow::desktop
             Table,
             Connect,
             // The floating controls' Pan (Zain, 2026-10-08), as the diagram's.
-            Pan
+            Pan,
+            // Text put on the schema where it is pressed (Zain, 2026-10-15).
+            Text
         };
         SchemaTool schema_tool_ = SchemaTool::Select;
         bool schema_tool_locked_ = false;
         QAction *schema_select_ = nullptr;
         QAction *schema_table_ = nullptr;
+        // Text and Insert in the schema's header (Zain, 2026-10-15), after
+        // Connect; and the header's tools that only a schema drawn by hand
+        // has, put away for a schema worked out from a diagram.
+        QAction *schema_text_ = nullptr;
+        QToolButton *schema_insert_button_ = nullptr;
+        std::vector<QWidget *> schema_drawn_only_;
+        // Whether what Insert puts down goes on the schema: it does while the
+        // schema is in front.
+        [[nodiscard]] bool inserting_on_schema() const;
+        // Something put on the schema from Insert, where the pointer last was
+        // over it, stepping past anything already standing exactly there.
+        [[nodiscard]] domain::Rect schema_spot(double width, double height) const;
         void choose_schema_tool(SchemaTool tool, bool locked);
         // A press elsewhere in the window puts the schema's tool down, as one
         // puts the diagram's down.

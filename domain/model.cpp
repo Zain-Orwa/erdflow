@@ -381,7 +381,8 @@ std::vector<Issue> validate(const Project& project) {
     };
     const auto elements = project.entities.size() + project.attributes.size()
         + project.relationships.size() + project.specializations.size()
-        + project.pictures.size() + project.notes.size();
+        + project.pictures.size() + project.notes.size()
+        + project.schema_pictures.size() + project.schema_notes.size();
     std::size_t participants = 0;
     for (const auto& [id, relationship] : project.relationships) {
         (void)id;
@@ -713,6 +714,42 @@ std::vector<Issue> validate(const Project& project) {
         identity(id.value, ref);
         if (note.id != id) error("identity.key_mismatch", "The note key and identifier differ.", ref);
         text_fields(note.name, note.description, ref, false);
+    }
+    // What is put on the schema is held to what the diagram's own is: a
+    // picture holds an image, a note is free text or a symbol, each has one
+    // identity in the whole project and one place on the schema.
+    for (const auto& [id, picture] : project.schema_pictures) {
+        const ElementRef ref = id;
+        if (!project.schema_figures.contains(ref))
+            error("schema.figure.missing", "A picture on the schema has no place on it.", ref);
+        identity(id.value, ref);
+        if (picture.id != id) error("identity.key_mismatch", "The picture key and identifier differ.", ref);
+        text_fields(picture.name, picture.description, ref, false);
+        if (picture.image.empty() || !looks_like_image(picture.image))
+            error("picture.image.invalid", "A picture must hold a PNG or JPEG image.", ref);
+        else if (picture.image.size() > max_image_bytes)
+            error("picture.image.limit", "A picture's image must fit in 2 MiB.", ref);
+    }
+    for (const auto& [id, note] : project.schema_notes) {
+        const ElementRef ref = id;
+        if (note.plain == note.free_text)
+            error("note.presentation.invalid", "A note on the schema must be free text or a symbol.", ref);
+        if (!project.schema_figures.contains(ref))
+            error("schema.figure.missing", "Text or a symbol on the schema has no place on it.", ref);
+        identity(id.value, ref);
+        if (note.id != id) error("identity.key_mismatch", "The note key and identifier differ.", ref);
+        text_fields(note.name, note.description, ref, false);
+    }
+    for (const auto& [ref, rect] : project.schema_figures) {
+        const auto* picture = std::get_if<PictureId>(&ref);
+        const auto* note = std::get_if<NoteId>(&ref);
+        if (!(picture && project.schema_pictures.contains(*picture)) && !(note && project.schema_notes.contains(*note)))
+            error("schema.figure.reference.missing", "A place on the schema refers to nothing put there.", ref);
+        if (!std::isfinite(rect.x) || !std::isfinite(rect.y) || !std::isfinite(rect.width) || !std::isfinite(rect.height)
+            || std::abs(rect.x) > max_coordinate || std::abs(rect.y) > max_coordinate
+            || rect.width <= 0 || rect.height <= 0 || rect.width > max_coordinate || rect.height > max_coordinate
+            || std::abs(rect.x + rect.width) > max_coordinate || std::abs(rect.y + rect.height) > max_coordinate)
+            error("schema.figure.bounds.invalid", "What is put on the schema must be finite, positive, and within the supported canvas.", ref);
     }
     if (project.connectors.size() > max_elements) error("connector.limit", "The connector shapes exceed the element limit.");
     for (const auto& [ref, connector] : project.connectors) {

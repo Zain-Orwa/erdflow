@@ -67,7 +67,7 @@ namespace {
 // the order the table lists them in; version 33 keeps the order somebody gave
 // the columns of a table worked out from the diagram.
 // Version 35 distinguishes borderless free text from card notes and symbols.
-constexpr int current_format_version = 35;
+constexpr int current_format_version = 36;
 
 // A titled card note, written by an older ERDFlow, as the free text it is now
 // read as: the title on the first line and the text beneath. Kept within a
@@ -977,6 +977,24 @@ QByteArray ErdxProjectStore::encode(const Project& project) {
     QJsonArray lettering;
     for (const auto& [ref, base] : project.lettering)
         lettering.append(QJsonObject{{"element", reference(ref)}, {"width", base.width}, {"height", base.height}});
+    // What is put on the schema (version 36): each with the place it stands
+    // in on the schema, since it has no other.
+    QJsonArray schema_pictures, schema_notes;
+    const auto placed_on_schema = [&](const ElementRef& ref, QJsonObject object) {
+        const auto& at = project.schema_figures.at(ref);
+        object.insert("x", at.x);
+        object.insert("y", at.y);
+        object.insert("width", at.width);
+        object.insert("height", at.height);
+        return object;
+    };
+    for (const auto& [id, picture] : project.schema_pictures)
+        schema_pictures.append(placed_on_schema(ElementRef{id}, QJsonObject{{"id", uuid_text(id.value)},
+            {"name", text(picture.name)}, {"description", text(picture.description)}, {"image", image_text(picture.image)}}));
+    for (const auto& [id, note] : project.schema_notes)
+        schema_notes.append(placed_on_schema(ElementRef{id}, QJsonObject{{"id", uuid_text(id.value)},
+            {"name", text(note.name)}, {"description", text(note.description)}, {"plain", note.plain},
+            {"free_text", note.free_text}}));
     QJsonArray pictures, notes;
     for (const auto& [id, picture] : project.pictures)
         pictures.append(QJsonObject{{"id", uuid_text(id.value)}, {"name", text(picture.name)},
@@ -1015,6 +1033,7 @@ QByteArray ErdxProjectStore::encode(const Project& project) {
         {"decisions", encode_decisions(project.decisions)},
         {"schema", encode_schema(project.schema)},
         {"schema_layout", encode_layout(project.schema_layout)},
+        {"schema_figures", QJsonObject{{"pictures", schema_pictures}, {"notes", schema_notes}}},
         {"background", QJsonObject{{"style", background_name(project.background.style)},
                                    {"strength", project.background.strength},
                                    {"image", image_text(project.background.image)}}}}}}).toJson(QJsonDocument::Indented);
@@ -1112,6 +1131,10 @@ application::LoadResult ErdxProjectStore::decode(const QByteArray& input) {
         // no such section, which reads correctly as nothing having been
         // resized that way, every name drawn at its ordinary size.
         const bool lettered = number_version >= 29;
+        // Version 36 adds the text, symbols and pictures put on the schema. A
+        // file written before it has none, which reads correctly as a schema
+        // with nothing put on it.
+        const bool schema_figured = number_version >= 36;
         // Version 21 records where the schema differs from the diagram. A file
         // written before it simply has no such section, which reads correctly
         // as the two agreeing about everything.
@@ -1134,7 +1157,9 @@ application::LoadResult ErdxProjectStore::decode(const QByteArray& input) {
         // such number, and is numbered as it opens in the order its
         // attributes were listed in then: the order of their identities.
         const bool creation_ordered = number_version >= 34;
-        const auto data = lettered
+        const auto data = schema_figured
+            ? object(root["project"], {"id", "name", "description", "entities", "attributes", "relationships", "layout", "connectors", "specializations", "colours", "pictures", "notes", "comments", "transparency", "lettering", "decisions", "schema", "schema_layout", "schema_figures", "background"})
+            : lettered
             ? object(root["project"], {"id", "name", "description", "entities", "attributes", "relationships", "layout", "connectors", "specializations", "colours", "pictures", "notes", "comments", "transparency", "lettering", "decisions", "schema", "schema_layout", "background"})
             : described
             ? object(root["project"], {"id", "name", "description", "entities", "attributes", "relationships", "layout", "connectors", "specializations", "colours", "pictures", "notes", "comments", "transparency", "decisions", "schema", "schema_layout", "background"})
@@ -1402,6 +1427,35 @@ application::LoadResult ErdxProjectStore::decode(const QByteArray& input) {
                     note.free_text = true;
                 }
                 if (!project.notes.emplace(note.id, std::move(note)).second) invalid("Duplicate note identifier.");
+            }
+        }
+        if (schema_figured) {
+            const auto place = [&](const QJsonObject& o) {
+                return Rect{number(o["x"]), number(o["y"]), number(o["width"]), number(o["height"])};
+            };
+            // One field holding both lists, so the project keeps within the
+            // number of fields a document's objects may have.
+            const auto put_there = object(data["schema_figures"], {"pictures", "notes"});
+            for (const auto& value : array(put_there["pictures"])) {
+                const auto o = object(value, {"id", "name", "description", "image", "x", "y", "width", "height"});
+                Picture picture{PictureId{parse_id(o["id"])}, string(o["name"]),
+                                string(o["description"], max_description_bytes), image_bytes(o["image"])};
+                const ElementRef ref{picture.id};
+                if (!project.schema_pictures.emplace(picture.id, std::move(picture)).second
+                    || !project.schema_figures.emplace(ref, place(o)).second)
+                    invalid("Duplicate picture identifier on the schema.");
+            }
+            for (const auto& value : array(put_there["notes"])) {
+                const auto o = object(value, {"id", "name", "description", "plain", "free_text", "x", "y", "width", "height"});
+                Note note{NoteId{parse_id(o["id"])}, string(o["name"]), string(o["description"], max_description_bytes)};
+                if (!o["plain"].isBool()) invalid("A note's plain flag must be true or false.");
+                if (!o["free_text"].isBool()) invalid("A note's free-text flag must be true or false.");
+                note.plain = o["plain"].toBool();
+                note.free_text = o["free_text"].toBool();
+                const ElementRef ref{note.id};
+                if (!project.schema_notes.emplace(note.id, std::move(note)).second
+                    || !project.schema_figures.emplace(ref, place(o)).second)
+                    invalid("Duplicate note identifier on the schema.");
             }
         }
         if (commented) {

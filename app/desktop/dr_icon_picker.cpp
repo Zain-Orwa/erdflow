@@ -68,8 +68,8 @@ DrIconPicker::DrIconPicker(QWidget* parent) : QDialog(parent) {
     }
     layout->addWidget(grid_host_);
 
-    destination_ = new QLabel(QStringLiteral("Each goes on the diagram as a picture, where the pointer last was. "
-                                             "Drag it beside the entity it illustrates."),
+    destination_ = new QLabel(QStringLiteral("Each goes as a picture on the diagram, or on the schema while it is in "
+                                             "front, where the pointer last was. Drag it beside what it illustrates."),
                               this);
     destination_->setObjectName("drIconDestination");
     destination_->setWordWrap(true);

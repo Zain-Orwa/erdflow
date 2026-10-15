@@ -19,6 +19,7 @@
 #include <QWidget>
 
 class QLineEdit;
+class QPlainTextEdit;
 class QAbstractScrollArea;
 #include <functional>
 #include <map>
@@ -444,6 +445,35 @@ public:
     void set_placing(bool on);
     [[nodiscard]] bool placing() const { return placing_; }
     std::function<void(bool)> placing_changed;
+    // Text in hand (Zain, 2026-10-15): the Text tool in the header, as the
+    // diagram has it. While it is on, a press puts text where it lands and
+    // opens it for writing, and does nothing else a press would do; `wrote`
+    // says one was put down, for the tool to be put down after one use.
+    // Escape puts it down, and says so.
+    void set_writing(bool on);
+    [[nodiscard]] bool writing() const { return writing_; }
+    std::function<void(bool)> writing_changed;
+    std::function<void()> wrote;
+    // What is put on the schema: text, symbols and pictures (2026-10-15), the
+    // schema's own and never the diagram's. One is chosen at a time, apart
+    // from the tables: a press on one chooses it and puts the tables down,
+    // and a press anywhere else puts it down. A chosen picture or symbol is
+    // pulled by its handles, keeping its proportions; any of them is carried
+    // by a press inside it, written in by a double click if it is text, and
+    // taken away by Delete. Every one of those is one edit.
+    [[nodiscard]] std::optional<domain::ElementRef> chosen_figure() const { return chosen_figure_; }
+    void choose_figure(std::optional<domain::ElementRef> figure);
+    // Where something put on the schema from a menu goes: where the pointer
+    // last was over it, or else the middle of what is in view.
+    [[nodiscard]] QPointF put_place() const;
+    // Each thing put on the schema and the box it is drawn in.
+    [[nodiscard]] std::vector<std::pair<domain::ElementRef, QRectF>> figure_boxes() const;
+    // Opens text on the schema for writing, and closes it, writing what was
+    // typed unless it is cancelled. Text closed empty that was only just put
+    // down is taken away again, as on the diagram.
+    void begin_text(domain::NoteId id, bool just_made);
+    void finish_text(bool cancel);
+    [[nodiscard]] bool writing_text() const { return text_editing_.has_value(); }
     // Pan in hand (Zain, 2026-10-08): the floating controls' Pan, as the
     // diagram's. While it is on, a press takes hold of the view rather than
     // of anything drawn on it, and dragging scrolls the schema; nothing is
@@ -870,6 +900,36 @@ private:
     [[nodiscard]] std::optional<domain::LinkSource> link_of(domain::ForeignKeyId key) const;
     bool connecting_ = false;
     bool placing_ = false;
+    bool writing_ = false;
+    // Whether the pointer has been over the schema, so that pointer_ is a
+    // place on it rather than where nothing has been yet.
+    bool pointer_seen_ = false;
+    std::optional<domain::ElementRef> chosen_figure_;
+    // A thing put on the schema being carried (no handle) or pulled by one of
+    // its handles, from the box it started in; drawn where the hand has it
+    // and written once, on letting go.
+    struct FigureDrag {
+        domain::ElementRef ref;
+        domain::Rect start;
+        QPointF grab;
+        int handle = -1;
+        domain::Rect now;
+    };
+    std::optional<FigureDrag> figure_drag_;
+    QPlainTextEdit* text_field_ = nullptr;
+    std::optional<domain::NoteId> text_editing_;
+    std::optional<std::uint64_t> text_made_at_;
+    // A picture's pixels, decoded once: its bytes never change once put down.
+    mutable std::map<domain::PictureId, QPixmap> figure_pixmaps_;
+    [[nodiscard]] QRectF figure_rect(const domain::ElementRef& ref) const;
+    [[nodiscard]] std::optional<domain::ElementRef> figure_at(QPointF point, bool pictures) const;
+    [[nodiscard]] std::vector<QRectF> figure_grips(const domain::ElementRef& ref) const;
+    [[nodiscard]] int figure_grip_at(QPointF point) const;
+    [[nodiscard]] const QPixmap& figure_pixmap(domain::PictureId id) const;
+    [[nodiscard]] QFont prose() const;
+    [[nodiscard]] QSizeF prose_size(const QString& text) const;
+    void paint_figures(QPainter& painter, bool pictures, bool exporting);
+    void place_text(QPointF at);
     bool panning_ = false;
     // Where a drag with Pan in hand was taken hold of, and where the schema
     // was scrolled to then.

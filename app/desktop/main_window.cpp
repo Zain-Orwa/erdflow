@@ -2881,7 +2881,12 @@ namespace erdflow::desktop
         action_glyphs_[schema_select_] = Glyph::Select;
         connect(schema_select_, &QAction::triggered, this, [this]
                 { choose_schema_tool(SchemaTool::Select, false); });
-        auto *schema_select_button = new QToolButton(schema_top_tools_);
+        // Each of the header's tools gives up its word, keeping its icon, where
+        // the header is too narrow for every word (Zain, 2026-10-15, as Arrange
+        // and Appearance have since 2026-10-01): with Text and Insert beside
+        // them the row no longer fits a window 1440 wide otherwise.
+        auto *schema_select_button = new HeaderToolButton(schema_top_tools_);
+        schema_header_words_.push_back(schema_select_button);
         schema_select_button->setObjectName("schemaSelect");
         schema_select_button->setDefaultAction(schema_select_);
         schema_select_button->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
@@ -2898,7 +2903,8 @@ namespace erdflow::desktop
         connect(schema_table_, &QAction::triggered, this,
                 [this](bool on)
                 { choose_schema_tool(on ? SchemaTool::Table : SchemaTool::Select, false); });
-        schema_add_table_ = new QToolButton(schema_top_tools_);
+        schema_add_table_ = new HeaderToolButton(schema_top_tools_);
+        schema_header_words_.push_back(schema_add_table_);
         schema_add_table_->setObjectName("schemaAddTable");
         schema_add_table_->setDefaultAction(schema_table_);
         schema_add_table_->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
@@ -2922,7 +2928,8 @@ namespace erdflow::desktop
         menu_heading(connect_lines, "How the lines run", "schemaConnectLinesHeading");
         for (auto *choice : schema_lines_->actions())
             connect_lines->addAction(choice);
-        auto *schema_connect_button = new QToolButton(schema_top_tools_);
+        auto *schema_connect_button = new HeaderToolButton(schema_top_tools_);
+        schema_header_words_.push_back(schema_connect_button);
         schema_connect_button->setObjectName("schemaConnect");
         schema_connect_button->setDefaultAction(schema_connect_);
         schema_connect_button->setMenu(connect_lines);
@@ -2932,6 +2939,46 @@ namespace erdflow::desktop
         // A double click locks it, as it locks the diagram's tools.
         schema_connect_button->installEventFilter(this);
         top_layout->addWidget(schema_connect_button);
+        // Text and Insert after Connect, in the order the diagram's row keeps
+        // them (Zain, 2026-10-15): text put down by a press, as a table is, and
+        // the diagram's own Insert menu -- a picture, symbols, Dr.icons --
+        // which puts them on whichever is in front. Offered on any schema,
+        // drawn by hand or worked out from a diagram.
+        schema_text_ = new QAction("Text", this);
+        schema_text_->setObjectName("schemaTextTool");
+        schema_text_->setCheckable(true);
+        schema_text_->setData("Text");
+        action_glyphs_[schema_text_] = Glyph::Note;
+        connect(schema_text_, &QAction::triggered, this, [this](bool on)
+                { choose_schema_tool(on ? SchemaTool::Text : SchemaTool::Select, false); });
+        auto *schema_text_button = new HeaderToolButton(schema_top_tools_);
+        schema_header_words_.push_back(schema_text_button);
+        schema_text_button->setObjectName("schemaText");
+        schema_text_button->setDefaultAction(schema_text_);
+        schema_text_button->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+        schema_text_button->setIconSize(QSize(18, 18));
+        // A double click locks it, as it locks Table.
+        schema_text_button->installEventFilter(this);
+        top_layout->addWidget(schema_text_button);
+        {
+            auto *button = new HeaderToolButton(schema_top_tools_);
+            button->setObjectName("schemaInsert");
+            button->setText("Insert");
+            button->setToolTip("Insert a picture from a file, symbols or Dr.icons onto the schema.");
+            schema_header_words_.push_back(button);
+            button->setProperty("menuButton", true);
+            button->setPopupMode(QToolButton::InstantPopup);
+            button->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+            button->setIconSize(QSize(18, 18));
+            auto *marked = new QAction("Insert", button);
+            marked->setObjectName("schemaInsertAction");
+            action_glyphs_[marked] = Glyph::Insert;
+            connect(marked, &QAction::changed, button, [button, marked]
+                    { button->setIcon(marked->icon()); });
+            top_layout->addWidget(button);
+            schema_insert_button_ = button;
+        }
+        schema_drawn_only_ = {schema_select_button, schema_add_table_, schema_connect_button};
         for (const auto &[label, named, menu] : {std::tuple{"Arrange", "schemaTopArrange", arranging},
                                                  std::tuple{"Appearance", "schemaTopAppearance", appearing}})
         {
@@ -2956,6 +3003,7 @@ namespace erdflow::desktop
             connect(marked, &QAction::changed, button, [button, marked]
                     { button->setIcon(marked->icon()); });
             top_layout->addWidget(button);
+            schema_drawn_only_.push_back(button);
         }
         schema_add_table_->setIconSize(QSize(18, 18));
         schema_connect_button->setIconSize(QSize(18, 18));
@@ -3110,6 +3158,17 @@ namespace erdflow::desktop
         schema_->placing_changed = [this](bool on)
         {
             choose_schema_tool(on ? SchemaTool::Table : SchemaTool::Select, false);
+        };
+        // And Text (2026-10-15): put down by Escape, and handed back after one
+        // use unless it was locked, as Table is.
+        schema_->writing_changed = [this](bool on)
+        {
+            choose_schema_tool(on ? SchemaTool::Text : SchemaTool::Select, false);
+        };
+        schema_->wrote = [this]
+        {
+            if (schema_tool_ == SchemaTool::Text && !schema_tool_locked_)
+                choose_schema_tool(SchemaTool::Select, false);
         };
         // Pan as the diagram's: put down by Escape, and handed back after one
         // drag unless it was locked.
@@ -4106,7 +4165,8 @@ namespace erdflow::desktop
         // since what it puts down is a picture.
         auto *dr_icons = insert_menu->addAction("Dr.icons…");
         dr_icons->setObjectName("insertDrIcons");
-        dr_icons->setToolTip("Illustrations for entities, such as a student, a course or an order, put on the diagram as pictures.");
+        dr_icons->setToolTip("Illustrations for entities, such as a student, a course or an order, put on the diagram, "
+                             "or on the schema while it is in front, as pictures.");
         action_glyphs_[dr_icons] = Glyph::Picture;
         connect(dr_icons, &QAction::triggered, this, [this]
                 { show_dr_icons(); });
@@ -4128,6 +4188,9 @@ namespace erdflow::desktop
         insert_button->setText("Insert");
         insert_button->setToolTip("Insert a picture from a file, or symbols for names and notes.");
         insert_button->setMenu(insert_menu);
+        // The schema's Insert drops the very same menu (2026-10-15).
+        if (schema_insert_button_)
+            schema_insert_button_->setMenu(insert_menu);
         insert_button->setPopupMode(QToolButton::InstantPopup);
         insert_button->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
         insert_button->setIconSize(toolbar->iconSize());
@@ -6842,6 +6905,11 @@ namespace erdflow::desktop
                 choose_schema_tool(SchemaTool::Table, true);
                 return true;
             }
+            if (watched == static_cast<QObject *>(findChild<QToolButton *>("schemaText")))
+            {
+                choose_schema_tool(SchemaTool::Text, true);
+                return true;
+            }
             for (const auto &[tool, action] : tool_actions_)
                 if (action != isa_action_ && watched == static_cast<QObject *>(toolbar_widget(action)))
                 {
@@ -7224,6 +7292,13 @@ namespace erdflow::desktop
 
     bool MainWindow::place_symbol(const QString &character)
     {
+        // With the schema in front it goes on the schema (2026-10-15).
+        if (inserting_on_schema())
+        {
+            const auto result = editor_.create_schema_symbol(bytes(character), schema_spot(symbol_body.width, symbol_body.height));
+            show_result(result, false);
+            return bool(result);
+        }
         // Nothing is being written in, so the character goes on the diagram
         // itself, drawn bare: no card, no border, no title, the way an emoji sits
         // in a line of chat. It is a note underneath, so it is moved, coloured,
@@ -7319,13 +7394,40 @@ namespace erdflow::desktop
             text->setFocus(Qt::OtherFocusReason);
             return true;
         }
+        const bool on_schema = inserting_on_schema();
         const auto placed = place_symbol(character);
         if (placed)
-            statusBar()->showMessage("Put on the diagram where the pointer last was. To put one in a name instead, "
-                                     "click into the name first, then pick the character.",
+            statusBar()->showMessage(on_schema
+                                         ? "Put on the schema where the pointer last was. To put one in a name instead, "
+                                           "click into the name first, then pick the character."
+                                         : "Put on the diagram where the pointer last was. To put one in a name instead, "
+                                           "click into the name first, then pick the character.",
                                      7000);
         refresh_symbol_destination();
         return placed;
+    }
+
+    bool MainWindow::inserting_on_schema() const
+    {
+        return schema_ && ribbon_ && ribbon_->schema_in_front() && schema_->isVisible();
+    }
+
+    domain::Rect MainWindow::schema_spot(double width, double height) const
+    {
+        // Where the pointer last was over the schema, or the middle of what is
+        // in view; stepping down and across past anything already put down
+        // exactly there, as the diagram's Insert does.
+        auto centre = schema_->put_place();
+        const auto &placed = editor_.project().schema_figures;
+        const auto taken = [&](const QPointF &at)
+        {
+            return std::any_of(placed.begin(), placed.end(), [&](const auto &entry)
+                               { return std::abs(entry.second.x - std::max(0.0, at.x() - width / 2)) < 2 &&
+                                        std::abs(entry.second.y - std::max(0.0, at.y() - height / 2)) < 2; });
+        };
+        for (int step = 0; step < 64 && taken(centre); ++step)
+            centre += QPointF(24, 24);
+        return domain::Rect{std::max(0.0, centre.x() - width / 2), std::max(0.0, centre.y() - height / 2), width, height};
     }
 
     void MainWindow::show_dr_icons()
@@ -7350,6 +7452,15 @@ namespace erdflow::desktop
         if (png.isEmpty())
             return false;
         finish_field_edit();
+        // With the schema in front it goes on the schema, as tall as a new
+        // entity there too (2026-10-15).
+        if (inserting_on_schema())
+        {
+            const auto result = editor_.create_schema_picture(icon->label, schema_spot(entity_body.height, entity_body.height),
+                                                              std::vector<std::uint8_t>(png.begin(), png.end()));
+            show_result(result, false);
+            return bool(result);
+        }
         // As tall as a new entity and square, so the icon stands beside the
         // entity it illustrates at the entity's own height. A starting size, as
         // every element's is: a picture is resized by hand like anything else.
@@ -7402,6 +7513,17 @@ namespace erdflow::desktop
         if (size.width() > 320 || size.height() > 320)
             size = size.scaled(QSizeF(320, 320), Qt::KeepAspectRatio);
         size = size.expandedTo(QSizeF(24, 24));
+        // With the schema in front it goes on the schema (2026-10-15), chosen
+        // there as a picture placed on the diagram is chosen.
+        if (inserting_on_schema())
+        {
+            const auto result = editor_.create_schema_picture(bytes(QFileInfo(path).completeBaseName()),
+                                                              schema_spot(size.width(), size.height()), *bytes_of_image);
+            show_result(result, false);
+            if (result && result.created)
+                schema_->choose_figure(*result.created);
+            return bool(result);
+        }
         const domain::Rect rect{centre.x() - size.width() / 2, centre.y() - size.height() / 2, size.width(), size.height()};
         const auto result = editor_.create_picture(bytes(QFileInfo(path).completeBaseName()), rect, *bytes_of_image);
         show_result(result);
@@ -8276,8 +8398,12 @@ namespace erdflow::desktop
         if (!header || !ribbon_ || !ribbon_->schema_in_front())
             return;
         const bool home = ribbon_->home_in_front();
+        // Text and Insert serve any schema (Zain, 2026-10-15); the rest of the
+        // tools only a schema drawn by hand.
         if (schema_top_tools_)
-            schema_top_tools_->setVisible(home && schema_first_);
+            schema_top_tools_->setVisible(home && (schema_first_ || schema_full_));
+        for (auto *widget : schema_drawn_only_)
+            widget->setVisible(schema_first_);
         if (schema_header_tools_)
             schema_header_tools_->setVisible(home && schema_open_);
         for (auto *button : {header_model_, header_theme_})
@@ -8318,14 +8444,8 @@ namespace erdflow::desktop
         place_workspace_controls(relational);
         if (auto *badge = findChild<QLabel *>("workspaceBadge"))
             badge->setText(relational ? "RELATIONAL DESIGN" : "CONCEPTUAL");
-        if (auto *picture = findChild<QAction *>("insertPicture"))
-            picture->setVisible(!relational);
-        // Dr.icons go where pictures go, so they are put away with Picture, and
-        // an open gallery with them.
-        if (auto *dr_icons = findChild<QAction *>("insertDrIcons"))
-            dr_icons->setVisible(!relational);
-        if (relational && dr_icons_)
-            dr_icons_->hide();
+        // Picture and Dr.icons are offered with either workspace in front
+        // (Zain, 2026-10-15): with the schema in front they go on the schema.
         // Examples, the template and Import belong to the design they work on,
         // not to Home (Zain, 2026-10-03), in every menu that offers them. Every
         // example and the template are Conceptual diagrams, and Import brings in
@@ -8444,6 +8564,10 @@ namespace erdflow::desktop
             hidden_chrome_.clear();
             if (ribbon_)
                 ribbon_->set_schema_in_front(false);
+            // A diagram's schema keeps Text and Insert up there only while it is
+            // in front (2026-10-15); a schema drawn by hand keeps its tools.
+            if (schema_top_tools_ && !schema_first_)
+                schema_top_tools_->hide();
             place_schema_header_tools();
             set_workspace_in_front(false);
             schema_share_ = schema_share_before_full_;
@@ -9733,6 +9857,8 @@ namespace erdflow::desktop
             // the Design menu as well as in the preview's bar.
             if (schema_top_tools_)
                 schema_top_tools_->setVisible(first);
+            for (auto *widget : schema_drawn_only_)
+                widget->setVisible(first);
             wear_schema_header_for_tab();
             wear_schema_first_header(first);
             wear_schema_panels(first);
@@ -11772,6 +11898,17 @@ namespace erdflow::desktop
             schema_table_->setChecked(tool == SchemaTool::Table);
             schema_connect_->setChecked(tool == SchemaTool::Connect);
         }
+        if (schema_text_)
+        {
+            const QSignalBlocker quiet_text(schema_text_);
+            schema_text_->setChecked(tool == SchemaTool::Text);
+            const bool text_locked = tool == SchemaTool::Text && schema_tool_locked_;
+            schema_text_->setText(text_locked ? "Text 🔒" : "Text");
+            schema_text_->setToolTip(text_locked
+                                         ? "Text is locked. Put down as much text as you like; press Select, Text or Escape to stop."
+                                         : "Put text on the schema: press Text, then click where it goes and type. Double-click "
+                                           "to lock Text for putting down several.");
+        }
         if (schema_pan_)
         {
             const QSignalBlocker quiet_pan(schema_pan_);
@@ -11797,6 +11934,7 @@ namespace erdflow::desktop
             schema_->set_panning(tool == SchemaTool::Pan);
             schema_->set_connecting(tool == SchemaTool::Connect);
             schema_->set_placing(tool == SchemaTool::Table);
+            schema_->set_writing(tool == SchemaTool::Text);
             if (tool != SchemaTool::Select)
                 schema_->setFocus(Qt::OtherFocusReason);
         }
@@ -11806,6 +11944,8 @@ namespace erdflow::desktop
             statusBar()->showMessage(schema_connect_->toolTip(), 8000);
         if (tool != was && tool == SchemaTool::Table)
             statusBar()->showMessage(schema_table_->toolTip(), 8000);
+        if (tool != was && tool == SchemaTool::Text && schema_text_)
+            statusBar()->showMessage(schema_text_->toolTip(), 8000);
         if (tool != was && tool == SchemaTool::Pan)
             statusBar()->showMessage("Drag to move around the schema. Double-click Pan to lock it for a longer look around.",
                                      8000);
@@ -11824,7 +11964,7 @@ namespace erdflow::desktop
             return;
         if (schema_scroll_ && (pressed == schema_scroll_ || schema_scroll_->isAncestorOf(pressed)))
             return;
-        if (const auto *button = qobject_cast<QToolButton *>(pressed); button && button->defaultAction() && (button->defaultAction() == schema_select_ || button->defaultAction() == schema_table_ || button->defaultAction() == schema_connect_))
+        if (const auto *button = qobject_cast<QToolButton *>(pressed); button && button->defaultAction() && (button->defaultAction() == schema_select_ || button->defaultAction() == schema_table_ || button->defaultAction() == schema_connect_ || button->defaultAction() == schema_text_))
             return;
         QTimer::singleShot(0, this, [this]
                            {
@@ -11848,34 +11988,63 @@ namespace erdflow::desktop
             return;
         }
         auto *header = schema_header_.data();
-        const auto words_of = [](QToolButton *button)
-        {
-            auto *shrinking = dynamic_cast<HeaderToolButton *>(button);
-            return shrinking ? shrinking->width_with_words() - shrinking->width_without_words() : 0;
-        };
         // Words are given up in turn (Zain, 2026-10-07): the schema's own
         // tools first, and the corner's Model and Theme last, so a narrow
         // window keeps every control in sight. Undo and Redo keep theirs.
         // Measured against the window as well as the header, since the header
         // lies across the whole window and is never wider than it can be seen.
-        int words = 0;
-        for (auto *button : schema_header_words_)
-            words += words_of(button);
-        int corner = 0;
-        for (auto *button : {header_model_, header_theme_})
-            if (button)
-                corner += words_of(button);
-        const auto room = std::min(header->width(), width()) - header->minimumSizeHint().width();
-        const auto worded = [](bool fits) { return fits ? Qt::ToolButtonTextBesideIcon : Qt::ToolButtonIconOnly; };
+        // Words are tried and given up in turn, the schema's own tools' first
+        // and the corner's last, until the header's natural width fits the room
+        // there is (2026-10-15). Its least width once said whether they would
+        // fit, but a row short of room squeezes every button in it, not only
+        // the ones measured, and a word that did not quite fit was cut down to
+        // an ellipsis instead of being given up: at 1600 wide before Text and
+        // Insert joined the row, and at 1920 after. The title gives way as it
+        // always has, so it is counted at its least.
+        const auto available = std::min(header->width(), width());
         const auto apply = [](QToolButton *button, Qt::ToolButtonStyle shown)
         {
             if (button && button->toolButtonStyle() != shown)
                 button->setToolButtonStyle(shown);
         };
+        // What a button's word adds to it, and whether it shows it now.
+        const auto word_of = [](QToolButton *button)
+        {
+            auto *shrinking = dynamic_cast<HeaderToolButton *>(button);
+            return shrinking ? shrinking->width_with_words() - shrinking->width_without_words() : 0;
+        };
+        const auto worded_now = [](QToolButton *button)
+        { return button->toolButtonStyle() == Qt::ToolButtonTextBesideIcon; };
+        // The header's natural width as it stands, the title at its least, and
+        // from it the width with every word given up: worked out, rather than
+        // tried, since this is asked while the header is being laid out.
+        auto *title = findChild<QLabel *>("documentTitle");
+        const auto slack = title && title->isVisibleTo(header)
+                               ? std::max(0, title->sizeHint().width() - title->minimumSizeHint().width())
+                               : 0;
+        int bare = header->sizeHint().width() - slack;
+        int tools = 0;
+        int corner = 0;
         for (auto *button : schema_header_words_)
-            apply(button, worded(room >= words + corner));
+            if (button->isVisibleTo(schema_top_tools_))
+            {
+                tools += word_of(button);
+                if (worded_now(button))
+                    bare -= word_of(button);
+            }
         for (auto *button : {header_model_, header_theme_})
-            apply(button, worded(room >= corner));
+            if (button && button->isVisibleTo(header))
+            {
+                corner += word_of(button);
+                if (worded_now(button))
+                    bare -= word_of(button);
+            }
+        const bool corner_words = bare + corner <= available;
+        const bool tool_words = corner_words && bare + corner + tools <= available;
+        for (auto *button : schema_header_words_)
+            apply(button, tool_words ? Qt::ToolButtonTextBesideIcon : Qt::ToolButtonIconOnly);
+        for (auto *button : {header_model_, header_theme_})
+            apply(button, corner_words ? Qt::ToolButtonTextBesideIcon : Qt::ToolButtonIconOnly);
     }
 
     ExportView MainWindow::export_view() const

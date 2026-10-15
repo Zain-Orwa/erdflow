@@ -756,6 +756,15 @@ struct Project {
     SchemaOverrides schema;
     // Where the schema has been arranged by hand, beside the diagram's own.
     SchemaLayout schema_layout;
+    // Text, symbols and pictures put on the Relational Schema (Zain,
+    // 2026-10-15). They are the schema's own, never the diagram's: placed in
+    // the schema's coordinates, and drawn, saved and undone with it. A note
+    // here is free text or a symbol, as on the diagram, and a picture keeps
+    // its bytes as a diagram picture does. Each stands where schema_figures
+    // says, keyed as the diagram's layout is.
+    std::map<NoteId, Note> schema_notes;
+    std::map<PictureId, Picture> schema_pictures;
+    std::map<ElementRef, Rect> schema_figures;
     std::map<ElementRef, Rect> layout;
     // How the user has shaped each connector they have touched. An absent entry
     // means the connector is bent and joined entirely automatically.

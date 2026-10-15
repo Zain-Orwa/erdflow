@@ -318,6 +318,34 @@ read as still to do.
   and is written back as Text when the project is saved (Zain chose this over
   keeping old cards); the model no longer admits a card. The Explorer's group
   is still called Notes, as it was for Text and symbols.
+- **Text and Insert on the Relational Schema** (2026-10-15, built in the
+  release laboratory at Zain's request, awaiting his review): the schema's
+  header offers Text and Insert after Connect, as the diagram's row does --
+  on a schema drawn by hand beside Select, Table, Connect, Arrange and
+  Appearance, and on a diagram's schema, while it is in front, on their own.
+  Text is put down where the schema is pressed and written in place (Ctrl+
+  Return or leaving it finishes, Escape abandons, a double click opens it
+  again; put down and left empty it is taken back with no step left behind),
+  handed back after one use and locked by a double click, as Table is.
+  Insert is the diagram's own menu: with the schema in front, Picture...,
+  Symbols... and Dr.icons... put what they put on the schema, where the
+  pointer last was over it. What is put there is the schema's own and never
+  the diagram's (`Project::schema_notes`, `schema_pictures`, `schema_figures`,
+  file version 36): pictures lie beneath the tables, as on the diagram, and
+  text and symbols over them; one is chosen at a time, apart from the tables,
+  carried by a press inside it, a picture or symbol pulled by its handles in
+  proportion, taken away by Delete, every one of those one step of history
+  (`Editor::create_schema_text`, `create_schema_symbol`,
+  `create_schema_picture`, `edit_schema_text`, `move_schema_figures`,
+  `resize_schema_figures`, `erase_schema_figures`). The schema's pictures and
+  its export frame carry them. To fit a window 1440 wide in the default
+  theme, every tool in a schema's header now gives up its word where the
+  header is too narrow for every word, as Arrange and Appearance always have
+  (Zain, 2026-10-15): at 1440 they show their icons, named on hover. Whether
+  the words fit is now worked out from the header's natural width rather than
+  its least, which also ends a defect older than this: between about 1500 and
+  1750 wide, Model and Theme kept their words and had them cut to an
+  ellipsis, because a row short of room squeezes every button in it.
 - **Desktop timeout risk reduced without weakening coverage** (committed in
   `7b12b70`): the old single `desktop` CTest entry is split into
   `desktop_export`, `desktop_relational` and `desktop_window` (the last since

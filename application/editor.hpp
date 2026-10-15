@@ -132,6 +132,19 @@ public:
     EditResult create_symbol(std::string character, domain::Rect rect);
     EditResult create_free_text(std::string text, domain::Rect rect);
     EditResult edit_free_text(domain::NoteId id, std::string text, domain::Rect rect);
+    // Text, a symbol or a picture put on the Relational Schema (2026-10-15):
+    // the schema's own, kept apart from the diagram's, in the schema's
+    // coordinates. Made, written, moved, resized and deleted only through
+    // these, each one step of history.
+    EditResult create_schema_text(std::string text, domain::Rect rect);
+    EditResult create_schema_symbol(std::string character, domain::Rect rect);
+    EditResult create_schema_picture(std::string name, domain::Rect rect, std::vector<std::uint8_t> image);
+    EditResult edit_schema_text(domain::NoteId id, std::string text, domain::Rect rect);
+    // A place for each, its size kept; and a size for each picture or symbol,
+    // clamped to a picture's bounds. Text is as large as its words.
+    EditResult move_schema_figures(const std::map<domain::ElementRef, domain::Rect>& places);
+    EditResult resize_schema_figures(const std::map<domain::ElementRef, domain::Rect>& boxes);
+    EditResult erase_schema_figures(const std::vector<domain::ElementRef>& figures);
     EditResult set_supertype(domain::SpecializationId specialization, std::optional<domain::EntityId> supertype);
     EditResult set_inheritance_direction(domain::SpecializationId specialization, domain::Inheritance direction);
     EditResult attach_subtype(domain::SpecializationId specialization, domain::EntityId subtype);

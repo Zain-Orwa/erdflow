@@ -18,6 +18,8 @@
 #include "app/desktop/welcome_flow_illustration.hpp"
 #include "app/desktop/main_window.hpp"
 #include "app/desktop/schema_router.hpp"
+#include "app/desktop/schema_view.hpp"
+#include "app/desktop/picture_export.hpp"
 #include "app/desktop/schema_colours.hpp"
 #include "app/desktop/notice.hpp"
 #include "app/desktop/schema_explorer.hpp"
@@ -8312,17 +8314,33 @@ namespace
         require(model.project().pictures == kept.pictures && model.project().layout == kept.layout,
                 "With every icon's picture, name and place as they were");
 
-        // Relational Design has no pictures, so it offers none, and an open
-        // gallery goes with it.
+        // With the schema in front (2026-10-15) Dr.icons is offered there too,
+        // and what it puts down goes on the schema, never on the diagram behind.
         window.show_dr_icons();
         settle();
         gallery = child<QDialog>(window, "drIconPicker");
         window.open_schema(true);
         settle_schema_full(window);
-        require(!entry->isVisible() && !gallery->isVisible(), "With the schema in front Dr.icons is not offered");
+        require(entry->isVisible() && gallery->isVisible(), "With the schema in front Dr.icons is still offered");
+        {
+            const auto diagram_pictures = model.project().pictures;
+            gallery->findChild<QToolButton *>("drIcon_course")->click();
+            settle();
+            require(model.project().pictures == diagram_pictures && model.project().schema_pictures.size() == 1,
+                    "And an icon picked then goes on the schema");
+            const auto &put = model.project().schema_pictures.begin()->second;
+            require(put.name == "Course" &&
+                        QByteArray(reinterpret_cast<const char *>(put.image.data()), static_cast<qsizetype>(put.image.size())) ==
+                            desktop::dr_icon_bytes(*desktop::dr_icon("course")),
+                    "As that icon's picture, named by its label");
+            child<QAction>(window, "undoCommand")->trigger();
+            settle();
+            require(model.project().schema_pictures.empty(), "One undo takes it off the schema");
+        }
         child<QPushButton>(window, "schemaFull")->click();
         settle();
-        require(entry->isVisible(), "And the diagram has it back");
+        require(entry->isVisible(), "And the diagram has it too");
+        gallery->hide();
 
         // Room for many: every placed icon keeps its own copy, and a project
         // file holds 8 MiB, so forty of the largest still save.
@@ -8450,6 +8468,248 @@ namespace
         }
         empty.mark_saved(empty.revision());
         std::cout << "PASS Dr.icons: seventeen compiled-in icons placed as pictures, kept, undone, drawn and exported\n";
+    }
+
+    // Text and Insert on the Relational Schema (Zain, 2026-10-15): text put
+    // down by the header's Text tool and written in place, and the diagram's
+    // Insert -- a picture, symbols, Dr.icons -- putting them on the schema
+    // while it is in front. Each is the schema's own, never the diagram's:
+    // chosen, carried, pulled by its handles in proportion, deleted and undone
+    // there, framed and drawn in its pictures, saved and opened again.
+    void schema_figures_tests(infrastructure::QtIdGenerator &ids)
+    {
+        application::Editor model(ids);
+        infrastructure::ErdxProjectStore store;
+        desktop::MainWindow window(model, store, ids);
+        window.resize(1440, 920);
+        window.show();
+        window.show_home(false);
+        settle();
+        // A diagram of two entities, so its schema has room beside its tables.
+        require(bool(model.create_entity("Student", {0, 0, 133, 77})) && bool(model.create_entity("Course", {300, 0, 133, 77})),
+                "A small diagram is drawn");
+        window.set_theme(desktop::ThemeId::OfficeLight);
+        settle();
+        const auto diagram = model.project();
+        window.open_schema(true);
+        settle_schema_full(window);
+        child<QAction>(window, "tabHome")->trigger();
+        settle();
+        auto *schema = window.schema();
+        const auto shown = [&](const char *name)
+        { auto *button = window.findChild<QToolButton *>(name); return button && button->isVisible(); };
+        require(shown("schemaText") && shown("schemaInsert"), "A diagram's schema offers Text and Insert in its header");
+        require(!shown("schemaSelect") && !shown("schemaAddTable") && !shown("schemaConnect") && !shown("schemaTopArrange"),
+                "And none of the tools only a schema drawn by hand has");
+        require(child<QToolButton>(window, "schemaInsert")->menu() == child<QMenu>(window, "insertMenu"),
+                "Its Insert is the diagram's own menu");
+        const auto pointer = [&](QEvent::Type type, QPointF at, Qt::MouseButton button, Qt::MouseButtons buttons)
+        {
+            QMouseEvent event(type, at, schema->mapToGlobal(at), button, buttons, Qt::NoModifier);
+            QApplication::sendEvent(schema, &event);
+            settle();
+        };
+        const auto press_and_let_go = [&](QPointF at)
+        {
+            pointer(QEvent::MouseButtonPress, at, Qt::LeftButton, Qt::LeftButton);
+            pointer(QEvent::MouseButtonRelease, at, Qt::LeftButton, Qt::NoButton);
+        };
+        const auto haul = [&](QPointF from, QPointF by)
+        {
+            pointer(QEvent::MouseButtonPress, from, Qt::LeftButton, Qt::LeftButton);
+            pointer(QEvent::MouseMove, from + by / 2, Qt::NoButton, Qt::LeftButton);
+            pointer(QEvent::MouseMove, from + by, Qt::NoButton, Qt::LeftButton);
+            pointer(QEvent::MouseButtonRelease, from + by, Qt::LeftButton, Qt::NoButton);
+        };
+        const auto view = schema->visibleRegion().boundingRect();
+        const QPointF spot = QPointF(view.topLeft()) + QPointF(30, 30);
+
+        // Text: the tool, a press, typing; then one use and back to Select.
+        auto *text_tool = child<QAction>(window, "schemaTextTool");
+        text_tool->trigger();
+        settle();
+        require(schema->writing(), "Text in hand on the schema");
+        press_and_let_go(spot);
+        auto *field = child<QPlainTextEdit>(window, "schemaInlineText");
+        require(field->isVisible() && schema->writing_text(), "A press puts text down and opens it for writing");
+        require(!text_tool->isChecked() && !schema->writing(), "Text is put down after one use, as Table is");
+        field->setPlainText("Reviewed with the DBA");
+        schema->finish_text(false);
+        settle();
+        require(model.project().schema_notes.size() == 1, "The text is on the schema");
+        const auto text = model.project().schema_notes.begin()->first;
+        require(model.project().schema_notes.at(text).free_text &&
+                    model.project().schema_notes.at(text).description == "Reviewed with the DBA",
+                "Holding what was written");
+        require(model.undo_label() == "Edit text", "Written as one step after it was put down");
+        // Put down and left empty, or abandoned, it is taken back, leaving no step.
+        const auto before_empty = model.revision();
+        text_tool->trigger();
+        settle();
+        press_and_let_go(spot + QPointF(0, 120));
+        schema->finish_text(true);
+        settle();
+        require(model.project().schema_notes.size() == 1 && model.revision() >= before_empty &&
+                    model.undo_label() == "Edit text",
+                "Text abandoned as it was put down is taken back without a trace in the history");
+        // A double click opens it again.
+        const auto text_box = model.project().schema_figures.at(domain::ElementRef{text});
+        const QPointF on_text(text_box.x + 6, text_box.y + text_box.height / 2);
+        // A double click is a press and a release, then the second press.
+        press_and_let_go(on_text);
+        QMouseEvent twice(QEvent::MouseButtonDblClick, on_text, schema->mapToGlobal(on_text), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(schema, &twice);
+        settle();
+        require(field->isVisible() && field->toPlainText() == "Reviewed with the DBA", "A double click opens the text for writing");
+        field->setPlainText("Reviewed with the DBA\nAgain");
+        schema->finish_text(false);
+        settle();
+        require(model.project().schema_notes.at(text).description == "Reviewed with the DBA\nAgain", "And writes it");
+        // Locked by a double click, Text places until Escape.
+        const auto notes_before = model.project().schema_notes.size();
+        QMouseEvent lock(QEvent::MouseButtonDblClick, QPointF(5, 5), QPointF(5, 5), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(child<QToolButton>(window, "schemaText"), &lock);
+        settle();
+        require(schema->writing() && text_tool->text().contains(QStringLiteral("🔒")), "A double click locks Text, and says so");
+        for (const auto at : {spot + QPointF(0, 200), spot + QPointF(0, 260)})
+        {
+            press_and_let_go(at);
+            field->setPlainText("Locked");
+            schema->finish_text(false);
+            settle();
+        }
+        require(schema->writing() && model.project().schema_notes.size() == notes_before + 2, "Locked, Text keeps placing");
+        QTest::keyClick(schema, Qt::Key_Escape);
+        settle();
+        require(!schema->writing() && !text_tool->isChecked(), "Escape puts Text down");
+        for (int step = 0; step < 4; ++step)
+            child<QAction>(window, "undoCommand")->trigger();
+        settle();
+        require(model.project().schema_notes.size() == notes_before, "Both placings undo");
+
+        // Insert, with the schema in front, puts on the schema, where the
+        // pointer last was: here a stretch of the schema with no table on it,
+        // since a picture lies beneath the tables as it lies beneath the
+        // diagram's shapes.
+        schema->setFocus();
+        settle();
+        {
+            const auto tables = schema->table_boxes();
+            QPointF empty;
+            bool found = false;
+            for (int y = view.top() + 60; y < view.bottom() - 60 && !found; y += 20)
+                for (int x = view.left() + 60; x < view.right() - 60 && !found; x += 20)
+                {
+                    const QRectF room(x - 90, y - 60, 180, 120);
+                    if (std::none_of(tables.begin(), tables.end(), [&](const QRectF &box) { return box.intersects(room); }) &&
+                        std::none_of(model.project().schema_figures.begin(), model.project().schema_figures.end(),
+                                     [&](const auto &entry) { return QRectF(entry.second.x, entry.second.y, entry.second.width, entry.second.height).intersects(room); }))
+                    {
+                        empty = QPointF(x, y);
+                        found = true;
+                    }
+                }
+            require(found, "The schema has an empty stretch in view");
+            pointer(QEvent::MouseMove, empty, Qt::NoButton, Qt::NoButton);
+        }
+        require(window.insert_symbol(QStringLiteral("⋈")), "A symbol is put on the schema");
+        QTemporaryDir pictures;
+        require(pictures.isValid(), "Temporary picture directory");
+        QImage sample(120, 60, QImage::Format_ARGB32);
+        sample.fill(Qt::transparent);
+        {
+            QPainter painter(&sample);
+            painter.fillRect(QRectF(10, 10, 100, 40), QColor(30, 120, 220));
+        }
+        const auto file = pictures.filePath("banner.png");
+        require(sample.save(file), "Write a sample picture");
+        require(window.insert_picture(file), "A picture from a file is put on the schema");
+        require(model.project().schema_pictures.size() == 1 && model.project().schema_notes.size() == notes_before + 1,
+                "Both are the schema's");
+        const domain::ElementRef picture{model.project().schema_pictures.begin()->first};
+        require(schema->chosen_figure() == picture, "And the picture is chosen there");
+        require(model.project().notes == diagram.notes && model.project().pictures == diagram.pictures &&
+                    model.project().layout == diagram.layout,
+                "Nothing is put on the diagram behind");
+
+        // Carried by a press inside it -- by its left end, since the symbol
+        // put down at the same place stands over its middle, and what stands
+        // over the tables answers first.
+        const auto start = model.project().schema_figures.at(picture);
+        haul(QPointF(start.x + 14, start.y + start.height / 2), QPointF(40, 30));
+        auto now = model.project().schema_figures.at(picture);
+        require(now.x == start.x + 40 && now.y == start.y + 30 && now.width == start.width && now.height == start.height,
+                "Carried where the hand takes it");
+        require(model.undo_label() == "Move on the schema", "As one step");
+        // Pulled by its bottom right corner, in proportion.
+        schema->choose_figure(picture);
+        const auto grip = std::clamp(std::min(now.width, now.height) / 4, 4.0, 9.0);
+        haul(QPointF(now.x + now.width - grip / 2, now.y + now.height - grip / 2), QPointF(60, 60));
+        const auto pulled = model.project().schema_figures.at(picture);
+        require(pulled.x == now.x && pulled.y == now.y && pulled.width > now.width &&
+                    std::abs(pulled.width / pulled.height - now.width / now.height) < 0.01,
+                "Its corner makes it larger, from the corner opposite, keeping its proportions");
+        require(model.undo_label() == "Resize picture", "As one step");
+        // Delete takes it away; undo brings it back.
+        schema->choose_figure(picture);
+        schema->setFocus();
+        QTest::keyClick(schema, Qt::Key_Delete);
+        settle();
+        require(!model.project().schema_pictures.contains(std::get<domain::PictureId>(picture)), "Delete takes it off the schema");
+        child<QAction>(window, "undoCommand")->trigger();
+        settle();
+        require(model.project().schema_figures.at(picture) == pulled, "And undo puts it back as it was");
+
+        // In its pictures: framed with the rest, drawn, and never chosen.
+        schema->choose_figure(picture);
+        const auto exported = schema->export_view();
+        const auto frame = exported.bounds(desktop::PictureExtent::WholeDiagram);
+        for (const auto &[ref, box] : schema->figure_boxes())
+            require(frame.contains(box), "Everything put on the schema is inside its picture's frame");
+        {
+            desktop::PictureOptions options;
+            options.format = desktop::PictureFormat::Png;
+            options.background = desktop::PictureBackground::Transparent;
+            options.carry_project = false;
+            QByteArray bytes;
+            const auto result = desktop::draw_picture(exported, options, {}, bytes);
+            require(result.ok, "The schema's picture is drawn");
+            QImage drawn;
+            drawn.loadFromData(bytes, "png");
+            const auto source = frame.adjusted(-options.margin, -options.margin, options.margin, options.margin);
+            const auto scale = drawn.width() / source.width();
+            const auto at = [&](QPointF point)
+            { return QPoint(static_cast<int>((point.x() - source.left()) * scale), static_cast<int>((point.y() - source.top()) * scale)); };
+            const QPointF middle(pulled.x + pulled.width / 2, pulled.y + pulled.height / 2);
+            require(qAlpha(drawn.pixel(at(middle))) > 0, "The picture put on the schema is in its picture");
+            // The sample's own corner is clear, so anything there would be the
+            // outline a chosen picture wears on screen. (The bottom right: the
+            // symbol put down first now stands over its top left.)
+            require(qAlpha(drawn.pixel(at(QPointF(pulled.x + pulled.width - 3, pulled.y + pulled.height - 3)))) == 0,
+                    "With nothing chosen drawn round it");
+        }
+
+        // Saved and opened again, as it was.
+        model.mark_saved(model.revision());
+        QTemporaryDir folder;
+        require(folder.isValid(), "A folder to save in");
+        const auto path = folder.filePath("schema-figures.erdx");
+        const auto kept = model.project();
+        require(store.save(path.toStdString(), kept).ok, "The project with what is on its schema saves");
+        require(window.open_path(path), "And opens again");
+        settle();
+        require(model.project().schema_notes == kept.schema_notes && model.project().schema_pictures == kept.schema_pictures &&
+                    model.project().schema_figures == kept.schema_figures,
+                "With everything on its schema as it was");
+        // Out of full view the diagram is in front, and the schema's Text and
+        // Insert go from the header with it.
+        window.open_schema(true);
+        settle_schema_full(window);
+        child<QPushButton>(window, "schemaFull")->click();
+        settle();
+        require(!shown("schemaText") && !shown("schemaInsert"), "With the diagram in front, the schema's Text and Insert are put away");
+        model.mark_saved(model.revision());
+        std::cout << "PASS text, symbols and pictures put on the schema are its own\n";
     }
 
     // A locked tool's padlock is seen whatever room its row has and whatever
@@ -9327,6 +9587,7 @@ int main(int argc, char **argv)
             tool_lock_mark_tests(ids);
             search_filter_tests(ids);
             dr_icons_tests(ids);
+            schema_figures_tests(ids);
         }
         if (window_tools_part)
         {
@@ -13498,8 +13759,10 @@ int main(int argc, char **argv)
                         reachable = true;
                 require(!reachable, "No conceptual drawing tool is on screen in Relational Design");
             }
-            require(!child<QAction>(window, "insertPicture")->isVisible(),
-                    "Nor Insert's picture, which is placed on the hidden diagram");
+            // Insert's picture stays: with the schema in front it goes on the
+            // schema (Zain, 2026-10-15).
+            require(child<QAction>(window, "insertPicture")->isVisible(),
+                    "Insert's picture stays, putting a picture on the schema");
             require(child<QWidget>(window, "schemaArrange")->isVisible() && child<QWidget>(window, "schemaAppearance")->isVisible(),
                     "Its own Arrange and Appearance are there instead");
             // The tabs stay, so the window is found in the same place in both
@@ -13542,7 +13805,7 @@ int main(int argc, char **argv)
                     "The same Settings View menu remains after returning to Conceptual");
             require(child<QLabel>(window, "workspaceBadge")->text() == "CONCEPTUAL",
                     "Leaving it names the conceptual workspace again");
-            require(child<QAction>(window, "insertPicture")->isVisible(), "And gives Insert its picture back");
+            require(child<QAction>(window, "insertPicture")->isVisible(), "And Insert still has its picture");
             // The conceptual workspace's own family, as the specification
             // names it, on the row it opens on.
             for (const char *conceptual : {"toolSelect", "toolEntity", "toolAttribute", "toolRelationship",
@@ -16020,20 +16283,21 @@ int main(int argc, char **argv)
             auto *add_table = child<QToolButton>(window, "schemaAddTable");
             auto *convert = child<QPushButton>(window, "schemaConvert");
             auto *header_tools = child<QWidget>(window, "schemaTopTools");
-            require(header_tools->isVisible() && add_table->isVisible() && add_table->text() == "Table" && child<QToolButton>(window, "schemaSelect")->isVisible() && child<QToolButton>(window, "schemaConnect")->isVisible() && child<QToolButton>(window, "schemaTopArrange")->isVisible() && child<QToolButton>(window, "schemaTopAppearance")->isVisible(),
-                    "The header offers Select, Table, Connect, Arrange and Appearance");
+            require(header_tools->isVisible() && add_table->isVisible() && add_table->text() == "Table" && child<QToolButton>(window, "schemaSelect")->isVisible() && child<QToolButton>(window, "schemaConnect")->isVisible() && child<QToolButton>(window, "schemaTopArrange")->isVisible() && child<QToolButton>(window, "schemaTopAppearance")->isVisible() && child<QToolButton>(window, "schemaText")->isVisible() && child<QToolButton>(window, "schemaInsert")->isVisible(),
+                    "The header offers Select, Table, Connect, Text, Insert, Arrange and Appearance");
             {
                 const auto x = [&](const char *name)
                 { return child<QToolButton>(window, name)->x(); };
-                require(x("schemaSelect") < x("schemaAddTable") && x("schemaAddTable") < x("schemaConnect") && x("schemaConnect") < x("schemaTopArrange") && x("schemaTopArrange") < x("schemaTopAppearance") && child<QAction>(window, "schemaSelectTool")->isChecked() && !add_table->isChecked() && !child<QAction>(window, "schemaConnectTool")->isChecked(),
-                        "In that order, Select | Table | Connect | Arrange | Appearance, with Select in hand");
+                require(x("schemaSelect") < x("schemaAddTable") && x("schemaAddTable") < x("schemaConnect") && x("schemaConnect") < x("schemaText") && x("schemaText") < x("schemaInsert") && x("schemaInsert") < x("schemaTopArrange") && x("schemaTopArrange") < x("schemaTopAppearance") && child<QAction>(window, "schemaSelectTool")->isChecked() && !add_table->isChecked() && !child<QAction>(window, "schemaConnectTool")->isChecked(),
+                        "In that order, Select | Table | Connect | Text | Insert | Arrange | Appearance, with Select in hand");
             }
             require(add_table->parentWidget() == header_tools, "Table is in the header, not on the schema");
             require(header_tools->parentWidget()->minimumSizeHint().width() <= 1440,
                     "And the header still fits a window 1440 wide, whatever the project is called");
-            // With Select in the row it fits by Arrange and Appearance giving up
-            // their words where the header is too narrow for every word (Zain,
-            // 2026-10-01), and taking them back where it is wide enough.
+            // It fits by its tools giving up their words where the header is too
+            // narrow for every word (Zain, 2026-10-01 for Arrange and Appearance;
+            // 2026-10-15 for every tool, once Text and Insert joined them), and
+            // taking them back where it is wide enough.
             {
                 auto *arranged = child<QToolButton>(window, "schemaTopArrange");
                 auto *appearing = child<QToolButton>(window, "schemaTopAppearance");
@@ -16044,13 +16308,19 @@ int main(int argc, char **argv)
                 const auto size_was = window.size();
                 window.resize(1900, size_was.height());
                 settle();
-                require(worded("schemaSelect") && worded("schemaAddTable") && worded("schemaConnect") && worded("schemaTopArrange") && worded("schemaTopAppearance"),
-                        "With room, every tool in the header says its name");
+                const std::vector<const char *> tools{"schemaSelect", "schemaAddTable", "schemaConnect", "schemaText",
+                                                      "schemaInsert", "schemaTopArrange", "schemaTopAppearance"};
+                require(std::all_of(tools.begin(), tools.end(), worded), "With room, every tool in the header says its name");
                 window.resize(1440, size_was.height());
                 settle();
-                require(window.width() == 1440 && !worded("schemaTopArrange") && !worded("schemaTopAppearance") && arranged->toolTip() == "Arrange" && appearing->toolTip() == "Appearance" && worded("schemaSelect") && worded("schemaAddTable") && worded("schemaConnect"),
-                        "1440 wide, Arrange and Appearance show their icons, named on hover, and Select, Table and "
-                        "Connect keep their words");
+                require(window.width() == 1440 && std::none_of(tools.begin(), tools.end(), worded) &&
+                            arranged->toolTip() == "Arrange" && appearing->toolTip() == "Appearance" &&
+                            std::all_of(tools.begin(), tools.end(), [&](const char *name)
+                                        { return !child<QToolButton>(window, name)->toolTip().isEmpty(); }),
+                        "1440 wide, every tool in the header shows its icon, named on hover");
+                require(header_tools->parentWidget()->minimumSizeHint().width() <= 1440 &&
+                            header_tools->parentWidget()->width() <= 1440,
+                        "And the header fits");
                 window.resize(size_was);
                 settle();
             }

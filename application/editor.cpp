@@ -169,6 +169,11 @@ struct Delta {
     Changes<ElementRef, Colour> colours;
     Changes<ElementRef, std::uint8_t> transparency;
     Changes<ElementRef, LetteringBase> lettering;
+    // What is put on the schema, each changed one by one as the diagram's own
+    // are, so moving a table never copies a picture into the history.
+    Changes<NoteId, Note> schema_notes;
+    Changes<PictureId, Picture> schema_pictures;
+    Changes<ElementRef, Rect> schema_figures;
     std::size_t bytes = 0;
     std::uint64_t before_state = 0;
     std::uint64_t after_state = 0;
@@ -179,7 +184,8 @@ struct Delta {
             && relationships.keys.empty() && specializations.keys.empty()
             && pictures.keys.empty() && notes.keys.empty() && comments.keys.empty()
             && layout.keys.empty() && connectors.keys.empty() && colours.keys.empty()
-            && transparency.keys.empty() && lettering.keys.empty();
+            && transparency.keys.empty() && lettering.keys.empty()
+            && schema_notes.keys.empty() && schema_pictures.keys.empty() && schema_figures.keys.empty();
     }
     void toggle(Project& project) {
         if (project_name) project.name.swap(*project_name);
@@ -200,6 +206,9 @@ struct Delta {
         colours.toggle(project.colours);
         transparency.toggle(project.transparency);
         lettering.toggle(project.lettering);
+        schema_notes.toggle(project.schema_notes);
+        schema_pictures.toggle(project.schema_pictures);
+        schema_figures.toggle(project.schema_figures);
     }
     [[nodiscard]] std::size_t estimate(const Project& project) const {
         return sizeof(Delta) + sizeof(std::unique_ptr<Delta>) + label.capacity()
@@ -217,7 +226,9 @@ struct Delta {
             + cost(comments, project.comments)
             + cost(layout, project.layout) + cost(connectors, project.connectors)
             + cost(colours, project.colours) + cost(transparency, project.transparency)
-            + cost(lettering, project.lettering);
+            + cost(lettering, project.lettering)
+            + cost(schema_notes, project.schema_notes) + cost(schema_pictures, project.schema_pictures)
+            + cost(schema_figures, project.schema_figures);
     }
 };
 
@@ -294,6 +305,50 @@ std::vector<HistoryChange> summarise(const Delta& delta, const Project& now) {
     walk(delta.specializations, now.specializations);
     walk(delta.pictures, now.pictures);
     walk(delta.notes, now.notes);
+    // What is put on the schema: made, deleted, moved or resized there. It is
+    // not on the diagram, so it is named but carries no element to go to.
+    {
+        const auto schema_noun = [&](const ElementRef& ref) -> std::string {
+            if (std::holds_alternative<PictureId>(ref)) return "Picture";
+            const auto id = std::get<NoteId>(ref);
+            const auto found = now.schema_notes.find(id);
+            const auto was = delta.schema_notes.alternate.find(id);
+            const bool free_text = found != now.schema_notes.end() ? found->second.free_text
+                                 : was != delta.schema_notes.alternate.end() && was->second.free_text;
+            return free_text ? "Text" : "Symbol";
+        };
+        std::set<ElementRef> told;
+        const auto tell = [&](const auto& changed, const auto& live) {
+            for (const auto& id : changed.keys) {
+                const bool was = changed.alternate.contains(id);
+                const auto after = live.find(id);
+                const bool is = after != live.end();
+                if (was == is) continue;
+                told.insert(ElementRef{id});
+                changes.push_back({.kind = is ? Kind::Created : Kind::Deleted, .noun = schema_noun(ElementRef{id}),
+                                   .name = is ? after->second.name : changed.alternate.at(id).name,
+                                   .other = "the schema"});
+            }
+        };
+        tell(delta.schema_pictures, now.schema_pictures);
+        tell(delta.schema_notes, now.schema_notes);
+        for (const auto& ref : delta.schema_figures.keys) {
+            if (told.contains(ref)) continue;
+            const auto before = delta.schema_figures.alternate.find(ref);
+            const auto after = now.schema_figures.find(ref);
+            if (before == delta.schema_figures.alternate.end() || after == now.schema_figures.end()) continue;
+            const bool sized = before->second.width != after->second.width || before->second.height != after->second.height;
+            changes.push_back({.kind = sized ? Kind::Resized : Kind::Moved, .noun = schema_noun(ref), .other = "the schema"});
+        }
+        for (const auto& id : delta.schema_notes.keys) {
+            const ElementRef ref{id};
+            if (told.contains(ref)) continue;
+            const auto before = delta.schema_notes.alternate.find(id);
+            const auto after = now.schema_notes.find(id);
+            if (before != delta.schema_notes.alternate.end() && after != now.schema_notes.end() && before->second != after->second)
+                changes.push_back({.kind = Kind::Changed, .noun = schema_noun(ref), .name = after->second.name, .other = "the schema"});
+        }
+    }
     // An attribute also has an owner it can be attached to or taken from.
     for (const auto& id : delta.attributes.keys) {
         const auto before = delta.attributes.alternate.find(id);
@@ -865,6 +920,90 @@ EditResult Editor::edit_free_text(NoteId id, std::string text, Rect rect) {
         if (value != found->second) delta.notes.put(id, std::move(value));
         const ElementRef ref{id};
         if (project().layout.at(ref) != rect) delta.layout.put(ref, rect);
+        return EditResult{};
+    });
+}
+// What is put on the schema (Zain, 2026-10-15): text, a symbol or a picture,
+// the schema's own. Each is one step of history, as its diagram twin is.
+EditResult Editor::create_schema_text(std::string text, Rect rect) {
+    return impl_->edit("Insert text", [&](Delta& delta) {
+        const NoteId id{impl_->next_id()};
+        delta.schema_notes.put(id, Note{id, {}, std::move(text), false, true});
+        delta.schema_figures.put(ElementRef{id}, rect);
+        return EditResult{true, {}, ElementRef{id}, {}};
+    });
+}
+EditResult Editor::create_schema_symbol(std::string character, Rect rect) {
+    return impl_->edit("Insert symbol", [&](Delta& delta) {
+        const NoteId id{impl_->next_id()};
+        delta.schema_notes.put(id, Note{id, std::move(character), {}, true, false});
+        delta.schema_figures.put(ElementRef{id}, rect);
+        return EditResult{true, {}, ElementRef{id}, {}};
+    });
+}
+EditResult Editor::create_schema_picture(std::string name, Rect rect, std::vector<std::uint8_t> image) {
+    return impl_->edit("Insert picture", [&](Delta& delta) {
+        const PictureId id{impl_->next_id()};
+        delta.schema_pictures.put(id, Picture{id, std::move(name), {}, std::move(image)});
+        delta.schema_figures.put(ElementRef{id}, rect);
+        return EditResult{true, {}, ElementRef{id}, {}};
+    });
+}
+EditResult Editor::edit_schema_text(NoteId id, std::string text, Rect rect) {
+    return impl_->edit("Edit text", [&](Delta& delta) {
+        const auto found = project().schema_notes.find(id);
+        if (found == project().schema_notes.end() || !found->second.free_text)
+            return failure("The text on the schema no longer exists.");
+        auto value = found->second;
+        value.description = std::move(text);
+        if (value != found->second) delta.schema_notes.put(id, std::move(value));
+        const ElementRef ref{id};
+        if (project().schema_figures.at(ref) != rect) delta.schema_figures.put(ref, rect);
+        return EditResult{};
+    });
+}
+EditResult Editor::move_schema_figures(const std::map<ElementRef, Rect>& places) {
+    return impl_->edit("Move on the schema", [&](Delta& delta) {
+        for (const auto& [ref, rect] : places) {
+            const auto found = project().schema_figures.find(ref);
+            if (found == project().schema_figures.end()) return failure("It is no longer on the schema.");
+            auto moved = found->second;
+            moved.x = std::clamp(rect.x, -max_coordinate, max_coordinate - moved.width);
+            moved.y = std::clamp(rect.y, -max_coordinate, max_coordinate - moved.height);
+            if (moved != found->second) delta.schema_figures.put(ref, moved);
+        }
+        return EditResult{};
+    });
+}
+EditResult Editor::resize_schema_figures(const std::map<ElementRef, Rect>& boxes) {
+    const bool pictures = !boxes.empty() && std::holds_alternative<PictureId>(boxes.begin()->first);
+    return impl_->edit(pictures ? "Resize picture" : "Resize symbol", [&](Delta& delta) {
+        for (const auto& [ref, box] : boxes) {
+            const auto found = project().schema_figures.find(ref);
+            if (found == project().schema_figures.end()) return failure("It is no longer on the schema.");
+            // Text is as large as its words; a picture and a symbol are drawn to
+            // their box, between a symbol's bounds, as on the diagram.
+            const auto* note = std::get_if<NoteId>(&ref);
+            if (note && project().schema_notes.at(*note).free_text) return failure("Text is as large as its words.");
+            auto sized = box;
+            sized.width = std::clamp(sized.width, min_picture_size, max_picture_size);
+            sized.height = std::clamp(sized.height, min_picture_size, max_picture_size);
+            sized.x = std::clamp(sized.x, -max_coordinate, max_coordinate - sized.width);
+            sized.y = std::clamp(sized.y, -max_coordinate, max_coordinate - sized.height);
+            if (sized != found->second) delta.schema_figures.put(ref, sized);
+        }
+        return EditResult{};
+    });
+}
+EditResult Editor::erase_schema_figures(const std::vector<ElementRef>& figures) {
+    return impl_->edit("Delete from the schema", [&](Delta& delta) {
+        for (const auto& ref : figures) {
+            if (!project().schema_figures.contains(ref)) return failure("It is no longer on the schema.");
+            if (const auto* id = std::get_if<PictureId>(&ref)) delta.schema_pictures.remove(*id);
+            else if (const auto* note = std::get_if<NoteId>(&ref)) delta.schema_notes.remove(*note);
+            else return failure("Only what is put on the schema is deleted here.");
+            delta.schema_figures.remove(ref);
+        }
         return EditResult{};
     });
 }

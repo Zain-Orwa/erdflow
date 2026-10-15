@@ -18,6 +18,7 @@
 
 #include <QKeyEvent>
 #include <QLineEdit>
+#include <QPlainTextEdit>
 #include <QStringList>
 #include <QToolTip>
 
@@ -37,6 +38,63 @@
 #include <limits>
 #include <array>
 #include <cmath>
+
+namespace {
+// Which sides of a box each handle lies on: the four corners clockwise from
+// the top left, then the four edges in the same order, as on the diagram.
+struct FigureSide { bool left, right, top, bottom; };
+constexpr std::array<FigureSide, 8> figure_sides{
+    FigureSide{true, false, true, false},  FigureSide{false, true, true, false},
+    FigureSide{false, true, false, true},  FigureSide{true, false, false, true},
+    FigureSide{false, false, true, false}, FigureSide{false, true, false, false},
+    FigureSide{false, false, false, true}, FigureSide{true, false, false, false}};
+
+// The box a handle asks for (as the diagram's pictures are pulled): the whole
+// thing scaled, its proportions kept, the sides the handle lies on travelling
+// with the hand and the ones opposite staying; along an edge it stays centred.
+erdflow::domain::Rect scaled_figure(const erdflow::domain::Rect& start, int handle, QPointF travelled) {
+    if (start.width < 0.1 || start.height < 0.1) return start;
+    const auto& side = figure_sides[static_cast<std::size_t>(std::clamp(handle, 0, 7))];
+    const auto across = side.right ? travelled.x() : side.left ? -travelled.x() : 0.0;
+    const auto down = side.bottom ? travelled.y() : side.top ? -travelled.y() : 0.0;
+    auto scale = handle >= 4
+        ? (side.left || side.right ? (start.width + across) / start.width : (start.height + down) / start.height)
+        : std::max((start.width + across) / start.width, (start.height + down) / start.height);
+    const auto least = std::max(erdflow::domain::min_picture_size / start.width, erdflow::domain::min_picture_size / start.height);
+    const auto most = std::min(erdflow::domain::max_picture_size / start.width, erdflow::domain::max_picture_size / start.height);
+    scale = std::clamp(scale, std::min(least, most), std::max(least, most));
+    const auto width = start.width * scale;
+    const auto height = start.height * scale;
+    const auto x = side.right ? start.x : side.left ? start.x + start.width - width : start.x + (start.width - width) / 2;
+    const auto y = side.bottom ? start.y : side.top ? start.y + start.height - height : start.y + (start.height - height) / 2;
+    return erdflow::domain::Rect{x, y, width, height};
+}
+
+// Text on the schema is written in, closed by Ctrl+Return or by leaving it,
+// and abandoned by Escape, as on the diagram.
+class SchemaTextField final : public QPlainTextEdit {
+public:
+    using QPlainTextEdit::QPlainTextEdit;
+    std::function<void(bool cancel)> finished;
+protected:
+    void keyPressEvent(QKeyEvent* event) override {
+        if (event->key() == Qt::Key_Escape) {
+            if (finished) finished(true);
+            return;
+        }
+        if ((event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter)
+            && (event->modifiers() & (Qt::ControlModifier | Qt::MetaModifier))) {
+            if (finished) finished(false);
+            return;
+        }
+        QPlainTextEdit::keyPressEvent(event);
+    }
+    void focusOutEvent(QFocusEvent* event) override {
+        QPlainTextEdit::focusOutEvent(event);
+        if (finished && isVisible()) finished(false);
+    }
+};
+} // namespace
 
 namespace erdflow::desktop {
 namespace {
@@ -642,6 +700,19 @@ void SchemaView::refresh() {
         }, *picked_);
         if (!still) picked_.reset();
     }
+    // Whatever was put on the schema and is no longer there is forgotten:
+    // chosen, carried, written in, or its pixels kept (2026-10-15).
+    const auto& figures = editor_.project().schema_figures;
+    if (chosen_figure_ && !figures.contains(*chosen_figure_)) chosen_figure_.reset();
+    if (figure_drag_ && !figures.contains(figure_drag_->ref)) figure_drag_.reset();
+    std::erase_if(figure_pixmaps_, [this](const auto& entry) {
+        return !editor_.project().schema_pictures.contains(entry.first);
+    });
+    if (text_editing_ && !editor_.project().schema_notes.contains(*text_editing_)) {
+        text_editing_.reset();
+        text_made_at_.reset();
+        if (text_field_) text_field_->hide();
+    }
     shaping_.reset();
     arrange();
     reroute();
@@ -1020,6 +1091,8 @@ void SchemaView::set_answering(std::optional<Answering> which, bool size) {
 }
 
 void SchemaView::select(std::optional<domain::ElementRef> table) {
+    // Choosing a table puts down whatever was chosen on the schema beside it.
+    if (table && chosen_figure_) { chosen_figure_.reset(); update(); }
     std::vector<domain::ElementRef> wanted;
     if (table) wanted.push_back(*table);
     if (selected_ == wanted && !picked_) return;
@@ -1032,6 +1105,7 @@ void SchemaView::select(std::optional<domain::ElementRef> table) {
 }
 
 void SchemaView::toggle_mark(const domain::ElementRef& table) {
+    chosen_figure_.reset();
     const auto found = std::find(selected_.begin(), selected_.end(), table);
     if (found != selected_.end()) selected_.erase(found);
     else selected_.push_back(table);
@@ -1041,6 +1115,7 @@ void SchemaView::toggle_mark(const domain::ElementRef& table) {
 }
 
 void SchemaView::select_all() {
+    chosen_figure_.reset();
     // Everything there is to see: a table a search has taken away is not
     // chosen with the rest, as a hidden shape on the diagram is not.
     const auto hidden = hidden_tables();
@@ -1059,6 +1134,29 @@ void SchemaView::select_all() {
 }
 
 void SchemaView::keyPressEvent(QKeyEvent* event) {
+    // Escape puts Text down, as it puts Table down (2026-10-15).
+    if (event->key() == Qt::Key_Escape && writing_) {
+        set_writing(false);
+        if (writing_changed) writing_changed(false);
+        event->accept();
+        return;
+    }
+    // Escape abandons something put on the schema being carried or pulled.
+    if (event->key() == Qt::Key_Escape && figure_drag_) {
+        figure_drag_.reset();
+        update();
+        event->accept();
+        return;
+    }
+    // Delete takes away what is chosen on the schema, on any schema.
+    if ((event->key() == Qt::Key_Delete || event->key() == Qt::Key_Backspace) && chosen_figure_) {
+        const auto ref = *chosen_figure_;
+        chosen_figure_.reset();
+        const auto result = editor_.erase_schema_figures({ref});
+        if (arranged) arranged(result);
+        event->accept();
+        return;
+    }
     // Escape puts Pan down, as it puts Table and Connect down.
     if (event->key() == Qt::Key_Escape && panning_) {
         set_panning(false);
@@ -1483,6 +1581,11 @@ void SchemaView::arrange() {
         measure(as_shape(line));
     }
     if (shaping_shape_) measure(shaping_shape_->second);
+    // And as far as anything put on the schema (2026-10-15).
+    for (const auto& [ref, at] : editor_.project().schema_figures) {
+        (void)ref;
+        reach(QPointF(at.x + at.width, at.y + at.height));
+    }
     // While tables are carried downward the canvas reaches a view further than
     // the lowest of them (see drag_room); otherwise it reaches just past what
     // is on it, as it always has.
@@ -1886,12 +1989,41 @@ void SchemaView::mousePressEvent(QMouseEvent* event) {
     }
     // With Table in hand, a press places a table where it lands, before
     // anything there answers, as the diagram's placing tools place wherever
-    // they are pressed.
-    placed_on_press_ = placing_;
+    // they are pressed. Text in hand does the same with text (2026-10-15).
+    placed_on_press_ = placing_ || writing_;
+    if (writing_) {
+        place_text(event->position());
+        event->accept();
+        return;
+    }
     if (placing_) {
         if (drawn_by_hand() && add_table) add_table(event->position());
         event->accept();
         return;
+    }
+    // What is put on the schema answers before the tables (2026-10-15): the
+    // chosen one's handles first, then text and symbols, which stand over
+    // the tables. A press inside one takes hold of it to carry it.
+    const auto take_hold = [&](const domain::ElementRef& figure, int handle) {
+        const auto& at = editor_.project().schema_figures.at(figure);
+        figure_drag_ = FigureDrag{figure, at, event->position(), handle, at};
+        if (handle < 0) setCursor(Qt::ClosedHandCursor);
+    };
+    if (const auto handle = figure_grip_at(event->position()); handle >= 0) {
+        take_hold(*chosen_figure_, handle);
+        event->accept();
+        return;
+    }
+    if (const auto figure = figure_at(event->position(), false)) {
+        choose_figure(*figure);
+        take_hold(*figure, -1);
+        event->accept();
+        return;
+    }
+    // Anything else pressed puts down what was chosen on the schema.
+    if (chosen_figure_) {
+        chosen_figure_.reset();
+        update();
     }
     // The plus answers before anything else on the table it belongs to, or it
     // could not be pressed: a press on a header takes hold of the table.
@@ -2037,6 +2169,13 @@ void SchemaView::mousePressEvent(QMouseEvent* event) {
                 carried_lines_.push_back(*routed.link);
         return;
     }
+    // A picture put on the schema lies beneath the rest, so it answers only
+    // where nothing else has.
+    if (const auto figure = figure_at(event->position(), true)) {
+        choose_figure(*figure);
+        take_hold(*figure, -1);
+        return;
+    }
     // Pressing the empty canvas asks about nothing, which puts the whole
     // schema back -- and holding it draws a band round whatever it is taken
     // across, which is the other way of gathering several.
@@ -2063,6 +2202,24 @@ void SchemaView::mouseMoveEvent(QMouseEvent* event) {
     // something is being dragged: a table under the pointer in the middle of a
     // gesture is not a table being considered.
     pointer_ = event->position();
+    pointer_seen_ = true;
+    // Something put on the schema, carried or pulled: drawn where the hand has
+    // it, kept on the canvas, and written once on letting go.
+    if (figure_drag_ && (event->buttons() & Qt::LeftButton)) {
+        const auto travelled = event->position() - figure_drag_->grab;
+        auto now = figure_drag_->handle < 0 ? figure_drag_->start
+                                            : scaled_figure(figure_drag_->start, figure_drag_->handle, travelled);
+        if (figure_drag_->handle < 0) {
+            now.x += travelled.x();
+            now.y += travelled.y();
+        }
+        now.x = std::max(0.0, now.x);
+        now.y = std::max(0.0, now.y);
+        figure_drag_->now = now;
+        update();
+        event->accept();
+        return;
+    }
     // A foreign key being drawn follows the pointer until it is let go. Below
     // a few pixels of travel it is still a click, and draws nothing.
     if (linking_) {
@@ -2146,6 +2303,22 @@ void SchemaView::mouseMoveEvent(QMouseEvent* event) {
             setCursor(Qt::CrossCursor);
             return;
         }
+        if (writing_) {
+            setCursor(Qt::IBeamCursor);
+            return;
+        }
+        // What is put on the schema says what a press there would do, asked in
+        // the order the press asks it (2026-10-15).
+        if (const auto handle = figure_grip_at(event->position()); handle >= 0) {
+            setCursor(handle == 0 || handle == 2 ? Qt::SizeFDiagCursor
+                      : handle == 1 || handle == 3 ? Qt::SizeBDiagCursor
+                      : handle == 4 || handle == 6 ? Qt::SizeVerCursor : Qt::SizeHorCursor);
+            return;
+        }
+        if (figure_at(event->position(), false)) {
+            setCursor(Qt::OpenHandCursor);
+            return;
+        }
         // What the pointer says is what a press there would do, so this asks
         // in the same order the press does: the line first, then whatever a
         // table offers inside itself, then its edges, then the table.
@@ -2167,7 +2340,8 @@ void SchemaView::mouseMoveEvent(QMouseEvent* event) {
             setCursor(Qt::CrossCursor);
             return;
         }
-        setCursor(table_at(event->position()) ? Qt::OpenHandCursor : Qt::ArrowCursor);
+        setCursor(table_at(event->position()) || figure_at(event->position(), true) ? Qt::OpenHandCursor
+                                                                                    : Qt::ArrowCursor);
         return;
     }
     if (!preview_.tables[*dragging_].origin) return;
@@ -2252,6 +2426,25 @@ void SchemaView::mouseReleaseEvent(QMouseEvent* event) {
     // do, and the pointer goes on saying where the next one goes.
     if (placing_) {
         setCursor(Qt::CrossCursor);
+        event->accept();
+        return;
+    }
+    if (writing_) {
+        event->accept();
+        return;
+    }
+    // Something put on the schema let go: written where it was put, or at the
+    // size it was pulled to, as one edit, unless it never moved.
+    if (figure_drag_ && event->button() == Qt::LeftButton) {
+        const auto drag = *figure_drag_;
+        figure_drag_.reset();
+        setCursor(Qt::OpenHandCursor);
+        if (drag.now != drag.start) {
+            const auto result = drag.handle < 0 ? editor_.move_schema_figures({{drag.ref, drag.now}})
+                                                : editor_.resize_schema_figures({{drag.ref, drag.now}});
+            if (arranged) arranged(result);
+        }
+        update();
         event->accept();
         return;
     }
@@ -2655,6 +2848,17 @@ void SchemaView::mouseDoubleClickEvent(QMouseEvent* event) {
         placed_on_press_ = false;
         event->accept();
         return;
+    }
+    // Text put on the schema opens for writing at a double click (2026-10-15).
+    if (const auto figure = figure_at(event->position(), false)) {
+        if (const auto* id = std::get_if<domain::NoteId>(&*figure);
+            id && editor_.project().schema_notes.at(*id).free_text) {
+            figure_drag_.reset();
+            choose_figure(*figure);
+            begin_text(*id, false);
+            event->accept();
+            return;
+        }
     }
     // A line behind a table is still the line, for the same reason it can be
     // taken hold of there: it has to be givable back, or it is stuck.
@@ -3409,7 +3613,12 @@ ExportView SchemaView::export_view() {
     result.column_type = [](const domain::PreviewColumn& column) { return typed_label(column); };
     result.background = theme_ ? theme_->canvas : QColor(Qt::white);
     result.bounds = [this](PictureExtent extent) {
-        if (preview_.tables.empty()) return QRectF{};
+        // What is put on the schema is in the picture with the rest, or alone
+        // when it is what is chosen (2026-10-15).
+        QRectF figures;
+        for (const auto& [ref, box] : figure_boxes())
+            if (extent != PictureExtent::Selection || chosen_figure_ == ref) figures = figures.united(box.adjusted(-12, -12, 12, 12));
+        if (preview_.tables.empty()) return figures;
         if (extent == PictureExtent::CurrentView) return QRectF(visibleRegion().boundingRect());
         // A picture is of what is left once a search has taken the rest away,
         // so what it frames is that too (C8, 2026-10-14).
@@ -3429,7 +3638,7 @@ ExportView SchemaView::export_view() {
             if (line_hidden(hidden, route.from_table, route.to_table)) continue;
             bounds = bounds.united(route.path.boundingRect().adjusted(-56, -56, 56, 56));
         }
-        return bounds;
+        return bounds.united(figures);
     };
     result.paint = [this](QPainter& painter, const QRectF& target, const QRectF& source, const QColor& ground) {
         // Remove only transient interaction decoration for the export. Restore
@@ -3442,6 +3651,7 @@ ExportView SchemaView::export_view() {
         QScopedValueRollback<decltype(hovered_type_)> type(hovered_type_, {});
         QScopedValueRollback<decltype(linking_)> linking(linking_, {});
         QScopedValueRollback<decltype(painted_)> painted(painted_);
+        QScopedValueRollback<decltype(chosen_figure_)> figure(chosen_figure_, {});
         painter.save();
         painter.setClipRect(target);
         painter.translate(target.topLeft());
@@ -3473,8 +3683,11 @@ void SchemaView::paint_schema(QPainter& painter, const QRectF& exposed, std::opt
     painter.setRenderHint(QPainter::Antialiasing, true);
     if (!exporting) painter.fillRect(rect(), theme_->canvas);
     painter.setBrush(Qt::NoBrush);
+    // Pictures put on the schema lie beneath everything else (2026-10-15).
+    paint_figures(painter, true, exporting);
 
     if (preview_.tables.empty()) {
+        paint_figures(painter, false, exporting);
         painter.setPen(theme_->muted);
         // A schema drawn by hand has no entity to wait for: it starts from a
         // table (Zain, 2026-09-27).
@@ -4203,6 +4416,9 @@ void SchemaView::paint_schema(QPainter& painter, const QRectF& exposed, std::opt
     for (const auto& routed : routes_)
         if (on_view(routed)) draw_ends(routed);
 
+    // Text and symbols put on the schema stand over the tables (2026-10-15).
+    paint_figures(painter, false, exporting);
+
     // The band goes over everything: it is the thing being done, not part of
     // what is being looked at. Before the hovered line's grips, which give up
     // early, so a band is drawn whether or not a line happens to be hovered.
@@ -4276,6 +4492,239 @@ void SchemaView::set_placing(bool on) {
     placing_ = on;
     setCursor(on ? Qt::CrossCursor : Qt::ArrowCursor);
     update();
+}
+
+// What is put on the schema (Zain, 2026-10-15): text, symbols and pictures,
+// the schema's own. Drawn, chosen, carried, pulled and written here, and each
+// change written through the Editor as one edit.
+void SchemaView::set_writing(bool on) {
+    if (writing_ == on) return;
+    writing_ = on;
+    setCursor(on ? Qt::IBeamCursor : Qt::ArrowCursor);
+    update();
+}
+
+void SchemaView::choose_figure(std::optional<domain::ElementRef> figure) {
+    if (figure && !editor_.project().schema_figures.contains(*figure)) figure.reset();
+    if (chosen_figure_ == figure) return;
+    chosen_figure_ = figure;
+    // A thing chosen on the schema is chosen instead of tables, not with them.
+    if (figure && (!selected_.empty() || picked_)) select(std::nullopt);
+    update();
+}
+
+QPointF SchemaView::put_place() const {
+    if (pointer_seen_ && rect().contains(pointer_.toPoint())) return pointer_;
+    const auto shown = visibleRegion().boundingRect();
+    return shown.isEmpty() ? QPointF(rect().center()) : QPointF(shown.center());
+}
+
+std::vector<std::pair<domain::ElementRef, QRectF>> SchemaView::figure_boxes() const {
+    std::vector<std::pair<domain::ElementRef, QRectF>> boxes;
+    for (const auto& [ref, at] : editor_.project().schema_figures) {
+        (void)at;
+        boxes.emplace_back(ref, figure_rect(ref));
+    }
+    return boxes;
+}
+
+QRectF SchemaView::figure_rect(const domain::ElementRef& ref) const {
+    const auto& at = figure_drag_ && figure_drag_->ref == ref ? figure_drag_->now
+                                                              : editor_.project().schema_figures.at(ref);
+    return QRectF(at.x, at.y, at.width, at.height);
+}
+
+std::optional<domain::ElementRef> SchemaView::figure_at(QPointF point, bool pictures) const {
+    std::optional<domain::ElementRef> found;
+    for (const auto& [ref, at] : editor_.project().schema_figures) {
+        (void)at;
+        if (std::holds_alternative<domain::PictureId>(ref) != pictures) continue;
+        if (figure_rect(ref).contains(point)) found = ref;
+    }
+    return found;
+}
+
+
+std::vector<QRectF> SchemaView::figure_grips(const domain::ElementRef& ref) const {
+    // Text is as large as its words, so it has nothing to pull. A picture has
+    // all eight handles and a symbol its four corners, inside its box, shrunk
+    // with it when it is small so it can still be seen while it is chosen.
+    if (const auto* note = std::get_if<domain::NoteId>(&ref);
+        note && editor_.project().schema_notes.at(*note).free_text)
+        return {};
+    const auto box = figure_rect(ref);
+    const auto size = std::clamp(std::min(box.width(), box.height()) / 4, 4.0, 9.0);
+    const auto count = std::holds_alternative<domain::PictureId>(ref) ? 8 : 4;
+    std::vector<QRectF> grips;
+    for (int i = 0; i < count; ++i) {
+        const auto& side = figure_sides[static_cast<std::size_t>(i)];
+        const QPointF at(side.left ? box.left() + size / 2 : side.right ? box.right() - size / 2 : box.center().x(),
+                         side.top ? box.top() + size / 2 : side.bottom ? box.bottom() - size / 2 : box.center().y());
+        grips.emplace_back(at - QPointF(size / 2, size / 2), QSizeF(size, size));
+    }
+    return grips;
+}
+
+int SchemaView::figure_grip_at(QPointF point) const {
+    if (!chosen_figure_ || !editor_.project().schema_figures.contains(*chosen_figure_)) return -1;
+    const auto grips = figure_grips(*chosen_figure_);
+    for (std::size_t i = 0; i < grips.size(); ++i)
+        if (grips[i].contains(point)) return static_cast<int>(i);
+    return -1;
+}
+
+const QPixmap& SchemaView::figure_pixmap(domain::PictureId id) const {
+    auto found = figure_pixmaps_.find(id);
+    if (found == figure_pixmaps_.end()) {
+        QPixmap pixmap;
+        const auto& bytes = editor_.project().schema_pictures.at(id).image;
+        pixmap.loadFromData(bytes.data(), static_cast<uint>(bytes.size()));
+        found = figure_pixmaps_.emplace(id, std::move(pixmap)).first;
+    }
+    return found->second;
+}
+
+QFont SchemaView::prose() const {
+    // The schema's own lettering, not the diagram's: the two are sized apart.
+    auto plain = font();
+    plain.setWeight(QFont::Normal);
+    plain.setUnderline(false);
+    return plain;
+}
+
+QSizeF SchemaView::prose_size(const QString& text) const {
+    const QFontMetricsF metrics(prose());
+    qreal width = 0;
+    const auto lines = text.split('\n');
+    for (const auto& line : lines) width = std::max(width, metrics.horizontalAdvance(line));
+    return {std::max(24.0, std::ceil(width) + 8), std::ceil(metrics.lineSpacing() * static_cast<qreal>(lines.size())) + 8};
+}
+
+void SchemaView::paint_figures(QPainter& painter, bool pictures, bool exporting) {
+    const auto& project = editor_.project();
+    painter.save();
+    if (pictures) {
+        // Beneath the lines and the tables, as a picture lies beneath the
+        // diagram, fitted to its box and never stretched.
+        painter.setRenderHint(QPainter::SmoothPixmapTransform);
+        for (const auto& [id, picture] : project.schema_pictures) {
+            (void)picture;
+            const auto box = figure_rect(domain::ElementRef{id});
+            const auto& image = figure_pixmap(id);
+            if (image.isNull()) continue;
+            const auto size = QSizeF(image.size()).scaled(box.size(), Qt::KeepAspectRatio);
+            painter.drawPixmap(QRectF(box.center() - QPointF(size.width() / 2, size.height() / 2), size), image,
+                               QRectF(QPointF(0, 0), QSizeF(image.size())));
+        }
+        painter.restore();
+        return;
+    }
+    // Text and symbols over the tables, in the ink the schema writes with.
+    painter.setPen(theme_->text);
+    for (const auto& [id, note] : project.schema_notes) {
+        if (text_editing_ && *text_editing_ == id) continue;
+        const auto box = figure_rect(domain::ElementRef{id});
+        if (note.free_text) {
+            painter.setFont(prose());
+            const QFontMetricsF metrics(painter.font());
+            qreal y = box.top() + 4 + metrics.ascent();
+            for (const auto& line : QString::fromStdString(note.description).split('\n')) {
+                painter.drawText(QPointF(box.left() + 4, y), line);
+                y += metrics.lineSpacing();
+            }
+            continue;
+        }
+        // A symbol is its character grown to fill its box, as on the diagram.
+        const auto character = QString::fromStdString(note.name);
+        if (character.isEmpty()) continue;
+        auto lettering = prose();
+        lettering.setPointSizeF(10);
+        const QFontMetricsF small(lettering);
+        const auto tall = small.tightBoundingRect(character).height();
+        const auto wide = small.horizontalAdvance(character);
+        if (tall < 0.1 || wide < 0.1) continue;
+        lettering.setPointSizeF(std::clamp(10 * std::min(box.height() * 0.86 / tall, box.width() * 0.86 / wide), 4.0, 260.0));
+        painter.setFont(lettering);
+        const auto ink = QFontMetricsF(lettering).tightBoundingRect(character);
+        painter.drawText(QPointF(box.center().x() - ink.center().x(), box.center().y() - ink.center().y()), character);
+    }
+    // What is chosen, outlined in the accent with its handles; never in a picture.
+    if (!exporting && chosen_figure_ && project.schema_figures.contains(*chosen_figure_)) {
+        const auto box = figure_rect(*chosen_figure_);
+        const bool picture = std::holds_alternative<domain::PictureId>(*chosen_figure_);
+        painter.setBrush(Qt::NoBrush);
+        painter.setPen(QPen(theme_->accent, picture ? 2.0 : 1.2, picture ? Qt::SolidLine : Qt::DashLine));
+        painter.drawRect(box);
+        painter.setPen(QPen(theme_->accent, 1.0));
+        painter.setBrush(theme_->canvas);
+        for (const auto& grip : figure_grips(*chosen_figure_)) painter.drawRect(grip);
+    }
+    painter.restore();
+}
+
+void SchemaView::place_text(QPointF at) {
+    const auto size = prose_size({});
+    const domain::Rect where{std::max(0.0, at.x()), std::max(0.0, at.y()), size.width(), size.height()};
+    const auto result = editor_.create_schema_text({}, where);
+    if (arranged) arranged(result);
+    if (!result || !result.created) return;
+    choose_figure(*result.created);
+    begin_text(std::get<domain::NoteId>(*result.created), true);
+    if (wrote) wrote();
+}
+
+void SchemaView::begin_text(domain::NoteId id, bool just_made) {
+    const auto found = editor_.project().schema_notes.find(id);
+    if (found == editor_.project().schema_notes.end() || !found->second.free_text) return;
+    if (text_editing_) finish_text(false);
+    if (!text_field_) {
+        auto* field = new SchemaTextField(this);
+        field->setObjectName("schemaInlineText");
+        field->setLineWrapMode(QPlainTextEdit::NoWrap);
+        field->finished = [this](bool cancel) { finish_text(cancel); };
+        text_field_ = field;
+    }
+    text_editing_ = id;
+    text_made_at_ = just_made ? std::optional{editor_.revision()} : std::nullopt;
+    const auto box = figure_rect(domain::ElementRef{id});
+    text_field_->setFont(prose());
+    text_field_->setPlainText(QString::fromStdString(found->second.description));
+    text_field_->setGeometry(QRectF(box.topLeft(), QSizeF(std::max(box.width() + 40, 240.0),
+                                                          std::max(box.height() + 30, 80.0))).toRect());
+    text_field_->show();
+    text_field_->raise();
+    text_field_->setFocus(Qt::OtherFocusReason);
+    text_field_->selectAll();
+    update();
+}
+
+void SchemaView::finish_text(bool cancel) {
+    if (!text_editing_ || !text_field_) return;
+    const auto id = *text_editing_;
+    const auto made = text_made_at_;
+    const auto words = text_field_->toPlainText();
+    text_editing_.reset();
+    text_made_at_.reset();
+    const bool holding = text_field_->hasFocus();
+    text_field_->hide();
+    if (holding) setFocus(Qt::OtherFocusReason);
+    update();
+    if (!editor_.project().schema_notes.contains(id)) return;
+    const domain::ElementRef ref{id};
+    // Closed empty, or abandoned, straight after being put down: taken back,
+    // and by undoing where nothing else has happened since, so the history
+    // does not keep a step that made nothing.
+    if (made && (cancel || words.trimmed().isEmpty())) {
+        if (chosen_figure_ == ref) chosen_figure_.reset();
+        const auto result = editor_.revision() == *made ? editor_.undo() : editor_.erase_schema_figures({ref});
+        if (arranged) arranged(result);
+        return;
+    }
+    if (cancel) return;
+    const auto& at = editor_.project().schema_figures.at(ref);
+    const auto size = prose_size(words);
+    const auto result = editor_.edit_schema_text(id, words.toStdString(), domain::Rect{at.x, at.y, size.width(), size.height()});
+    if (arranged) arranged(result);
 }
 
 std::optional<std::pair<std::size_t, std::size_t>> SchemaView::connect_row_at(QPointF point) const {
