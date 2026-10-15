@@ -266,6 +266,14 @@ if(BUILD_TESTING)
     # Each of its parts keeps the limit the whole suite had.
     set_tests_properties(desktop_export desktop_relational desktop_relational_lines desktop_window_tools
                          desktop_window desktop_new_projects PROPERTIES TIMEOUT 60)
+    # On the Windows CI runners the canvas suite, about 11 s, went past 30 s
+    # three times in runs where the other suites passed, once on a runner
+    # slow from the start; 30 runs in a row there took 10-12 s each, so it is
+    # the runner, not a stall (2026-10-16). Windows gives it the desktop
+    # parts' 60 s; elsewhere it keeps 30 s.
+    if(WIN32)
+        set_tests_properties(canvas PROPERTIES TIMEOUT 60)
+    endif()
 endif()
 
 # Installable packages (packaging/README.md). Off for ordinary builds, which
