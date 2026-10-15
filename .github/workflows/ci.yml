@@ -26,15 +26,6 @@ jobs:
           - name: Windows x86-64
             runner: windows-2025
             qt-arch: win64_msvc2022_64
-          - name: Linux x86-64
-            runner: ubuntu-24.04
-            qt-arch: linux_gcc_64
-          - name: macOS Apple Silicon
-            runner: macos-15
-            qt-arch: clang_64
-          - name: macOS Intel
-            runner: macos-15-intel
-            qt-arch: clang_64
 
     steps:
       - name: Check out the source
@@ -56,7 +47,15 @@ jobs:
           -DBUILD_TESTING=ON
 
       - name: Build
-        run: cmake --build build/ci --config Release --parallel
+        run: cmake --build build/ci --config Release --parallel --target canvas_tests
 
-      - name: Test
-        run: ctest --test-dir build/ci --build-config Release --output-on-failure --timeout 120
+      # Diagnostic branch only (never merged): the limit CTest gives canvas on
+      # Windows, then canvas run ten times through CTest under that limit.
+      - name: The canvas limit on Windows
+        shell: bash
+        run: |
+          ctest --test-dir build/ci --build-config Release --show-only=json-v1 > tests.json
+          python -c "import json; t=[x for x in json.load(open('tests.json'))['tests'] if x['name']=='canvas'][0]; print('canvas TIMEOUT', {p['name']: p['value'] for p in t['properties']}['TIMEOUT'])"
+
+      - name: Run canvas ten times
+        run: ctest --test-dir build/ci --build-config Release -R "^canvas$" --repeat until-fail:10 --output-on-failure --timeout 120
