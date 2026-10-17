@@ -1,0 +1,23 @@
+{
+  "demo_name": "University conceptual-to-schema LinkedIn demo",
+  "mode": "replay",
+  "database": "university",
+  "animation": {
+    "intro_seconds": 5,
+    "conceptual_seconds": 25,
+    "conversion_seconds": 15,
+    "final_seconds": 15
+  },
+  "ai": {
+    "providers": [
+      "typesafe_jev",
+      "anthropic_claude"
+    ],
+    "enabled": false
+  },
+  "recording": {
+    "format": "mp4",
+    "capture": "external_screen_recorder",
+    "auto_record": false
+  }
+}
