@@ -551,7 +551,42 @@ jobs:
           done < "$RUNNER_TEMP/binary-packages.txt"
           sort -u "$RUNNER_TEMP/source-packages.txt" > "$out/SOURCE-PACKAGES.txt"
           cat "$out/SOURCE-PACKAGES.txt"
-          (cd "$out" && while read -r source version; do apt-get source --download-only "$source=$version"; done < SOURCE-PACKAGES.txt)
+          # The mirror keeps only each package's current source, so a version
+          # the runner image carries but Ubuntu has since replaced is taken
+          # from Launchpad instead: the same version, each file checked against
+          # the SHA-256 sums its .dsc gives.
+          fetch_from_launchpad() {
+            python3 - "$1" "$2" <<'PY'
+          import hashlib, json, re, sys, urllib.parse, urllib.request
+          source, version = sys.argv[1:]
+          api = "https://api.launchpad.net/1.0/ubuntu/+archive/primary"
+          query = urllib.parse.urlencode({"ws.op": "getPublishedSources", "source_name": source,
+                                          "version": version, "exact_match": "true"})
+          entries = json.load(urllib.request.urlopen(f"{api}?{query}"))["entries"]
+          if not entries:
+              sys.exit(f"{source} {version} is not on Launchpad either")
+          urls = json.load(urllib.request.urlopen(entries[0]["self_link"] + "?ws.op=sourceFileUrls"))
+          files = {urllib.parse.unquote(url.rsplit("/", 1)[-1]): url for url in urls}
+          for name, url in files.items():
+              for attempt in range(3):
+                  try:
+                      urllib.request.urlretrieve(url, name)
+                      break
+                  except urllib.error.ContentTooShortError:
+                      if attempt == 2:
+                          raise
+          dsc = next(name for name in files if name.endswith(".dsc"))
+          listed = re.search(r"^Checksums-Sha256:\n((?: .+\n)+)", open(dsc).read(), re.M).group(1)
+          for line in listed.splitlines():
+              digest, _, name = line.split()
+              if hashlib.sha256(open(name, "rb").read()).hexdigest() != digest:
+                  sys.exit(f"{name} does not match its .dsc")
+          print(f"{source} {version}: {', '.join(sorted(files))} from Launchpad")
+          PY
+          }
+          (cd "$out" && while read -r source version; do
+            apt-get source --download-only "$source=$version" || fetch_from_launchpad "$source" "$version" || exit 1
+          done < SOURCE-PACKAGES.txt)
           ls -la "$out"
           tar -C build/package -cf "build/package/ERDFlow-$ERDFLOW_VERSION-linux-x86_64-system-library-sources.tar" system-library-sources
 
