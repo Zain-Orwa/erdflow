@@ -9723,9 +9723,18 @@ void converted_shapes_fit_their_names_tests(infrastructure::QtIdGenerator &ids)
         require(card_of("Department")->geometry().top() == card_of("Professor")->geometry().top() &&
                     page->columns_across() == 2,
                 "Two small tables stand side by side");
-        window.resize(760, 1000);
+        // Narrowed until the two no longer fit side by side, measured from the
+        // cards themselves: how wide they are depends on the platform's font.
+        {
+            const int both = card_of("Department")->width() + 16 + card_of("Professor")->width();
+            const int room = child<QScrollArea>(window, "practiceScroll")->viewport()->width() - 4;
+            window.resize(window.width() - (room - both) - 40, 1000);
+        }
         settle();
         settle();
+        require(child<QScrollArea>(window, "practiceScroll")->viewport()->width() - 4 <
+                    card_of("Department")->width() + 16 + card_of("Professor")->width(),
+                "The window narrows below the two cards side by side");
         require(card_of("Professor")->geometry().top() > card_of("Department")->geometry().bottom(),
                 "Where the second does not fit beside the first, it goes below");
         window.resize(1440, 1000);
