@@ -8,6 +8,7 @@
 #include "ribbon.hpp"
 #include "theme.hpp"
 #include "infrastructure/project_store.hpp"
+#include "infrastructure/updater.hpp"
 
 #include <QApplication>
 #include <QCommandLineParser>
@@ -128,5 +129,15 @@ int main(int argc, char* argv[]) {
             }
         });
     });
+    // ERDFlow keeps itself up to date (ADR-024): an installed copy looks for a
+    // newer release a little after it has opened, fetches it in the
+    // background, and puts it in place as it closes, so the next start is the
+    // new version. Never in a run that only checks the build or takes a
+    // picture.
+    erdflow::infrastructure::Updater updater(ERDFLOW_VERSION);
+    if (!parser.isSet("smoke-test") && !parser.isSet("screenshot")) {
+        QTimer::singleShot(5000, &app, [&updater] { updater.look(); });
+        QObject::connect(&app, &QCoreApplication::aboutToQuit, &app, [&updater] { updater.put_in_place(); });
+    }
     return app.exec();
 }

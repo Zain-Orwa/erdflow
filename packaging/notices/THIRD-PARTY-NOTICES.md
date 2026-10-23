@@ -38,6 +38,16 @@ Part of ERDFlow's icon set comes from Lucide, under the ISC licence, and some
 of those icons derive from Feather, under the MIT licence; see
 `LICENSE-lucide.txt`.
 
+## Monocypher
+
+ERDFlow checks the signature on an update before putting it in place with
+Monocypher 4.0.2 (<https://monocypher.org>), by Loup Vaillant, Michael Savage,
+Fabio Scotoni and contributors, compiled into ERDFlow unmodified. Monocypher
+is dual-licensed under CC0-1.0 and the BSD 2-Clause licence; ERDFlow uses it
+under CC0-1.0, which dedicates it to the public domain. Its source, and how
+it was taken and checked, are in ERDFlow's source, under
+`third_party/monocypher`.
+
 ## Windows package: Microsoft Visual C++ runtime
 
 The Windows package contains Microsoft Visual C++ runtime libraries

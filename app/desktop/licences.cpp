@@ -35,6 +35,8 @@ namespace erdflow::desktop
                         "Qt libraries with modified versions of your own.\n\n")
                     .arg(qt_version);
         text += "Its icons include Lucide and Feather icons under the ISC and MIT licences.\n\n";
+        text += "It checks the signature on its updates with Monocypher, dedicated to the public domain "
+                "under CC0-1.0.\n\n";
         if (folder.isEmpty())
             text += "This copy of ERDFlow was not installed from a package, so the licence files are not "
                     "beside it. They are in ERDFlow's source, under packaging/notices.";
