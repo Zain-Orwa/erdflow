@@ -67,7 +67,8 @@ namespace {
 // the order the table lists them in; version 33 keeps the order somebody gave
 // the columns of a table worked out from the diagram.
 // Version 35 distinguishes borderless free text from card notes and symbols.
-constexpr int current_format_version = 36;
+// Version 37 keeps the rows put into the schema's tables to practise with.
+constexpr int current_format_version = 37;
 
 // A titled card note, written by an older ERDFlow, as the free text it is now
 // read as: the title on the first line and the text beneath. Kept within a
@@ -395,6 +396,61 @@ ColumnIdentity parse_column_identity(const QJsonValue& value) {
     if (kind == "discriminator")
         return DiscriminatorColumn{SpecializationId{parse_id(object(value, {"kind", "specialization"})["specialization"])}};
     invalid("Unsupported column kind in a column order.");
+}
+
+// The rows put into the schema's tables to practise with (version 37). Each
+// value is kept against its column's identity, as a column order is, and NULL
+// is written as null: it is not the empty string.
+QJsonObject encode_practice(const PracticeData& practice) {
+    QJsonArray tables;
+    for (const auto& [relation, table] : practice.tables) {
+        QJsonArray rows;
+        for (const auto& row : table.rows) {
+            QJsonArray values;
+            for (const auto& [column, value] : row.values)
+                values.append(QJsonObject{{"column", column_identity_object(column)},
+                                          {"value", value ? QJsonValue(text(*value)) : QJsonValue()}});
+            rows.append(values);
+        }
+        tables.append(QJsonObject{{"relation", uuid_text(relation.value)}, {"rows", rows}});
+    }
+    QJsonArray places;
+    for (const auto& [relation, place] : practice.places)
+        places.append(QJsonObject{{"relation", uuid_text(relation.value)}, {"x", place.x}, {"y", place.y},
+                                  {"width", place.width}, {"height", place.height}});
+    return {{"converted", practice.converted}, {"enforced", practice.enforced}, {"tables", tables}, {"places", places}};
+}
+double number(const QJsonValue& value);
+PracticeData parse_practice(const QJsonValue& value) {
+    const auto o = object(value, {"converted", "enforced", "tables", "places"});
+    PracticeData practice;
+    practice.converted = parse_flag(o["converted"], "converted");
+    practice.enforced = parse_flag(o["enforced"], "enforced");
+    for (const auto& item : array(o["tables"])) {
+        const auto entry = object(item, {"relation", "rows"});
+        PracticeTable table;
+        for (const auto& listed : array(entry["rows"])) {
+            PracticeRow row;
+            std::set<ColumnIdentity> named;
+            for (const auto& one : array(listed)) {
+                const auto cell = object(one, {"column", "value"});
+                const auto column = parse_column_identity(cell["column"]);
+                if (!named.insert(column).second) invalid("A practice row holds the same column twice.");
+                // A null is a NULL, which a row keeps as no value at all.
+                if (!cell["value"].isNull()) row.values.emplace(column, string(cell["value"], max_description_bytes));
+            }
+            table.rows.push_back(std::move(row));
+        }
+        if (!practice.tables.emplace(RelationId{parse_id(entry["relation"])}, std::move(table)).second)
+            invalid("Duplicate practice table.");
+    }
+    for (const auto& item : array(o["places"])) {
+        const auto place = object(item, {"relation", "x", "y", "width", "height"});
+        const Rect at{number(place["x"]), number(place["y"]), number(place["width"]), number(place["height"])};
+        if (!practice.places.emplace(RelationId{parse_id(place["relation"])}, at).second)
+            invalid("Practice Data places a table twice.");
+    }
+    return practice;
 }
 
 // Where the schema has been edited away from the diagram. Written as its own
@@ -883,8 +939,9 @@ void check_structure(const QByteArray& input) {
             // bookkeeping this preflight does for a hostile document before
             // the real parse ever runs. It is not a schema check: it only has
             // to stay above the widest object the format actually writes,
-            // which is the project itself at eighteen fields.
-            if (keys.size() > 20) invalid("Unsupported project fields.");
+            // which is the project itself at twenty-two fields since
+            // version 37 gave it its practice rows and Connect's constraints.
+            if (keys.size() > 24) invalid("Unsupported project fields.");
         }
     }
 }
@@ -1034,6 +1091,8 @@ QByteArray ErdxProjectStore::encode(const Project& project) {
         {"schema", encode_schema(project.schema)},
         {"schema_layout", encode_layout(project.schema_layout)},
         {"schema_figures", QJsonObject{{"pictures", schema_pictures}, {"notes", schema_notes}}},
+        {"practice", encode_practice(project.practice)},
+        {"connect_constraints", project.connect_constraints},
         {"background", QJsonObject{{"style", background_name(project.background.style)},
                                    {"strength", project.background.strength},
                                    {"image", image_text(project.background.image)}}}}}}).toJson(QJsonDocument::Indented);
@@ -1135,6 +1194,10 @@ application::LoadResult ErdxProjectStore::decode(const QByteArray& input) {
         // file written before it has none, which reads correctly as a schema
         // with nothing put on it.
         const bool schema_figured = number_version >= 36;
+        // Version 37 adds the rows put into the schema's tables to practise
+        // with. A file written before it has none, which reads correctly as a
+        // schema not yet converted into practice tables.
+        const bool practised = number_version >= 37;
         // Version 21 records where the schema differs from the diagram. A file
         // written before it simply has no such section, which reads correctly
         // as the two agreeing about everything.
@@ -1157,7 +1220,9 @@ application::LoadResult ErdxProjectStore::decode(const QByteArray& input) {
         // such number, and is numbered as it opens in the order its
         // attributes were listed in then: the order of their identities.
         const bool creation_ordered = number_version >= 34;
-        const auto data = schema_figured
+        const auto data = practised
+            ? object(root["project"], {"id", "name", "description", "entities", "attributes", "relationships", "layout", "connectors", "specializations", "colours", "pictures", "notes", "comments", "transparency", "lettering", "decisions", "schema", "schema_layout", "schema_figures", "practice", "connect_constraints", "background"})
+            : schema_figured
             ? object(root["project"], {"id", "name", "description", "entities", "attributes", "relationships", "layout", "connectors", "specializations", "colours", "pictures", "notes", "comments", "transparency", "lettering", "decisions", "schema", "schema_layout", "schema_figures", "background"})
             : lettered
             ? object(root["project"], {"id", "name", "description", "entities", "attributes", "relationships", "layout", "connectors", "specializations", "colours", "pictures", "notes", "comments", "transparency", "lettering", "decisions", "schema", "schema_layout", "background"})
@@ -1503,6 +1568,10 @@ application::LoadResult ErdxProjectStore::decode(const QByteArray& input) {
                                                          number_version >= 31, number_version >= 32,
                                                          number_version >= 33);
         if (arranged) project.schema_layout = parse_layout(data["schema_layout"], pulled_tables, relational);
+        if (practised) {
+            project.practice = parse_practice(data["practice"]);
+            project.connect_constraints = parse_flag(data["connect_constraints"], "connect_constraints");
+        }
         if (papered) {
             const auto o = object(data["background"], {"style", "strength", "image"});
             project.background.style = parse_background_style(o["style"]);

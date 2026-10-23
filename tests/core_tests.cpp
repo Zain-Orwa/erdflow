@@ -5,6 +5,7 @@
 // and whether it is a gain or a loss. He decides. Fixing a real defect is not
 // covered by this — fix it and say what was wrong. Full rule: CLAUDE.md.
 #include "application/editor.hpp"
+#include "domain/practice_data.hpp"
 #include "domain/schema_preview.hpp"
 
 #include <algorithm>
@@ -5164,6 +5165,265 @@ void attributes_placed_unnamed_list_in_the_order_they_are_named() {
     CHECK((listed_now() == Names{"1", "Two", "3", "4", "Later", "Five", "First", "Mid", "Last"}));
 }
 
+// Practice Data (Zain, 2026-10-23): rows put into the schema's tables, held to
+// the schema's rules, and never a change to the schema itself.
+void practice_data_follows_the_schema() {
+    TestIds ids;
+    Editor editor(ids);
+    editor.new_schema_project();
+    const auto table = [&](const std::string& name) {
+        return std::get<RelationId>(*editor.create_relation(name).created);
+    };
+    const auto column_id = [&](RelationId in, const std::string& name) {
+        for (const auto& column : editor.project().schema.added.at(in))
+            if (column.name == name) return column.id;
+        throw std::runtime_error("no column " + name);
+    };
+    const auto add = [&](RelationId in, const std::string& name, LogicalType type, std::uint32_t length,
+                         bool required, bool unique) {
+        CHECK(editor.add_schema_column(ElementRef{in}, name));
+        const auto id = column_id(in, name);
+        CHECK(editor.set_schema_column_type(id, type));
+        if (length != 0) CHECK(editor.set_schema_column_size(id, length, 0));
+        CHECK(editor.set_schema_column_rules(id, false, required, unique));
+        return id;
+    };
+    const auto point = [&](RelationId from, RelationId to, const std::string& name, bool key) {
+        CHECK(editor.add_schema_column(ElementRef{from}, name));
+        const auto id = column_id(from, name);
+        CHECK(editor.set_schema_column_rules(id, key, true, false));
+        CHECK(editor.add_foreign_key(from, id, to, column_id(to, editor.project().schema.relations.at(to).name + "ID")));
+        return id;
+    };
+    const auto department = table("Department");
+    const auto dept_id = column_id(department, "DepartmentID");
+    const auto dept_name = add(department, "DepartmentName", LogicalType::Varchar, 20, true, false);
+    const auto office = add(department, "Office", LogicalType::Varchar, 10, false, false);
+    const auto professor = table("Professor");
+    const auto professor_id = column_id(professor, "ProfessorID");
+    CHECK(editor.set_schema_column_auto_increment(professor_id, true));
+    add(professor, "FirstName", LogicalType::Varchar, 30, true, false);
+    const auto email = add(professor, "Email", LogicalType::Varchar, 60, false, true);
+    const auto works_in = point(professor, department, "DepartmentID", false);
+    const auto hired = add(professor, "Hired", LogicalType::Date, 0, false, false);
+    // A bridge keyed by the two foreign keys it holds.
+    const auto teaches = table("Teaches");
+    CHECK(editor.erase_schema_column(column_id(teaches, "TeachesID")));
+    const auto teaches_professor = point(teaches, professor, "ProfessorID", true);
+    const auto teaches_department = point(teaches, department, "DepartmentID", true);
+
+    const auto schema_before = editor.project().schema;
+    const auto layout_before = editor.project().schema_layout;
+    CHECK(editor.project().practice.empty());
+    const auto steps = editor.history().size();
+    CHECK(editor.convert_to_practice_tables());
+    CHECK(editor.history().size() == steps + 1);
+    CHECK(editor.history().back().description == "Convert All to Tables");
+    const auto& practice = [&]() -> const PracticeData& { return editor.project().practice; };
+    CHECK(practice().converted && practice().enforced);
+    // Every table starts with rows, and every one of them keeps every rule.
+    const auto preview = schema_preview(editor.project());
+    CHECK(preview.tables.size() == 3);
+    for (std::size_t t = 0; t < preview.tables.size(); ++t) {
+        CHECK(practice().tables.at(preview.tables[t].id).rows.size() == 3);
+        CHECK(practice_problems(preview, practice(), t).empty());
+    }
+    // The schema is exactly as it was.
+    CHECK(editor.project().schema == schema_before);
+    CHECK(editor.project().schema_layout == layout_before);
+    // Starting rows are made from the schema alone, so they come out the same
+    // every time.
+    CHECK(converted_to_practice(preview, PracticeData{}) == practice());
+    const auto rows = [&](RelationId in) -> const std::vector<PracticeRow>& { return practice().tables.at(in).rows; };
+    const auto value = [&](RelationId in, std::size_t row, ColumnIdentity column) -> PracticeValue {
+        const auto& values = rows(in).at(row).values;
+        const auto found = values.find(column);
+        return found == values.end() ? std::nullopt : found->second;
+    };
+    CHECK(value(department, 0, dept_id) == PracticeValue("1"));
+    CHECK(value(professor, 2, hired) == PracticeValue("2024-08-30"));
+    // The bridge's rows point at rows that exist, and no two share its key.
+    for (const auto& row : rows(teaches)) {
+        CHECK(row.values.contains(teaches_professor) && row.values.contains(teaches_department));
+    }
+    CHECK(editor.undo());
+    CHECK(editor.project().practice.empty());
+    CHECK(editor.redo());
+    CHECK(practice().converted);
+
+    const auto refused = [&](const EditResult& result, const std::string& rule, const std::string& said) {
+        CHECK(!result);
+        CHECK(result.error.substr(0, result.error.find('\n')) == rule);
+        if (result.error.find(said) == std::string::npos) throw std::runtime_error("Unexpected refusal: " + result.error);
+    };
+    const auto kept = practice();
+    // A primary key identifies its row; 01 is the same whole number as 1.
+    refused(editor.set_practice_value(department, 1, dept_id, "01"), "Primary Key violation",
+            "DepartmentID 01 already exists. A primary key must uniquely identify each row.");
+    refused(editor.set_practice_value(department, 1, dept_id, std::nullopt), "Primary Key violation", "cannot be NULL");
+    refused(editor.set_practice_value(department, 1, dept_name, std::nullopt), "NOT NULL violation",
+            "DepartmentName is required");
+    refused(editor.set_practice_value(department, 1, dept_id, "abc"), "Data type violation", "whole numbers (int)");
+    refused(editor.set_practice_value(department, 1, dept_name, std::string(21, 'x')), "Data type violation",
+            "at most 20 characters");
+    refused(editor.set_practice_value(professor, 0, works_in, "99"), "Foreign Key violation",
+            "DepartmentID 99 does not exist in Department.");
+    refused(editor.set_practice_value(professor, 1, email, *value(professor, 0, email)), "Unique constraint violation",
+            "already exists");
+    refused(editor.set_practice_value(professor, 0, professor_id, "7"), "Identity column", "counts itself up");
+    refused(editor.set_practice_value(professor, 0, hired, "2024-02-30"), "Data type violation", "holds a date");
+    refused(editor.add_practice_row(teaches, rows(teaches).at(0)), "Primary Key violation",
+            "already exists. A primary key must uniquely identify each row, so no two rows may share all of its values.");
+    CHECK(practice() == kept);
+    CHECK(editor.history().size() == steps + 1);
+
+    // NULL is not the empty string: an optional column holds either.
+    CHECK(editor.set_practice_value(department, 0, office, ""));
+    CHECK(value(department, 0, office) == PracticeValue(""));
+    CHECK(editor.set_practice_value(department, 0, office, std::nullopt));
+    CHECK(value(department, 0, office) == std::nullopt);
+    CHECK(editor.history().back().description == "Edited a value in Department");
+
+    // A row added counts its identity up, and is held to every rule.
+    PracticeRow typed;
+    typed.values[ColumnIdentity{column_id(professor, "FirstName")}] = "Ada";
+    typed.values[ColumnIdentity{works_in}] = "2";
+    typed.values[ColumnIdentity{professor_id}] = "100";
+    CHECK(editor.add_practice_row(professor, typed));
+    CHECK(rows(professor).size() == 4);
+    CHECK(value(professor, 3, professor_id) == PracticeValue("4"));
+    typed.values[ColumnIdentity{works_in}] = "42";
+    refused(editor.add_practice_row(professor, typed), "Foreign Key violation", "does not exist in Department");
+    PracticeRow unnamed;
+    unnamed.values[ColumnIdentity{works_in}] = "1";
+    refused(editor.add_practice_row(professor, unnamed), "NOT NULL violation", "FirstName is required");
+
+    // A row that is pointed at stays until what points at it is gone.
+    refused(editor.delete_practice_rows(department, {0}), "Foreign Key violation", "is still referenced by");
+    refused(editor.clear_practice_table(department), "Foreign Key violation", "still referenced");
+    CHECK(editor.delete_practice_rows(professor, {3}));
+    CHECK(rows(professor).size() == 3);
+    CHECK(editor.history().back().description == "Deleted a row from Professor");
+
+    // Reset puts the starting rows back; Clear leaves none. Neither reaches the
+    // schema.
+    CHECK(editor.set_practice_value(department, 0, dept_name, "Changed"));
+    CHECK(editor.reset_practice_table(department));
+    CHECK(rows(department) == kept.tables.at(department).rows);
+    CHECK(editor.clear_practice_table(teaches));
+    CHECK(rows(teaches).empty());
+    CHECK(editor.project().schema == schema_before);
+
+    // With constraints off, a change that breaks a rule is kept and shown.
+    CHECK(editor.enforce_practice_constraints(false));
+    CHECK(editor.history().back().description == "Turn constraints off");
+    CHECK(editor.set_practice_value(department, 1, dept_id, "1"));
+    const auto now = schema_preview(editor.project());
+    const auto at = std::find_if(now.tables.begin(), now.tables.end(), [&](const auto& t) { return t.id == department; });
+    const auto problems = practice_problems(now, practice(), static_cast<std::size_t>(at - now.tables.begin()));
+    CHECK(std::any_of(problems.begin(), problems.end(), [](const PracticeProblem& p) {
+        return p.rule == PracticeRule::PrimaryKey && p.row == 1;
+    }));
+    CHECK(editor.enforce_practice_constraints(true));
+    CHECK(value(department, 1, dept_id) == PracticeValue("1"));
+
+    // A column renamed keeps its values: they are kept against what the column
+    // is, not what it is called.
+    CHECK(editor.rename_schema_column(dept_name, "Title"));
+    CHECK(value(department, 0, dept_name) == PracticeValue("Department 1"));
+    // Converting again fills only what has no rows; the rest keep theirs.
+    const auto before_again = practice();
+    CHECK(editor.convert_to_practice_tables());
+    CHECK(practice() == before_again);
+
+    // A card is put where the hand lets it go, and every other card stays
+    // where it stood. Only the places change, and the move undoes.
+    const auto rows_before_move = practice().tables;
+    const auto schema_before_move = editor.project().schema;
+    const auto layout_before_move = editor.project().schema_layout;
+    std::map<RelationId, Rect> places{{department, Rect{0, 0, 400, 0}}, {professor, Rect{416, 0, 400, 0}},
+                                      {teaches, Rect{900, 640, 400, 0}}};
+    CHECK(editor.move_practice_table(teaches, places));
+    CHECK(practice().places == places);
+    CHECK(editor.history().back().description == "Moved Teaches");
+    CHECK(practice().tables == rows_before_move);
+    CHECK(editor.project().schema == schema_before_move && editor.project().schema_layout == layout_before_move);
+    const auto moves = editor.history().size();
+    CHECK(editor.move_practice_table(teaches, places));
+    CHECK(editor.history().size() == moves);
+    places[department] = Rect{-5, 0, 400, 0};
+    CHECK(!editor.move_practice_table(department, places));
+    places[department] = Rect{0, 0, 400, 0};
+    places[teaches] = Rect{900, 640, 520, 300};
+    CHECK(editor.resize_practice_table(teaches, places));
+    CHECK(practice().places.at(teaches) == (Rect{900, 640, 520, 300}));
+    CHECK(editor.history().back().description == "Resized Teaches");
+    CHECK(editor.undo());
+    CHECK(editor.undo());
+    CHECK(practice().places.empty());
+}
+
+// Connect with its constraints off (Zain, 2026-10-23): any row to any row or
+// table at once, within what the model can hold; and the switch itself.
+void connect_without_constraints() {
+    TestIds ids;
+    Editor editor(ids);
+    editor.new_schema_project();
+    CHECK(!editor.project().connect_constraints);
+    const auto table = [&](const std::string& name) {
+        return std::get<RelationId>(*editor.create_relation(name).created);
+    };
+    const auto column_id = [&](RelationId in, const std::string& name) {
+        for (const auto& column : editor.project().schema.added.at(in))
+            if (column.name == name) return column.id;
+        throw std::runtime_error("no column " + name);
+    };
+    const auto department = table("Department");
+    const auto employee = table("Employee");
+    CHECK(editor.add_schema_column(ElementRef{employee}, "Code"));
+    const auto code = column_id(employee, "Code");
+    CHECK(editor.set_schema_column_type(code, LogicalType::Varchar));
+    CHECK(editor.add_schema_column(ElementRef{department}, "Name"));
+    const auto plain = column_id(department, "Name");
+    const auto keys = [&] { return editor.project().schema.foreign_keys; };
+    const auto type_of = [&](SchemaColumnId id) {
+        for (const auto& [owner, columns] : editor.project().schema.added) {
+            (void)owner;
+            for (const auto& one : columns)
+                if (one.id == id) return one.logical_type;
+        }
+        throw std::runtime_error("no such column");
+    };
+
+    // A column of another type takes the key's, and nothing is asked.
+    CHECK(editor.connect_foreign_key_freely(employee, code, {}, department, column_id(department, "DepartmentID")));
+    CHECK(keys().size() == 1 && type_of(code) == LogicalType::Int);
+    // Connected to another key, it is pointed there instead.
+    CHECK(editor.connect_foreign_key_freely(employee, code, {}, employee, column_id(employee, "EmployeeID")));
+    CHECK(keys().size() == 1 && keys().begin()->second.to == employee);
+    // Let go on a table, a column is made, numbered on where its name is taken.
+    CHECK(editor.connect_foreign_key_freely(employee, std::nullopt, "EmployeeID", employee, column_id(employee, "EmployeeID")));
+    CHECK(keys().size() == 2);
+    CHECK(std::any_of(editor.project().schema.added.at(employee).begin(), editor.project().schema.added.at(employee).end(),
+                      [](const SchemaColumn& one) { return one.name == "EmployeeID2" && one.logical_type == LogicalType::Int; }));
+    // What the model cannot hold is still not made.
+    const auto before = editor.project().schema;
+    CHECK(!editor.connect_foreign_key_freely(employee, code, {}, department, plain));
+    CHECK(!editor.connect_foreign_key_freely(department, column_id(department, "DepartmentID"), {}, department,
+                                             column_id(department, "DepartmentID")));
+    CHECK(editor.project().schema == before);
+    // A unique column can be referred to.
+    CHECK(editor.set_schema_column_rules(plain, false, true, true));
+    CHECK(editor.connect_foreign_key_freely(employee, code, {}, department, plain));
+
+    // The switch: off as a project starts, an undoable step.
+    CHECK(editor.set_connect_constraints(true));
+    CHECK(editor.project().connect_constraints);
+    CHECK(editor.history().back().description == "Turn Connect constraints on");
+    CHECK(editor.undo());
+    CHECK(!editor.project().connect_constraints);
+}
+
 int main() {
     const std::pair<const char*, std::function<void()>> tests[] = {
         {"identity and work in progress", identity_and_work_in_progress},
@@ -5195,6 +5455,8 @@ int main() {
         {"connections can be pinned as they are made", connections_can_be_pinned_as_they_are_made},
         {"free text lifecycle", free_text_lifecycle},
         {"pictures and notes are placed like elements", pictures_and_notes_are_placed_like_elements},
+        {"practice data follows the schema", practice_data_follows_the_schema},
+        {"connect without constraints", connect_without_constraints},
         {"schema figures are the schema's own", schema_figures_are_the_schemas_own},
         {"lettering follows resizing by hand", lettering_follows_resizing_by_hand},
         {"a rename widens but never narrows", a_rename_widens_but_never_narrows},

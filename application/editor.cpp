@@ -5,6 +5,7 @@
 // and whether it is a gain or a loss. He decides. Fixing a real defect is not
 // covered by this — fix it and say what was wrong. Full rule: CLAUDE.md.
 #include "application/editor.hpp"
+#include "domain/practice_data.hpp"
 #include "domain/schema_preview.hpp"
 
 #include <algorithm>
@@ -74,6 +75,17 @@ std::size_t payload(const Connector& value) { return value.waypoints.capacity() 
 // A comment holds its text and the list of what it is pinned to on the heap.
 std::size_t payload(const Comment& value) {
     return value.text.capacity() + value.targets.capacity() * sizeof(CommentTarget);
+}
+// A practice table's rows, and every value in them.
+std::size_t payload(const PracticeTable& value) {
+    std::size_t result = value.rows.capacity() * sizeof(PracticeRow);
+    for (const auto& row : value.rows)
+        for (const auto& [column, held] : row.values) {
+            (void)column;
+            result += sizeof(std::pair<const ColumnIdentity, PracticeValue>) + 4 * sizeof(void*)
+                    + (held ? held->capacity() : 0);
+        }
+    return result;
 }
 
 // The three fields history swaps whole rather than key by key. They are the
@@ -174,6 +186,13 @@ struct Delta {
     Changes<NoteId, Note> schema_notes;
     Changes<PictureId, Picture> schema_pictures;
     Changes<ElementRef, Rect> schema_figures;
+    // Practice rows, a table at a time, so a value typed into one table never
+    // copies the others into the history.
+    Changes<RelationId, PracticeTable> practice_tables;
+    std::optional<bool> practice_converted;
+    std::optional<bool> practice_enforced;
+    std::optional<std::map<RelationId, Rect>> practice_places;
+    std::optional<bool> connect_constraints;
     std::size_t bytes = 0;
     std::uint64_t before_state = 0;
     std::uint64_t after_state = 0;
@@ -185,7 +204,9 @@ struct Delta {
             && pictures.keys.empty() && notes.keys.empty() && comments.keys.empty()
             && layout.keys.empty() && connectors.keys.empty() && colours.keys.empty()
             && transparency.keys.empty() && lettering.keys.empty()
-            && schema_notes.keys.empty() && schema_pictures.keys.empty() && schema_figures.keys.empty();
+            && schema_notes.keys.empty() && schema_pictures.keys.empty() && schema_figures.keys.empty()
+            && practice_tables.keys.empty() && !practice_converted && !practice_enforced && !practice_places
+            && !connect_constraints;
     }
     void toggle(Project& project) {
         if (project_name) project.name.swap(*project_name);
@@ -209,6 +230,11 @@ struct Delta {
         schema_notes.toggle(project.schema_notes);
         schema_pictures.toggle(project.schema_pictures);
         schema_figures.toggle(project.schema_figures);
+        practice_tables.toggle(project.practice.tables);
+        if (practice_converted) std::swap(project.practice.converted, *practice_converted);
+        if (practice_enforced) std::swap(project.practice.enforced, *practice_enforced);
+        if (practice_places) std::swap(project.practice.places, *practice_places);
+        if (connect_constraints) std::swap(project.connect_constraints, *connect_constraints);
     }
     [[nodiscard]] std::size_t estimate(const Project& project) const {
         return sizeof(Delta) + sizeof(std::unique_ptr<Delta>) + label.capacity()
@@ -228,7 +254,10 @@ struct Delta {
             + cost(colours, project.colours) + cost(transparency, project.transparency)
             + cost(lettering, project.lettering)
             + cost(schema_notes, project.schema_notes) + cost(schema_pictures, project.schema_pictures)
-            + cost(schema_figures, project.schema_figures);
+            + cost(schema_figures, project.schema_figures)
+            + cost(practice_tables, project.practice.tables)
+            + (practice_places ? entries(practice_places->size() + project.practice.places.size(),
+                                         sizeof(std::pair<const RelationId, Rect>)) : 0);
     }
 };
 
@@ -1737,6 +1766,77 @@ EditResult Editor::connect_foreign_key(RelationId referencing, std::optional<Sch
     });
 }
 
+EditResult Editor::connect_foreign_key_freely(RelationId referencing, std::optional<SchemaColumnId> column,
+                                              std::string name, RelationId referenced, SchemaColumnId target,
+                                              ForeignKeyId* made) {
+    return impl_->edit("Connect tables", [&](Delta& delta) {
+        const auto& schema = project().schema;
+        if (!schema.relations.contains(referencing) || !schema.relations.contains(referenced))
+            return failure("Choose two existing tables.");
+        const auto owns = [&](RelationId table, SchemaColumnId id) {
+            const auto found = schema.added.find(table);
+            return found != schema.added.end()
+                && std::any_of(found->second.begin(), found->second.end(),
+                               [&](const SchemaColumn& one) { return one.id == id; });
+        };
+        if (!owns(referenced, target)) return failure("The column no longer exists.");
+        const auto& pointed = *find_schema_column(schema, target);
+        const auto keys = std::count_if(schema.added.at(referenced).begin(), schema.added.at(referenced).end(),
+                                        [](const SchemaColumn& one) { return one.identifier; });
+        if (!pointed.unique && !(pointed.identifier && keys == 1))
+            return failure("A foreign key refers to a primary key or a unique column.");
+        auto value = schema;
+        SchemaColumnId holding;
+        if (column) {
+            if (!owns(referencing, *column)) return failure("The column no longer exists.");
+            if (*column == target) return failure("A column cannot reference itself.");
+            // Pointed here instead of wherever it pointed before.
+            for (auto at = value.foreign_keys.begin(); at != value.foreign_keys.end();) {
+                if (at->second.column != *column) {
+                    ++at;
+                    continue;
+                }
+                if (at->second.target == target) return EditResult{};
+                at = value.foreign_keys.erase(at);
+            }
+            auto& held = *find_schema_column(value, *column);
+            held.logical_type = pointed.logical_type;
+            held.length = pointed.length;
+            held.scale = pointed.scale;
+            holding = *column;
+        } else {
+            auto& own = value.added[referencing];
+            const auto taken = [&](const std::string& called) {
+                return std::any_of(own.begin(), own.end(), [&](const SchemaColumn& one) { return one.name == called; });
+            };
+            if (name.empty()) name = pointed.name;
+            auto chosen = name;
+            for (int n = 2; taken(chosen); ++n) chosen = name + std::to_string(n);
+            SchemaColumn fresh;
+            fresh.id = SchemaColumnId{impl_->next_id()};
+            fresh.name = std::move(chosen);
+            fresh.logical_type = pointed.logical_type;
+            fresh.length = pointed.length;
+            fresh.scale = pointed.scale;
+            holding = fresh.id;
+            own.push_back(std::move(fresh));
+        }
+        const ForeignKeyId id{impl_->next_id()};
+        value.foreign_keys[id] = SchemaForeignKey{id, referencing, referenced, holding, target};
+        if (const auto why = broken_reference(value); !why.empty()) return failure(why);
+        delta.schema = std::move(value);
+        if (made) *made = id;
+        return EditResult{};
+    });
+}
+
+EditResult Editor::set_connect_constraints(bool constrained) {
+    return impl_->edit(constrained ? "Turn Connect constraints on" : "Turn Connect constraints off", [&](Delta& delta) {
+        if (project().connect_constraints != constrained) delta.connect_constraints = constrained;
+        return EditResult{};
+    });
+}
+
 EditResult Editor::erase_foreign_key(ForeignKeyId id) {
     return impl_->edit("Remove foreign key", [&](Delta& delta) {
         if (!project().schema.foreign_keys.contains(id)) return failure("The foreign key no longer exists.");
@@ -3206,6 +3306,175 @@ EditResult Editor::duplicate(const std::vector<ElementRef>& elements, double dx,
         return result;
     });
 }
+
+namespace {
+// Where a relation stands in the schema as it reads now, if it is still there.
+std::optional<std::size_t> practice_table(const SchemaPreview& preview, RelationId id) {
+    for (std::size_t t = 0; t < preview.tables.size(); ++t)
+        if (preview.tables[t].id == id) return t;
+    return std::nullopt;
+}
+EditResult refused(const PracticeProblem& problem) { return failure(problem.title + "\n" + problem.message); }
+std::string practice_name(const SchemaPreview& preview, std::optional<std::size_t> t) {
+    return t ? preview.tables[*t].name : std::string("the table");
+}
+} // namespace
+
+EditResult Editor::convert_to_practice_tables() {
+    return impl_->edit("Convert All to Tables", [&](Delta& delta) {
+        const auto preview = schema_preview(project());
+        if (preview.tables.empty()) return failure("The schema has no tables to convert yet. Add a table first.");
+        const auto& before = project().practice;
+        const auto after = converted_to_practice(preview, before);
+        for (const auto& [id, table] : after.tables)
+            if (!before.tables.contains(id)) delta.practice_tables.put(id, table);
+        if (!before.converted) delta.practice_converted = true;
+        return EditResult{};
+    });
+}
+
+EditResult Editor::set_practice_value(RelationId table, std::size_t row, ColumnIdentity column, PracticeValue value) {
+    const auto preview = schema_preview(project());
+    const auto t = practice_table(preview, table);
+    return impl_->edit("Edit a value in " + practice_name(preview, t), [&](Delta& delta) {
+        if (!t) return failure("The table is no longer in the schema.");
+        const auto& shape = preview.tables[*t];
+        const auto found = project().practice.tables.find(table);
+        if (found == project().practice.tables.end() || row >= found->second.rows.size())
+            return failure("The row no longer exists.");
+        const auto columns = practice_columns(shape);
+        const auto at = std::find_if(columns.begin(), columns.end(),
+                                     [&](std::size_t c) { return column_identity(shape.columns[c]) == column; });
+        if (at == columns.end()) return failure("The column is no longer in the table.");
+        const auto& described = shape.columns[*at];
+        auto after = project().practice;
+        auto& values = after.tables[table].rows[row].values;
+        if (value) values[column] = std::move(value);
+        else values.erase(column);
+        if (after == project().practice) return EditResult{};
+        if (after.enforced && described.auto_increment)
+            return failure("Identity column\n" + described.name + " counts itself up (IDENTITY). The database gives "
+                           "each new row the next number, so it is not typed over by hand.");
+        if (after.enforced)
+            if (const auto why = practice_refusal(preview, project().practice, after, *t, row, {*at}))
+                return refused(*why);
+        delta.practice_tables.put(table, after.tables.at(table));
+        return EditResult{};
+    });
+}
+
+EditResult Editor::add_practice_row(RelationId table, PracticeRow row) {
+    const auto preview = schema_preview(project());
+    const auto t = practice_table(preview, table);
+    return impl_->edit("Add a row to " + practice_name(preview, t), [&](Delta& delta) {
+        if (!t) return failure("The table is no longer in the schema.");
+        const auto& shape = preview.tables[*t];
+        auto after = project().practice;
+        auto& rows = after.tables[table];
+        const auto columns = practice_columns(shape);
+        PracticeRow made;
+        for (const auto c : columns) {
+            const auto& described = shape.columns[c];
+            const auto identity = *column_identity(described);
+            if (described.auto_increment) {
+                made.values[identity] = next_counted_value(rows, described);
+                continue;
+            }
+            const auto typed = row.values.find(identity);
+            if (typed != row.values.end() && typed->second) made.values[identity] = typed->second;
+        }
+        rows.rows.push_back(std::move(made));
+        if (after.enforced)
+            if (const auto why = practice_refusal(preview, project().practice, after, *t, rows.rows.size() - 1, columns))
+                return refused(*why);
+        delta.practice_tables.put(table, rows);
+        return EditResult{};
+    });
+}
+
+EditResult Editor::delete_practice_rows(RelationId table, std::vector<std::size_t> rows) {
+    const auto preview = schema_preview(project());
+    const auto t = practice_table(preview, table);
+    std::sort(rows.begin(), rows.end());
+    rows.erase(std::unique(rows.begin(), rows.end()), rows.end());
+    const auto label = rows.size() == 1 ? "Delete a row from " + practice_name(preview, t)
+                                        : "Delete " + std::to_string(rows.size()) + " rows from " + practice_name(preview, t);
+    return impl_->edit(label, [&](Delta& delta) {
+        if (!t) return failure("The table is no longer in the schema.");
+        const auto found = project().practice.tables.find(table);
+        if (rows.empty() || found == project().practice.tables.end() || rows.back() >= found->second.rows.size())
+            return failure("The row no longer exists.");
+        auto after = project().practice;
+        auto& kept = after.tables[table].rows;
+        for (auto at = rows.rbegin(); at != rows.rend(); ++at) kept.erase(kept.begin() + static_cast<std::ptrdiff_t>(*at));
+        if (after.enforced)
+            if (const auto why = practice_refusal(preview, project().practice, after, *t, std::nullopt, {}))
+                return refused(*why);
+        delta.practice_tables.put(table, after.tables.at(table));
+        return EditResult{};
+    });
+}
+
+EditResult Editor::reset_practice_table(RelationId table) {
+    const auto preview = schema_preview(project());
+    const auto t = practice_table(preview, table);
+    return impl_->edit("Reset " + practice_name(preview, t), [&](Delta& delta) {
+        if (!t) return failure("The table is no longer in the schema.");
+        auto after = project().practice;
+        after.tables[table].rows = starter_rows(preview, project().practice, *t);
+        if (after == project().practice) return EditResult{};
+        if (after.enforced)
+            if (const auto why = practice_refusal(preview, project().practice, after, *t, std::nullopt, {}))
+                return refused(*why);
+        delta.practice_tables.put(table, after.tables.at(table));
+        return EditResult{};
+    });
+}
+
+EditResult Editor::clear_practice_table(RelationId table) {
+    const auto preview = schema_preview(project());
+    const auto t = practice_table(preview, table);
+    return impl_->edit("Clear " + practice_name(preview, t), [&](Delta& delta) {
+        if (!t) return failure("The table is no longer in the schema.");
+        auto after = project().practice;
+        after.tables[table].rows.clear();
+        if (after == project().practice) return EditResult{};
+        if (after.enforced)
+            if (const auto why = practice_refusal(preview, project().practice, after, *t, std::nullopt, {}))
+                return refused(*why);
+        delta.practice_tables.put(table, after.tables.at(table));
+        return EditResult{};
+    });
+}
+
+EditResult Editor::enforce_practice_constraints(bool enforced) {
+    return impl_->edit(enforced ? "Turn constraints on" : "Turn constraints off", [&](Delta& delta) {
+        if (project().practice.enforced != enforced) delta.practice_enforced = enforced;
+        return EditResult{};
+    });
+}
+
+EditResult Editor::move_practice_table(RelationId table, std::map<RelationId, Rect> places) {
+    return place_practice(table, std::move(places), "Move ");
+}
+
+EditResult Editor::resize_practice_table(RelationId table, std::map<RelationId, Rect> places) {
+    return place_practice(table, std::move(places), "Resize ");
+}
+
+EditResult Editor::place_practice(RelationId table, std::map<RelationId, Rect> places, const std::string& verb) {
+    const auto preview = schema_preview(project());
+    const auto t = practice_table(preview, table);
+    return impl_->edit(verb + practice_name(preview, t), [&](Delta& delta) {
+        if (!t) return failure("The table is no longer in the schema.");
+        // What was kept for tables the schema does not have now stays kept.
+        for (const auto& [kept, place] : project().practice.places) places.emplace(kept, place);
+        if (places == project().practice.places) return EditResult{};
+        delta.practice_places = std::move(places);
+        return EditResult{};
+    });
+}
+
 EditResult Editor::undo() {
     if (!can_undo()) return failure("There is nothing to undo.");
     auto& delta = impl_->history[impl_->cursor - 1];

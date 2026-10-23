@@ -2467,7 +2467,7 @@ void SchemaView::mouseReleaseEvent(QMouseEvent* event) {
             // strip under a table being the table itself.
             if (const auto spot = link_spot(here)) {
                 if (linked) linked(Linked{from.table, from.row, spot->table, spot->row, at});
-            } else if (warned && from.table < preview_.tables.size()
+            } else if (warned && editor_.project().connect_constraints && from.table < preview_.tables.size()
                        && from.row < preview_.tables[from.table].columns.size()) {
                 const auto& start = preview_.tables[from.table];
                 warned(start.columns[from.row].primary_key
@@ -4843,6 +4843,16 @@ std::optional<SchemaView::LinkTarget> SchemaView::link_target() const {
     if (!linking_ || !linking_->travelled) return std::nullopt;
     auto spot = link_spot(linking_to_);
     if (!spot) return std::nullopt;
+    // With Connect's constraints off (Zain, 2026-10-23) a line goes on wherever
+    // the model can hold the key: from the primary key or a unique column, to
+    // anything but the row itself.
+    if (!editor_.project().connect_constraints) {
+        const auto& home = preview_.tables[linking_->table];
+        const auto& start = home.columns[linking_->row];
+        spot->takes = !start.ignored && (start.unique || (start.primary_key && home.primary_key.size() == 1))
+                   && !(spot->table == linking_->table && spot->row == linking_->row);
+        return spot;
+    }
     const auto plan = plan_connection(preview_, linking_->table, linking_->row, spot->table, spot->row);
     spot->takes = plan.kind != ConnectPlan::Kind::Refused;
     return spot;

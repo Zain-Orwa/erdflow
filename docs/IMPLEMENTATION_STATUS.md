@@ -3274,6 +3274,69 @@ Not built yet, though some of it is on screen:
 - Reference pictures exist for one system and release. The audit is
   offscreen and does not prove what a real screen reader announces.
 
+## Practice Data (2026-10-23)
+
+The first form of the Data workspace (ADR-023). *Convert All to Tables* (Model
+and Design menus) raises a page over the whole stage in place of the schema,
+as the schema rises over the diagram: a header (*Practice Data*, *Show
+Schema*, and how many tables were converted), one bar (Search tables,
+Constraints active, grid or list) and a card for every table the schema has,
+each as big as its whole table and flowing side by side while they fit. A card
+is resized by any edge or corner. Tables are not
+grouped into kinds. A card is dragged by its heading and stays exactly where it
+is let go; the first move pins every card where it stood, gaps stay gaps, the
+places are saved and each move undoes. The navigation and the
+workspace switch are unchanged.
+
+A card shows the table's name alone on its line, its row count (and, only when some do, how many rows break a
+rule), Add Row, Reset and a ⋯ menu (Delete Selected Rows, Set Cell to NULL,
+Clear Table), and the rows under column heads marked with the schema's own
+golden key and PK, FK and UQ. A foreign key's cell offers the rows it can point
+at, named by what they hold ("1 — Computer Science"). A refused change is
+explained in the card ("Primary Key violation — DepartmentID 1 already
+exists…") and in the status bar. An identity column is counted up and not
+typed over.
+
+- Domain: `domain/practice_data.{hpp,cpp}` (columns, values, rules, starter
+  rows); `PracticeData` in `domain/model.hpp`, on `Project::practice`.
+- Editor: `convert_to_practice_tables`, `set_practice_value`,
+  `add_practice_row`, `delete_practice_rows`, `reset_practice_table`,
+  `clear_practice_table`, `enforce_practice_constraints`,
+  `move_practice_table`, `resize_practice_table` -- each one step of
+  history, refused whole while constraints are enforced.
+- File: format 37, `practice` (see `ERDX_FORMAT.md`).
+- Desktop: `app/desktop/practice_data_view.{hpp,cpp}`; `MainWindow`
+  `show_practice_data` / `open_practice_data`, `convertToTables`,
+  `--practice-data` for screenshots.
+- Tests: core `practice data follows the schema`; persistence `practice rows
+  persist`; desktop (window-tools part) `practice_data_tests`.
+
+Not built: the DataSource port of ADR-012 (one source so far); sorting and
+filtering rows; import and export of rows.
+
+## Connect's constraints (2026-10-23)
+
+On a schema drawn by hand, Connect's menu gains *Constraints active* and
+*Constraints off* under *How the lines run* (Zain, 2026-10-23). A project
+starts with them **off**: a line from a primary-key or unique row, let go on
+any row or table -- another table or its own -- connects at once, asking
+nothing and saying nothing. The column let go on takes the key's type, a
+foreign key it already had is pointed here instead, and a column made for it
+is numbered on where its name is taken. Only what the model itself cannot hold
+-- a reference to a column that is neither the only primary key column nor
+unique, or a column to itself -- is not made, silently. *Constraints active*
+is Connect exactly as it was before: its questions and its refusals. The
+choice is the project's (`Project::connect_constraints`, format 37) and is an
+undoable step. A schema worked out from a diagram has no Connect and is
+unchanged.
+
+- Editor: `connect_foreign_key_freely`, `set_connect_constraints`.
+- Desktop: `MainWindow::connect_schema_rows_freely`; `SchemaView::link_target`
+  lights a landing by the same rule while a line is drawn.
+- Tests: core `connect without constraints`; persistence `practice rows
+  persist`; desktop new-projects part (the free drag), and the existing
+  Connect checks now turn constraints on first.
+
 ## System qualities in this implementation
 
 | Requirement | Concrete evidence | Current limit |

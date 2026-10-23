@@ -60,6 +60,9 @@ int main(int argc, char* argv[]) {
     // options above it.
     parser.addOption({"theme", "Wear this theme, such as midnight, for this run only.", "key"});
     parser.addOption({"schema-full", "Raise Relational Design at full height."});
+    // Shows Practice Data, converting the schema first if it never has been.
+    // Development tooling like the options above it.
+    parser.addOption({"practice-data", "Show Practice Data in place of the schema."});
     // The window's size for a screenshot, such as 1440x1080 -- the reference
     // viewport the visual comparisons are made at (ADR-022 section 9.6).
     // Development tooling like the options above it.
@@ -108,6 +111,7 @@ int main(int argc, char* argv[]) {
         }
         if (parser.isSet("schema") || parser.isSet("schema-full"))
             window.open_schema(parser.isSet("schema-full"));
+        if (parser.isSet("practice-data")) window.open_practice_data();
         QTimer::singleShot(900, &window, [&] {
             if (parser.isSet("screenshot") && !window.grab().save(parser.value("screenshot"))) {
                 app.exit(1);

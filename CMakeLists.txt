@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(ERDFlow VERSION 0.1.0 LANGUAGES CXX)
+project(ERDFlow VERSION 0.2.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -21,7 +21,8 @@ if(ERDFLOW_SANITIZERS AND NOT MSVC)
     target_link_options(erdflow_warnings INTERFACE -fsanitize=address,undefined)
 endif()
 
-add_library(erdflow_domain domain/model.cpp domain/schema_preview.cpp domain/diagram_from_schema.cpp)
+add_library(erdflow_domain domain/model.cpp domain/schema_preview.cpp domain/diagram_from_schema.cpp
+                           domain/practice_data.cpp)
 target_include_directories(erdflow_domain PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(erdflow_domain PRIVATE erdflow_warnings)
 
@@ -44,6 +45,7 @@ add_library(erdflow_desktop app/desktop/main_window.cpp app/desktop/schema_view.
                             app/desktop/symbols.cpp app/desktop/symbol_picker.cpp
                             app/desktop/dr_icons.cpp app/desktop/dr_icon_picker.cpp
                             app/desktop/export_dialog.cpp app/desktop/search_bar.cpp
+                            app/desktop/practice_data_view.cpp
                             app/desktop/licences.cpp)
 target_link_libraries(erdflow_desktop PUBLIC erdflow_canvas Qt6::Svg PRIVATE erdflow_warnings)
 # Help -> Licences names ERDFlow's copyright holder as LICENSE does, so there

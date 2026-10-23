@@ -9,6 +9,12 @@
 
 **Status:** Accepted
 
+> **Amended by [ADR-023](ADR-023-PRACTICE-DATA.md), 2026-10-23.** Zain chose
+> to build the Data workspace first, as **Practice Data**, reached from
+> Relational Design before SQL exists. The visible order is therefore
+> Conceptual ERD → Relational Design → Data → SQL until SQL arrives. What this
+> document says about the four workspaces otherwise stands.
+
 **Date:** 2026-09-23
 **Project:** ERDFlow
 **Decision Scope:** Visible product workspaces, theme token architecture, menu bar, start-route readiness
