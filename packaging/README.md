@@ -65,7 +65,9 @@ AppImage is also started on fresh Ubuntu 24.04, Debian 13 and Fedora 42
 systems. A sources job collects and checks the source archives published with
 the release (`release/SOURCES.md`), and the Linux job the source packages of
 the Ubuntu libraries in the AppImage. A last job checks the four checksums,
-writes `SHA256SUMS` and, with a key set, signs it. It creates no release and no
+writes `SHA256SUMS` and, with a key set, signs it; with the update key set it
+also writes `SHA256SUMS.ed25519`, the signature installed copies check before
+they update themselves (ADR-024). It creates no release and no
 tag, and publishes nothing; `release/assemble-release.sh` gathers a run's
 files for a release.
 
@@ -81,6 +83,7 @@ missing secret skips its step and never fails the build.
 | `MACOS_SIGNING_IDENTITY` | Its name, such as `Developer ID Application: Zain Orwa (TEAMID)` |
 | `APPLE_API_KEY_ID`, `APPLE_API_ISSUER_ID`, `APPLE_API_KEY_P8_BASE64` | An App Store Connect API key for the notary service: its key ID, issuer ID and base64-encoded `.p8` file |
 | `ERDFLOW_GPG_PRIVATE_KEY`, `ERDFLOW_GPG_PASSPHRASE` | An OpenPGP private key (ASCII-armoured) and its passphrase, to sign `SHA256SUMS` |
+| `ERDFLOW_UPDATE_SIGNING_KEY` | The Ed25519 update key (PEM), whose public half is `release_key_hex` in `infrastructure/updater.cpp`. Set since 2026-10-23. Without it the run warns, and installed copies are not offered its packages. |
 | variable `ERDFLOW_REDISTRIBUTION_APPROVED` = `true` | The release owner's sign-off. Every package then says it was approved, and the notices refuse to say so while a release blocker remains. |
 
 The macOS app is signed with the hardened runtime and a secure timestamp, the

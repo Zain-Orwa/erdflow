@@ -29,8 +29,16 @@ target_link_libraries(erdflow_domain PRIVATE erdflow_warnings)
 add_library(erdflow_application application/editor.cpp application/history.cpp)
 target_link_libraries(erdflow_application PUBLIC erdflow_domain PRIVATE erdflow_warnings)
 
-add_library(erdflow_infrastructure infrastructure/project_store.cpp)
-target_link_libraries(erdflow_infrastructure PUBLIC erdflow_application Qt6::Core PRIVATE erdflow_warnings)
+add_library(erdflow_infrastructure infrastructure/project_store.cpp infrastructure/updater.cpp)
+target_link_libraries(erdflow_infrastructure PUBLIC erdflow_application Qt6::Core PRIVATE erdflow_warnings erdflow_monocypher)
+
+# Monocypher checks the signature on an update before it is put in place, and
+# is used for nothing else (ADR-024). Its files are upstream's, unmodified
+# (third_party/monocypher/README.md), so they are compiled as they are, without
+# ERDFlow's own warnings.
+enable_language(C)
+add_library(erdflow_monocypher STATIC third_party/monocypher/monocypher.c
+                                      third_party/monocypher/monocypher-ed25519.c)
 
 
 # The canvas draws the diagram, so it is also what draws a picture of it.
@@ -215,6 +223,10 @@ if(BUILD_TESTING)
     target_link_libraries(persistence_tests PRIVATE erdflow_infrastructure erdflow_warnings)
     add_test(NAME persistence COMMAND persistence_tests)
 
+    add_executable(update_tests tests/update_tests.cpp)
+    target_link_libraries(update_tests PRIVATE erdflow_infrastructure erdflow_warnings)
+    add_test(NAME update COMMAND update_tests)
+
     add_executable(canvas_tests tests/canvas_tests.cpp)
     target_link_libraries(canvas_tests PRIVATE erdflow_canvas erdflow_infrastructure erdflow_warnings)
     add_test(NAME canvas COMMAND canvas_tests)
@@ -282,5 +294,7 @@ endif()
 # stay exactly as they are; the package workflow turns it on.
 option(ERDFLOW_PACKAGING "Build ERDFlow as an installable application and prepare its packages" OFF)
 if(ERDFLOW_PACKAGING)
+    # Only a packaged ERDFlow updates itself; a build from source never does.
+    target_compile_definitions(erdflow_infrastructure PRIVATE ERDFLOW_PACKAGED_BUILD)
     include(packaging/packaging.cmake)
 endif()

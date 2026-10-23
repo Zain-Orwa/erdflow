@@ -18,6 +18,7 @@
 #include "search_bar.hpp"
 #include "symbol_picker.hpp"
 #include "symbols.hpp"
+#include "infrastructure/updater.hpp"
 
 #include <QAbstractButton>
 #include <QAction>
@@ -7283,6 +7284,18 @@ namespace erdflow::desktop
         for (const char *name : {"themeMenu", "iconMenu", "notationMenu"})
             if (auto *menu = findChild<QMenu *>(name))
                 settings_menu_->addMenu(menu);
+        // Whether an installed ERDFlow keeps itself up to date (Zain,
+        // 2026-10-23, ADR-024): on until somebody turns it off, and read
+        // afresh each time ERDFlow looks for an update or closes.
+        settings_menu_->addSeparator();
+        auto *updates = settings_menu_->addAction("Automatic Updates");
+        updates->setObjectName("automaticUpdates");
+        updates->setCheckable(true);
+        updates->setChecked(QSettings().value(infrastructure::automatic_updates_key, true).toBool());
+        updates->setToolTip("ERDFlow looks for a newer version when it opens, fetches it while you work, "
+                            "and puts it in place when you close it.");
+        connect(updates, &QAction::toggled, this, [](bool on)
+                { QSettings().setValue(infrastructure::automatic_updates_key, on); });
         home_->top_bar()->attach_theme_menu(findChild<QMenu *>("themeMenu"));
         connect(home_->top_bar()->return_button(), &QPushButton::clicked, this, [this]
                 { show_home(false); });

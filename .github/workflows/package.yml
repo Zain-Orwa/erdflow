@@ -749,7 +749,17 @@ jobs:
     timeout-minutes: 10
     env:
       HAS_GPG_SIGNING: ${{ secrets.ERDFLOW_GPG_PRIVATE_KEY != '' }}
+      HAS_UPDATE_SIGNING: ${{ secrets.ERDFLOW_UPDATE_SIGNING_KEY != '' }}
     steps:
+      # Only for the public key ERDFlow carries, which the update signature
+      # below is checked against.
+      - name: Check out the update key ERDFlow carries
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          path: source
+          sparse-checkout: infrastructure/updater.cpp
+          sparse-checkout-cone-mode: false
+
       - name: Download the packages
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -781,6 +791,34 @@ jobs:
             --armor --detach-sign --output SHA256SUMS.asc SHA256SUMS
           gpg --batch --verify SHA256SUMS.asc SHA256SUMS
 
+      # What an installed ERDFlow checks before it updates itself (ADR-024):
+      # an Ed25519 signature of SHA256SUMS, which names every package and its
+      # hash (secret ERDFLOW_UPDATE_SIGNING_KEY). The key's public half must be
+      # the one ERDFlow carries, or no installed copy would take the update.
+      - name: Sign SHA256SUMS for automatic updates
+        if: env.HAS_UPDATE_SIGNING == 'true'
+        working-directory: packages
+        env:
+          ERDFLOW_UPDATE_SIGNING_KEY: ${{ secrets.ERDFLOW_UPDATE_SIGNING_KEY }}
+        run: |
+          umask 077
+          key="$RUNNER_TEMP/update-key.pem"
+          printf '%s\n' "$ERDFLOW_UPDATE_SIGNING_KEY" > "$key"
+          openssl pkeyutl -sign -rawin -inkey "$key" -in SHA256SUMS -out SHA256SUMS.ed25519
+          openssl pkey -in "$key" -pubout -out "$RUNNER_TEMP/update-key.pub"
+          rm -f "$key"
+          openssl pkeyutl -verify -pubin -inkey "$RUNNER_TEMP/update-key.pub" -rawin -in SHA256SUMS \
+            -sigfile SHA256SUMS.ed25519
+          held=$(openssl pkey -pubin -in "$RUNNER_TEMP/update-key.pub" -outform DER | tail -c 32 | od -An -tx1 | tr -d ' \n')
+          carried=$(sed -n 's/.*release_key_hex\[\] = "\([0-9a-f]\{64\}\)".*/\1/p' ../source/infrastructure/updater.cpp)
+          if [ "$held" != "$carried" ]; then
+            echo "::error::The update signing key ($held) is not the one ERDFlow carries ($carried)"; exit 1
+          fi
+
+      - name: Say that this run's packages will not be offered as an update
+        if: env.HAS_UPDATE_SIGNING != 'true'
+        run: echo "::warning::ERDFLOW_UPDATE_SIGNING_KEY is not set; installed copies will not update to these packages"
+
       - name: Upload SHA256SUMS
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -788,5 +826,6 @@ jobs:
           path: |
             packages/SHA256SUMS
             packages/SHA256SUMS.asc
+            packages/SHA256SUMS.ed25519
           if-no-files-found: error
           retention-days: 14

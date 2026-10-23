@@ -3337,6 +3337,34 @@ unchanged.
   persist`; desktop new-projects part (the free drag), and the existing
   Connect checks now turn constraints on first.
 
+## Automatic updates (2026-10-23)
+
+An installed ERDFlow keeps itself up to date (ADR-024; Zain chose all three
+when asked: put in place on closing, every release signed, a switch in
+Settings). Five seconds after opening, it fetches the newest release's
+`SHA256SUMS` and `SHA256SUMS.ed25519` with the system's `curl`, checks the
+Ed25519 signature against the key it carries, and, where the line for its own
+computer is newer than itself, fetches that package and checks its SHA-256. On
+closing, the last ERDFlow open puts it in place: the bundle swapped in by a
+shell once ERDFlow has exited (macOS), the installer run with nothing shown
+(Windows), the AppImage renamed over itself (Linux). Anything that fails is let
+go silently and tried again next time. Only packaged builds that were
+installed do this; a build from source never does.
+
+- Infrastructure: `infrastructure/updater.{hpp,cpp}` -- `read_offer`,
+  `signed_by`, `is_newer`, `package_platform`, and `Updater` (`look`,
+  `put_in_place`); Monocypher 4.0.2 in `third_party/monocypher`, unmodified.
+- Desktop: `main.cpp` starts it, except with `--smoke-test` or
+  `--screenshot`; Home's Settings menu gains *Automatic Updates* (on by
+  default, `updates/automatic`); Help -> Licences credits Monocypher.
+- Release: the package workflow signs `SHA256SUMS` with
+  `ERDFLOW_UPDATE_SIGNING_KEY` and checks the key is the one ERDFlow carries;
+  `assemble-release.sh` gathers and checks the signature.
+- Tests: `update` suite (RFC 8032 vector, signed lists, refusals, unsafe
+  names); desktop window part (the Settings switch, the Licences credit).
+- Not yet seen end to end: the first release to carry this must be installed
+  by hand, and only the release after it can be fetched by one.
+
 ## System qualities in this implementation
 
 | Requirement | Concrete evidence | Current limit |

@@ -26,6 +26,7 @@
 #include "app/desktop/practice_data_view.hpp"
 #include "app/desktop/schema_explorer.hpp"
 #include "infrastructure/project_store.hpp"
+#include "infrastructure/updater.hpp"
 
 #include <QAbstractAnimation>
 #include <QAnimationGroup>
@@ -9929,7 +9930,7 @@ void converted_shapes_fit_their_names_tests(infrastructure::QtIdGenerator &ids)
         require(installed.contains("ERDFlow 0.1.0") && installed.contains("MIT licence") &&
                     installed.contains("Zain Orwa") && installed.contains("Qt 6.11.2") &&
                     installed.contains("GNU Lesser General Public License version 3") &&
-                    installed.contains("replace the Qt libraries") &&
+                    installed.contains("replace the Qt libraries") && installed.contains("Monocypher") &&
                     installed.contains(QDir::toNativeSeparators(root.filePath("windows/licenses"))),
                 "Licences names ERDFlow's licence and holder, the Qt it uses under the LGPL, and the folder");
         require(desktop::licences_text("0.1.0", "6.11.2", {}).contains("packaging/notices"),
@@ -10158,8 +10159,26 @@ int main(int argc, char **argv)
             require(home->sidebar()->button(desktop::HomeSection::Settings)->isVisible(),
                     "Settings is the sidebar's row");
             auto *settings = window.findChild<QMenu *>("settingsMenu");
-            require(settings != nullptr && settings->actions().size() == 3 && settings->actions()[0]->menu() == window.findChild<QMenu *>("themeMenu"),
-                    "Its Settings holds the application's own choices: theme, icons, notation");
+            require(settings != nullptr && settings->actions().size() == 5 && settings->actions()[0]->menu() == window.findChild<QMenu *>("themeMenu"),
+                    "Its Settings holds the application's own choices: theme, icons, notation, and updates");
+            // Automatic updates, after the three and apart from them (Zain,
+            // 2026-10-23): on until turned off, and remembered.
+            {
+                auto *updates = settings->actions()[4];
+                require(settings->actions()[3]->isSeparator() && updates->objectName() == "automaticUpdates" &&
+                            updates->isCheckable(),
+                        "Automatic Updates follows them, apart");
+                QSettings().remove(infrastructure::automatic_updates_key);
+                updates->setChecked(true);
+                require(QSettings().value(infrastructure::automatic_updates_key, true).toBool(), "Updates start on");
+                updates->setChecked(false);
+                require(!QSettings().value(infrastructure::automatic_updates_key, true).toBool() &&
+                            !infrastructure::automatic_updates_on(),
+                        "Turned off, it is remembered and the updater reads it");
+                updates->setChecked(true);
+                require(infrastructure::automatic_updates_on(), "And turned on again");
+                QSettings().remove(infrastructure::automatic_updates_key);
+            }
             // A panel somebody had closed must not be reopened merely because
             // they passed through the home screen.
             auto *checks = child<QDockWidget>(window, "validationDock");
