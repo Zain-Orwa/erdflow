@@ -40,6 +40,7 @@ class QScrollArea;
 class QPushButton;
 class QToolButton;
 class QVBoxLayout;
+class QVariantAnimation;
 class QStandardItemModel;
 class QTreeView;
 class QTreeWidget;
@@ -48,6 +49,7 @@ namespace erdflow::desktop
 {
 
     class DrIconPicker;
+    class PracticeDataView;
     class Ribbon;
     class SearchBar;
     class SymbolPicker;
@@ -134,6 +136,9 @@ namespace erdflow::desktop
         // wanted drives it, including a screenshot taken with nobody there to
         // click the button.
         void open_schema(bool full = false);
+        // Practice Data over the whole stage, converting the schema the first
+        // time, as Convert All to Tables does. Public for the same reason.
+        void open_practice_data();
         // Chooses the notation every end is drawn in, on the diagram and on the
         // schema alike. Public so that anything already knowing which notation is
         // wanted can drive it, a screenshot of one of the four included.
@@ -240,6 +245,19 @@ namespace erdflow::desktop
         void place_schema_header_tools();
         bool schema_full_ = false;
         bool laying_out_schema_ = false;
+        // Practice Data (Zain, 2026-10-23): the schema's tables as cards of
+        // rows, laid over the whole stage in place of the schema, which waits
+        // underneath exactly as it was. The first time, the schema is converted
+        // into practice tables; Show Schema puts the page away again.
+        PracticeDataView *practice_ = nullptr;
+        bool practice_open_ = false;
+        QPointer<QVariantAnimation> practice_motion_;
+        QAction *convert_to_tables_ = nullptr;
+        // The side panels, and the schema's own tools, put away while the
+        // page is up, to come back as they were.
+        std::vector<QPointer<QWidget>> hidden_for_practice_;
+        std::vector<QPointer<QWidget>> stilled_for_practice_;
+        void show_practice_data(bool shown);
         // The diagram's own furniture, put away while the schema has the window.
         std::vector<QPointer<QWidget>> hidden_for_schema_;
         bool schema_took_full_view_ = false;
@@ -310,6 +328,7 @@ namespace erdflow::desktop
         // another; the schema turned into the diagram it would have come from.
         void add_schema_table(std::optional<QPointF> at);
         void link_schema_rows(const SchemaView::Linked &link);
+        void connect_schema_rows_freely(const SchemaView::Linked &link);
         void convert_schema_to_diagram();
         // What the window offers follows whether the project starts from its
         // schema: while it does, Relational Design has the whole window and

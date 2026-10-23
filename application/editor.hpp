@@ -81,6 +81,18 @@ public:
     EditResult add_foreign_key(domain::RelationId from, domain::SchemaColumnId column,
                                domain::RelationId to, domain::SchemaColumnId target);
     EditResult erase_foreign_key(domain::ForeignKeyId id);
+    // Connect with its constraints off (Zain, 2026-10-23): the column made to
+    // refer to `target`, asking nothing. A column that already refers
+    // somewhere is pointed here instead; it takes the target's type and size;
+    // where no column is given one is made, named `name` or, where that is
+    // taken, numbered on from it. Refused only where the model itself would
+    // refuse the key: a target that is neither its table's only primary key
+    // column nor unique, or a column referring to itself.
+    EditResult connect_foreign_key_freely(domain::RelationId referencing, std::optional<domain::SchemaColumnId> column,
+                                          std::string name, domain::RelationId referenced,
+                                          domain::SchemaColumnId target, domain::ForeignKeyId* made = nullptr);
+    // Whether Connect holds a connection to its rules.
+    EditResult set_connect_constraints(bool constrained);
     // A foreign key made by Connect (Zain, 2026-10-01, Stage 5 of the Schema
     // workspace): the referencing table's column pointing at the referenced
     // table's key, in one edit, so one Undo takes all of it back. Either an
@@ -462,10 +474,46 @@ public:
                      const std::vector<domain::AttributeId>& detached_attributes = {},
                      const std::vector<InheritanceLink>& detached_inheritance = {});
     EditResult duplicate(const std::vector<domain::ElementRef>& elements, double dx = 32, double dy = 32);
+
+    // Practice Data (Zain, 2026-10-23): rows put into the schema's tables, each
+    // change one step of history like any other. None of them touches the
+    // schema. While constraints are enforced, a change that breaks one is
+    // refused whole and the refusal says which rule and why, its first line
+    // the rule ("Primary Key violation") and the rest the explanation; while
+    // they are not, the change is kept and the rows that break a rule show it.
+    //
+    // Converting gives every table that has no rows yet the rows it starts
+    // with; a table that has rows keeps them.
+    EditResult convert_to_practice_tables();
+    // One value of one row, NULL where none is given. A value the database
+    // counts up itself is not typed over while constraints are enforced.
+    EditResult set_practice_value(domain::RelationId table, std::size_t row, domain::ColumnIdentity column,
+                                  domain::PracticeValue value);
+    // A row added at the end, with what was typed into it. A column that
+    // counts itself up is given its next value whatever was typed there.
+    EditResult add_practice_row(domain::RelationId table, domain::PracticeRow row);
+    EditResult delete_practice_rows(domain::RelationId table, std::vector<std::size_t> rows);
+    // The rows a table started with, back again; or none at all. The table,
+    // its columns and its rules are untouched either way.
+    EditResult reset_practice_table(domain::RelationId table);
+    EditResult clear_practice_table(domain::RelationId table);
+    EditResult enforce_practice_constraints(bool enforced);
+    // A table's card put down where the hand let it go (Zain, 2026-10-23).
+    // `places` is where every card now stands -- the first move puts them all
+    // where they stood -- and `table` the one that was moved, which names the
+    // step. Only where the cards stand changes.
+    EditResult move_practice_table(domain::RelationId table, std::map<domain::RelationId, domain::Rect> places);
+    // The same, for a card pulled to another size by an edge or a corner. A
+    // height of nought is as tall as the card's rows ask for.
+    EditResult resize_practice_table(domain::RelationId table, std::map<domain::RelationId, domain::Rect> places);
+
     EditResult undo();
     EditResult redo();
 
 private:
+    // Where the cards stand, by a move or by a pull; the verb names the step.
+    EditResult place_practice(domain::RelationId table, std::map<domain::RelationId, domain::Rect> places,
+                              const std::string& verb);
     // The one way an element is renamed; what differs is how its box changes.
     EditResult rename_resizing(domain::ElementRef ref, std::string name,
                                const std::function<std::optional<domain::Rect>(const domain::Rect&)>& resized);

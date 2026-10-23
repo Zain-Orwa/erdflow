@@ -23,6 +23,7 @@
 #include "app/desktop/picture_export.hpp"
 #include "app/desktop/schema_colours.hpp"
 #include "app/desktop/notice.hpp"
+#include "app/desktop/practice_data_view.hpp"
 #include "app/desktop/schema_explorer.hpp"
 #include "infrastructure/project_store.hpp"
 
@@ -82,6 +83,7 @@
 #include <QWidgetAction>
 #include <QStandardItemModel>
 #include <QSvgRenderer>
+#include <QTableView>
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QToolBar>
@@ -1793,8 +1795,11 @@ namespace
                             corner_model->iconSize() == corner_theme->iconSize() &&
                             corner_model->height() == corner_theme->height(),
                         "Each a mark, a word and a menu, alike");
-                require(entries() == QStringList({"designRelational", "checkModel", "fileOpenExample"}),
-                        "On the diagram Model offers Convert to Schema, Check model and Open example, in that order");
+                // Convert All to Tables follows the conversion it goes on from
+                // (Practice Data, Zain 2026-10-23).
+                require(entries() == QStringList({"designRelational", "convertToTables", "checkModel", "fileOpenExample"}),
+                        "On the diagram Model offers Convert to Schema, Convert All to Tables, Check model and Open "
+                        "example, in that order");
                 require(child<QAction>(relational, "designRelational")->text() == "Convert to Schema",
                         "Converting is named for where it goes");
                 require(!child<QPushButton>(relational, "previewSchema")->isVisible() &&
@@ -1824,7 +1829,7 @@ namespace
                         !child<QPushButton>(relational, "openExample")->isVisible(),
                     "With Relational Design in front, its own are offered and the Conceptual ones are put away");
             check_corner_placement(false);
-            require(entries() == QStringList({"modelToConceptual", "openRelationalExampleMenu"}) &&
+            require(entries() == QStringList({"modelToConceptual", "convertToTables", "openRelationalExampleMenu"}) &&
                         child<QAction>(relational, "modelToConceptual")->text() == "Convert to Conceptual",
                     "With the schema in front Model offers Convert to Conceptual and its own examples, not the "
                     "diagram's checks");
@@ -6510,6 +6515,9 @@ namespace
         {
             application::Editor model(ids);
             model.new_schema_project();
+            // Connect with its constraints on, as these checks are about
+            // (they are off unless turned on, Zain 2026-10-23).
+            require(bool(model.set_connect_constraints(true)), "Connect's constraints are turned on");
             std::map<std::string, domain::RelationId> made;
             const auto table = [&](const char *name, double x, double y)
             {
@@ -6773,6 +6781,7 @@ namespace
         {
             application::Editor model(ids);
             model.new_schema_project();
+            require(bool(model.set_connect_constraints(true)), "Connect's constraints are turned on");
             std::map<std::string, domain::RelationId> made;
             const auto table = [&](const char *name, double x, double y)
             {
@@ -7218,6 +7227,7 @@ namespace
         {
             application::Editor model(ids);
             model.new_schema_project();
+            require(bool(model.set_connect_constraints(true)), "Connect's constraints are turned on");
             std::map<std::string, domain::RelationId> made;
             const auto table = [&](const char *name, double x, double y)
             {
@@ -7486,6 +7496,7 @@ namespace
         {
             application::Editor model(ids);
             model.new_schema_project();
+            require(bool(model.set_connect_constraints(true)), "Connect's constraints are turned on");
             std::map<std::string, domain::RelationId> made;
             const auto table = [&](const char *name, double x, double y)
             {
@@ -9536,6 +9547,336 @@ void converted_shapes_fit_their_names_tests(infrastructure::QtIdGenerator &ids)
     // Help -> Licences (2026-10-15): beside About, it names ERDFlow's licence
     // and the Qt it uses, and finds the licence files wherever a package put
     // them (docs/QT_LGPL_COMPLIANCE.md, section 3).
+    // Practice Data (Zain, 2026-10-23): the schema's tables as cards of rows in
+    // place of the schema, held to its keys and rules, and the way back to the
+    // schema exactly as it was.
+    void practice_data_tests(infrastructure::QtIdGenerator &ids)
+    {
+        application::Editor model(ids);
+        infrastructure::ErdxProjectStore store;
+        desktop::MainWindow window(model, store, ids);
+        window.resize(1440, 1000);
+        window.show();
+        // A schema drawn by hand: Department, and Professor pointing at it.
+        model.new_schema_project();
+        const auto department = std::get<domain::RelationId>(*model.create_relation("Department").created);
+        const auto professor = std::get<domain::RelationId>(*model.create_relation("Professor").created);
+        const auto column = [&](domain::RelationId in, const std::string &name)
+        {
+            for (const auto &one : model.project().schema.added.at(in))
+                if (one.name == name)
+                    return one.id;
+            throw std::runtime_error("no column " + name);
+        };
+        require(bool(model.add_schema_column(domain::ElementRef{department}, "DepartmentName")) &&
+                    bool(model.set_schema_column_type(column(department, "DepartmentName"), domain::LogicalType::Varchar)) &&
+                    bool(model.set_schema_column_size(column(department, "DepartmentName"), 30, 0)) &&
+                    bool(model.set_schema_column_rules(column(department, "DepartmentName"), false, true, false)) &&
+                    bool(model.add_schema_column(domain::ElementRef{professor}, "DepartmentID")) &&
+                    bool(model.add_foreign_key(professor, column(professor, "DepartmentID"), department,
+                                               column(department, "DepartmentID"))),
+                "A small schema is drawn");
+        window.show_home(false);
+        settle();
+        const auto schema = model.project().schema;
+        const auto layout = model.project().schema_layout;
+        const auto value = [&](domain::RelationId in, std::size_t row, domain::SchemaColumnId of) -> domain::PracticeValue
+        {
+            const auto &values = model.project().practice.tables.at(in).rows.at(row).values;
+            const auto found = values.find(domain::ColumnIdentity{of});
+            return found == values.end() ? std::nullopt : found->second;
+        };
+
+        require(!window.findChild<QPushButton *>("practiceDataMode"),
+                "The workspace switch is left as it was: Practice Data is reached by converting");
+        auto *menu = child<QToolButton>(window, "headerModel")->menu();
+        emit menu->aboutToShow();
+        require(menu->actions().contains(child<QAction>(window, "convertToTables")),
+                "The Model menu offers Convert All to Tables");
+        child<QAction>(window, "convertToTables")->trigger();
+        settle();
+        auto *page = static_cast<desktop::PracticeDataView *>(child<QWidget>(window, "practiceData"));
+        // It rises over the stage as the schema rises over the diagram.
+        settle_until([&] { return page->isVisible() && page->geometry() == page->parentWidget()->rect(); },
+                     "Converting raises Practice Data over the whole stage");
+        require(page->findChildren<QWidget *>("practiceCategory").isEmpty() &&
+                    !page->findChild<QWidget *>("practiceSchemaHidden"),
+                "No kinds of table to choose between, and no Schema hidden: the grid follows the controls");
+        require(!child<QDockWidget>(window, "explorerDock")->isVisible() &&
+                    !child<QDockWidget>(window, "propertiesDock")->isVisible(),
+                "The side panels are put away with the schema they describe");
+        require(model.project().schema == schema && model.project().schema_layout == layout,
+                "Converting changes nothing in the schema");
+        const auto card_of = [&](const QString &name) -> QFrame *
+        {
+            for (auto *card : page->findChildren<QFrame *>("practiceCard"))
+                if (card->findChild<QLabel *>("practiceCardName")->text() == name)
+                    return card;
+            throw std::runtime_error("no card for " + name.toStdString());
+        };
+        require(page->findChildren<QFrame *>("practiceCard").size() == 2, "A card for every table");
+        require(child<QLabel>(window, "practiceStatusCount")->text() == "2 tables converted",
+                "The page counts the tables it converted");
+        auto *departments = card_of("Department")->findChild<QTableView *>("practiceTable")->model();
+        require(departments->rowCount() == 3 && departments->columnCount() == 2 &&
+                    departments->headerData(0, Qt::Horizontal).toString() == "DepartmentID" &&
+                    departments->headerData(1, Qt::Horizontal).toString() == "DepartmentName",
+                "Each card holds its table's own columns, and the rows it starts with");
+        require(card_of("Department")->findChild<QLabel *>("practiceTrouble")->isHidden() &&
+                    !card_of("Department")->findChild<QLabel *>("practiceReady"),
+                "Rows that keep every rule leave the name alone on its line");
+
+        // A key that is already there is refused, and the card says why.
+        departments->setData(departments->index(1, 0), "1", Qt::EditRole);
+        settle();
+        settle();
+        auto *said = card_of("Department")->findChild<QLabel *>("practiceMessage");
+        require(said->isVisible() && said->text().contains("Primary Key violation") &&
+                    said->text().contains("already exists"),
+                "A duplicate primary key is refused, and the card says which rule and why");
+        require(value(department, 1, column(department, "DepartmentID")) == domain::PracticeValue("2"),
+                "And nothing is changed");
+        // A good value is kept, and undoes like any other change.
+        departments->setData(departments->index(0, 1), "Mathematics", Qt::EditRole);
+        settle();
+        settle();
+        require(value(department, 0, column(department, "DepartmentName")) == domain::PracticeValue("Mathematics") &&
+                    !said->isVisible(),
+                "A value that keeps the rules is kept, and what was said before goes");
+        child<QAction>(window, "undoCommand")->trigger();
+        settle();
+        require(value(department, 0, column(department, "DepartmentName")) == domain::PracticeValue("Department 1") &&
+                    departments->data(departments->index(0, 1)).toString() == "Department 1",
+                "Undo takes it back, on the card too");
+
+        // A foreign key is chosen from the rows it can point at, by what they hold.
+        auto *professors_view = card_of("Professor")->findChild<QTableView *>("practiceTable");
+        auto *professors = professors_view->model();
+        // A view declines to open an editor until it is ready to, so it is
+        // asked until it does.
+        settle_until([&]
+                     {
+            if (!professors_view->findChild<QComboBox *>("practiceChoice"))
+                professors_view->edit(professors->index(0, 1));
+            return professors_view->findChild<QComboBox *>("practiceChoice") != nullptr; },
+                     "A foreign key's cell opens to a choice");
+        auto *choice = professors_view->findChild<QComboBox *>("practiceChoice");
+        require(choice && choice->count() == 3 && choice->itemText(0) == "1 — Department 1" &&
+                    choice->itemData(0).toString() == "1",
+                "A foreign key offers the rows it can point at, each named by what it holds");
+        professors_view->setFocus();
+        settle();
+        settle();
+        // Add Row opens a row to type into, saved only if it keeps every rule.
+        card_of("Professor")->findChild<QPushButton *>("practiceAddRow")->click();
+        settle();
+        require(professors->rowCount() == 4, "Add Row opens a row to type into");
+        professors->setData(professors->index(3, 0), "4", Qt::EditRole);
+        professors->setData(professors->index(3, 1), "99", Qt::EditRole);
+        card_of("Professor")->findChild<QPushButton *>("practiceSaveRow")->click();
+        settle();
+        require(model.project().practice.tables.at(professor).rows.size() == 3 &&
+                    card_of("Professor")->findChild<QLabel *>("practiceMessage")->text().contains(
+                        "DepartmentID 99 does not exist in Department"),
+                "A row pointing at nothing is refused, and the card says what it points at");
+        professors->setData(professors->index(3, 1), "2", Qt::EditRole);
+        card_of("Professor")->findChild<QPushButton *>("practiceSaveRow")->click();
+        settle();
+        require(model.project().practice.tables.at(professor).rows.size() == 4 && professors->rowCount() == 4,
+                "Put right, it is added");
+
+        // With constraints off, what breaks a rule is kept and shown.
+        child<QCheckBox>(window, "practiceConstraints")->click();
+        settle();
+        require(!model.project().practice.enforced &&
+                    child<QLabel>(window, "practiceConstraintsWords")->text() == "Constraints off",
+                "Constraints can be turned off");
+        departments->setData(departments->index(1, 0), "1", Qt::EditRole);
+        settle();
+        settle();
+        require(value(department, 1, column(department, "DepartmentID")) == domain::PracticeValue("1") &&
+                    card_of("Department")->findChild<QLabel *>("practiceTrouble")->isVisible() &&
+                    card_of("Department")->findChild<QLabel *>("practiceTrouble")->text().contains("break"),
+                "And a duplicate key is kept, the card marked as breaking a rule");
+        child<QAction>(window, "undoCommand")->trigger();
+        child<QAction>(window, "undoCommand")->trigger();
+        settle();
+        require(model.project().practice.enforced, "Undo turns them back on");
+
+        // Finding a table among many.
+        auto *search = child<QLineEdit>(window, "practiceSearch");
+        search->setText("prof");
+        settle();
+        require(card_of("Department")->isHidden() && card_of("Professor")->isVisible(),
+                "Search narrows the cards to the tables it names");
+        search->clear();
+        settle();
+        settle();
+        // Each card shows its whole table, every column and every row, and the
+        // cards stand side by side while they fit, the next below where not.
+        for (const auto *name : {"Department", "Professor"})
+        {
+            auto *rows = card_of(name)->findChild<QTableView *>("practiceTable");
+            require(!rows->horizontalScrollBar()->isVisible() && !rows->verticalScrollBar()->isVisible(),
+                    "A card shows its whole table, with nothing to scroll");
+        }
+        require(card_of("Department")->geometry().top() == card_of("Professor")->geometry().top() &&
+                    page->columns_across() == 2,
+                "Two small tables stand side by side");
+        window.resize(760, 1000);
+        settle();
+        settle();
+        require(card_of("Professor")->geometry().top() > card_of("Department")->geometry().bottom(),
+                "Where the second does not fit beside the first, it goes below");
+        window.resize(1440, 1000);
+        settle();
+        settle();
+        child<QToolButton>(window, "practiceList")->click();
+        settle();
+        require(page->columns_across() == 1, "And one to a line in the list");
+        child<QToolButton>(window, "practiceGrid")->click();
+        settle();
+
+        // A card is put exactly where it is let go, held where it was taken;
+        // the place it left stays empty and the other card does not move.
+        {
+            auto *host = child<QWidget>(window, "practiceCards");
+            auto *moved = card_of("Professor");
+            const auto left_behind = moved->geometry();
+            const auto department_was = card_of("Department")->geometry();
+            const auto &bytes = professor.value.bytes;
+            QMimeData carried;
+            carried.setData("application/x-erdflow-practice-table",
+                            QByteArray(reinterpret_cast<const char *>(bytes.data()), static_cast<qsizetype>(bytes.size())));
+            carried.setData("application/x-erdflow-practice-hold", "30,12");
+            const QPoint at(department_was.left() + 60, department_was.bottom() + 300);
+            QDragEnterEvent enter(at, Qt::MoveAction, &carried, Qt::LeftButton, Qt::NoModifier);
+            QApplication::sendEvent(host, &enter);
+            QDragMoveEvent over(at, Qt::MoveAction, &carried, Qt::LeftButton, Qt::NoModifier);
+            QApplication::sendEvent(host, &over);
+            auto *mark = child<QFrame>(window, "practiceDropMark");
+            require(mark->isVisible() && mark->geometry().topLeft() == at - QPoint(30, 12),
+                    "An outline shows where the card will land");
+            QDropEvent drop(QPointF(at), Qt::MoveAction, &carried, Qt::LeftButton, Qt::NoModifier);
+            QApplication::sendEvent(host, &drop);
+            settle();
+            settle();
+            require(card_of("Professor")->geometry().topLeft() == at - QPoint(30, 12),
+                    "The card stands exactly where it was let go");
+            require(card_of("Department")->geometry() == department_was,
+                    "The other card stays where it stood");
+            for (auto *card : page->findChildren<QFrame *>("practiceCard"))
+                require(!card->isVisible() || !card->geometry().intersects(left_behind),
+                        "And the place the card left stays empty");
+            require(model.project().practice.places.size() == 2 && model.project().schema == schema,
+                    "Both places are kept; the schema is untouched");
+            window.resize(1920, 1000);
+            settle();
+            settle();
+            require(card_of("Professor")->geometry().topLeft() == at - QPoint(30, 12) &&
+                        card_of("Department")->geometry().topLeft() == department_was.topLeft(),
+                    "A wider window rearranges nothing");
+            window.resize(1440, 1000);
+            settle();
+            child<QAction>(window, "undoCommand")->trigger();
+            settle();
+            settle();
+            require(model.project().practice.places.empty() &&
+                        card_of("Department")->geometry().top() == card_of("Professor")->geometry().top(),
+                    "Undo puts the cards back in the grid");
+        }
+
+        // A card is pulled to another size by its corner; the size is kept,
+        // the card's table scrolls inside it, and Undo gives the size back.
+        {
+            auto *card = card_of("Department");
+            const auto was = card->geometry();
+            const QPoint corner(card->width() - 2, card->height() - 2);
+            const auto pointer = [&](QEvent::Type type, QPoint at, Qt::MouseButton button, Qt::MouseButtons buttons)
+            {
+                QMouseEvent event(type, QPointF(at), QPointF(card->mapToGlobal(at)), button, buttons, Qt::NoModifier);
+                QApplication::sendEvent(card, &event);
+            };
+            pointer(QEvent::MouseMove, corner, Qt::NoButton, Qt::NoButton);
+            require(card->cursor().shape() == Qt::SizeFDiagCursor, "The corner offers to pull the card");
+            pointer(QEvent::MouseButtonPress, corner, Qt::LeftButton, Qt::LeftButton);
+            pointer(QEvent::MouseMove, corner + QPoint(120, -40), Qt::NoButton, Qt::LeftButton);
+            pointer(QEvent::MouseButtonRelease, corner + QPoint(120, -40), Qt::LeftButton, Qt::NoButton);
+            settle();
+            settle();
+            const auto &place = model.project().practice.places.at(department);
+            require(place.width == was.width() + 120 && place.height == was.height() - 40 &&
+                        card_of("Department")->geometry() == QRect(was.topLeft(), QSize(was.width() + 120, was.height() - 40)),
+                    "The card is the size it was pulled to, and keeps it");
+            require(model.history().back().description == "Resized Department", "A pull is one step of history");
+            require(card_of("Department")->findChild<QTableView *>("practiceTable")->verticalScrollBar()->isVisible(),
+                    "Pulled shorter than its rows, its table scrolls");
+            child<QAction>(window, "undoCommand")->trigger();
+            settle();
+            settle();
+            require(model.project().practice.places.empty() && card_of("Department")->geometry() == was,
+                    "Undo gives the card its whole size back");
+        }
+
+        // Every theme, Plain's greys included.
+        for (const auto theme : {desktop::ThemeId::Plain, desktop::ThemeId::Midnight, desktop::ThemeId::Azure})
+        {
+            window.set_theme(theme);
+            settle();
+        }
+
+        // Show Schema goes back to the schema exactly as it was.
+        child<QPushButton>(window, "practiceShowSchema")->click();
+        settle_until([&] { return !page->isVisible(); }, "Show Schema lowers the page away");
+        require(window.schema()->isVisible() && child<QPushButton>(window, "schemaModeSchema")->isChecked(),
+                "Back to the schema, the switch as it was");
+        require(child<QDockWidget>(window, "explorerDock")->isVisible() &&
+                    child<QDockWidget>(window, "propertiesDock")->isVisible(),
+                "The side panels come back");
+        require(model.project().schema == schema && model.project().schema_layout == layout,
+                "And the schema is exactly as it was");
+        child<QAction>(window, "convertToTables")->trigger();
+        settle_until([&] { return page->isVisible() && page->geometry() == page->parentWidget()->rect(); },
+                     "Convert All to Tables shows the page again");
+        require(professors->rowCount() == 4 && model.project().practice.tables.at(professor).rows.size() == 4,
+                "With the rows it had: converting again gives rows only to a table that has none");
+
+        // From a diagram, the schema it converts to is raised to the whole
+        // window underneath, so Show Schema comes back to the schema.
+        {
+            application::Editor drawn(ids);
+            desktop::MainWindow diagram(drawn, store, ids);
+            diagram.resize(1440, 1000);
+            diagram.show();
+            require(bool(drawn.create_entity("Student", {0, 0, 133, 77})), "A diagram of one entity");
+            diagram.show_home(false);
+            settle();
+            child<QAction>(diagram, "convertToTables")->trigger();
+            settle_schema_full(diagram);
+            auto *practice = child<QWidget>(diagram, "practiceData");
+            settle_until([&] { return practice->geometry() == practice->parentWidget()->rect(); },
+                         "From the diagram, the page lands over the whole stage");
+            require(practice->isVisible() && child<QLabel>(diagram, "workspaceBadge")->text() == "PRACTICE DATA",
+                    "Converting from the diagram shows Practice Data, and the header says so");
+            require(drawn.project().practice.tables.size() == 1, "Its one table is converted");
+            child<QPushButton>(diagram, "practiceShowSchema")->click();
+            settle_until([&] { return !practice->isVisible(); }, "Show Schema lowers the page away");
+            require(child<QPushButton>(diagram, "schemaFull")->isChecked() &&
+                        child<QLabel>(diagram, "workspaceBadge")->text() == "RELATIONAL DESIGN",
+                    "Show Schema comes back to the schema, with the whole window");
+            diagram.open_practice_data();
+            settle();
+            require(practice->isVisible(), "Practice Data is there again");
+            child<QAction>(diagram, "undoCommand")->trigger();
+            settle_until([&] { return !practice->isVisible(); }, "Undoing the conversion lowers the page");
+            require(!drawn.project().practice.converted,
+                    "Undoing the conversion takes the page away with it");
+            drawn.mark_saved(drawn.revision());
+        }
+        model.mark_saved(model.revision());
+        std::cout << "PASS Practice Data converts the schema into tables of rows held to its rules, and goes back\n";
+    }
+
     void licences_tests(infrastructure::QtIdGenerator &ids)
     {
         application::Editor editor(ids);
@@ -9703,6 +10044,7 @@ int main(int argc, char **argv)
             dr_icons_tests(ids);
             schema_figures_tests(ids);
             licences_tests(ids);
+            practice_data_tests(ids);
         }
         if (window_tools_part)
         {
@@ -16383,7 +16725,7 @@ int main(int argc, char **argv)
                 for (auto *action : menu->actions())
                     if (action->isVisible() && !action->isSeparator())
                         names << (action->menu() ? action->menu()->objectName() : action->objectName());
-                require(names == QStringList({"designConvert", "openRelationalExampleMenu"}) &&
+                require(names == QStringList({"designConvert", "convertToTables", "openRelationalExampleMenu"}) &&
                             child<QAction>(window, "designConvert")->text() == "Convert to Conceptual",
                         "A schema drawn by hand: Model offers Convert to Conceptual and its own examples");
                 require(child<QToolButton>(window, "headerModel")->isVisible() &&
@@ -16796,6 +17138,36 @@ int main(int argc, char **argv)
             type_name("ManagerID");
             require(schema->preview().tables[0].columns.size() == 2, "The table has its second column");
 
+            // With Connect's constraints off, as a project starts (Zain,
+            // 2026-10-23), the same drag joins the rows at once: nothing is
+            // asked and nothing is said.
+            require(!window.editor().project().connect_constraints, "Connect starts with its constraints off");
+            {
+                const auto rows_now = schema->row_boxes().front();
+                const QPointF key_gutter(rows_now[0].left() + 22, rows_now[0].center().y());
+                const QPointF onto(rows_now[1].center().x(), rows_now[1].center().y());
+                bool questioned = false;
+                QTimer::singleShot(300, &window, [&]
+                                   {
+                    if (auto *box = window.findChild<QMessageBox *>()) { questioned = true; box->reject(); } });
+                const auto steps = window.editor().history().size();
+                mouse(QEvent::MouseButtonPress, key_gutter, Qt::LeftButton);
+                mouse(QEvent::MouseMove, (key_gutter + onto) / 2, Qt::LeftButton);
+                mouse(QEvent::MouseMove, onto, Qt::LeftButton);
+                mouse(QEvent::MouseButtonRelease, onto, Qt::NoButton);
+                settle();
+                const auto &held = schema->preview().tables[0].columns[1];
+                require(!questioned && held.foreign_key && held.references == std::size_t{0} &&
+                            held.references_column == 0 && held.type == domain::LogicalType::Int &&
+                            window.editor().history().size() == steps + 1,
+                        "With constraints off, the drag makes the foreign key at once, asking nothing");
+                child<QAction>(window, "undoCommand")->trigger();
+                settle();
+                require(!schema->preview().tables[0].columns[1].foreign_key, "And it undoes");
+            }
+            child<QAction>(window, "schemaConnectConstrained")->trigger();
+            settle();
+            require(window.editor().project().connect_constraints, "Constraints active turns them on");
             // A foreign key drawn by hand, from the key it is to reference --
             // EmployeeID's key gutter -- onto the column that is to hold it,
             // ManagerID, which is asked about first (Zain, 2026-10-01: the

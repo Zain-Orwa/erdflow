@@ -733,6 +733,54 @@ struct SchemaOverrides {
     auto operator<=>(const SchemaOverrides&) const = default;
 };
 
+// Practice Data (Zain, 2026-10-23): the rows a student puts into the tables the
+// schema describes, to see what its keys and rules do to real data without
+// writing SQL. It is the Data workspace ADR-022 names, reached before SQL.
+//
+// The schema stays the only description of the tables. Nothing here says what
+// a table or a column is: a row is kept against the relation's own identity and
+// each value against the column's (ColumnIdentity), so renaming a column or
+// listing it elsewhere keeps its values, and a column the schema gains later
+// simply has none yet. Nothing done to a row ever reaches the schema.
+//
+// One value as it was typed, or NULL. NULL is not the empty string and not
+// nought, and is kept apart from both.
+using PracticeValue = std::optional<std::string>;
+
+struct PracticeRow {
+    // A column with no entry holds NULL.
+    std::map<ColumnIdentity, PracticeValue> values;
+    auto operator<=>(const PracticeRow&) const = default;
+};
+
+struct PracticeTable {
+    std::vector<PracticeRow> rows;
+    auto operator<=>(const PracticeTable&) const = default;
+};
+
+struct PracticeData {
+    // Whether the schema has been converted into practice tables at all.
+    bool converted = false;
+    // Whether a change that breaks a constraint is refused, as a database
+    // refuses it, or kept and marked so it can be looked at.
+    bool enforced = true;
+    // A table with no entry has not been given any rows yet. Rows kept for a
+    // table the schema no longer has are kept, as an order kept for a column
+    // that has gone is, for the table coming back.
+    std::map<RelationId, PracticeTable> tables;
+    // Where each card was put by hand (Zain, 2026-10-23): its top-left corner
+    // on the page, its width, and its height where it was pulled to one --
+    // nought means as tall as its rows ask for.
+    // Until a card is moved there are none, and the cards stand in a grid that
+    // follows the window. The first card moved puts every card where it stood,
+    // and from then on each stays exactly where it is, gaps and all; a table
+    // with no place is put below them. A place kept for a table the schema
+    // does not have at the moment waits for it.
+    std::map<RelationId, Rect> places;
+    [[nodiscard]] bool empty() const { return !converted && enforced && tables.empty() && places.empty(); }
+    auto operator<=>(const PracticeData&) const = default;
+};
+
 struct Project {
     ProjectId id;
     std::string name = "Untitled";
@@ -788,6 +836,16 @@ struct Project {
     std::map<ElementRef, LetteringBase> lettering;
     // The paper the diagram is drawn on.
     Background background;
+    // The rows put into the schema's tables to practise with, kept apart from
+    // the schema they are put into.
+    PracticeData practice;
+    // Whether Connect, on a schema drawn by hand, holds a connection to its
+    // own rules -- asking before it makes or uses a column, and turning away
+    // what it would not make -- or connects whatever it is asked to at once
+    // (Zain, 2026-10-23). Off unless turned on. Either way a foreign key the
+    // model cannot hold -- to a column that is neither the primary key nor
+    // unique -- is never made.
+    bool connect_constraints = false;
     auto operator<=>(const Project&) const = default;
 };
 

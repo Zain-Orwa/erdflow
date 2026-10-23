@@ -763,6 +763,46 @@ schema. Version 36 rejects a missing field, an extra key in an entry, a note
 with both flags or neither, an image that is not one, and a place that is not
 positive. Saving an older project writes version 36.
 
+## Version 37: Practice Data rows
+
+The current writer emits version 37 (2026-10-23). The project object gains one
+required field, `practice`, an object with exactly `converted` (boolean),
+`enforced` (boolean), `places` (where each card was put by hand: entries of
+exactly `relation`, `x`, `y`, `width` and `height`, the card's top-left corner
+on the page and its size, a height of `0` meaning as tall as its rows; each
+table at most once and never off the top or left of the page; empty until a
+card is first moved or resized) and `tables`, an array whose
+entries have exactly
+`relation` (a relation's identity) and `rows`. Each row is an array of cells,
+and each cell has exactly `column` (a column identity, written as a column
+order writes one: `attribute`, `column`, `foreign_key`, `key` or
+`discriminator`) and `value`, which is text or `null`.
+
+The rows are the project's own practice data and never part of the schema: a
+relation or column named here need not exist in the schema as it reads now,
+and its rows are kept for it coming back. `null` is SQL's NULL and is kept
+apart from the empty string; a cell that is absent reads as NULL too, and a
+reader keeps NULL as no value at all. A row may name a column only once, and a
+relation may appear only once. Values are bounded as descriptions are (16 KiB),
+and the project holds at most 10,000 practice rows.
+
+Version 37 also gives the project `connect_constraints` (boolean): whether
+Connect, on a schema drawn by hand, holds a connection to its own rules or
+connects at once without asking. It is `false` unless turned on, and a file
+written before it opens with it off.
+
+With `practice` and `connect_constraints` the project object has twenty-two
+fields, so the preflight that bounds an object's fields before the real parse
+now allows twenty-four (it was twenty, exactly the project's width at version
+36).
+
+Versions 1-36 must contain neither `practice` nor `connect_constraints`, and
+open with no practice tables and Connect's constraints off.
+Version 37 rejects a missing field, an extra key, a value that is neither text
+nor `null`, a row that names a column twice, a table placed twice, and a
+place off the page. Saving an older project
+writes version 37.
+
 ## Verification
 
 `tests/persistence_tests.cpp` covers exact graph and Unicode roundtrips, copied

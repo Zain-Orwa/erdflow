@@ -4,6 +4,7 @@
 // say what you want to change, what the application will LOOK like afterwards,
 // and whether it is a gain or a loss. He decides. Fixing a real defect is not
 // covered by this — fix it and say what was wrong. Full rule: CLAUDE.md.
+#include "domain/practice_data.hpp"
 #include "domain/schema_preview.hpp"
 #include "infrastructure/project_store.hpp"
 
@@ -190,10 +191,16 @@ void forget_native_tables(QJsonObject& project) {
 void forget_lettering(QJsonObject& project) {
     project.remove("lettering");
 }
+// Version 37 is the first to carry practice rows.
+void forget_practice(QJsonObject& project) {
+    project.remove("practice");
+    project.remove("connect_constraints");
+}
 // Version 36 is the first to carry what is put on the schema, so an earlier
-// one carries neither list.
+// one carries neither list -- nor, being older still than 37, practice rows.
 void forget_schema_figures(QJsonObject& project) {
     project.remove("schema_figures");
+    forget_practice(project);
 }
 // Version 28 is the first to record which bridges were chosen to be keyed by
 // their participants' foreign keys, so an earlier one carries no such list.
@@ -433,7 +440,7 @@ void project_description_persists_across_the_version_boundary() {
 
     const auto encoded = ErdxProjectStore::encode(fixture.editor.project());
     const auto root = QJsonDocument::fromJson(encoded).object();
-    CHECK(root["format_version"].toInt() == 36);
+    CHECK(root["format_version"].toInt() == 37);
     CHECK(root["project"].toObject()["description"].toString().toStdString() == description);
     const auto reopened = ErdxProjectStore::decode(encoded);
     CHECK(reopened);
@@ -463,7 +470,7 @@ void project_description_persists_across_the_version_boundary() {
     CHECK(from_older);
     CHECK(from_older.project->description.empty());
     CHECK(QJsonDocument::fromJson(ErdxProjectStore::encode(*from_older.project))
-              .object()["format_version"].toInt() == 36);
+              .object()["format_version"].toInt() == 37);
     change_project(older, [&](QJsonObject& project) { project["description"] = QString::fromStdString(description); });
     reject(bytes(older));
 
@@ -514,7 +521,7 @@ void malformed_json_and_text() {
 
 void strict_version_and_field_contract() {
     Fixture fixture;
-    for (const auto& version : {QJsonValue(0), QJsonValue(37), QJsonValue(1.5), QJsonValue("1"), QJsonValue(true)}) {
+    for (const auto& version : {QJsonValue(0), QJsonValue(38), QJsonValue(1.5), QJsonValue("1"), QJsonValue(true)}) {
         auto root = fixture.document();
         root["format_version"] = version;
         reject(bytes(root));
@@ -613,7 +620,7 @@ void connector_shapes_persist_and_older_versions_still_open() {
 
     const auto encoded = ErdxProjectStore::encode(fixture.editor.project());
     const auto root = QJsonDocument::fromJson(encoded).object();
-    CHECK(root["format_version"].toInt() == 36);
+    CHECK(root["format_version"].toInt() == 37);
     CHECK(root["project"].toObject()["connectors"].toArray().size() == 2);
 
     // A pinned join survives the same round trip.
@@ -844,7 +851,7 @@ void connector_shapes_persist_and_older_versions_still_open() {
             // and reads as specialization, which is how those files were drawn.
             CHECK(specialization.direction == (version >= 5 ? Inheritance::Generalization : Inheritance::Specialization));
         }
-        CHECK(QJsonDocument::fromJson(ErdxProjectStore::encode(*opened.project)).object()["format_version"].toInt() == 36);
+        CHECK(QJsonDocument::fromJson(ErdxProjectStore::encode(*opened.project)).object()["format_version"].toInt() == 37);
     }
 
     // A document whose shape contradicts its declared version is refused rather
@@ -938,7 +945,7 @@ void free_text_persists() {
     CHECK(read && *read.project == fixture.editor.project());
     CHECK(ErdxProjectStore::encode(*read.project) == encoded);
     auto root = QJsonDocument::fromJson(encoded).object();
-    CHECK(root["format_version"].toInt() == 36);
+    CHECK(root["format_version"].toInt() == 37);
     auto bad = root;
     change_first(bad, "notes", [](QJsonObject& note) { note["plain"] = true; note["free_text"] = true; });
     reject_because(bytes(bad), "both a symbol and free text");
@@ -961,7 +968,7 @@ void schema_figures_persist() {
     CHECK(text && symbol && picture);
     const auto encoded = ErdxProjectStore::encode(fixture.editor.project());
     const auto root = QJsonDocument::fromJson(encoded).object();
-    CHECK(root["format_version"].toInt() == 36);
+    CHECK(root["format_version"].toInt() == 37);
     const auto put_there = root["project"].toObject()["schema_figures"].toObject();
     CHECK(put_there.size() == 2 && put_there["pictures"].toArray().size() == 1 && put_there["notes"].toArray().size() == 2);
     const auto written = put_there["pictures"].toArray()[0].toObject();
@@ -1039,7 +1046,7 @@ void pictures_and_notes_persist() {
 
     const auto encoded = ErdxProjectStore::encode(fixture.editor.project());
     const auto root = QJsonDocument::fromJson(encoded).object();
-    CHECK(root["format_version"].toInt() == 36);
+    CHECK(root["format_version"].toInt() == 37);
     const auto project = root["project"].toObject();
     CHECK(project["pictures"].toArray().size() == 1);
     CHECK(project["notes"].toArray().size() == 1);
@@ -1336,7 +1343,7 @@ void answered_sides_persist() {
 
     const auto encoded = ErdxProjectStore::encode(editor.project());
     const auto root = QJsonDocument::fromJson(encoded).object();
-    CHECK(root["format_version"].toInt() == 36);
+    CHECK(root["format_version"].toInt() == 37);
     for (const auto& value : root["project"].toObject()["relationships"].toArray())
         for (const auto& side : value.toObject()["participants"].toArray()) {
             CHECK(side.toObject().contains("cardinality_confirmed"));
@@ -1444,7 +1451,7 @@ void conversion_decisions_persist() {
 
     const auto encoded = ErdxProjectStore::encode(editor.project());
     const auto root = QJsonDocument::fromJson(encoded).object();
-    CHECK(root["format_version"].toInt() == 36);
+    CHECK(root["format_version"].toInt() == 37);
     CHECK(root["project"].toObject().contains("decisions"));
 
     const auto reread = ErdxProjectStore::decode(encoded);
@@ -1835,7 +1842,7 @@ void schema_divergence_persists() {
 
     const auto encoded = ErdxProjectStore::encode(editor.project());
     const auto root = QJsonDocument::fromJson(encoded).object();
-    CHECK(root["format_version"].toInt() == 36);
+    CHECK(root["format_version"].toInt() == 37);
     const auto reopened = ErdxProjectStore::decode(encoded);
     CHECK(reopened);
     CHECK(*reopened.project == editor.project());
@@ -1887,7 +1894,7 @@ void schema_arrangement_persists() {
 
     const auto encoded = ErdxProjectStore::encode(editor.project());
     const auto root = QJsonDocument::fromJson(encoded).object();
-    CHECK(root["format_version"].toInt() == 36);
+    CHECK(root["format_version"].toInt() == 37);
     const auto reopened = ErdxProjectStore::decode(encoded);
     CHECK(reopened);
     CHECK(*reopened.project == editor.project());
@@ -1978,7 +1985,7 @@ void legacy_schema_state_migrates() {
 
     const auto current = ErdxProjectStore::encode(editor.project());
     const auto root = QJsonDocument::fromJson(current).object();
-    CHECK(root["format_version"].toInt() == 36);
+    CHECK(root["format_version"].toInt() == 37);
 
     // The same document, said the way a version 25 file said it.
     auto older = root;
@@ -2043,7 +2050,7 @@ void schema_metadata_persists() {
 
     const auto encoded = ErdxProjectStore::encode(editor.project());
     const auto root = QJsonDocument::fromJson(encoded).object();
-    CHECK(root["format_version"].toInt() == 36);
+    CHECK(root["format_version"].toInt() == 37);
     // Version 18 has no conceptual mode to write, because there are no modes.
     CHECK(!root["project"].toObject().contains("mode"));
 
@@ -2114,7 +2121,7 @@ void schema_metadata_persists() {
         CHECK(from_moded.project->entities.at(fixture.employee).comment == "A person on the payroll.");
         // Read back, it is a version 18 project like any other, carrying no mode.
         const auto again = QJsonDocument::fromJson(ErdxProjectStore::encode(*from_moded.project)).object();
-        CHECK(again["format_version"].toInt() == 36);
+        CHECK(again["format_version"].toInt() == 37);
         CHECK(!again["project"].toObject().contains("mode"));
     }
 
@@ -2148,7 +2155,7 @@ void comments_persist() {
 
     const auto encoded = ErdxProjectStore::encode(editor.project());
     const auto root = QJsonDocument::fromJson(encoded).object();
-    CHECK(root["format_version"].toInt() == 36);
+    CHECK(root["format_version"].toInt() == 37);
     const auto written = root["project"].toObject()["comments"].toArray();
     CHECK(written.size() == 2);
 
@@ -2299,7 +2306,7 @@ void lettering_persists() {
     CHECK(fixture.editor.project().lettering.at(address) == (LetteringBase{before.width, before.height}));
     const auto encoded = ErdxProjectStore::encode(fixture.editor.project());
     const auto root = QJsonDocument::fromJson(encoded).object();
-    CHECK(root["format_version"].toInt() == 36);
+    CHECK(root["format_version"].toInt() == 37);
     const auto reopened = ErdxProjectStore::decode(encoded);
     CHECK(reopened && reopened.project->lettering == fixture.editor.project().lettering);
 
@@ -2380,7 +2387,7 @@ void schema_first_projects_persist() {
     CHECK(editor.add_foreign_key(employee, columns.back().id, employee, columns.front().id));
     const auto encoded = ErdxProjectStore::encode(editor.project());
     const auto root = QJsonDocument::fromJson(encoded).object();
-    CHECK(root["format_version"].toInt() == 36);
+    CHECK(root["format_version"].toInt() == 37);
     const auto reread = ErdxProjectStore::decode(encoded);
     CHECK(reread && *reread.project == editor.project());
     CHECK(reread.project->schema.standalone && reread.project->schema.foreign_keys.size() == 1);
@@ -2504,7 +2511,7 @@ void key_order_persists_and_older_keys_keep_their_meaning() {
         // Version 32 writes each column's place, and reads it back.
         const auto encoded = ErdxProjectStore::encode(editor.project());
         auto root = QJsonDocument::fromJson(encoded).object();
-        CHECK(root["format_version"].toInt() == 36);
+        CHECK(root["format_version"].toInt() == 37);
         const auto reread = ErdxProjectStore::decode(encoded);
         CHECK(reread && *reread.project == editor.project());
 
@@ -2516,7 +2523,7 @@ void key_order_persists_and_older_keys_keep_their_meaning() {
         CHECK((key_of(*older.project, "Pair") == std::vector<std::string>{"B", "A"}));
         CHECK(validate(*older.project).empty());
         const auto saved = ErdxProjectStore::encode(*older.project);
-        CHECK(QJsonDocument::fromJson(saved).object()["format_version"].toInt() == 36);
+        CHECK(QJsonDocument::fromJson(saved).object()["format_version"].toInt() == 37);
         const auto again = ErdxProjectStore::decode(saved);
         CHECK(again && *again.project == *older.project);
         CHECK((key_of(*again.project, "Pair") == std::vector<std::string>{"B", "A"}));
@@ -2658,7 +2665,7 @@ void generated_column_order_persists() {
     // key and the foreign key meaning the same -- Phone's place included.
     const auto encoded = ErdxProjectStore::encode(editor.project());
     const auto root = QJsonDocument::fromJson(encoded).object();
-    CHECK(root["format_version"].toInt() == 36);
+    CHECK(root["format_version"].toInt() == 37);
     const auto reread = ErdxProjectStore::decode(encoded);
     CHECK(reread && *reread.project == editor.project());
     CHECK(schema_preview(*reread.project) == ordered);
@@ -2688,7 +2695,7 @@ void generated_column_order_persists() {
     CHECK(schema_preview(*from_older.project) == as_made);
     CHECK((names(table_of(as_made, "Parents"), false) == std::vector<std::string>{"A", "B", "Name"}));
     const auto saved = ErdxProjectStore::encode(*from_older.project);
-    CHECK(QJsonDocument::fromJson(saved).object()["format_version"].toInt() == 36);
+    CHECK(QJsonDocument::fromJson(saved).object()["format_version"].toInt() == 37);
     const auto again = ErdxProjectStore::decode(saved);
     CHECK(again && *again.project == *from_older.project);
     CHECK(schema_preview(*again.project) == as_made);
@@ -2930,7 +2937,7 @@ void attribute_creation_order_persists() {
     // it is the same project listed the same way -- through a file as well.
     const auto encoded = ErdxProjectStore::encode(editor.project());
     const auto root = QJsonDocument::fromJson(encoded).object();
-    CHECK(root["format_version"].toInt() == 36);
+    CHECK(root["format_version"].toInt() == 37);
     for (const auto& value : root["project"].toObject()["attributes"].toArray()) {
         const auto attribute = value.toObject();
         CHECK(attribute["creation_order"].toInt() == attribute["name"].toString().toInt());
@@ -2999,7 +3006,7 @@ void attribute_creation_order_persists() {
     CHECK((listed_columns(reopened.project()) == std::vector<std::string>{"1", "5", "4", "3", "2", "6"}));
     // Saved next, it is version 35 and keeps the numbers it was given.
     const auto resaved = ErdxProjectStore::encode(*from_older.project);
-    CHECK(QJsonDocument::fromJson(resaved).object()["format_version"].toInt() == 36);
+    CHECK(QJsonDocument::fromJson(resaved).object()["format_version"].toInt() == 37);
     const auto reread_older = ErdxProjectStore::decode(resaved);
     CHECK(reread_older && *reread_older.project == *from_older.project);
 
@@ -3024,6 +3031,130 @@ void attribute_creation_order_persists() {
     CHECK(at_the_limit);
 }
 
+// Version 37 carries the rows put into the schema's tables to practise with
+// (2026-10-23): each value against its column's identity, and NULL written as
+// null, kept apart from the empty string.
+void practice_rows_persist() {
+    Fixture fixture;
+    auto& editor = fixture.editor;
+    CHECK(editor.convert_to_practice_tables());
+    CHECK(editor.enforce_practice_constraints(false));
+    const auto preview = schema_preview(editor.project());
+    // Where the cards were put by hand is kept with the rows.
+    CHECK(editor.move_practice_table(preview.tables.front().id,
+                                     {{preview.tables.front().id, Rect{120.5, 840, 412, 236}}}));
+    CHECK(!preview.tables.empty());
+    const auto& table = preview.tables.front();
+    const auto columns = practice_columns(table);
+    CHECK(columns.size() >= 2);
+    const auto first = *column_identity(table.columns[columns[0]]);
+    const auto second = *column_identity(table.columns[columns[1]]);
+    CHECK(!editor.project().practice.tables.at(table.id).rows.empty());
+    CHECK(editor.set_practice_value(table.id, 0, first, std::string{}));
+    CHECK(editor.set_practice_value(table.id, 0, second, std::nullopt));
+    const auto encoded = ErdxProjectStore::encode(editor.project());
+    const auto root = QJsonDocument::fromJson(encoded).object();
+    CHECK(root["format_version"].toInt() == 37);
+    const auto practice = root["project"].toObject()["practice"].toObject();
+    CHECK(practice.size() == 4 && practice["converted"].toBool() && !practice["enforced"].toBool());
+    CHECK(practice["tables"].toArray().size() == static_cast<qsizetype>(editor.project().practice.tables.size()));
+    const auto read = ErdxProjectStore::decode(encoded);
+    CHECK(read && *read.project == editor.project());
+    const auto& row = read.project->practice.tables.at(table.id).rows.at(0);
+    CHECK(row.values.at(first) == PracticeValue(std::string{}));
+    CHECK(!row.values.contains(second));
+
+    // A null written for a value reads as NULL, the same as no entry.
+    auto explicit_null = root;
+    change_project(explicit_null, [&](QJsonObject& project) {
+        auto held = project["practice"].toObject();
+        auto tables = held["tables"].toArray();
+        auto entry = tables[0].toObject();
+        auto rows = entry["rows"].toArray();
+        auto cells = rows[0].toArray();
+        cells.append(QJsonObject{{"column", QJsonObject{{"kind", "key"}, {"relation", uuid_text(fixture.ids.next())}}},
+                                 {"value", QJsonValue()}});
+        rows[0] = cells;
+        entry["rows"] = rows;
+        tables[0] = entry;
+        held["tables"] = tables;
+        project["practice"] = held;
+    });
+    const auto with_null = ErdxProjectStore::decode(bytes(explicit_null));
+    CHECK(with_null && with_null.project->practice == editor.project().practice);
+
+    // Connect's constraints, off unless turned on, travel with the project.
+    CHECK(!read.project->connect_constraints && root["project"].toObject()["connect_constraints"].isBool());
+    CHECK(editor.set_connect_constraints(true));
+    const auto constrained = ErdxProjectStore::decode(ErdxProjectStore::encode(editor.project()));
+    CHECK(constrained && constrained.project->connect_constraints);
+    CHECK(editor.undo());
+    // A version 36 file has none and must not carry the field; version 37 must.
+    auto older = root;
+    change_project(older, [](QJsonObject& project) { forget_practice(project); });
+    older["format_version"] = 36;
+    const auto from_older = ErdxProjectStore::decode(bytes(older));
+    CHECK(from_older && from_older.project->practice.empty() && !from_older.project->connect_constraints);
+    auto smuggled = root;
+    smuggled["format_version"] = 36;
+    reject(bytes(smuggled));
+    auto missing = root;
+    change_project(missing, [](QJsonObject& project) { forget_practice(project); });
+    reject(bytes(missing));
+    // Values are text or null; a column is named once in a row.
+    const auto first_cell = [&](const std::function<void(QJsonArray&)>& change) {
+        auto changed = root;
+        change_project(changed, [&](QJsonObject& project) {
+            auto held = project["practice"].toObject();
+            auto tables = held["tables"].toArray();
+            auto entry = tables[0].toObject();
+            auto rows = entry["rows"].toArray();
+            auto cells = rows[0].toArray();
+            change(cells);
+            rows[0] = cells;
+            entry["rows"] = rows;
+            tables[0] = entry;
+            held["tables"] = tables;
+            project["practice"] = held;
+        });
+        return changed;
+    };
+    reject(bytes(first_cell([](QJsonArray& cells) {
+        auto cell = cells[0].toObject();
+        cell["value"] = 7;
+        cells[0] = cell;
+    })));
+    reject(bytes(first_cell([](QJsonArray& cells) { cells.append(cells[0]); })));
+    reject(bytes(first_cell([](QJsonArray& cells) {
+        auto cell = cells[0].toObject();
+        cell["extra"] = true;
+        cells[0] = cell;
+    })));
+    // A place is kept as it was given, and each table has one at most.
+    CHECK(read.project->practice.places == editor.project().practice.places &&
+          read.project->practice.places.size() == 1);
+    auto twice = root;
+    change_project(twice, [](QJsonObject& project) {
+        auto held = project["practice"].toObject();
+        auto places = held["places"].toArray();
+        places.append(places[0]);
+        held["places"] = places;
+        project["practice"] = held;
+    });
+    reject(bytes(twice));
+    auto off_the_page = root;
+    change_project(off_the_page, [](QJsonObject& project) {
+        auto held = project["practice"].toObject();
+        auto places = held["places"].toArray();
+        auto place = places[0].toObject();
+        place["x"] = -10;
+        places[0] = place;
+        held["places"] = places;
+        project["practice"] = held;
+    });
+    reject(bytes(off_the_page));
+}
+
 int main() {
     const std::pair<const char*, std::function<void()>> tests[] = {
         {"UUIDv7 and exact graph roundtrip", uuid_generation_and_roundtrip},
@@ -3037,6 +3168,7 @@ int main() {
         {"escaped field name decoding", escaped_field_names},
         {"connector shapes persist across versions", connector_shapes_persist_and_older_versions_still_open},
         {"free text persists", free_text_persists},
+        {"practice rows persist", practice_rows_persist},
         {"pictures and notes persist", pictures_and_notes_persist},
         {"schema figures persist", schema_figures_persist},
         {"comments persist", comments_persist},

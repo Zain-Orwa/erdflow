@@ -1122,6 +1122,31 @@ std::vector<Issue> validate(const Project& project) {
                     error("schema.line.end.invalid", "A schema line's end must be within the supported canvas.", owner);
         }
     }
+    // Practice rows are bounded as the rest of a project is: so many rows in
+    // all, and each value no longer than a description.
+    std::size_t practice_rows = 0;
+    for (const auto& [table, rows] : project.practice.tables) {
+        (void)table;
+        practice_rows += rows.rows.size();
+        for (const auto& row : rows.rows)
+            for (const auto& [column, value] : row.values) {
+                (void)column;
+                if (value && value->size() > max_description_bytes)
+                    error("practice.value.limit", "A practice value exceeds the 16 KiB limit.");
+            }
+    }
+    if (project.practice.places.size() > max_elements)
+        error("practice.places.limit", "Practice Data places more than 10,000 tables.");
+    for (const auto& [table, place] : project.practice.places) {
+        (void)table;
+        if (!std::isfinite(place.x) || !std::isfinite(place.y) || !std::isfinite(place.width) || place.x < 0
+            || place.y < 0 || place.x > max_coordinate || place.y > max_coordinate || place.width < 1
+            || place.width > max_coordinate || !std::isfinite(place.height) || place.height < 0
+            || place.height > max_coordinate)
+            error("practice.place.invalid", "A practice table's place must be on the page.");
+    }
+    if (practice_rows > max_elements)
+        error("practice.rows.limit", "Practice Data holds more than 10,000 rows. Clear a table to make room.");
     return issues;
 }
 
