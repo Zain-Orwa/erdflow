@@ -1,0 +1,158 @@
+name: "Bug Report"
+description: "Report a bug, crash, regression, or incorrect behavior in ERDFlow."
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for helping improve ERDFlow!
+
+        Before submitting:
+        - Search existing issues for duplicates.
+        - Use the latest `main` or the latest available version when possible.
+        - Do not include passwords, tokens, or private data.
+        - Do not upload private or sensitive database designs, client data, or
+          confidential `.erdx` projects. Reduce the problem to a small example
+          you are free to share.
+
+        Something is slow rather than wrong? Please use the **Performance** form instead.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected Area
+      description: Which part of ERDFlow has the problem?
+      options:
+        - Conceptual Design
+        - Relational Schema
+        - Schema conversion (Conceptual ↔ Schema)
+        - Relationships / Connectors
+        - Rendering / Layout
+        - Workspace / UI
+        - Import / Export
+        - Save / Load
+        - Examples / Templates
+        - Build / CI
+        - Performance
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: operating-system
+    attributes:
+      label: Operating System
+      options:
+        - macOS (Apple Silicon)
+        - macOS (Intel)
+        - Windows
+        - Linux
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: ERDFlow Version
+      description: Enter the version or commit hash, if known (for a source build, `git rev-parse --short HEAD`).
+      placeholder: "Example: commit abc1234"
+    validations:
+      required: false
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Bug Description
+      description: Describe the problem clearly.
+      placeholder: "What is going wrong?"
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to Reproduce
+      description: Provide exact steps to reproduce the problem.
+      placeholder: |
+        1. Open ERDFlow.
+        2. Create or open a project (for example, an M:M relationship between two entities).
+        3. Select...
+        4. Observe...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: What should happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual Behavior
+      description: What happens instead?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: regression
+    attributes:
+      label: Regression Status
+      description: Did this feature work correctly before?
+      options:
+        - "Yes, it worked before"
+        - "No, it has always behaved this way"
+        - "Not sure"
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: affected-features
+    attributes:
+      label: Additional Affected Functionality
+      description: Select everything affected by this bug.
+      options:
+        - label: Undo / Redo
+        - label: Save / Load
+        - label: Conceptual ↔ Schema conversion
+        - label: Schema editing
+        - label: Relationships / Connectors
+        - label: Rendering / Layout
+        - label: Import / Export
+        - label: None of the above
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Screenshots, Logs, or Example Files
+      description: |
+        Attach screenshots, relevant logs, or a minimal
+        example project if available. Remove sensitive data, and do not attach
+        private database designs or confidential `.erdx` projects.
+    validations:
+      required: false
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional Context
+      description: Add any other relevant details.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: confirmation
+    attributes:
+      label: Submission Checklist
+      options:
+        - label: I searched for existing reports of this issue.
+          required: true
+        - label: I provided enough information to reproduce the bug.
+          required: true
+        - label: I removed sensitive information from attachments.
+          required: true

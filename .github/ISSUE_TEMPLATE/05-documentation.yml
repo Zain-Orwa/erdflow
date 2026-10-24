@@ -1,0 +1,76 @@
+name: "Documentation Issue"
+description: "Report documentation that is incorrect, missing, outdated, or unclear."
+title: "[Docs]: "
+labels: ["documentation"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for helping improve ERDFlow's documentation!
+
+        Point to the exact document and passage where you can. Small, obvious
+        corrections can also go straight to a Pull Request.
+
+  - type: input
+    id: location
+    attributes:
+      label: Document / Page / Path
+      description: Which document, page, or file? A link or repository path is ideal.
+      placeholder: "Example: docs/DEVELOPMENT.md, section \"Build and run\""
+    validations:
+      required: true
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Kind of Problem
+      options:
+        - Incorrect
+        - Missing
+        - Outdated
+        - Unclear
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What Is Wrong?
+      description: Describe what is incorrect, missing, outdated, or unclear.
+    validations:
+      required: true
+
+  - type: textarea
+    id: correction
+    attributes:
+      label: Expected Correction
+      description: What should the documentation say or cover instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: wording
+    attributes:
+      label: Suggested Wording
+      description: Optional replacement text.
+    validations:
+      required: false
+
+  - type: dropdown
+    id: audience
+    attributes:
+      label: Who Is Affected?
+      multiple: true
+      options:
+        - Users
+        - Contributors
+        - Developers
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional Context
+    validations:
+      required: false

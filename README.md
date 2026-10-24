@@ -213,3 +213,9 @@ Intel) and Linux x86-64, as installers whose packaging, licence notices and
 source offer are recorded in [the release record](docs/RELEASE_0.1.0.md). The
 project is released under the [MIT License](LICENSE); it uses Qt under the
 LGPL version 3 ([compliance plan](docs/QT_LGPL_COMPLIANCE.md)).
+
+## Contributing
+
+Contributions are welcome: bug reports, feature ideas, documentation
+improvements and code. Read [CONTRIBUTING.md](CONTRIBUTING.md) to get started,
+and see [SECURITY.md](SECURITY.md) for how to report a vulnerability privately.
