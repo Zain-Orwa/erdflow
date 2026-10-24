@@ -5,6 +5,8 @@
 // and whether it is a gain or a loss. He decides. Fixing a real defect is not
 // covered by this — fix it and say what was wrong. Full rule: CLAUDE.md.
 #include "app/desktop/icons.hpp"
+#include "app/desktop/dr_icons.hpp"
+#include "app/desktop/licences.hpp"
 #include "app/desktop/symbols.hpp"
 #include "app/desktop/export_dialog.hpp"
 #include "app/desktop/home_page.hpp"
@@ -16,12 +18,22 @@
 #include "app/desktop/start_route_card.hpp"
 #include "app/desktop/welcome_flow_illustration.hpp"
 #include "app/desktop/main_window.hpp"
+#include "app/desktop/schema_router.hpp"
+#include "app/desktop/schema_view.hpp"
+#include "app/desktop/picture_export.hpp"
+#include "app/desktop/schema_colours.hpp"
 #include "app/desktop/notice.hpp"
+#include "app/desktop/practice_data_view.hpp"
 #include "app/desktop/schema_explorer.hpp"
 #include "infrastructure/project_store.hpp"
+#include "infrastructure/updater.hpp"
 
 #include <QAbstractAnimation>
+#include <QAnimationGroup>
+#include <QSequentialAnimationGroup>
+#include <QVariantAnimation>
 #include <QAction>
+#include <QFocusEvent>
 #include <cmath>
 #include <QDebug>
 #include <QScrollArea>
@@ -66,22 +78,30 @@
 #include <QInputDialog>
 #include <QRegularExpression>
 #include <QAbstractButton>
+#include <QActionGroup>
 #include <QSettings>
 #include <QSlider>
 #include <QWidgetAction>
 #include <QStandardItemModel>
+#include <QSvgRenderer>
+#include <QTableView>
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QToolBar>
 #include <QWheelEvent>
+#include <QTest>
 #include <QToolButton>
 #include <QTreeView>
 
 #include <algorithm>
+#include <optional>
 #include <cstdlib>
+#include <cstring>
 #include <iostream>
 #include <limits>
+#include <functional>
 #include <map>
+#include <random>
 #include <set>
 #include <stdexcept>
 
@@ -135,22 +155,100 @@ namespace
     // (2026-10-09). Only for a move with nothing timed to follow it: opening
     // the schema full, raising the Conceptual preview and converting each do
     // something more a little after their panel lands.
+    //
+    // A move is carried to its end rather than watched (2026-10-12): its last
+    // frame is the one it would have reached, through Qt's own setCurrentTime,
+    // so it lands, finishes and does whatever it does on finishing exactly as
+    // it does when left to run. Watching cost the window part about 280 ms a
+    // move, twenty times over, spent walking the window for animations between
+    // frames.
     void settle_motion(const QWidget &window)
     {
         QElapsedTimer clock;
         clock.start();
-        const auto moving = [&]
+        const auto carry_to_rest = [&]
         {
-            const auto animations = window.findChildren<QAbstractAnimation *>();
-            return std::any_of(animations.begin(), animations.end(), [](const QAbstractAnimation *animation)
-                               { return animation->state() == QAbstractAnimation::Running; });
+            bool moved = false;
+            for (const QPointer<QAbstractAnimation> animation : window.findChildren<QAbstractAnimation *>())
+            {
+                if (!animation || animation->state() != QAbstractAnimation::Running)
+                    continue;
+                moved = true;
+                // One in a running group is carried along by its group.
+                if (animation->group() && animation->group()->state() == QAbstractAnimation::Running)
+                    continue;
+                // One that never ends is left to be caught below.
+                if (animation->totalDuration() < 0)
+                    continue;
+                animation->setCurrentTime(animation->direction() == QAbstractAnimation::Forward
+                                              ? animation->totalDuration()
+                                              : 0);
+            }
+            return moved;
         };
-        while (moving())
+        while (carry_to_rest())
         {
             require(clock.elapsed() < 10000, "What moves in the window comes to rest");
             QApplication::processEvents(QEventLoop::AllEvents, 5);
         }
         settle();
+    }
+    // While the checks run, a window is not repainted of its own accord
+    // (2026-10-12): Qt's request to bring a window's picture up to date is set
+    // aside, so nothing is drawn that no check looks at -- on the macOS Intel
+    // runner that drawing was a third of the main window's part. Every
+    // check that looks at pixels asks for them: grab() and render() draw the
+    // widget there and then, through the same paint code. Every other event
+    // -- layout, resizing, style, input, focus, timers -- is delivered exactly
+    // as before. Taken away, it hands each window the request it was owed,
+    // so painting resumes where it left off.
+    class PaintingOnRequest final : public QObject
+    {
+    public:
+        PaintingOnRequest() { qApp->installEventFilter(this); }
+        ~PaintingOnRequest() override
+        {
+            qApp->removeEventFilter(this);
+            for (const auto &window : owed_)
+                if (window)
+                    QCoreApplication::postEvent(window, new QEvent(QEvent::UpdateRequest), Qt::LowEventPriority);
+        }
+        PaintingOnRequest(const PaintingOnRequest &) = delete;
+        PaintingOnRequest &operator=(const PaintingOnRequest &) = delete;
+
+    protected:
+        bool eventFilter(QObject *watched, QEvent *event) override
+        {
+            if (event->type() != QEvent::UpdateRequest)
+                return false;
+            auto *window = qobject_cast<QWidget *>(watched);
+            if (!window || !window->isWindow())
+                return false;
+            if (std::find(owed_.begin(), owed_.end(), window) == owed_.end())
+                owed_.emplace_back(window);
+            return true;
+        }
+
+    private:
+        std::vector<QPointer<QWidget>> owed_;
+    };
+    // Lets the event loop run until what the next check is about has come
+    // about: work the window leaves to its next pass, or to a timer of its own.
+    // A fixed wait for it is longer than it needs to be on a quick machine and
+    // may be too short on a slow one (2026-10-12). Not for checks of timing
+    // itself -- a fade, a clock, a hover that must settle -- which keep theirs.
+    template <class Done>
+    void settle_until(Done done, const char *what)
+    {
+        QElapsedTimer clock;
+        clock.start();
+        settle();
+        while (!done())
+        {
+            require(clock.elapsed() < 10000, what);
+            QApplication::processEvents(QEventLoop::AllEvents, 5);
+            settle();
+        }
     }
     template <class T>
     T *child(desktop::MainWindow &window, const char *name)
@@ -159,6 +257,18 @@ namespace
         auto *value = window.findChild<T *>(QString::fromLatin1(name));
         require(value != nullptr, name);
         return value;
+    }
+    // A schema opened to the whole window gets there a moment after its panel
+    // has risen (MainWindow::open_schema, 320 ms), as a project that starts
+    // from its schema always does. This waits until it is there, however long
+    // the machine takes, where a fixed wait was longer than that on a quick
+    // machine and, at 300 ms, could end just before it (2026-10-12).
+    void settle_schema_full(desktop::MainWindow &window)
+    {
+        settle_motion(window);
+        settle_until([&] { return child<QPushButton>(window, "schemaFull")->isChecked(); },
+                     "The schema opens to the whole window");
+        settle_motion(window);
     }
     void dismiss(QMessageBox::StandardButton choice)
     {
@@ -597,6 +707,273 @@ namespace
 
 namespace
 {
+    // An exported picture carries no halo (C4, 2026-10-14). Whatever a
+    // workspace lays under a mark to keep a line off it -- a patch under a
+    // label, the fill of a hollow end -- is laid in the ground the picture
+    // stands on, and the Schema's lines no longer stand on a stroke of the
+    // canvas at all; so a picture on no ground, or on white from a dark theme,
+    // has nothing in the canvas colour where it does not belong, as PNG and as
+    // SVG. A hollow end stays hollow, the line kept out of it, and on the
+    // theme's own colour it is filled with that colour, as the canvas draws it.
+    void export_halo_tests()
+    {
+        infrastructure::QtIdGenerator ids;
+        // A picture as pixels -- a PNG read back, or an SVG drawn -- with the
+        // part of the diagram it shows and its scale.
+        struct Picture
+        {
+            QImage image;
+            QRectF source;
+            double scale = 1;
+            [[nodiscard]] QPoint at(QPointF point) const
+            {
+                return {static_cast<int>((point.x() - source.left()) * scale), static_cast<int>((point.y() - source.top()) * scale)};
+            }
+        };
+        const auto picture = [](const desktop::ExportView &view, desktop::PictureFormat format,
+                                desktop::PictureBackground ground, double scale)
+        {
+            desktop::PictureOptions options;
+            options.format = format;
+            options.background = ground;
+            options.scale = scale;
+            options.carry_project = false;
+            QByteArray bytes;
+            const auto result = desktop::draw_picture(view, options, {}, bytes);
+            require(result.ok, "The picture is drawn");
+            Picture drawn;
+            if (format == desktop::PictureFormat::Svg)
+            {
+                QSvgRenderer renderer(bytes);
+                drawn.image = QImage(result.pixels, QImage::Format_ARGB32_Premultiplied);
+                drawn.image.fill(Qt::transparent);
+                QPainter painter(&drawn.image);
+                renderer.render(&painter);
+            }
+            else
+                drawn.image.loadFromData(bytes, "png");
+            drawn.image = drawn.image.convertToFormat(QImage::Format_ARGB32);
+            drawn.source = view.bounds(desktop::PictureExtent::WholeDiagram)
+                               .adjusted(-options.margin, -options.margin, options.margin, options.margin);
+            drawn.scale = drawn.image.width() / drawn.source.width();
+            return drawn;
+        };
+        const auto alike = [](QRgb pixel, const QColor &colour)
+        {
+            return std::abs(qRed(pixel) - colour.red()) <= 6 && std::abs(qGreen(pixel) - colour.green()) <= 6 &&
+                   std::abs(qBlue(pixel) - colour.blue()) <= 6;
+        };
+        // How many nearly opaque pixels of a picture are in `colour`, leaving
+        // out the boxes given (in the diagram's own coordinates).
+        const auto in_colour = [&](const Picture &drawn, const QColor &colour, const std::vector<QRectF> &boxes)
+        {
+            std::vector<QRect> left_out;
+            for (const auto &box : boxes)
+                left_out.push_back(QRect(drawn.at(box.topLeft()), drawn.at(box.bottomRight())).adjusted(-3, -3, 3, 3));
+            long found = 0;
+            for (int y = 0; y < drawn.image.height(); ++y)
+            {
+                const auto *row = reinterpret_cast<const QRgb *>(drawn.image.constScanLine(y));
+                for (int x = 0; x < drawn.image.width(); ++x)
+                    if (qAlpha(row[x]) >= 200 && alike(row[x], colour) &&
+                        std::none_of(left_out.begin(), left_out.end(), [&](const QRect &box) { return box.contains(x, y); }))
+                        ++found;
+            }
+            return found;
+        };
+        const auto light = desktop::theme(desktop::ThemeId::OfficeLight).canvas;
+        const auto dark = desktop::theme(desktop::ThemeId::Dracula).canvas;
+
+        // The Schema: the Company example, whose optional foreign keys end hollow.
+        {
+            application::Editor editor(ids);
+            infrastructure::ErdxProjectStore store;
+            desktop::MainWindow window(editor, store, ids);
+            window.resize(1440, 920);
+            window.show();
+            window.show_home(false);
+            settle();
+            window.load_company_database_relational();
+            settle();
+            window.open_schema(true);
+            window.set_theme(desktop::ThemeId::OfficeLight);
+            settle();
+            auto *view = window.schema();
+            for (const auto format : {desktop::PictureFormat::Png, desktop::PictureFormat::Svg})
+                require(in_colour(picture(view->export_view(), format, desktop::PictureBackground::Transparent, 1.0), light,
+                                  view->table_boxes()) == 0,
+                        "A Schema picture on no ground has nothing in the canvas colour outside its tables");
+            // Each line's end 21 px out from its foreign key, where an optional
+            // end has its hollow: filled with the theme's colour on that colour,
+            // empty on no ground, and never crossed by the line.
+            const auto on_theme = picture(view->export_view(), desktop::PictureFormat::Png, desktop::PictureBackground::ThemeColour, 1.0);
+            const auto on_nothing = picture(view->export_view(), desktop::PictureFormat::Png, desktop::PictureBackground::Transparent, 1.0);
+            int hollow = 0;
+            for (const auto &shape : view->line_shapes())
+            {
+                require(shape.size() >= 2, "Every line has a run");
+                const QLineF first(shape[0], shape[1]);
+                const auto centre = first.pointAt(21.0 / first.length());
+                const bool filled = alike(on_theme.image.pixel(on_theme.at(centre)), light);
+                const bool empty = qAlpha(on_nothing.image.pixel(on_nothing.at(centre))) == 0;
+                require(filled == empty, "An end hollow on the theme's colour is empty on no ground, and only such an end");
+                hollow += empty ? 1 : 0;
+            }
+            require(hollow > 0, "The Company schema's optional foreign keys end hollow");
+            window.set_theme(desktop::ThemeId::Dracula);
+            settle();
+            require(in_colour(picture(view->export_view(), desktop::PictureFormat::Png, desktop::PictureBackground::White, 1.0), dark,
+                              view->table_boxes()) == 0,
+                    "A Schema picture on white from a dark theme has no dark halo");
+            view->set_notation(desktop::Notation::Chen);
+            settle();
+            require(in_colour(picture(view->export_view(), desktop::PictureFormat::Png, desktop::PictureBackground::Transparent, 1.0), dark,
+                              view->table_boxes()) == 0,
+                    "In Chen notation the Schema's labels stand on no patch of the canvas");
+            view->set_notation(desktop::Notation::CrowsFoot);
+            window.set_theme(desktop::ThemeId::OfficeLight);
+            settle();
+            editor.mark_saved(editor.revision());
+        }
+
+        // The diagram: the Company example, its labels in Chen and its hollow
+        // ends in crow's foot, drawn at half size to keep the test quick.
+        {
+            application::Editor model(ids);
+            infrastructure::ErdxProjectStore store;
+            desktop::MainWindow window(model, store, ids);
+            window.resize(1440, 920);
+            window.show();
+            window.show_home(false);
+            settle();
+            window.load_company_database();
+            window.set_theme(desktop::ThemeId::OfficeLight);
+            settle();
+            auto *canvas = window.canvas();
+            canvas->set_notation(desktop::Notation::Chen);
+            settle();
+            for (const auto format : {desktop::PictureFormat::Png, desktop::PictureFormat::Svg})
+                require(in_colour(picture(desktop::ExportView(*canvas), format, desktop::PictureBackground::Transparent, 0.5), light, {}) == 0,
+                        "A diagram picture on no ground lays no patch of the canvas under its labels");
+            canvas->set_notation(desktop::Notation::CrowsFoot);
+            window.set_theme(desktop::ThemeId::Dracula);
+            settle();
+            require(in_colour(picture(desktop::ExportView(*canvas), desktop::PictureFormat::Png, desktop::PictureBackground::White, 0.5), dark, {}) == 0,
+                    "A diagram picture on white from a dark theme fills no hollow end with the dark canvas");
+            window.set_theme(desktop::ThemeId::OfficeLight);
+            settle();
+            model.mark_saved(model.revision());
+        }
+        std::cout << "PASS exported pictures carry no halo, on any ground, and hollow ends stay hollow\n";
+    }
+
+    // A PDF page is lettered the way a raster picture of it is (C5,
+    // 2026-10-14). Qt sizes a font given in points by the dots per inch of what
+    // it is drawn on, and a PDF writer's are its resolution, while every name
+    // was measured, and every shape and column sized to it, at a raster
+    // picture's; drawn on the writer itself, a page's lettering came out three
+    // or four times too large and was cut down to a letter or two. At any
+    // resolution, what a workspace paints a page on now has a raster picture's
+    // dots per inch for its lettering and the page's own size at the resolution
+    // asked for, and the text the PDF sets is the same size at 72 dpi as at 1200.
+    void export_page_tests()
+    {
+        infrastructure::QtIdGenerator ids;
+        const QImage raster(1, 1, QImage::Format_ARGB32_Premultiplied);
+        // The sizes of the text a PDF sets, each with how often it is set: its
+        // packed streams unpacked and their `Tf` operators read. A page whose
+        // fonts cannot be embedded has none, its lettering drawn as outlines.
+        const auto text_sizes = [](const QByteArray &pdf)
+        {
+            std::map<QString, int> sizes;
+            static const QRegularExpression packed("/Filter /FlateDecode[^>]*>>\\s*stream\\r?\\n");
+            static const QRegularExpression setting("([0-9.]+) Tf");
+            const auto latin = QString::fromLatin1(pdf);
+            for (auto found = packed.globalMatch(latin); found.hasNext();)
+            {
+                const auto start = found.next().capturedEnd();
+                auto end = pdf.indexOf("endstream", start);
+                require(end > start, "Every packed stream of the page ends");
+                while (end > start && (pdf.at(end - 1) == '\n' || pdf.at(end - 1) == '\r'))
+                    --end;
+                // qUncompress reads a length first; nought lets it grow.
+                const auto unpacked = qUncompress(QByteArray(4, '\0') + pdf.mid(start, end - start));
+                for (auto set = setting.globalMatch(QString::fromLatin1(unpacked)); set.hasNext();)
+                    ++sizes[set.next().captured(1)];
+            }
+            return sizes;
+        };
+        struct Page
+        {
+            QByteArray bytes;
+            int lettering = 0;
+            QSize drawn_on;
+        };
+        const auto page = [](const desktop::ExportView &view, int resolution)
+        {
+            Page made;
+            auto watched = view;
+            watched.paint = [&made, paint = view.paint](QPainter &painter, const QRectF &target, const QRectF &source,
+                                                        const QColor &ground)
+            {
+                made.lettering = painter.device()->logicalDpiY();
+                made.drawn_on = QSize(painter.device()->width(), painter.device()->height());
+                paint(painter, target, source, ground);
+            };
+            desktop::PictureOptions options;
+            options.format = desktop::PictureFormat::Pdf;
+            options.background = desktop::PictureBackground::White;
+            options.resolution = resolution;
+            options.carry_project = false;
+            require(desktop::draw_picture(watched, options, {}, made.bytes).ok, "The page is drawn");
+            require(made.bytes.startsWith("%PDF") && made.bytes.trimmed().endsWith("%%EOF"), "And is a whole PDF");
+            return made;
+        };
+        const auto check = [&](const desktop::ExportView &view)
+        {
+            // The page's width in points, as the PDF itself states it.
+            const auto points_wide = [](const QByteArray &pdf)
+            {
+                static const QRegularExpression media("/MediaBox \\[0 0 ([0-9.]+) ([0-9.]+)\\]");
+                const auto found = media.match(QString::fromLatin1(pdf));
+                require(found.hasMatch(), "The page states its size");
+                return found.captured(1).toDouble();
+            };
+            const auto at72 = page(view, 72);
+            const auto lettered = text_sizes(at72.bytes);
+            for (const int resolution : {72, 300, 1200})
+            {
+                const auto made = resolution == 72 ? at72 : page(view, resolution);
+                require(made.lettering == raster.logicalDpiY(),
+                        "A page letters at a raster picture's dots per inch, whatever its resolution");
+                require(std::abs(made.drawn_on.width() - points_wide(made.bytes) * resolution / 72.0) <= 1.5,
+                        "And keeps the resolution asked for");
+                require(points_wide(made.bytes) == points_wide(at72.bytes), "Its page is the same size at any resolution");
+                require(text_sizes(made.bytes) == lettered, "And the text it sets is the same size at any resolution");
+            }
+        };
+
+        application::Editor editor(ids);
+        infrastructure::ErdxProjectStore store;
+        desktop::MainWindow window(editor, store, ids);
+        window.resize(1440, 920);
+        window.show();
+        window.show_home(false);
+        settle();
+        window.load_company_database_relational();
+        settle();
+        window.open_schema(true);
+        settle();
+        check(window.schema()->export_view());
+        window.open_schema(false);
+        settle();
+        window.load_company_database();
+        settle();
+        check(desktop::ExportView(*window.canvas()));
+        editor.mark_saved(editor.revision());
+        std::cout << "PASS a PDF page is lettered as a raster picture is, at any resolution\n";
+    }
+
     void export_state_tests()
     {
         infrastructure::QtIdGenerator ids;
@@ -851,7 +1228,7 @@ namespace
         state(true, true, true);
         new_conceptual();
         state(false, false, false);
-        require(model.create_note("Note", {0, 0, 200, 100}, "Only a note").ok, "Picture-only content");
+        require(model.create_free_text("Only text", {0, 0, 200, 100}).ok, "Picture-only content");
         changed();
         state(true, false, true);
         new_conceptual();
@@ -938,7 +1315,7 @@ namespace
             require(other_tools->isVisible() && !other_tools->isEnabled(), "Other tools' formats stay as they were");
             // Relational Design in front: they go with the diagram.
             placed.open_schema(true);
-            settle_for(450);
+            settle_schema_full(placed);
             require(offered(placed, false), "With Relational Design in front, the Conceptual ones are put away");
             require(other_tools->isVisible() && !other_tools->isEnabled() && !other_tools->toolTip().isEmpty(),
                     "And its Import keeps the entry that says why other tools' formats cannot be read yet");
@@ -955,7 +1332,7 @@ namespace
             schema_first.resize(1440, 920);
             schema_first.show();
             schema_first.show_home(false);
-            settle_for(450);
+            settle_schema_full(schema_first);
             require(offered(schema_first, false), "A schema drawn by hand is not offered the Conceptual ones");
             require(child<QAction>(schema_first, "importFromOtherTools")->isVisible(),
                     "Only the entry for other tools' formats");
@@ -1419,8 +1796,11 @@ namespace
                             corner_model->iconSize() == corner_theme->iconSize() &&
                             corner_model->height() == corner_theme->height(),
                         "Each a mark, a word and a menu, alike");
-                require(entries() == QStringList({"designRelational", "checkModel", "fileOpenExample"}),
-                        "On the diagram Model offers Convert to Schema, Check model and Open example, in that order");
+                // Convert All to Tables follows the conversion it goes on from
+                // (Practice Data, Zain 2026-10-23).
+                require(entries() == QStringList({"designRelational", "convertToTables", "checkModel", "fileOpenExample"}),
+                        "On the diagram Model offers Convert to Schema, Convert All to Tables, Check model and Open "
+                        "example, in that order");
                 require(child<QAction>(relational, "designRelational")->text() == "Convert to Schema",
                         "Converting is named for where it goes");
                 require(!child<QPushButton>(relational, "previewSchema")->isVisible() &&
@@ -1431,8 +1811,8 @@ namespace
                 // One theme, wherever it is chosen.
                 auto *themes = child<QMenu>(relational, "themeMenu");
                 require(corner_theme->menu() == themes &&
-                            child<QToolBar>(relational, "designTools")->actions().contains(themes->menuAction()),
-                        "The corner's Theme and Settings' Design row drop the same theme menu");
+                            child<QMenu>(relational, "settingsMenu")->actions().contains(themes->menuAction()),
+                        "The corner and Home Settings retain the same theme menu");
                 const auto worn = relational.canvas()->theme_id();
                 child<QAction>(relational, "thememidnight")->trigger();
                 settle();
@@ -1445,12 +1825,12 @@ namespace
             // A diagram's schema given the whole window is Relational Design in
             // front, and back again.
             relational.open_schema(true);
-            settle_for(450);
+            settle_schema_full(relational);
             require(offered(true) && conceptual_offered(false) &&
                         !child<QPushButton>(relational, "openExample")->isVisible(),
                     "With Relational Design in front, its own are offered and the Conceptual ones are put away");
             check_corner_placement(false);
-            require(entries() == QStringList({"modelToConceptual", "openRelationalExampleMenu"}) &&
+            require(entries() == QStringList({"modelToConceptual", "convertToTables", "openRelationalExampleMenu"}) &&
                         child<QAction>(relational, "modelToConceptual")->text() == "Convert to Conceptual",
                     "With the schema in front Model offers Convert to Conceptual and its own examples, not the "
                     "diagram's checks");
@@ -1462,12 +1842,12 @@ namespace
             require(offered(false) && conceptual_offered(true), "Back on the diagram, they are put away again");
             check_corner_placement(true);
             child<QAction>(relational, "modelToConceptual")->trigger();
-            settle_for(450);
+            settle_motion(relational);
             require(child<QLabel>(relational, "workspaceBadge")->text() == "CONCEPTUAL" &&
                         entries().front() == "designRelational",
                     "Model's Convert to Conceptual puts the schema away and the diagram is in front again");
             relational.open_schema(true);
-            settle_for(450);
+            settle_schema_full(relational);
 
             // Each opens from its entry as a project that starts from its schema:
             // no diagram made first, untitled on disk and clean, Relational
@@ -1491,7 +1871,7 @@ namespace
             {
                 require(opening.entry->isVisible() && opening.entry->isEnabled(), "The entry can be chosen");
                 opening.entry->trigger();
-                settle_for(450);
+                settle_motion(relational);
                 const auto &project = relational.editor().project();
                 require(project.name == opening.name && sound(project) &&
                             table_names(project) == table_names(*opening.built) &&
@@ -1550,7 +1930,7 @@ namespace
                                           "fileTemplateRelational"})
                 {
                     child<QAction>(relational, entry)->trigger();
-                    settle_for(300);
+                    settle_motion(relational);
                     const auto boxes = view->table_boxes();
                     require(boxes.size() == relational.editor().project().schema.relations.size(),
                             "Lettered larger, every table is drawn");
@@ -1639,13 +2019,41 @@ namespace
 
                 // A size given from outside: to the view itself, which the scroll
                 // area at once gives back -- a size from outside as well -- and
-                // by the window.
+                // by the window. The scroll area gives its size back before the
+                // view hears of the one it was given, so both arrive at the size
+                // the lines were already routed at, and neither routes them
+                // (2026-10-10): they used to be routed twice over at that same
+                // size, to exactly the same lines.
                 const auto routed_now = view->routings();
                 const auto size_held = view->size();
+                const auto boxes_held = view->table_boxes();
+                const auto lines_held = view->line_shapes();
+                const auto bits_equal = [](double a, double b) { return std::memcmp(&a, &b, sizeof a) == 0; };
+                const auto same_point = [&](QPointF a, QPointF b)
+                { return bits_equal(a.x(), b.x()) && bits_equal(a.y(), b.y()); };
                 view->resize(view->width() + 40, view->height() + 40);
-                require(view->size() == size_held && view->routings() == routed_now + 2,
-                        "A size given to the view from outside routes the lines, and the scroll area giving its own "
-                        "back routes them again");
+                require(view->size() == size_held, "The scroll area gives the view its own size back");
+                require(view->routings() == routed_now,
+                        "And a size given back at the size the lines were routed at routes nothing");
+                bool tables_held = view->table_boxes().size() == boxes_held.size();
+                for (std::size_t t = 0; tables_held && t < boxes_held.size(); ++t)
+                    tables_held = same_point(view->table_boxes()[t].topLeft(), boxes_held[t].topLeft()) &&
+                                  same_point(view->table_boxes()[t].bottomRight(), boxes_held[t].bottomRight());
+                require(tables_held, "Every table stays exactly where it was");
+                const auto lines_now = view->line_shapes();
+                bool ends_held = lines_now.size() == lines_held.size();
+                bool corners_held = ends_held;
+                for (std::size_t l = 0; corners_held && l < lines_held.size(); ++l)
+                {
+                    ends_held = ends_held && !lines_now[l].empty() && lines_now[l].size() == lines_held[l].size() &&
+                                same_point(lines_now[l].front(), lines_held[l].front()) &&
+                                same_point(lines_now[l].back(), lines_held[l].back());
+                    corners_held = lines_now[l].size() == lines_held[l].size();
+                    for (std::size_t c = 0; corners_held && c < lines_held[l].size(); ++c)
+                        corners_held = same_point(lines_now[l][c], lines_held[l][c]);
+                }
+                require(ends_held, "Every line still leaves and arrives at exactly the same points");
+                require(corners_held, "And turns at exactly the same corners");
                 settle();
                 const auto size_now = view->size();
                 const auto routed_then = view->routings();
@@ -1928,6 +2336,475 @@ namespace
                 opened.mark_saved(opened.revision());
             }
 
+            // A band, or tables carried, held near or past the edge of the view
+            // scroll it on, so the same gesture goes on into what was not
+            // showing (C6, 2026-10-12). The pointer stays where it is on the
+            // screen and the schema moves under it: the band reaches wherever the
+            // pointer now is on the schema, what is carried goes there with it,
+            // and nothing is written until the hand lets go.
+            {
+                // The messages here are put together from the edge being tried.
+                const auto must = [](bool ok, const std::string &message) { require(ok, message.c_str()); };
+                child<QAction>(relational, "fileExampleCompanyRelational")->trigger();
+                settle();
+                relational.resize(1000, 700);
+                settle();
+                auto *view = relational.schema();
+                auto *scroll = child<QScrollArea>(relational, "schemaScroll");
+                auto *port = scroll->viewport();
+                auto *across = scroll->horizontalScrollBar();
+                auto *down = scroll->verticalScrollBar();
+                must(across->maximum() > 0 && down->maximum() > 0, "At this size the Company schema scrolls both ways");
+                const auto as_opened = opened.project();
+                const auto boxes_opened = view->table_boxes();
+                const auto mouse = [&](QEvent::Type type, QPointF where, Qt::MouseButtons held)
+                {
+                    QMouseEvent event(type, where, view->mapToGlobal(where.toPoint()),
+                                      type == QEvent::MouseMove ? Qt::NoButton : Qt::LeftButton, held, Qt::NoModifier);
+                    QApplication::sendEvent(view, &event);
+                };
+                const auto hold_for = [](int ms)
+                {
+                    QElapsedTimer clock;
+                    clock.start();
+                    while (clock.elapsed() < ms)
+                        QApplication::processEvents(QEventLoop::AllEvents, 5);
+                };
+                const auto on_schema = [&](QPoint in_port) { return QPointF(view->mapFrom(port, in_port)); };
+                const auto bars = [&] { return QPoint(across->value(), down->value()); };
+                const auto seen = [&]
+                { return QRectF(on_schema(QPoint(0, 0)), on_schema(QPoint(port->width(), port->height()))); };
+                const auto sign_of = [](int value) { return (value > 0) - (value < 0); };
+                const auto w = port->width();
+                const auto h = port->height();
+                // The view put where there is room to scroll towards the edge.
+                const auto away_from = [&](QPoint sign)
+                {
+                    view->select(std::nullopt);
+                    across->setValue(sign.x() < 0 ? across->maximum() : sign.x() > 0 ? 0 : across->maximum() / 2);
+                    down->setValue(sign.y() < 0 ? down->maximum() : sign.y() > 0 ? 0 : down->maximum() / 2);
+                    settle();
+                };
+                const auto empty_spot = [&]
+                {
+                    const auto empty = [&](QPointF p)
+                    {
+                        for (const auto &box : view->table_boxes())
+                            if (box.adjusted(-14, -14, 14, 14).contains(p))
+                                return false;
+                        for (const auto &line : view->line_shapes())
+                            for (std::size_t i = 1; i < line.size(); ++i)
+                                if (QRectF(line[i - 1], line[i]).normalized().adjusted(-10, -10, 10, 10).contains(p))
+                                    return false;
+                        return true;
+                    };
+                    for (int y = h / 3; y < h * 2 / 3; y += 7)
+                        for (int x = w / 3; x < w * 2 / 3; x += 7)
+                            if (empty(on_schema(QPoint(x, y))))
+                                return on_schema(QPoint(x, y));
+                    throw std::runtime_error("No empty canvas in the middle of the view");
+                };
+
+                // A band held at each edge scrolls the view that way, goes on
+                // while the pointer is held still, stops when it is let go, and
+                // marks exactly the tables it reached -- one that was out of view
+                // when it was begun among them.
+                struct Way
+                {
+                    const char *name;
+                    QPoint at;
+                    QPoint sign;
+                };
+                // Held a little past the edge, where the view goes faster.
+                for (const auto &way : {Way{"bottom", {w / 2, h + 40}, {0, 1}}, Way{"top", {w / 2, -40}, {0, -1}},
+                                        Way{"right", {w + 40, h / 2}, {1, 0}}, Way{"left", {-40, h / 2}, {-1, 0}}})
+                {
+                    const std::string name = way.name;
+                    away_from(way.sign);
+                    const auto was_seen = seen();
+                    const auto start = empty_spot();
+                    // The nearest table wholly beyond that edge, and the pointer
+                    // held at the edge across from it -- clear of the strips along
+                    // the other edges, so the view goes only the one way.
+                    std::optional<QRectF> beyond;
+                    const auto distance = [&](const QRectF &box)
+                    {
+                        return way.sign.y() > 0   ? box.top() - was_seen.bottom()
+                               : way.sign.y() < 0 ? was_seen.top() - box.bottom()
+                               : way.sign.x() > 0 ? box.left() - was_seen.right()
+                                                  : was_seen.left() - box.right();
+                    };
+                    const QRectF lane = way.sign.y() != 0 ? was_seen.adjusted(40, -1e6, -40, 1e6)
+                                                          : was_seen.adjusted(-1e6, 40, 1e6, -40);
+                    for (const auto &box : view->table_boxes())
+                        if (distance(box) > 0 && box.intersects(lane) && (!beyond || distance(box) < distance(*beyond)))
+                            beyond = box;
+                    must(beyond.has_value(), "There is a table beyond the " + name + " edge for the band to reach");
+                    const auto across_from = view->mapTo(port, beyond->intersected(lane).center().toPoint());
+                    const QPoint at(way.sign.y() != 0 ? across_from.x() : way.at.x(),
+                                    way.sign.y() != 0 ? way.at.y() : across_from.y());
+                    const auto from = bars();
+                    mouse(QEvent::MouseButtonPress, start, Qt::LeftButton);
+                    mouse(QEvent::MouseMove, start + QPointF(12, 12), Qt::LeftButton);
+                    mouse(QEvent::MouseMove, on_schema(at), Qt::LeftButton);
+                    const auto reaches = [&]
+                    {
+                        const auto here = on_schema(at);
+                        return way.sign.y() > 0   ? here.y() > beyond->top() + 2
+                               : way.sign.y() < 0 ? here.y() < beyond->bottom() - 2
+                               : way.sign.x() > 0 ? here.x() > beyond->left() + 2
+                                                  : here.x() < beyond->right() - 2;
+                    };
+                    // Waited for until the band has reached that table and the
+                    // view has moved on the axis it is held towards. The pointer
+                    // is held 40 px past the edge, so a table nearer the edge than
+                    // 38 px is reached before the scroll has taken a step; reaching
+                    // it says nothing about scrolling (2026-10-14: at some sizes of
+                    // view the wait ended before the first step, with the view not
+                    // yet moved). Which way it moved is then asked as before.
+                    const auto reached_at_once = reaches();
+                    const auto moved_that_way = [&]
+                    { return way.sign.y() != 0 ? bars().y() != from.y() : bars().x() != from.x(); };
+                    for (int waited = 0; waited < 4000 && !(reaches() && moved_that_way()); waited += 20)
+                        hold_for(20);
+                    // What was measured, said when a check fails, so a failure on
+                    // another machine tells its own geometry.
+                    const auto measured = [&]
+                    {
+                        const auto now = bars();
+                        return " (view " + std::to_string(port->width()) + "x" + std::to_string(port->height()) +
+                               ", bars from " + std::to_string(from.x()) + "," + std::to_string(from.y()) + " to " +
+                               std::to_string(now.x()) + "," + std::to_string(now.y()) + ", table reached at once: " +
+                               (reached_at_once ? "yes" : "no") + ")";
+                    };
+                    must(reaches(), "Held at the " + name + " edge, the band is carried on to the table beyond it" +
+                                        measured());
+                    const auto scrolled = bars() - from;
+                    must(sign_of(scrolled.x()) == way.sign.x() && sign_of(scrolled.y()) == way.sign.y(),
+                         "A band held at the " + name + " edge scrolls the view that way and no other" + measured());
+                    const auto still = bars();
+                    hold_for(60);
+                    const auto at_end = way.sign.y() > 0 ? down->value() == down->maximum()
+                                        : way.sign.y() < 0 ? down->value() == 0
+                                        : way.sign.x() > 0 ? across->value() == across->maximum()
+                                                           : across->value() == 0;
+                    must(bars() != still || at_end, "Held still at the " + name + " edge, the view goes on scrolling");
+                    const auto reached = on_schema(at);
+                    mouse(QEvent::MouseButtonRelease, reached, Qt::NoButton);
+                    const auto stopped = bars();
+                    hold_for(60);
+                    must(bars() == stopped, "Let go at the " + name + " edge, the view stops");
+                    const auto caught = QRectF(start, reached).normalized();
+                    std::vector<domain::ElementRef> expected;
+                    for (std::size_t t = 0; t < view->table_boxes().size(); ++t)
+                        if (view->preview().tables[t].origin && view->table_boxes()[t].intersects(caught))
+                            expected.push_back(*view->preview().tables[t].origin);
+                    auto marked = view->selection();
+                    std::sort(expected.begin(), expected.end());
+                    std::sort(marked.begin(), marked.end());
+                    must(marked == expected, "The band held at the " + name + " edge marks exactly the tables it reached");
+                    must(beyond->intersects(caught), "Among them, the table that was out of view beyond the " + name + " edge");
+                }
+
+                // The case above made on purpose, at the top edge (2026-10-14): a
+                // table 20 px above the view, which the pointer held 40 px past
+                // the edge reaches before the scroll has taken a step; one 38 px
+                // above, at the threshold; and one 60 px above, out of that first
+                // reach. Each time the band waits for the view to move, and it
+                // moves up and only up. At the top of the schema, where the view
+                // cannot move, it is never seen to move, and the check of which
+                // way it moved rejects it.
+                {
+                    const QPoint up(0, -1);
+                    for (const int gap : {20, 38, 60})
+                    {
+                        const std::string what = "A table " + std::to_string(gap) + " px above the view";
+                        // A table that can be brought to that distance above the
+                        // view, with empty canvas in the middle of the view to
+                        // start the band from.
+                        std::optional<QRectF> target;
+                        QPointF start;
+                        auto boxes = view->table_boxes();
+                        std::sort(boxes.begin(), boxes.end(),
+                                  [](const QRectF &a, const QRectF &b) { return a.bottom() < b.bottom(); });
+                        for (const auto &box : boxes)
+                        {
+                            const auto top_of_view = static_cast<int>(std::ceil(box.bottom())) + gap;
+                            if (top_of_view > down->maximum())
+                                continue;
+                            view->select(std::nullopt);
+                            across->setValue(std::clamp(static_cast<int>(box.center().x()) - w / 2, 0, across->maximum()));
+                            down->setValue(top_of_view);
+                            settle();
+                            if (std::abs(seen().top() - (box.bottom() + gap)) > 1.0)
+                                continue;
+                            try
+                            {
+                                start = empty_spot();
+                            }
+                            catch (const std::runtime_error &)
+                            {
+                                continue;
+                            }
+                            target = box;
+                            break;
+                        }
+                        must(target.has_value(), what + " can be set up");
+                        const auto lane = seen().adjusted(40, -1e6, -40, 1e6);
+                        const QPoint at(view->mapTo(port, target->intersected(lane).center().toPoint()).x(), -40);
+                        const auto from = bars();
+                        mouse(QEvent::MouseButtonPress, start, Qt::LeftButton);
+                        mouse(QEvent::MouseMove, start + QPointF(12, 12), Qt::LeftButton);
+                        mouse(QEvent::MouseMove, on_schema(at), Qt::LeftButton);
+                        const auto reaches = [&] { return on_schema(at).y() < target->bottom() - 2; };
+                        const auto reached_at_once = reaches();
+                        must(reached_at_once == (gap < 38),
+                             what + (gap < 38 ? " is reached before the scroll has taken a step"
+                                              : " is not reached before the scroll has taken a step"));
+                        for (int waited = 0; waited < 4000 && !(reaches() && bars().y() != from.y()); waited += 20)
+                            hold_for(20);
+                        const auto scrolled = bars() - from;
+                        std::cout << "PASS band at the top edge, table " << gap << " px beyond: reached at once "
+                                  << (reached_at_once ? "yes" : "no") << ", bars " << from.x() << "," << from.y() << " -> "
+                                  << bars().x() << "," << bars().y() << '\n';
+                        must(reaches(), what + ": the band reaches it");
+                        must(sign_of(scrolled.x()) == up.x() && sign_of(scrolled.y()) == up.y(),
+                             what + ": the band waits for the view to scroll, and it scrolls up and no other way");
+                        mouse(QEvent::MouseButtonRelease, on_schema(at), Qt::NoButton);
+                        settle();
+                    }
+                    // At the top of the schema the view cannot move: the scroll
+                    // runs and takes no step, nothing is ever seen to move, and
+                    // the check of which way it moved does not pass it.
+                    view->select(std::nullopt);
+                    across->setValue(across->maximum() / 2);
+                    down->setValue(0);
+                    settle();
+                    const auto start = empty_spot();
+                    const auto from = bars();
+                    mouse(QEvent::MouseButtonPress, start, Qt::LeftButton);
+                    mouse(QEvent::MouseMove, start + QPointF(12, 12), Qt::LeftButton);
+                    mouse(QEvent::MouseMove, on_schema({w / 2, -40}), Qt::LeftButton);
+                    bool moved = false;
+                    for (int waited = 0; waited < 300 && !moved; waited += 20)
+                    {
+                        hold_for(20);
+                        moved = bars() != from;
+                    }
+                    const auto scrolled = bars() - from;
+                    must(!moved, "At the top of the schema the view cannot scroll up, and is never seen to");
+                    must(!(sign_of(scrolled.x()) == up.x() && sign_of(scrolled.y()) == up.y()),
+                         "And a view that did not scroll does not pass the check of which way it scrolled");
+                    mouse(QEvent::MouseButtonRelease, on_schema({w / 2, -40}), Qt::NoButton);
+                    settle();
+                }
+
+                // Brought back in, the schema put away, or the keyboard taken
+                // away, a band stops scrolling the view.
+                const auto band_to_bottom = [&]
+                {
+                    away_from({0, 1});
+                    const auto start = empty_spot();
+                    mouse(QEvent::MouseButtonPress, start, Qt::LeftButton);
+                    mouse(QEvent::MouseMove, start + QPointF(12, 12), Qt::LeftButton);
+                    mouse(QEvent::MouseMove, on_schema({w / 2, h - 3}), Qt::LeftButton);
+                    hold_for(60);
+                    must(down->value() > 0, "A band held at the bottom scrolls the view down");
+                    return start;
+                };
+                {
+                    const auto start = band_to_bottom();
+                    mouse(QEvent::MouseMove, start + QPointF(30, 30), Qt::LeftButton);
+                    const auto in_again = bars();
+                    hold_for(80);
+                    must(bars() == in_again, "A band brought back from the edge stops scrolling the view");
+                    mouse(QEvent::MouseButtonRelease, start + QPointF(30, 30), Qt::NoButton);
+                }
+                {
+                    band_to_bottom();
+                    QFocusEvent away(QEvent::FocusOut, Qt::ActiveWindowFocusReason);
+                    QApplication::sendEvent(view, &away);
+                    const auto unfocused = bars();
+                    hold_for(80);
+                    must(bars() == unfocused, "A schema that loses the keyboard stops scrolling");
+                    mouse(QEvent::MouseButtonRelease, on_schema({w / 2, h - 3}), Qt::NoButton);
+                }
+                {
+                    band_to_bottom();
+                    relational.show_home(true);
+                    settle();
+                    const auto put_away = bars();
+                    hold_for(80);
+                    must(bars() == put_away, "A schema put away stops scrolling");
+                    relational.show_home(false);
+                    settle();
+                    mouse(QEvent::MouseButtonRelease, on_schema({w / 2, h - 3}), Qt::NoButton);
+                    settle();
+                }
+
+                // One table carried to each edge, and every table carried down:
+                // the view scrolls, what is carried follows the pointer exactly
+                // -- stopping as a group at the top and the left, as it always
+                // has -- the lines are routed as it goes, and the whole carry is
+                // one step of history that undoes and redoes whole.
+                struct Carry
+                {
+                    const char *name;
+                    QPoint sign;
+                    bool everything;
+                };
+                bool saved_once = false;
+                for (const auto &carry : {Carry{"one table down", {0, 1}, false}, Carry{"one table up", {0, -1}, false},
+                                          Carry{"one table right", {1, 0}, false}, Carry{"one table left", {-1, 0}, false},
+                                          Carry{"every table down", {0, 1}, true}})
+                {
+                    const std::string name = carry.name;
+                    view->select(std::nullopt);
+                    const auto before = view->table_boxes();
+                    // A table brought to the middle of the view, with room left to
+                    // scroll on the way it is to be carried.
+                    std::optional<std::size_t> pressed;
+                    for (std::size_t t = 0; t < before.size() && !pressed; ++t)
+                    {
+                        if (!view->preview().tables[t].origin)
+                            continue;
+                        const QPointF heading(before[t].center().x(), before[t].top() + 13);
+                        const auto left = std::clamp(static_cast<int>(heading.x()) - w / 2, 0, across->maximum());
+                        const auto top = std::clamp(static_cast<int>(heading.y()) - h / 2, 0, down->maximum());
+                        const bool room = (carry.sign.x() <= 0 || left < across->maximum() - 40) &&
+                                          (carry.sign.x() >= 0 || left > 40) &&
+                                          (carry.sign.y() <= 0 || top < down->maximum() - 40) &&
+                                          (carry.sign.y() >= 0 || top > 40);
+                        const bool inside = std::abs(heading.x() - left - w / 2) < w / 2 - 60 &&
+                                            std::abs(heading.y() - top - h / 2) < h / 2 - 60;
+                        if (!room || !inside)
+                            continue;
+                        across->setValue(left);
+                        down->setValue(top);
+                        settle();
+                        pressed = t;
+                    }
+                    must(pressed.has_value(), "A table can be brought into view with room to carry " + name);
+                    if (carry.everything)
+                    {
+                        view->select_all();
+                        settle();
+                    }
+                    const QPointF grip(before[*pressed].center().x(), before[*pressed].top() + 13);
+                    const auto grip_in_port = view->mapTo(port, grip.toPoint());
+                    const QPoint edge(carry.sign.x() > 0 ? w - 3 : carry.sign.x() < 0 ? 2 : grip_in_port.x(),
+                                      carry.sign.y() > 0 ? h - 3 : carry.sign.y() < 0 ? 2 : grip_in_port.y());
+                    const auto steps = opened.history_position();
+                    const auto from = bars();
+                    mouse(QEvent::MouseButtonPress, grip, Qt::LeftButton);
+                    const auto carried_refs = view->selection();
+                    std::vector<std::size_t> carried;
+                    for (std::size_t t = 0; t < before.size(); ++t)
+                        if (view->preview().tables[t].origin &&
+                            std::find(carried_refs.begin(), carried_refs.end(), *view->preview().tables[t].origin) !=
+                                carried_refs.end())
+                            carried.push_back(t);
+                    mouse(QEvent::MouseMove, grip + QPointF(carry.sign * 10), Qt::LeftButton);
+                    mouse(QEvent::MouseMove, on_schema(edge), Qt::LeftButton);
+                    const auto routed = view->routings();
+                    hold_for(150);
+                    const auto scrolled = bars() - from;
+                    must(sign_of(scrolled.x()) == carry.sign.x() && sign_of(scrolled.y()) == carry.sign.y(),
+                         "Carrying " + name + " to the edge scrolls the view that way and no other");
+                    must(opened.history_position() == steps, "Carrying " + name + " writes nothing until it is let go");
+                    must(view->routings() > routed, "Carrying " + name + ", the lines are routed as the tables go");
+                    const auto reached = on_schema(edge);
+                    mouse(QEvent::MouseButtonRelease, reached, Qt::NoButton);
+                    settle();
+                    must(opened.history_position() == steps + 1, "Carrying " + name + " is one step of history");
+                    auto moved = reached - grip;
+                    for (const auto t : carried)
+                    {
+                        moved.setX(std::max(moved.x(), -before[t].left()));
+                        moved.setY(std::max(moved.y(), -before[t].top()));
+                    }
+                    const auto after = view->table_boxes();
+                    bool exact = after.size() == before.size();
+                    for (std::size_t t = 0; exact && t < before.size(); ++t)
+                    {
+                        const bool was_carried = std::find(carried.begin(), carried.end(), t) != carried.end();
+                        exact = after[t] == (was_carried ? before[t].translated(moved) : before[t]);
+                    }
+                    must(exact, "Everything carried " + name + " lands exactly where the pointer took it, and the "
+                                                               "rest stay where they were");
+                    if (!saved_once)
+                    {
+                        // Saved and opened again, the carried table is where it was put.
+                        QTemporaryDir folder;
+                        const auto saved_at = folder.filePath("carried.erdx").toStdString();
+                        must(opened_store.save(saved_at, opened.project()).ok, "The carried schema saves");
+                        const auto reloaded = opened_store.load(saved_at);
+                        must(reloaded && *reloaded.project == opened.project(),
+                             "And loads back with the table where it was carried");
+                        saved_once = true;
+                    }
+                    child<QAction>(relational, "undoCommand")->trigger();
+                    settle();
+                    must(view->table_boxes() == before, "Undone, everything carried " + name + " is where it was");
+                    child<QAction>(relational, "redoCommand")->trigger();
+                    settle();
+                    must(view->table_boxes() == after, "Redone, everything carried " + name + " is where it was let go");
+                    child<QAction>(relational, "undoCommand")->trigger();
+                    settle();
+                }
+                // Held at the top or the left long enough, a table carried there
+                // stops at the edge of the schema -- where its coordinates are
+                // nought -- and the view stops with it. No room is made beyond:
+                // the schema does not reach above or left of nought.
+                for (const QPoint sign : {QPoint(0, -1), QPoint(-1, 0)})
+                {
+                    const std::string name = sign.y() ? "top" : "left";
+                    view->select(std::nullopt);
+                    across->setValue(0);
+                    down->setValue(0);
+                    settle();
+                    const auto before = view->table_boxes();
+                    std::optional<std::size_t> pressed;
+                    for (std::size_t t = 0; t < before.size() && !pressed; ++t)
+                        if (view->preview().tables[t].origin &&
+                            seen().adjusted(60, 60, -60, -60)
+                                .contains(QPointF(before[t].center().x(), before[t].top() + 13)))
+                            pressed = t;
+                    must(pressed.has_value(), "A table stands in view to carry to the " + name);
+                    const QPointF grip(before[*pressed].center().x(), before[*pressed].top() + 13);
+                    const auto grip_in_port = view->mapTo(port, grip.toPoint());
+                    const QPoint edge(sign.x() ? -40 : grip_in_port.x(), sign.y() ? -40 : grip_in_port.y());
+                    mouse(QEvent::MouseButtonPress, grip, Qt::LeftButton);
+                    mouse(QEvent::MouseMove, on_schema(edge), Qt::LeftButton);
+                    const auto at_edge = [&]
+                    {
+                        const auto box = view->table_boxes()[*pressed];
+                        return sign.y() ? box.top() == 0 : box.left() == 0;
+                    };
+                    for (int waited = 0; waited < 3000 && !at_edge(); waited += 20)
+                        hold_for(20);
+                    must(at_edge(), "Carried to the " + name + ", the table stops at the edge of the schema");
+                    const auto stopped = bars();
+                    hold_for(60);
+                    must(bars() == stopped && bars() == QPoint(0, 0) && at_edge(),
+                         "Held there, neither the view nor the table goes any further");
+                    bool none_past = true;
+                    for (const auto &box : view->table_boxes())
+                        none_past = none_past && box.top() >= 0 && box.left() >= 0;
+                    must(none_past, "No table is ever taken above or left of the schema's edge");
+                    mouse(QEvent::MouseButtonRelease, on_schema(edge), Qt::NoButton);
+                    settle();
+                    child<QAction>(relational, "undoCommand")->trigger();
+                    settle();
+                    must(view->table_boxes() == before, "The carry to the " + name + " is put back");
+                }
+                relational.resize(1440, 1080);
+                settle();
+                must(opened.project() == as_opened && view->table_boxes() == boxes_opened,
+                     "And the Company schema is as it opened");
+                opened.mark_saved(opened.revision());
+            }
+
             // A table's lettering is measured once, not on every movement of the
             // pointer (2026-10-06): a drag moves tables and changes none of what
             // they say. Whatever does change what a table measures -- a name, a
@@ -2136,7 +3013,7 @@ namespace
             // to it and typed, and a foreign key connected to Employee's key, each
             // one step, undone back to the example exactly and redone.
             child<QAction>(relational, "fileExampleCompanyRelational")->trigger();
-            settle_for(300);
+            settle_motion(relational);
             const auto as_opened = opened.project();
             const auto audit = opened.create_relation("Audit", domain::Point{100, 2400});
             require(audit.ok, "A table is made on the example");
@@ -2178,7 +3055,7 @@ namespace
             // A Conceptual example opened from Relational Design is a diagram
             // again, and whichever workspace is then in front offers only its own.
             relational.load_company_database();
-            settle_for(450);
+            settle_motion(relational);
             require(!opened.project().schema.standalone && opened.project().entities.size() == 14 &&
                         child<QAction>(relational, "fileExampleCompany")->isVisible() !=
                             child<QAction>(relational, "fileExampleCompanyRelational")->isVisible(),
@@ -2430,6 +3307,2457 @@ namespace
         }
     }
 
+    // Opening the schema routes its lines once (2026-10-10). The arrangement
+    // grows the canvas while the schema is still put away, and Qt holds that
+    // resize back until the panel is shown -- after the schema has already been
+    // routed at that very size -- so every opening routed every line twice, for
+    // half the time the opening took. A resize to the size the lines were routed
+    // at routes nothing now; a resize to any other size, and every routing asked
+    // for by an edit, a refresh, Undo, Redo or the theme, still routes.
+    // CIEDE2000, the distance at which two colours are told apart: under about
+    // 10 two thin lines are hard to tell apart, from 20 they are plainly
+    // different.
+    double colour_distance(const QColor &one, const QColor &other)
+    {
+        struct Lab
+        {
+            double L, a, b;
+        };
+        const auto lab = [](const QColor &colour)
+        {
+            const auto linear = [](double v) { return v <= 0.04045 ? v / 12.92 : std::pow((v + 0.055) / 1.055, 2.4); };
+            const double r = linear(colour.redF()), g = linear(colour.greenF()), b = linear(colour.blueF());
+            const double x = (0.4124 * r + 0.3576 * g + 0.1805 * b) / 0.95047;
+            const double y = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+            const double z = (0.0193 * r + 0.1192 * g + 0.9505 * b) / 1.08883;
+            const auto f = [](double t) { return t > 0.008856 ? std::cbrt(t) : 7.787 * t + 16.0 / 116; };
+            return Lab{116 * f(y) - 16, 500 * (f(x) - f(y)), 200 * (f(y) - f(z))};
+        };
+        const auto p = lab(one), q = lab(other);
+        constexpr double rad = 3.14159265358979323846 / 180;
+        const double c1 = std::hypot(p.a, p.b), c2 = std::hypot(q.a, q.b), cb = (c1 + c2) / 2;
+        const double g = 0.5 * (1 - std::sqrt(std::pow(cb, 7) / (std::pow(cb, 7) + std::pow(25.0, 7))));
+        const double a1 = (1 + g) * p.a, a2 = (1 + g) * q.a;
+        const double c1p = std::hypot(a1, p.b), c2p = std::hypot(a2, q.b);
+        double h1 = std::atan2(p.b, a1) / rad, h2 = std::atan2(q.b, a2) / rad;
+        if (h1 < 0)
+            h1 += 360;
+        if (h2 < 0)
+            h2 += 360;
+        double dh = h2 - h1;
+        if (c1p * c2p == 0)
+            dh = 0;
+        else if (dh > 180)
+            dh -= 360;
+        else if (dh < -180)
+            dh += 360;
+        const double dL = q.L - p.L, dC = c2p - c1p, dH = 2 * std::sqrt(c1p * c2p) * std::sin(dh / 2 * rad);
+        const double lb = (p.L + q.L) / 2, cbp = (c1p + c2p) / 2;
+        double hb = h1 + h2;
+        if (c1p * c2p != 0)
+        {
+            if (std::abs(h1 - h2) > 180)
+                hb += hb < 360 ? 360 : -360;
+            hb /= 2;
+        }
+        const double t = 1 - 0.17 * std::cos((hb - 30) * rad) + 0.24 * std::cos(2 * hb * rad) +
+                         0.32 * std::cos((3 * hb + 6) * rad) - 0.20 * std::cos((4 * hb - 63) * rad);
+        const double dth = 30 * std::exp(-std::pow((hb - 275) / 25, 2));
+        const double rc = 2 * std::sqrt(std::pow(cbp, 7) / (std::pow(cbp, 7) + std::pow(25.0, 7)));
+        const double sl = 1 + 0.015 * std::pow(lb - 50, 2) / std::sqrt(20 + std::pow(lb - 50, 2));
+        const double sc = 1 + 0.045 * cbp, sh = 1 + 0.015 * cbp * t, rt = -std::sin(2 * dth * rad) * rc;
+        return std::sqrt(std::pow(dL / sl, 2) + std::pow(dC / sc, 2) + std::pow(dH / sh, 2) + rt * (dC / sc) * (dH / sh));
+    }
+
+    // The colours themselves, given to schemas made up for the purpose: every
+    // relationship meeting one table plainly apart while the palette has
+    // colours enough, shared out evenly when it has not, the same whatever
+    // order the lines come in, one colour for every line of a key of several,
+    // every colour standing out from every canvas it is drawn on, and one
+    // relationship added recolouring hardly anything it does not meet.
+    void schema_colour_allocation_tests()
+    {
+        using namespace desktop::schema_colours;
+        // `count` relationships all meeting table 0, alternately leaving and
+        // arriving, each with a table of its own at the other end; the last,
+        // where asked, refers to table 0 itself.
+        const auto star = [](int count, bool itself = false)
+        {
+            std::vector<Line> lines;
+            for (int i = 0; i < count; ++i)
+            {
+                const auto other = static_cast<std::size_t>(i + 1);
+                lines.push_back({"relationship " + std::to_string(i), i % 2 ? other : 0, i % 2 ? 0 : other, {}});
+            }
+            if (itself && !lines.empty())
+                lines.back() = {lines.back().identity, 0, 0, {}};
+            return lines;
+        };
+        const auto given_to = [](const std::vector<Line> &lines, const std::map<std::string, QColor> &given)
+        {
+            std::vector<QColor> colours;
+            for (const auto &line : lines)
+                colours.push_back(given.at(line.identity));
+            return colours;
+        };
+        for (const auto palette : {Palette::Light, Palette::Dark})
+        {
+            const std::string name = palette == Palette::Light ? "light" : "dark";
+            for (const int count : {2, 3, 6, 12, 16})
+            {
+                const auto lines = star(count, count == 6);
+                const auto colours = given_to(lines, allocate(lines, palette));
+                double closest = 1e9;
+                for (std::size_t i = 0; i < colours.size(); ++i)
+                    for (std::size_t j = i + 1; j < colours.size(); ++j)
+                        closest = std::min(closest, distance(colours[i], colours[j]));
+                require(closest >= 20.0, (std::to_string(count) + " relationships at one table are plainly apart on a " +
+                                          name + " canvas (closest " + std::to_string(closest) + ")")
+                                             .c_str());
+            }
+            const auto crowded = star(20);
+            std::map<QRgb, int> used;
+            for (const auto &colour : given_to(crowded, allocate(crowded, palette)))
+                ++used[colour.rgb()];
+            for (const auto &[colour, uses] : used)
+                require(uses <= 2, ("Twenty relationships at one table share the " + name +
+                                    " palette's sixteen colours evenly: none used more than twice")
+                                       .c_str());
+        }
+        {
+            for (const int count : {2, 3, 5})
+            {
+                const auto lines = star(count);
+                const auto colours = given_to(lines, allocate(lines, Palette::Grey));
+                std::set<QRgb> distinct;
+                for (const auto &colour : colours)
+                {
+                    distinct.insert(colour.rgb());
+                    require(colour.red() == colour.green() && colour.green() == colour.blue(), "The grey palette gives greys only");
+                }
+                require(distinct.size() == colours.size(),
+                        (std::to_string(count) + " relationships at one table are given greys of their own").c_str());
+            }
+            const auto crowded = star(12);
+            std::map<QRgb, int> used;
+            for (const auto &colour : given_to(crowded, allocate(crowded, Palette::Grey)))
+                ++used[colour.rgb()];
+            for (const auto &[colour, uses] : used)
+                require(uses <= 3, "Twelve relationships at one table share the five greys evenly: none used more than three times");
+
+            // Exactly five greys, each told apart from every other: greys differ
+            // in lightness alone, so five 8.4 apart is as far apart as five can
+            // be, short of the 20 colours manage.
+            const auto &greys = colours_of(Palette::Grey);
+            require(greys.size() == 5, "Plain has exactly five greys");
+            double closest = 1e9;
+            for (std::size_t i = 0; i < greys.size(); ++i)
+            {
+                require(greys[i].red() == greys[i].green() && greys[i].green() == greys[i].blue(), "Each is a grey");
+                for (std::size_t j = i + 1; j < greys.size(); ++j)
+                    closest = std::min(closest, distance(greys[i], greys[j]));
+            }
+            require(closest >= 8.0, "No two of the five greys are nearer than 8 apart");
+
+            // From six relationships at one table to fifteen, every grey is used
+            // there and none more often than sharing them out evenly asks --
+            // also where every relationship's other end is busy with three
+            // relationships of its own, whose four then each have a grey of
+            // their own -- and whatever order the relationships are listed in,
+            // the greys are the same.
+            for (int count = 6; count <= 15; ++count)
+            {
+                for (const bool busy_ends : {false, true})
+                {
+                    auto lines = star(count);
+                    if (busy_ends)
+                        for (int i = 0; i < count; ++i)
+                            for (int j = 0; j < 3; ++j)
+                                lines.push_back({"elsewhere " + std::to_string(i) + "." + std::to_string(j),
+                                                 static_cast<std::size_t>(i + 1),
+                                                 static_cast<std::size_t>(100 + 3 * i + j), {}});
+                    const auto given = allocate(lines, Palette::Grey);
+                    std::map<QRgb, int> shares;
+                    for (int i = 0; i < count; ++i)
+                        ++shares[given.at("relationship " + std::to_string(i)).rgb()];
+                    int most = 0;
+                    for (const auto &[grey, uses] : shares)
+                        most = std::max(most, uses);
+                    require(shares.size() == 5 && most <= (count + 4) / 5,
+                            (std::to_string(count) + " relationships at one table" + (busy_ends ? ", their other ends busy," : "") +
+                             " share the five greys as evenly as they can")
+                                .c_str());
+                    if (busy_ends)
+                        for (int i = 0; i < count; ++i)
+                        {
+                            std::map<QRgb, int> at_end;
+                            ++at_end[given.at("relationship " + std::to_string(i)).rgb()];
+                            for (int j = 0; j < 3; ++j)
+                                ++at_end[given.at("elsewhere " + std::to_string(i) + "." + std::to_string(j)).rgb()];
+                            require(at_end.size() == 4, "And the four relationships at each other end have a grey each");
+                        }
+                    auto shuffled = lines;
+                    std::reverse(shuffled.begin(), shuffled.end());
+                    require(allocate(shuffled, Palette::Grey) == given, "And the same whatever order they are listed in");
+                }
+            }
+
+            // Every table of a schema shared out evenly at once cannot always be
+            // had: a relationship has a table at each end, and the grey right at
+            // one may be wrong at the other. Over 400 made-up schemas of 6 to 35
+            // tables, a third of their relationships meeting at one table, the
+            // tables are weighed against their own even shares and every
+            // relationship is looked at again knowing them all (2026-10-13): a
+            // table given one grey more often than its share asks is found in
+            // 120 of them, never by more than one. Counting uses across both
+            // ends together, taking each relationship once, it was 271; the
+            // bounds are the figures measured.
+            int uneven = 0, furthest = 0;
+            for (int seed = 1; seed <= 400; ++seed)
+            {
+                std::mt19937 random(static_cast<unsigned>(seed));
+                const auto tables = 6 + static_cast<int>(random() % 30);
+                const auto relations = tables + static_cast<int>(random() % static_cast<unsigned>(2 * tables));
+                std::vector<Line> lines;
+                for (int r = 0; r < relations; ++r)
+                {
+                    auto from = static_cast<std::size_t>(random() % static_cast<unsigned>(tables));
+                    const auto to = static_cast<std::size_t>(random() % static_cast<unsigned>(tables));
+                    if (random() % 3 == 0)
+                        from = 0;
+                    lines.push_back({"r" + std::to_string(seed) + "." + std::to_string(r), from, to, {}});
+                }
+                const auto given = allocate(lines, Palette::Grey);
+                std::map<std::size_t, std::map<QRgb, std::set<std::string>>> at;
+                for (const auto &line : lines)
+                    for (const auto table : {line.from_table, line.to_table})
+                        at[table][given.at(line.identity).rgb()].insert(line.identity);
+                int past = 0;
+                for (const auto &[table, shades] : at)
+                {
+                    std::set<std::string> meeting;
+                    int most = 0;
+                    for (const auto &[grey, identities] : shades)
+                    {
+                        meeting.insert(identities.begin(), identities.end());
+                        most = std::max(most, static_cast<int>(identities.size()));
+                    }
+                    past = std::max(past, most - static_cast<int>((meeting.size() + 4) / 5));
+                }
+                uneven += past > 0 ? 1 : 0;
+                furthest = std::max(furthest, past);
+            }
+            require(furthest <= 1, "No table of a made-up schema is given a grey more than once past its even share");
+            require(uneven <= 120, ("And a table past its share is found in no more than 120 schemas of the 400 (" +
+                                    std::to_string(uneven) + ")")
+                                       .c_str());
+        }
+        // Relationships are told apart by identity, never by what they say: two
+        // that say the same, or nearly the same, stay two, and two that meet
+        // are given colours of their own however alike their names.
+        {
+            const std::vector<Line> alike{{"one", 0, 1, "Order.CustomerID>Customer.CustomerID|"},
+                                          {"two", 0, 1, "Order.CustomerID>Customer.CustomerID|"},
+                                          {"three", 2, 1, "Order.CustomerID>Customer.CustomerID|"},
+                                          {"four", 0, 1, "Order.CustomerId>Customer.CustomerID|"}};
+            for (const auto palette : {Palette::Light, Palette::Dark, Palette::Grey})
+            {
+                const auto given = allocate(alike, palette);
+                require(given.size() == 4, "Relationships saying the same or nearly the same stay as many as they are");
+                std::set<QRgb> distinct;
+                for (const auto &[identity, colour] : given)
+                    distinct.insert(colour.rgb());
+                require(distinct.size() == 4, "Meeting at one table, each is given a colour of its own");
+            }
+        }
+        // One colour for every line of a key of several, and none of it hangs on
+        // the order the lines are listed in.
+        {
+            auto lines = star(7);
+            lines.push_back({"relationship 3", 4, 0, {}});
+            lines.push_back({"relationship 3", 4, 0, {}});
+            const auto given = allocate(lines, Palette::Light);
+            require(given.size() == 7, "Every line of a key of several is one relationship, with one colour");
+            auto shuffled = lines;
+            std::reverse(shuffled.begin(), shuffled.end());
+            std::rotate(shuffled.begin(), shuffled.begin() + 3, shuffled.end());
+            require(allocate(shuffled, Palette::Light) == given, "The colours do not hang on the order of the lines");
+        }
+        // Every colour stands out from every canvas it is drawn on, three to one.
+        {
+            const auto luminance = [](const QColor &colour)
+            {
+                const auto linear = [](double v) { return v <= 0.04045 ? v / 12.92 : std::pow((v + 0.055) / 1.055, 2.4); };
+                return 0.2126 * linear(colour.redF()) + 0.7152 * linear(colour.greenF()) + 0.0722 * linear(colour.blueF());
+            };
+            std::size_t index = 0;
+            for (const auto &theme : desktop::themes())
+            {
+                const auto id = static_cast<desktop::ThemeId>(index++);
+                const auto palette = desktop::colourless(id) ? Palette::Grey
+                                     : theme.canvas.lightnessF() < 0.5 ? Palette::Dark
+                                                                        : Palette::Light;
+                for (const auto &colour : colours_of(palette))
+                {
+                    const auto a = luminance(colour), b = luminance(theme.canvas);
+                    require((std::max(a, b) + 0.05) / (std::min(a, b) + 0.05) >= 3.0,
+                            ("Every line colour stands out three to one from theme " + std::to_string(index - 1) + "'s canvas")
+                                .c_str());
+                }
+            }
+        }
+        // One relationship added to each of 400 made-up schemas of 20 to 160
+        // tables: it can move relationships it meets onto other colours, and
+        // through them, now and then, a few it does not meet. Measured on these
+        // schemas (2026-10-13): in colour, in 23 of the 400, never more than 3.
+        // Five greys leave far less room, and sharing them evenly at every
+        // table means one added can move greys further: in 190, never more
+        // than 16 (taking each relationship once, without the second look and
+        // the even shares, it was 166 and 12). The bounds are those figures,
+        // so that anything making it reach further fails.
+        for (const auto &[palette, reaching, farthest] :
+             {std::make_tuple(Palette::Light, 23L, 3L), std::make_tuple(Palette::Grey, 190L, 16L)})
+        {
+            long additions_reaching_further = 0, furthest = 0;
+            for (int seed = 1; seed <= 400; ++seed)
+            {
+                std::mt19937 random(static_cast<unsigned>(seed));
+                const auto tables = 20 + static_cast<int>(random() % 140);
+                const auto relations = tables + static_cast<int>(random() % static_cast<unsigned>(tables));
+                std::vector<Line> lines;
+                for (int r = 0; r < relations; ++r)
+                {
+                    const auto from = static_cast<std::size_t>(random() % static_cast<unsigned>(tables));
+                    const auto to = static_cast<std::size_t>(random() % static_cast<unsigned>(tables));
+                    lines.push_back({"relationship " + std::to_string(seed) + "." + std::to_string(r), from, to, {}});
+                }
+                const auto before = allocate(lines, palette);
+                const auto from = static_cast<std::size_t>(random() % static_cast<unsigned>(tables));
+                const auto to = static_cast<std::size_t>(random() % static_cast<unsigned>(tables));
+                const Line added{"added " + std::to_string(seed), from, to, {}};
+                auto more = lines;
+                more.push_back(added);
+                const auto after = allocate(more, palette);
+                long further = 0;
+                for (const auto &line : lines)
+                {
+                    const bool meets = line.from_table == added.from_table || line.from_table == added.to_table ||
+                                       line.to_table == added.from_table || line.to_table == added.to_table;
+                    if (!meets && before.at(line.identity) != after.at(line.identity))
+                        ++further;
+                }
+                additions_reaching_further += further > 0 ? 1 : 0;
+                furthest = std::max(furthest, further);
+            }
+            const std::string in = palette == Palette::Grey ? " in greys" : " in colour";
+            require(furthest <= farthest, ("One relationship added recolours at most " + std::to_string(farthest) +
+                                           " relationships it does not meet" + in)
+                                              .c_str());
+            require(additions_reaching_further <= reaching,
+                    ("And only in some schemas: no more than " + std::to_string(reaching) + " of the 400" + in).c_str());
+        }
+        std::cout << "PASS relationship colours are plainly apart, even, stable and readable on every canvas\n";
+    }
+
+    // Each relationship on the schema keeps one colour of its own (2026-10-13):
+    // given by what the relationship is, not by where its tables stand, so it
+    // stays put while tables move and lines are routed again, through saving
+    // and opening, undoing and redoing; and the relationships that meet at one
+    // table are given colours plainly different from one another.
+    // A relationship's colour is worked out from what it joins, by name, so a
+    // rename is the one change besides adding or taking away a relationship
+    // that can recolour one. Renamed on the schema as somebody renames there,
+    // a table or a column gives the relationships it names their colours at
+    // once -- what a fresh view of the same schema gives them -- and nothing
+    // that does not meet them is recoloured; undo, redo, saving and opening
+    // give back exactly what there was.
+    // Several foreign keys referring to one primary key (C3c-1, 2026-10-13).
+    // Their ends are fanned across the key's row, and they are fanned on each
+    // side of the table apart: ends landing on one side stand apart however
+    // many land on the other, up to the five places a row has room for, past
+    // which some must share one. Every end stays on the row it is about; an end
+    // put by hand stays exactly where it was put, and a line shaped by hand
+    // keeps its corners; the lines keep their ends through saving, opening and
+    // undo; and the searches the view remembers stay the searches it would make.
+    void schema_endpoint_separation_tests(infrastructure::QtIdGenerator &ids)
+    {
+        // Where one line leaves and lands: the table and row of the foreign-key
+        // column it leaves from, the table and row of the key it lands on, and
+        // which side of that table it lands on.
+        struct Ends
+        {
+            std::size_t from_table, from_row, to_table, to_row;
+            QPointF from, to;
+            int side;
+        };
+        const auto ends_of = [](desktop::SchemaView &view)
+        {
+            const auto &preview = view.preview();
+            const auto shapes = view.line_shapes();
+            const auto keys = view.line_keys();
+            const auto rows = view.row_boxes();
+            const auto boxes = view.table_boxes();
+            std::vector<Ends> all;
+            for (std::size_t i = 0; i < shapes.size(); ++i)
+            {
+                const auto from = shapes[i].front(), to = shapes[i].back();
+                std::optional<Ends> found;
+                for (std::size_t t = 0; t < preview.tables.size() && !found; ++t)
+                    for (std::size_t c = 0; c < preview.tables[t].columns.size() && !found; ++c)
+                    {
+                        const auto &column = preview.tables[t].columns[c];
+                        if (!column.key_id || !keys[i] || *column.key_id != *keys[i] || !column.references)
+                            continue;
+                        if (from.y() < rows[t][c].top() - 0.01 || from.y() > rows[t][c].bottom() + 0.01)
+                            continue;
+                        const auto target = *column.references;
+                        const int side = std::abs(to.x() - boxes[target].left()) < std::abs(to.x() - boxes[target].right()) ? 0 : 1;
+                        found = Ends{t, c, target, column.references_column, from, to, side};
+                    }
+                require(found.has_value(), "Every line leaves from the row of a column of its foreign key");
+                all.push_back(*found);
+            }
+            return all;
+        };
+        // Every line, but those whose ends were put by hand, lands on the edge
+        // of the row it refers to and leaves from the edge of its own.
+        const auto attached = [](desktop::SchemaView &view, const std::vector<Ends> &all, const std::set<std::size_t> &by_hand,
+                                 const std::string &what)
+        {
+            const auto rows = view.row_boxes();
+            const auto boxes = view.table_boxes();
+            for (std::size_t i = 0; i < all.size(); ++i)
+            {
+                if (by_hand.contains(i))
+                    continue;
+                const auto &one = all[i];
+                const auto on_edge = [](QPointF at, const QRectF &box)
+                { return std::abs(at.x() - box.left()) < 0.01 || std::abs(at.x() - box.right()) < 0.01; };
+                const auto in_row = [](QPointF at, const QRectF &row)
+                { return at.y() >= row.top() - 0.01 && at.y() <= row.bottom() + 0.01; };
+                require(on_edge(one.to, boxes[one.to_table]) && in_row(one.to, rows[one.to_table][one.to_row]),
+                        (what + ": every line lands on the row of the key it refers to").c_str());
+                require(on_edge(one.from, boxes[one.from_table]) && in_row(one.from, rows[one.from_table][one.from_row]),
+                        (what + ": and leaves from the row of its own foreign key").c_str());
+            }
+        };
+        // How many ends land on each side of each key's row, and how many
+        // places they take: at least as many as there are ends, up to five.
+        const auto separated = [](const std::vector<Ends> &all, const std::set<std::size_t> &by_hand, const std::string &what)
+        {
+            std::map<std::tuple<std::size_t, std::size_t, int>, std::pair<int, std::set<long long>>> at;
+            for (std::size_t i = 0; i < all.size(); ++i)
+                if (!by_hand.contains(i))
+                {
+                    auto &landing = at[{all[i].to_table, all[i].to_row, all[i].side}];
+                    ++landing.first;
+                    landing.second.insert(std::llround(all[i].to.y() * 4));
+                }
+            for (const auto &[where, landing] : at)
+                require(static_cast<int>(landing.second.size()) >= std::min(landing.first, 5),
+                        (what + ": ends landing on one side of a key's row stand apart, up to the five places a row has").c_str());
+            return at;
+        };
+        const auto open = [&](application::Editor &model, desktop::MainWindow &window)
+        {
+            (void)model;
+            window.resize(1440, 920);
+            window.show();
+            window.show_home(false);
+            settle();
+            window.open_schema(true);
+            settle();
+        };
+        // A table, Hub, referred to by others: `left` of them standing to its
+        // left and `right` to its right, so their lines land on its key's row
+        // from both sides in known numbers.
+        const auto hub_of = [&](application::Editor &model, int left, int right)
+        {
+            double placed = 0;
+            const auto entity = [&](const std::string &name)
+            {
+                placed += 400;
+                const auto made = std::get<domain::EntityId>(*model.create_entity(name, domain::Rect{placed, 0, 148, 86}).created);
+                const auto key = model.create_attribute(name + "ID", domain::Rect{placed, 200, 150, 60}, domain::ElementRef{made});
+                require(key.ok && model.set_attribute_kind(std::get<domain::AttributeId>(*key.created), domain::AttributeKind::Key).ok,
+                        "Each table has a key");
+                return made;
+            };
+            const auto hub = entity("Hub");
+            std::vector<domain::EntityId> spokes;
+            for (int i = 0; i < left + right; ++i)
+            {
+                const auto spoke = entity("Spoke" + std::to_string(i));
+                const auto relationship = std::get<domain::RelationshipId>(
+                    *model.create_relationship("Has" + std::to_string(i), domain::Rect{placed, 400, 190, 110}).created);
+                const auto one = model.connect(relationship, hub);
+                const auto many = model.connect(relationship, spoke);
+                require(one.ok && one.participant && many.ok && many.participant, "Both sides are joined");
+                require(model.update_participant(relationship, *one.participant, domain::Cardinality::One,
+                                                 domain::Participation::Partial, "")
+                                .ok &&
+                            model.update_participant(relationship, *many.participant, domain::Cardinality::Many,
+                                                     domain::Participation::Partial, "")
+                                .ok,
+                        "One hub to many spokes");
+                spokes.push_back(spoke);
+            }
+            return std::pair{hub, spokes};
+        };
+        const auto place_hub = [&](application::Editor &model, desktop::MainWindow &window, domain::EntityId hub,
+                                   const std::vector<domain::EntityId> &spokes, int left)
+        {
+            std::map<domain::ElementRef, domain::Point> places;
+            places[domain::ElementRef{hub}] = {900, 600};
+            for (std::size_t i = 0; i < spokes.size(); ++i)
+            {
+                const bool on_left = static_cast<int>(i) < left;
+                const auto row = on_left ? i : i - static_cast<std::size_t>(left);
+                places[domain::ElementRef{spokes[i]}] = {on_left ? 100.0 : 1700.0, 60.0 + 170.0 * static_cast<double>(row)};
+            }
+            require(model.move_schema_tables(places).ok, "The tables are put where the test wants them");
+            window.schema()->refresh();
+            settle();
+        };
+        const auto hub_table = [](desktop::SchemaView &view)
+        {
+            for (std::size_t t = 0; t < view.preview().tables.size(); ++t)
+                if (view.preview().tables[t].name.rfind("Hub", 0) == 0)
+                    return t;
+            throw std::runtime_error("No hub");
+        };
+
+        // Hubs: two ends on one side; five on one side while three land on the
+        // other; and seven on each side, more than a row has places for.
+        for (const auto &[left, right] : {std::pair{2, 0}, std::pair{5, 3}, std::pair{7, 7}})
+        {
+            application::Editor model(ids);
+            const auto [hub, spokes] = hub_of(model, left, right);
+            infrastructure::ErdxProjectStore hub_store;
+            desktop::MainWindow window(model, hub_store, ids);
+            open(model, window);
+            place_hub(model, window, hub, spokes, left);
+            auto *view = window.schema();
+            const auto what = "A hub referred to " + std::to_string(left) + " times from its left and " + std::to_string(right) +
+                              " from its right";
+            const auto all = ends_of(*view);
+            attached(*view, all, {}, what);
+            const auto landings = separated(all, {}, what);
+            const auto target = hub_table(*view);
+            int on_left = 0, on_right = 0;
+            for (const auto &[where, landing] : landings)
+                if (std::get<0>(where) == target)
+                    (std::get<2>(where) == 0 ? on_left : on_right) += landing.first;
+            require(on_left == left && on_right == right, (what + ": the lines land on the sides their tables stand on").c_str());
+            if (left > 5)
+                for (const auto &[where, landing] : landings)
+                    if (std::get<0>(where) == target)
+                        require(landing.second.size() >= 5,
+                                (what + ": past five on a side, the row's five places are all used").c_str());
+            model.mark_saved(model.revision());
+        }
+
+        // A key of several columns, referred to from both sides: each line of
+        // it lands on its own column's row, and the ends on each row stand apart.
+        {
+            application::Editor model(ids);
+            double placed = 0;
+            const auto entity = [&](const std::string &name, const std::vector<std::string> &keys)
+            {
+                placed += 400;
+                const auto made = std::get<domain::EntityId>(*model.create_entity(name, domain::Rect{placed, 0, 148, 86}).created);
+                for (const auto &key : keys)
+                {
+                    const auto attribute = model.create_attribute(key, domain::Rect{placed, 200, 150, 60}, domain::ElementRef{made});
+                    require(attribute.ok && model.set_attribute_kind(std::get<domain::AttributeId>(*attribute.created),
+                                                                     domain::AttributeKind::Key)
+                                                .ok,
+                            "A key");
+                }
+                return made;
+            };
+            const auto invoice = entity("Invoice", {"InvoiceNo", "Year"});
+            std::vector<domain::EntityId> referring{entity("Shipment", {"ShipmentNo"}), entity("Refund", {"RefundNo"}),
+                                                    entity("Payment", {"PaymentNo"})};
+            for (std::size_t i = 0; i < referring.size(); ++i)
+            {
+                const auto relationship = std::get<domain::RelationshipId>(
+                    *model.create_relationship("Covers" + std::to_string(i), domain::Rect{placed, 400, 190, 110}).created);
+                const auto one = model.connect(relationship, invoice);
+                const auto many = model.connect(relationship, referring[i]);
+                require(one.ok && one.participant && many.ok && many.participant &&
+                            model.update_participant(relationship, *one.participant, domain::Cardinality::One,
+                                                     domain::Participation::Partial, "")
+                                .ok &&
+                            model.update_participant(relationship, *many.participant, domain::Cardinality::Many,
+                                                     domain::Participation::Partial, "")
+                                .ok,
+                        "Each refers to the invoice");
+            }
+            infrastructure::ErdxProjectStore composite_store;
+            desktop::MainWindow window(model, composite_store, ids);
+            open(model, window);
+            place_hub(model, window, invoice, referring, 2);
+            auto *view = window.schema();
+            const auto all = ends_of(*view);
+            attached(*view, all, {}, "A key of two columns referred to three times");
+            separated(all, {}, "A key of two columns referred to three times");
+            std::map<domain::ForeignKeyId, std::set<std::size_t>> rows_of_key;
+            for (std::size_t i = 0; i < all.size(); ++i)
+                rows_of_key[*view->line_keys()[i]].insert(all[i].to_row);
+            require(rows_of_key.size() == 3 && std::all_of(rows_of_key.begin(), rows_of_key.end(), [](const auto &one)
+                                                           { return one.second.size() == 2; }),
+                    "Each reference is one key landing on both of the key's rows");
+            model.mark_saved(model.revision());
+        }
+
+        // The Company example: Employee's key is referred to seven times,
+        // once by Employee itself, from both sides.
+        application::Editor editor(ids);
+        infrastructure::ErdxProjectStore store;
+        desktop::MainWindow window(editor, store, ids);
+        window.resize(1440, 920);
+        window.show();
+        window.show_home(false);
+        settle();
+        window.load_company_database_relational();
+        settle();
+        window.open_schema(true);
+        settle();
+        auto *view = window.schema();
+        const auto company = ends_of(*view);
+        attached(*view, company, {}, "The Company schema");
+        separated(company, {}, "The Company schema");
+        std::size_t employee = 0;
+        for (std::size_t t = 0; t < view->preview().tables.size(); ++t)
+            if (view->preview().tables[t].name == "Employee")
+                employee = t;
+        int to_employee = 0, sides = 0, itself = 0;
+        std::set<int> seen_sides;
+        for (const auto &one : company)
+            if (one.to_table == employee)
+            {
+                ++to_employee;
+                seen_sides.insert(one.side);
+                itself += one.from_table == employee ? 1 : 0;
+            }
+        sides = static_cast<int>(seen_sides.size());
+        require(to_employee == 7 && sides == 2 && itself == 1,
+                "Employee's key is referred to seven times, from both sides, once by Employee itself");
+
+        // An end put by hand stays exactly where it was put, and is left out of
+        // the fan: the ends the fan places still stand apart.
+        const auto shapes = view->line_shapes();
+        std::optional<std::size_t> by_hand, shaped;
+        for (std::size_t i = 0; i < company.size(); ++i)
+        {
+            if (company[i].to_table != employee || company[i].from_table == employee)
+                continue;
+            if (!by_hand)
+                by_hand = i;
+            else if (!shaped)
+                shaped = i;
+        }
+        require(by_hand && shaped && *by_hand != *shaped, "Two lines into Employee to work with");
+        const auto link_of_line = [&](std::size_t line)
+        {
+            for (const auto &table : view->preview().tables)
+                for (const auto &column : table.columns)
+                    if (column.key_id && view->line_keys()[line] && *column.key_id == *view->line_keys()[line] && column.link)
+                        return *column.link;
+            throw std::runtime_error("A line with no link");
+        };
+        const auto hand_link = link_of_line(*by_hand);
+        const auto box = view->table_boxes()[employee];
+        const auto row = view->row_boxes()[employee][company[*by_hand].to_row];
+        domain::SchemaLine end_by_hand;
+        end_by_hand.to = domain::SchemaEnd{true, {company[*by_hand].side == 0 ? 0.0 : 1.0, (row.top() + 3 - box.top()) / box.height()}};
+        require(editor.shape_schema_line(hand_link, end_by_hand).ok, "An end is put by hand");
+        view->refresh();
+        settle();
+        {
+            const auto now = ends_of(*view);
+            std::optional<std::size_t> found;
+            for (std::size_t i = 0; i < now.size(); ++i)
+                if (link_of_line(i) == hand_link)
+                    found = i;
+            require(found.has_value(), "The line put by hand is still drawn");
+            const QPointF wanted(company[*by_hand].side == 0 ? box.left() : box.right(), row.top() + 3);
+            require(QLineF(now[*found].to, wanted).length() < 0.01, "An end put by hand stays exactly where it was put");
+            separated(now, {*found}, "With an end put by hand");
+            attached(*view, now, {*found}, "With an end put by hand");
+        }
+        require(editor.undo().ok, "Undo takes the hand's end back");
+        view->refresh();
+        settle();
+        require(view->line_shapes() == shapes, "And the lines are drawn as before it");
+
+        // A line shaped by hand keeps every corner the hand gave it; only its
+        // ends follow the tables, as they always have.
+        const auto shaped_link = link_of_line(*shaped);
+        domain::SchemaLine route_by_hand;
+        for (const auto &corner : shapes[*shaped])
+            route_by_hand.route.push_back({corner.x(), corner.y()});
+        require(route_by_hand.route.size() >= 4, "A line with corners to keep");
+        require(editor.shape_schema_line(shaped_link, route_by_hand).ok, "A line is shaped by hand");
+        view->refresh();
+        settle();
+        const auto kept = [&](const char *what)
+        {
+            const auto now = view->line_shapes();
+            std::optional<std::size_t> found;
+            for (std::size_t i = 0; i < now.size(); ++i)
+                if (link_of_line(i) == shaped_link)
+                    found = i;
+            require(found && now[*found].size() == route_by_hand.route.size(), what);
+            for (std::size_t k = 2; k + 2 < route_by_hand.route.size(); ++k)
+                require(QLineF(now[*found][k], QPointF(route_by_hand.route[k].x, route_by_hand.route[k].y)).length() < 0.01, what);
+            require(editor.project().schema_layout.lines.at(domain::foreign_key_from(shaped_link)) == route_by_hand,
+                    "And the shape the hand gave is kept as it was given");
+        };
+        kept("A line shaped by hand keeps its corners");
+        attached(*view, ends_of(*view), {}, "With a line shaped by hand");
+
+        // Saved and opened again, and moved and the move undone: every line
+        // keeps its ends.
+        const auto before = view->line_shapes();
+        {
+            QTemporaryDir folder;
+            const auto path = folder.filePath("ends.erdx");
+            require(store.save(path.toStdString(), editor.project()).ok, "The schema saves");
+            editor.mark_saved(editor.revision());
+            require(window.open_path(path), "And opens again");
+            settle();
+            view = window.schema();
+            require(view->line_shapes() == before, "Opened again, every line has the ends it had");
+        }
+        std::map<domain::ElementRef, domain::Point> moved;
+        for (const auto &table : view->preview().tables)
+            if (table.name == "Dependent" && table.origin)
+                moved[*table.origin] = {40, 1900};
+        require(!moved.empty() && editor.move_schema_tables(moved).ok, "A table is moved");
+        view->refresh();
+        settle();
+        const auto after_move = view->line_shapes();
+        require(after_move != before, "Moving a table moves the lines it has");
+        attached(*view, ends_of(*view), {}, "After a move");
+        separated(ends_of(*view), {}, "After a move");
+        require(editor.undo().ok, "The move is undone");
+        view->refresh();
+        settle();
+        require(view->line_shapes() == before, "Undone, every line has the ends it had");
+        require(editor.redo().ok, "And redone");
+        view->refresh();
+        settle();
+        require(view->line_shapes() == after_move, "Redone, the ends of the move");
+        require(editor.undo().ok, "Undone again");
+        view->refresh();
+        settle();
+
+        // The searches the view remembers are, under the new ends, the
+        // searches it would make afresh.
+        view->check_route_memory(true);
+        const auto account_before = view->route_memory().account();
+        for (const double x : {300.0, 700.0, 40.0})
+        {
+            std::map<domain::ElementRef, domain::Point> step;
+            for (const auto &table : view->preview().tables)
+                if (table.name == "Dependent" && table.origin)
+                    step[*table.origin] = {x, 1900};
+            require(editor.move_schema_tables(step).ok, "A table is moved again");
+            view->refresh();
+            settle();
+        }
+        const auto account_after = view->route_memory().account();
+        require(account_after.taken_again > account_before.taken_again, "Searches are taken again from memory");
+        require(account_after.mismatches == account_before.mismatches,
+                "And every search taken again is the search the router makes afresh");
+        view->check_route_memory(false);
+        editor.mark_saved(editor.revision());
+        std::cout << "PASS ends landing on one key's row are fanned on each side apart, and every end stays on its row\n";
+    }
+
+    // Relationships whose lines meet at one row -- several foreign keys
+    // referring to one key -- are told apart there first (C3c-2, 2026-10-14):
+    // no two of one colour or of one family while the palette has enough, and
+    // as far apart as a row's few colours can be; in Plain, a grey repeated
+    // only as often as sharing five out evenly asks. Lines whose rows nobody
+    // shares are given what C3a gives them; every line of one relationship,
+    // a key of several columns among them, has its one colour; and the
+    // colours do not hang on the order the lines are listed in.
+    void schema_shared_key_colour_tests(infrastructure::QtIdGenerator &ids)
+    {
+        using namespace desktop::schema_colours;
+        // `count` relationships from tables of their own, all landing on table
+        // 0's key row, named from `seed`.
+        const auto hub = [](int count, unsigned seed)
+        {
+            std::mt19937 random(seed);
+            std::vector<Line> lines;
+            for (int i = 0; i < count; ++i)
+                lines.push_back({"r" + std::to_string(random()), static_cast<std::size_t>(i + 1), 0,
+                                 "T" + std::to_string(random() % 100000) + ".ID>Hub.ID|", 1, 0});
+            return lines;
+        };
+        // Among some colours: the least distance, the pairs of one family and
+        // the pairs of one colour.
+        struct Apart
+        {
+            double least = 1e9;
+            int kindred = 0;
+            int same = 0;
+        };
+        const auto apart = [](const std::vector<QColor> &colours)
+        {
+            Apart found;
+            for (std::size_t a = 0; a < colours.size(); ++a)
+                for (std::size_t b = a + 1; b < colours.size(); ++b)
+                {
+                    found.least = std::min(found.least, distance(colours[a], colours[b]));
+                    found.kindred += kindred(colours[a], colours[b]) ? 1 : 0;
+                    found.same += colours[a] == colours[b] ? 1 : 0;
+                }
+            return found;
+        };
+        // The fewest pairs of one grey `count` relationships can have among five.
+        const auto fewest_alike = [](int count)
+        {
+            const int each = count / 5, more = count % 5;
+            return more * (each + 1) * each / 2 + (5 - more) * each * (each - 1) / 2;
+        };
+        const auto given_to = [](const std::vector<Line> &lines, const std::map<std::string, QColor> &given)
+        {
+            std::vector<QColor> colours;
+            for (const auto &line : lines)
+                colours.push_back(given.at(line.identity));
+            return colours;
+        };
+
+        // One key row shared by two to nine relationships, under twenty sets of
+        // names each (names decide each relationship's own colour and the order
+        // they are taken in). The bounds are the least measured under 300 sets
+        // (2026-10-14): up to four, every two at least 30 apart (30.9 in light,
+        // 31.6 in dark); up to nine, 22 (22.8, 22.7).
+        for (const auto palette : {Palette::Light, Palette::Dark})
+            for (int count = 2; count <= 9; ++count)
+                for (unsigned seed = 1; seed <= 20; ++seed)
+                {
+                    const auto lines = hub(count, seed * 7919U + static_cast<unsigned>(count));
+                    const auto found = apart(given_to(lines, allocate(lines, palette)));
+                    require(found.same == 0 && found.kindred == 0,
+                            (std::to_string(count) + " relationships at one key row: no two of one colour or one family").c_str());
+                    require(found.least >= (count <= 4 ? 30.0 : 22.0),
+                            (std::to_string(count) + " relationships at one key row are " + (count <= 4 ? "30" : "22") +
+                             " apart or more (" + std::to_string(found.least) + ")")
+                                .c_str());
+                }
+        for (int count = 2; count <= 10; ++count)
+            for (unsigned seed = 1; seed <= 20; ++seed)
+            {
+                const auto lines = hub(count, seed * 7919U + static_cast<unsigned>(count));
+                require(apart(given_to(lines, allocate(lines, Palette::Grey))).same == fewest_alike(count),
+                        (std::to_string(count) + " relationships at one key row in Plain repeat a grey only as often as "
+                                                 "sharing five out evenly asks")
+                            .c_str());
+            }
+
+        // Where no row is shared, nothing is given otherwise than without rows:
+        // C3a's colours, exactly.
+        for (int seed = 1; seed <= 20; ++seed)
+        {
+            std::mt19937 random(static_cast<unsigned>(seed));
+            const auto tables = 6 + static_cast<int>(random() % 30);
+            std::vector<std::size_t> next(static_cast<std::size_t>(tables), 0);
+            std::vector<Line> unshared, without;
+            for (int r = 0; r < 2 * tables; ++r)
+            {
+                const auto from = static_cast<std::size_t>(random() % static_cast<unsigned>(tables));
+                const auto to = static_cast<std::size_t>(random() % static_cast<unsigned>(tables));
+                const auto leaves = next[from]++;
+                const auto lands = next[to]++;
+                unshared.push_back({"r" + std::to_string(r), from, to, {}, leaves, lands});
+                without.push_back({"r" + std::to_string(r), from, to, {}, no_column, no_column});
+            }
+            for (const auto palette : {Palette::Light, Palette::Dark, Palette::Grey})
+                require(allocate(unshared, palette) == allocate(without, palette),
+                        "Lines meeting no other at their rows are given exactly what they are given at their tables alone");
+        }
+
+        // A key of several columns: each relationship referring to it lands on
+        // both its rows, in one colour, and is told apart at both. And a key's
+        // row that is also a foreign key is met by the line leaving it as much
+        // as by the lines arriving at it.
+        {
+            std::vector<Line> lines;
+            for (int i = 0; i < 3; ++i)
+                for (std::size_t column = 0; column < 2; ++column)
+                    lines.push_back({"refers " + std::to_string(i), static_cast<std::size_t>(i + 1), 0,
+                                     "Refers" + std::to_string(i) + ">Invoice|", column + 1, column});
+            lines.push_back({"leaves its key", 10, 11, "Item.ID>Order.ID|", 0, 0});
+            lines.push_back({"arrives a", 12, 10, "Note.ItemID>Item.ID|", 1, 0});
+            lines.push_back({"arrives b", 13, 10, "Tag.ItemID>Item.ID|", 1, 0});
+            for (const auto palette : {Palette::Light, Palette::Dark})
+            {
+                const auto given = allocate(lines, palette);
+                require(given.size() == 6, "Every line of a key of several is one relationship");
+                const auto composite = apart({given.at("refers 0"), given.at("refers 1"), given.at("refers 2")});
+                require(composite.same == 0 && composite.kindred == 0 && composite.least >= 30.0,
+                        "The relationships referring to a key of several are told apart at its rows");
+                const auto both_ways = apart({given.at("leaves its key"), given.at("arrives a"), given.at("arrives b")});
+                require(both_ways.same == 0 && both_ways.kindred == 0 && both_ways.least >= 30.0,
+                        "At a key that is also a foreign key, the line leaving it and those arriving are told apart");
+                auto shuffled = lines;
+                std::reverse(shuffled.begin(), shuffled.end());
+                std::rotate(shuffled.begin(), shuffled.begin() + 4, shuffled.end());
+                require(allocate(shuffled, palette) == given, "And none of it hangs on the order the lines are listed in");
+            }
+        }
+
+        // One relationship added to each of 50 made-up schemas of 20 to 80
+        // tables, whose keys have one to three columns: as at C3a it can move
+        // relationships it meets onto other colours, and through them, now and
+        // then, a few it does not meet -- more often than C3a, since a row is
+        // weighed before a table. Measured (2026-10-14): in colour in 4 of the
+        // 50, never more than 3 (at their tables alone, 2 and 1). The bounds are
+        // those figures, so that anything making it reach further fails.
+        {
+            long reaching = 0, furthest = 0;
+            for (int seed = 1; seed <= 50; ++seed)
+            {
+                std::mt19937 random(static_cast<unsigned>(seed));
+                const auto tables = 20 + static_cast<int>(random() % 60);
+                std::vector<int> keys;
+                std::vector<std::size_t> next;
+                for (int t = 0; t < tables; ++t)
+                {
+                    keys.push_back(1 + static_cast<int>(random() % 3));
+                    next.push_back(static_cast<std::size_t>(keys.back()));
+                }
+                const auto relationship = [&](const std::string &identity)
+                {
+                    const auto from = static_cast<std::size_t>(random() % static_cast<unsigned>(tables));
+                    const auto to = static_cast<std::size_t>(random() % static_cast<unsigned>(tables));
+                    const auto key = static_cast<std::size_t>(random() % static_cast<unsigned>(keys[to]));
+                    return Line{identity, from, to, {}, next[from]++, key};
+                };
+                std::vector<Line> lines;
+                const auto relations = tables + static_cast<int>(random() % static_cast<unsigned>(tables));
+                for (int r = 0; r < relations; ++r)
+                    lines.push_back(relationship("relationship " + std::to_string(seed) + "." + std::to_string(r)));
+                const auto added = relationship("added " + std::to_string(seed));
+                const auto before = allocate(lines, Palette::Light);
+                auto more = lines;
+                more.push_back(added);
+                const auto after = allocate(more, Palette::Light);
+                long further = 0;
+                for (const auto &line : lines)
+                {
+                    const bool meets = line.from_table == added.from_table || line.from_table == added.to_table ||
+                                       line.to_table == added.from_table || line.to_table == added.to_table;
+                    if (!meets && before.at(line.identity) != after.at(line.identity))
+                        ++further;
+                }
+                reaching += further > 0 ? 1 : 0;
+                furthest = std::max(furthest, further);
+            }
+            require(furthest <= 3, "One relationship added recolours at most 3 relationships it does not meet, rows weighed");
+            require(reaching <= 4, "And only in some schemas: no more than 4 of the 50");
+        }
+
+        // On the schema: seven relationships land on Employee's key in the
+        // Company example (2026-10-14: the closest two of them 32.4 apart in
+        // light and 26.4 in dark, no two of one family; under C3a 23.6 and
+        // 22.5, with five pairs of one family in light).
+        application::Editor editor(ids);
+        infrastructure::ErdxProjectStore store;
+        desktop::MainWindow window(editor, store, ids);
+        window.resize(1440, 920);
+        window.show();
+        window.show_home(false);
+        settle();
+        window.load_company_database_relational();
+        settle();
+        window.open_schema(true);
+        settle();
+        // Every relationship on a schema: the rows its lines meet, and the
+        // colour each of its lines is drawn in, checked to be one colour.
+        using Rows = std::set<std::pair<std::size_t, std::size_t>>;
+        const auto relationships = [](desktop::SchemaView &view)
+        {
+            std::map<domain::ForeignKeyId, std::pair<Rows, std::vector<QColor>>> found;
+            const auto &preview = view.preview();
+            for (std::size_t t = 0; t < preview.tables.size(); ++t)
+                for (std::size_t c = 0; c < preview.tables[t].columns.size(); ++c)
+                {
+                    const auto &column = preview.tables[t].columns[c];
+                    if (!column.key_id || !column.references)
+                        continue;
+                    auto &rows = found[*column.key_id].first;
+                    rows.insert({t, c});
+                    rows.insert({*column.references, column.references_column});
+                }
+            const auto keys = view.line_keys();
+            const auto drawn = view.line_colours();
+            for (std::size_t i = 0; i < keys.size(); ++i)
+                if (keys[i])
+                    found[*keys[i]].second.push_back(drawn[i]);
+            for (const auto &[key, met] : found)
+                require(!met.second.empty() && std::all_of(met.second.begin(), met.second.end(),
+                                                           [&](const QColor &colour) { return colour == met.second.front(); }),
+                        "Every line of a relationship is drawn in its one colour, from its foreign key to its key");
+            return found;
+        };
+        // The colours of the relationships meeting at one table's row, by name.
+        const auto at_row = [&](desktop::SchemaView &view, const std::string &table, const std::string &column)
+        {
+            const auto &preview = view.preview();
+            std::optional<std::pair<std::size_t, std::size_t>> row;
+            for (std::size_t t = 0; t < preview.tables.size(); ++t)
+                if (preview.tables[t].name == table)
+                    for (std::size_t c = 0; c < preview.tables[t].columns.size(); ++c)
+                        if (preview.tables[t].columns[c].name == column)
+                            row = std::pair{t, c};
+            require(row.has_value(), ("The schema has " + table + "." + column).c_str());
+            std::vector<QColor> colours;
+            for (const auto &[key, met] : relationships(view))
+                if (met.first.contains(*row))
+                    colours.push_back(met.second.front());
+            return colours;
+        };
+        auto *view = window.schema();
+        const auto light = at_row(*view, "Employee", "EmployeeID");
+        require(light.size() == 7, "Seven relationships meet at Employee's key");
+        const auto in_light = apart(light);
+        require(in_light.same == 0 && in_light.kindred == 0 && in_light.least >= 22.0,
+                "At Employee's key no two relationships are of one colour or one family, and every two are 22 apart or more");
+        window.set_theme(desktop::ThemeId::Dracula);
+        settle();
+        const auto in_dark = apart(at_row(*view, "Employee", "EmployeeID"));
+        require(in_dark.same == 0 && in_dark.kindred == 0 && in_dark.least >= 22.0,
+                "In a dark theme too, Employee's key has no two of one colour or one family");
+        window.set_theme(desktop::ThemeId::Plain);
+        settle();
+        require(apart(at_row(*view, "Employee", "EmployeeID")).same == fewest_alike(7),
+                "In Plain, Employee's key repeats a grey only as often as seven among five asks");
+        window.set_theme(desktop::ThemeId::OfficeLight);
+        settle();
+        require(at_row(*view, "Employee", "EmployeeID") == light, "Back in the first theme, Employee's key has its colours again");
+        editor.mark_saved(editor.revision());
+
+        // A key of two columns referred to three times, drawn: each of the
+        // three is one colour on both of its lines, and the three are told
+        // apart at both rows.
+        {
+            application::Editor model(ids);
+            double placed = 0;
+            const auto entity = [&](const std::string &name, const std::vector<std::string> &keys)
+            {
+                placed += 400;
+                const auto made = std::get<domain::EntityId>(*model.create_entity(name, domain::Rect{placed, 0, 148, 86}).created);
+                for (const auto &key : keys)
+                {
+                    const auto attribute = model.create_attribute(key, domain::Rect{placed, 200, 150, 60}, domain::ElementRef{made});
+                    require(attribute.ok && model.set_attribute_kind(std::get<domain::AttributeId>(*attribute.created),
+                                                                     domain::AttributeKind::Key)
+                                                .ok,
+                            "A key");
+                }
+                return made;
+            };
+            const auto invoice = entity("Invoice", {"InvoiceNo", "Year"});
+            for (const auto &name : {"Shipment", "Refund", "Payment"})
+            {
+                const auto referring = entity(name, {std::string(name) + "No"});
+                const auto relationship = std::get<domain::RelationshipId>(
+                    *model.create_relationship(std::string("Covers ") + name, domain::Rect{placed, 400, 190, 110}).created);
+                const auto one = model.connect(relationship, invoice);
+                const auto many = model.connect(relationship, referring);
+                require(one.ok && one.participant && many.ok && many.participant &&
+                            model.update_participant(relationship, *one.participant, domain::Cardinality::One,
+                                                     domain::Participation::Partial, "")
+                                .ok &&
+                            model.update_participant(relationship, *many.participant, domain::Cardinality::Many,
+                                                     domain::Participation::Partial, "")
+                                .ok,
+                        "Each refers to the invoice");
+            }
+            infrastructure::ErdxProjectStore composite_store;
+            desktop::MainWindow composite(model, composite_store, ids);
+            composite.resize(1440, 920);
+            composite.show();
+            composite.show_home(false);
+            settle();
+            composite.open_schema(true);
+            settle();
+            auto *drawn = composite.schema();
+            const auto found = relationships(*drawn);
+            require(found.size() == 3 && std::all_of(found.begin(), found.end(), [](const auto &one) { return one.second.second.size() == 2; }),
+                    "Each of the three draws two lines, one for each column of the key");
+            // The table the schema works out from Invoice, whatever it names it.
+            std::string invoices;
+            for (const auto &table : drawn->preview().tables)
+                if (table.name.rfind("Invoice", 0) == 0)
+                    invoices = table.name;
+            for (const auto &column : {"InvoiceNo", "Year"})
+            {
+                const auto there = apart(at_row(*drawn, invoices, column));
+                require(there.same == 0 && there.kindred == 0 && there.least >= 30.0,
+                        "At each row of a key of several, the relationships referring to it are told apart");
+            }
+            model.mark_saved(model.revision());
+        }
+        std::cout << "PASS relationships meeting at one key row are told apart there first, as the palette allows\n";
+    }
+
+    // A table carried on the Schema shows what it has come into line with (C7,
+    // 2026-10-14): a guide along the edge or middle of a table left standing
+    // that its own edge or middle is within a few pixels of, in the theme's
+    // warning colour, on the canvas and never in a picture. Nothing is snapped
+    // -- the table goes exactly where the hand takes it -- nothing reaches the
+    // project or its history while it is carried, and letting go takes the
+    // guides away.
+    void schema_alignment_guide_tests(infrastructure::QtIdGenerator &ids)
+    {
+        application::Editor model(ids);
+        infrastructure::ErdxProjectStore store;
+        desktop::MainWindow window(model, store, ids);
+        window.resize(1440, 920);
+        window.show();
+        window.show_home(false);
+        settle();
+        child<QAction>(window, "fileTemplateRelational")->trigger();
+        window.set_theme(desktop::ThemeId::OfficeLight);
+        settle();
+        auto *view = window.schema();
+        // The template's two tables are of one width; one is made wider, so
+        // that its edges and middle are never met all at once.
+        require(view->preview().tables.size() == 2 && view->preview().tables[1].origin,
+                "The template has two tables to line up");
+        const auto first = view->table_boxes();
+        require(model.resize_schema_tables({{*view->preview().tables[1].origin,
+                                             domain::SchemaTableBox{first[1].width() + 94, first[1].height(), {}}}}).ok,
+                "One of them made wider");
+        view->refresh();
+        settle();
+        const auto boxes = view->table_boxes();
+        const auto standing = boxes[0];
+        const auto carried = boxes[1];
+        require(std::abs(standing.width() - carried.width()) >= 2 && std::abs(standing.height() - carried.height()) >= 2,
+                "Of different sizes, so an edge and a middle are never met at once");
+        const auto mouse = [&](QEvent::Type type, QPointF where, Qt::MouseButtons held)
+        {
+            QMouseEvent event(type, where, view->mapToGlobal(where.toPoint()),
+                              type == QEvent::MouseMove ? Qt::NoButton : Qt::LeftButton, held, Qt::NoModifier);
+            QApplication::sendEvent(view, &event);
+        };
+        const auto as_opened = model.project();
+        const auto steps = model.history().size();
+        const QPointF press(carried.center().x(), carried.top() + 13);
+        mouse(QEvent::MouseButtonPress, press, Qt::LeftButton);
+        require(view->alignment_guides().empty(), "A table pressed but not yet carried shows no guide");
+        // The table carried until its top left is at `corner`, and the one
+        // guide that is then shown, which must be there.
+        const auto carry = [&](QPointF corner)
+        {
+            mouse(QEvent::MouseMove, press + (corner - carried.topLeft()), Qt::LeftButton);
+            const auto now = view->table_boxes()[1];
+            require(std::abs(now.left() - corner.x()) < 1e-6 && std::abs(now.top() - corner.y()) < 1e-6,
+                    "A carried table goes exactly where the hand takes it, guide or none");
+            require(model.project() == as_opened && model.history().size() == steps,
+                    "And nothing reaches the project or its history while it is carried");
+            return view->alignment_guides();
+        };
+        const auto down_at = [&](QPointF corner, double x)
+        {
+            const auto guides = carry(corner);
+            const auto now = view->table_boxes()[1];
+            require(guides.size() == 1 && guides[0].x1() == x && guides[0].x2() == x,
+                    "One guide runs down the schema, along the standing table's edge or middle");
+            require(guides[0].y1() == std::min(standing.top(), now.top()) - 26 &&
+                        guides[0].y2() == std::max(standing.bottom(), now.bottom()) + 26,
+                    "Past both tables, by as much as the diagram's guides run past its shapes");
+        };
+        const auto across_at = [&](QPointF corner, double y)
+        {
+            const auto guides = carry(corner);
+            require(guides.size() == 1 && guides[0].y1() == y && guides[0].y2() == y,
+                    "One guide runs across the schema, along the standing table's edge or middle");
+            return guides[0];
+        };
+        // Below the standing table: lined up on its left, its middle, its right.
+        const auto below = standing.bottom() + 80;
+        down_at({standing.left(), below}, standing.left());
+        down_at({standing.left() + 3, below}, standing.left());
+        down_at({standing.center().x() - carried.width() / 2, below}, standing.center().x());
+        down_at({standing.right() - carried.width(), below}, standing.right());
+        // Just past a guide's reach: the first distance off the standing
+        // table's left at which none of the carried table's edges and middle
+        // is within 7 pixels of any of the standing table's.
+        double off = 8;
+        const auto clear = [&](double d)
+        {
+            for (const auto mine : {d, d + carried.width() / 2, d + carried.width()})
+                for (const auto theirs : {0.0, standing.width() / 2, standing.width()})
+                    if (std::abs(theirs - mine) <= 7)
+                        return false;
+            return true;
+        };
+        while (off < 40 && !clear(off))
+            ++off;
+        require(off < 40, "There is a place just past every guide's reach");
+        require(carry({standing.left() + off, below}).empty(), "Just past a guide's reach, no guide");
+        require(carry({standing.right() + 200, below}).empty(), "Nowhere near the standing table, no guide");
+        // Beside it: lined up on its top and its bottom.
+        const auto beside = standing.right() + 120;
+        across_at({beside, standing.bottom() - carried.height()}, standing.bottom());
+        const auto guide = across_at({beside, standing.top()}, standing.top());
+
+        // On the canvas the guide is in the theme's warning colour, where it
+        // runs past each table; a picture of the schema has none of it.
+        const auto &colours = desktop::theme(desktop::ThemeId::OfficeLight);
+        const auto distance = [](QColor a, QColor b)
+        { return std::abs(a.red() - b.red()) + std::abs(a.green() - b.green()) + std::abs(a.blue() - b.blue()); };
+        const auto shows_guide = [&](const QImage &image, QPointF at, double scale)
+        {
+            for (int dy = -1; dy <= 1; ++dy)
+            {
+                const QPoint pixel(static_cast<int>(at.x() * scale), static_cast<int>(at.y() * scale) + dy);
+                if (image.rect().contains(pixel) &&
+                    distance(image.pixelColor(pixel), colours.warning) < distance(colours.canvas, colours.warning) / 2)
+                    return true;
+            }
+            return false;
+        };
+        const auto canvas = view->grab().toImage();
+        const auto ratio = canvas.devicePixelRatio();
+        const QPointF past_standing(guide.x1() + 13, guide.y1());
+        const QPointF past_carried(guide.x2() - 13, guide.y1());
+        require(shows_guide(canvas, past_standing, ratio) && shows_guide(canvas, past_carried, ratio),
+                "The guide is drawn in the theme's warning colour past both tables");
+        desktop::PictureOptions options;
+        options.format = desktop::PictureFormat::Png;
+        options.background = desktop::PictureBackground::White;
+        options.carry_project = false;
+        QByteArray bytes;
+        require(desktop::draw_picture(view->export_view(), options, {}, bytes).ok, "A picture is drawn mid-carry");
+        QImage picture;
+        picture.loadFromData(bytes, "png");
+        const auto origin = view->export_view().bounds(desktop::PictureExtent::WholeDiagram).topLeft() -
+                            QPointF(options.margin, options.margin);
+        require(!shows_guide(picture, past_standing - origin, 1.0) && !shows_guide(picture, past_carried - origin, 1.0),
+                "A picture of the schema has no guide in it");
+
+        // Let go, the table stays where it was put and the guides are gone.
+        mouse(QEvent::MouseButtonRelease, press + (QPointF(beside, standing.top()) - carried.topLeft()), Qt::NoButton);
+        settle();
+        require(view->alignment_guides().empty(), "Let go, no guide is left behind");
+        require(view->table_boxes()[1].topLeft() == QPointF(beside, standing.top()) && model.history().size() == steps + 1,
+                "And the table stays where it was let go, as one move");
+        model.mark_saved(model.revision());
+        std::cout << "PASS a carried Schema table shows what it lines up with, and nothing is snapped\n";
+    }
+
+    void schema_line_colour_rename_tests(infrastructure::QtIdGenerator &ids)
+    {
+        application::Editor editor(ids);
+        infrastructure::ErdxProjectStore store;
+        desktop::MainWindow window(editor, store, ids);
+        window.resize(1440, 920);
+        window.show();
+        window.show_home(false);
+        settle();
+        window.load_company_database_relational();
+        settle();
+        window.open_schema(true);
+        settle();
+        const auto colours_of = [](desktop::SchemaView &view)
+        {
+            std::map<domain::ForeignKeyId, QColor> by_key;
+            const auto keys = view.line_keys();
+            const auto drawn = view.line_colours();
+            for (std::size_t i = 0; i < keys.size(); ++i)
+            {
+                require(keys[i].has_value(), "Every line on the schema draws a foreign key");
+                const auto [at, added] = by_key.emplace(*keys[i], drawn[i]);
+                require(added || at->second == drawn[i], "Every line of one relationship is drawn in its one colour");
+            }
+            return by_key;
+        };
+        auto *view = window.schema();
+        const auto colours = [&] { return colours_of(*view); };
+        const auto ends = [&]
+        {
+            std::map<domain::ForeignKeyId, std::pair<std::string, std::string>> tables;
+            const auto &preview = view->preview();
+            for (const auto &table : preview.tables)
+                for (const auto &column : table.columns)
+                    if (column.key_id && column.references && *column.references < preview.tables.size())
+                        tables[*column.key_id] = {table.name, preview.tables[*column.references].name};
+            return tables;
+        };
+        const auto closest_at = [&](const std::string &table)
+        {
+            const auto given = colours();
+            std::vector<QColor> meeting;
+            for (const auto &[key, at] : ends())
+                if (at.first == table || at.second == table)
+                    meeting.push_back(given.at(key));
+            double closest = 1e9;
+            for (std::size_t i = 0; i < meeting.size(); ++i)
+                for (std::size_t j = i + 1; j < meeting.size(); ++j)
+                    closest = std::min(closest, colour_distance(meeting[i], meeting[j]));
+            return closest;
+        };
+        const auto table_at = [&](const std::string &name)
+        {
+            const auto &tables = view->preview().tables;
+            for (std::size_t t = 0; t < tables.size(); ++t)
+                if (tables[t].name == name)
+                    return t;
+            throw std::runtime_error("No table named " + name);
+        };
+        const auto column_at = [&](std::size_t table, const std::string &name)
+        {
+            const auto &columns = view->preview().tables[table].columns;
+            for (std::size_t c = 0; c < columns.size(); ++c)
+                if (columns[c].name == name)
+                    return c;
+            throw std::runtime_error("No column named " + name);
+        };
+        // Renamed as the schema's own rename box renames: the window applies
+        // it, as it applies every edit, and the schema is worked out again.
+        const auto rename = [&](std::size_t table, std::optional<std::size_t> column, const char *name)
+        {
+            require(bool(view->renamed), "The schema hands a rename to the window");
+            view->renamed(desktop::SchemaView::Spot{table, column, {}}, QString::fromUtf8(name));
+            settle();
+        };
+        const auto command = [&](const char *name)
+        {
+            child<QAction>(window, name)->trigger();
+            settle();
+        };
+        // Nothing recoloured but relationships meeting the given tables.
+        const auto only_at = [&](const std::map<domain::ForeignKeyId, QColor> &was,
+                                 const std::map<domain::ForeignKeyId, std::pair<std::string, std::string>> &at,
+                                 const std::set<std::string> &tables, const char *what)
+        {
+            const auto now = colours();
+            for (const auto &[key, colour] : was)
+            {
+                const auto &[from, to] = at.at(key);
+                if (!tables.contains(from) && !tables.contains(to))
+                    require(now.at(key) == colour, (std::string(what) + ": " + from + " -> " + to + " keeps its colour").c_str());
+            }
+        };
+        // A view made afresh for the schema as it now is -- saved, and opened in
+        // a window of its own, which keeps the keys' identities -- gives every
+        // relationship the colour this one does: nothing here is left over
+        // from before the rename.
+        QTemporaryDir folder;
+        int saved = 0;
+        const auto as_afresh = [&](const char *what)
+        {
+            const auto path = folder.filePath(QString("renamed-%1.erdx").arg(++saved));
+            require(store.save(path.toStdString(), editor.project()).ok, "The schema saves");
+            application::Editor fresh(ids);
+            infrastructure::ErdxProjectStore fresh_store;
+            desktop::MainWindow fresh_window(fresh, fresh_store, ids);
+            fresh_window.resize(1440, 920);
+            fresh_window.show();
+            fresh_window.show_home(false);
+            settle();
+            require(fresh_window.open_path(path), "And opens in a window of its own");
+            settle();
+            fresh_window.open_schema(true);
+            settle();
+            require(colours_of(*fresh_window.schema()) == colours(), what);
+            fresh.mark_saved(fresh.revision());
+        };
+
+        const auto first = colours();
+        const auto first_ends = ends();
+        // Columns of one name in many tables are as many relationships, each
+        // with a colour of its own where they meet.
+        {
+            int named_alike = 0;
+            for (const auto &table : view->preview().tables)
+                for (const auto &column : table.columns)
+                    named_alike += column.key_id && column.name == "EmployeeID" ? 1 : 0;
+            require(named_alike >= 5 && first.size() == first_ends.size() && first.size() == 25,
+                    "Foreign keys of one name in different tables are each a relationship of their own");
+            require(closest_at("Employee") >= 20.0, "And each has a colour plainly its own");
+        }
+
+        // A table renamed.
+        auto colourings = view->colourings();
+        rename(table_at("Dependent"), std::nullopt, "Dependant");
+        require(view->preview().tables[table_at("Dependant")].name == "Dependant", "The table is renamed");
+        require(view->colourings() == colourings + 1, "A table renamed gives the relationships their colours again at once");
+        std::optional<domain::ForeignKeyId> dependant;
+        for (const auto &[key, at] : first_ends)
+            if (at.first == "Dependent")
+                dependant = key;
+        require(dependant && colours().at(*dependant) != first.at(*dependant),
+                "Dependant -> Employee says something new, and is given the colour that goes with it");
+        only_at(first, first_ends, {"Dependent", "Employee"}, "Dependent renamed");
+        require(closest_at("Employee") >= 20.0, "Employee's relationships are still plainly apart");
+        as_afresh("Renamed, the table's relationships have the colours a view made afresh gives them");
+        const auto table_renamed = colours();
+        command("undoCommand");
+        require(colours() == first, "Undoing the rename gives back every colour there was");
+        command("redoCommand");
+        require(colours() == table_renamed, "Redoing it gives back the colours of the rename");
+        command("undoCommand");
+
+        // A column other tables refer to, renamed.
+        colourings = view->colourings();
+        const auto employee = table_at("Employee");
+        rename(employee, column_at(employee, "EmployeeID"), "StaffID");
+        require(view->colourings() == colourings + 1, "A referenced column renamed gives the colours again at once");
+        int changed = 0;
+        for (const auto &[key, colour] : colours())
+            changed += colour != first.at(key) ? 1 : 0;
+        require(changed > 0, "And the relationships that refer to it by its new name have the colours that go with it");
+        only_at(first, first_ends, {"Employee"}, "Employee's key renamed");
+        require(closest_at("Employee") >= 20.0, "Employee's relationships are still plainly apart");
+        as_afresh("Renamed, every relationship has the colour a view made afresh gives it");
+        const auto column_renamed = colours();
+        command("undoCommand");
+        require(colours() == first, "Undoing the column's rename gives back every colour there was");
+        command("redoCommand");
+        require(colours() == column_renamed, "Redoing it gives back the colours of the rename");
+        command("undoCommand");
+
+        // Two tables' names swapped, by way of a third: as many relationships as
+        // before, none run together, each still plainly apart where it meets
+        // another, and what a view made afresh gives.
+        rename(table_at("EmployeePhone"), std::nullopt, "Swapping");
+        rename(table_at("EmployeeSkill"), std::nullopt, "EmployeePhone");
+        rename(table_at("Swapping"), std::nullopt, "EmployeeSkill");
+        require(colours().size() == first.size(), "Names swapped, every relationship is still one of its own");
+        for (const auto &table : {"Employee", "EmployeePhone", "EmployeeSkill"})
+            require(closest_at(table) >= 20.0, (std::string("Names swapped, the relationships at ") + table +
+                                                " are still plainly apart")
+                                                   .c_str());
+        as_afresh("Names swapped, every relationship has the colour a view made afresh gives it");
+        for (int step = 0; step < 3; ++step)
+            command("undoCommand");
+        require(colours() == first, "Undoing the swap gives back every colour there was");
+        editor.mark_saved(editor.revision());
+
+        // A key of several columns: an invoice known by its number and year,
+        // which a shipment refers to by both, so one relationship is drawn as
+        // two lines -- in one colour, which neither moving a table nor
+        // renaming the shipment's columns splits.
+        {
+            application::Editor model(ids);
+            double placed = 0;
+            const auto entity = [&](const char *name)
+            {
+                placed += 400;
+                return std::get<domain::EntityId>(*model.create_entity(name, domain::Rect{placed, 0, 148, 86}).created);
+            };
+            const auto attribute = [&](const char *name, domain::EntityId owner, domain::AttributeKind kind)
+            {
+                const auto made = model.create_attribute(name, domain::Rect{placed, 200, 150, 60}, domain::ElementRef{owner});
+                require(made.ok && made.created, "An attribute is made");
+                if (kind != domain::AttributeKind::Normal)
+                    require(model.set_attribute_kind(std::get<domain::AttributeId>(*made.created), kind).ok,
+                            "And given its kind");
+            };
+            const auto relate = [&](const char *name, domain::EntityId one, domain::EntityId many)
+            {
+                const auto relationship = std::get<domain::RelationshipId>(
+                    *model.create_relationship(name, domain::Rect{placed, 400, 190, 110}).created);
+                const auto first_side = model.connect(relationship, one);
+                const auto second_side = model.connect(relationship, many);
+                require(first_side.ok && first_side.participant && second_side.ok && second_side.participant,
+                        "Both sides are joined");
+                require(model.update_participant(relationship, *first_side.participant, domain::Cardinality::One,
+                                                 domain::Participation::Partial, "")
+                                .ok &&
+                            model.update_participant(relationship, *second_side.participant, domain::Cardinality::Many,
+                                                     domain::Participation::Partial, "")
+                                .ok,
+                        "And given their cardinalities");
+            };
+            const auto invoice = entity("Invoice");
+            attribute("InvoiceNo", invoice, domain::AttributeKind::Key);
+            attribute("Year", invoice, domain::AttributeKind::Key);
+            const auto shipment = entity("Shipment");
+            attribute("ShipmentNo", shipment, domain::AttributeKind::Key);
+            const auto depot = entity("Depot");
+            attribute("DepotID", depot, domain::AttributeKind::Key);
+            const auto carrier = entity("Carrier");
+            attribute("CarrierID", carrier, domain::AttributeKind::Key);
+            relate("Covers", invoice, shipment);
+            relate("Holds", depot, shipment);
+            relate("Carries", carrier, shipment);
+
+            infrastructure::ErdxProjectStore composite_store;
+            desktop::MainWindow composite(model, composite_store, ids);
+            composite.resize(1440, 920);
+            composite.show();
+            composite.show_home(false);
+            settle();
+            composite.open_schema(true);
+            settle();
+            auto *schema = composite.schema();
+            const auto drawn = [&]
+            {
+                std::map<domain::ForeignKeyId, std::vector<QColor>> lines;
+                const auto keys = schema->line_keys();
+                const auto in = schema->line_colours();
+                for (std::size_t i = 0; i < keys.size(); ++i)
+                {
+                    require(keys[i].has_value(), "Every line of the shipments draws a foreign key");
+                    lines[*keys[i]].push_back(in[i]);
+                }
+                return lines;
+            };
+            const auto before = drawn();
+            std::optional<domain::ForeignKeyId> covers;
+            for (const auto &[key, in] : before)
+                if (in.size() == 2)
+                    covers = key;
+            require(before.size() == 3 && covers, "Shipment refers to the invoice by a key of two columns, one relationship");
+            require(before.at(*covers)[0] == before.at(*covers)[1], "Both of its lines are drawn in its one colour");
+            std::vector<QColor> one_each;
+            for (const auto &[key, in] : before)
+                one_each.push_back(in.front());
+            for (std::size_t i = 0; i < one_each.size(); ++i)
+                for (std::size_t j = i + 1; j < one_each.size(); ++j)
+                    require(colour_distance(one_each[i], one_each[j]) >= 20.0,
+                            "The three relationships meeting at Shipment are plainly apart");
+            const auto boxes = schema->table_boxes();
+            std::size_t invoice_at = 0;
+            for (std::size_t t = 0; t < boxes.size(); ++t)
+                if (schema->preview().tables[t].name == "Invoice")
+                    invoice_at = t;
+            const QPointF grip(boxes[invoice_at].center().x(), boxes[invoice_at].top() + 13);
+            const auto mouse = [&](QEvent::Type type, QPointF where, Qt::MouseButtons held)
+            {
+                QMouseEvent event(type, where, schema->mapToGlobal(where.toPoint()),
+                                  type == QEvent::MouseMove ? Qt::NoButton : Qt::LeftButton, held, Qt::NoModifier);
+                QApplication::sendEvent(schema, &event);
+            };
+            mouse(QEvent::MouseButtonPress, grip, Qt::LeftButton);
+            for (int step = 1; step <= 6; ++step)
+                mouse(QEvent::MouseMove, grip + QPointF(25.0 * step, 40.0 * step), Qt::LeftButton);
+            mouse(QEvent::MouseButtonRelease, grip + QPointF(150, 240), Qt::NoButton);
+            settle();
+            require(drawn() == before, "The invoice moved, the key of two columns keeps its one colour");
+            model.mark_saved(model.revision());
+        }
+        std::cout << "PASS renamed tables and columns give their relationships the colours their names give, at once\n";
+    }
+
+    void schema_line_colour_tests(infrastructure::QtIdGenerator &ids)
+    {
+        application::Editor editor(ids);
+        infrastructure::ErdxProjectStore store;
+        desktop::MainWindow window(editor, store, ids);
+        window.resize(1440, 920);
+        window.show();
+        window.show_home(false);
+        settle();
+        window.load_company_database_relational();
+        settle();
+        window.open_schema(true);
+        settle();
+        auto *view = window.schema();
+        // The colour each relationship has been given, checked first to be the
+        // colour of every line that draws it -- every column of a key of
+        // several.
+        const auto colours = [&]
+        {
+            std::map<domain::ForeignKeyId, QColor> by_key;
+            const auto keys = view->line_keys();
+            const auto drawn = view->line_colours();
+            for (std::size_t i = 0; i < keys.size(); ++i)
+            {
+                require(keys[i].has_value(), "Every line on the schema draws a foreign key");
+                const auto [at, added] = by_key.emplace(*keys[i], drawn[i]);
+                require(added || at->second == drawn[i], "Every line of one relationship is drawn in its one colour");
+            }
+            return by_key;
+        };
+        // The tables each relationship joins, read from the preview.
+        const auto joins = [&]
+        {
+            std::map<domain::ForeignKeyId, std::pair<std::string, std::string>> tables;
+            const auto &preview = view->preview();
+            for (const auto &table : preview.tables)
+                for (const auto &column : table.columns)
+                    if (column.key_id && column.references && *column.references < preview.tables.size())
+                        tables[*column.key_id] = {table.name, preview.tables[*column.references].name};
+            return tables;
+        };
+        const auto meeting = [&](const std::string &table)
+        {
+            std::vector<domain::ForeignKeyId> keys;
+            for (const auto &[key, ends] : joins())
+                if (ends.first == table || ends.second == table)
+                    keys.push_back(key);
+            return keys;
+        };
+        const auto closest_at = [&](const std::string &table, const std::map<domain::ForeignKeyId, QColor> &given)
+        {
+            const auto keys = meeting(table);
+            double closest = 1e9;
+            for (std::size_t i = 0; i < keys.size(); ++i)
+                for (std::size_t j = i + 1; j < keys.size(); ++j)
+                    closest = std::min(closest, colour_distance(given.at(keys[i]), given.at(keys[j])));
+            return closest;
+        };
+
+        // The Employee table (2026-10-13: three of its lines were three greens,
+        // two of them under 8 apart, and two were near-identical purples).
+        const auto first = colours();
+        require(meeting("Employee").size() >= 8, "Employee is joined by many relationships");
+        require(closest_at("Employee", first) >= 20.0,
+                ("Every two relationships meeting at Employee are plainly different colours (closest " +
+                 std::to_string(closest_at("Employee", first)) + ")")
+                    .c_str());
+        for (const auto &table : view->preview().tables)
+            if (meeting(table.name).size() <= 16)
+                require(closest_at(table.name, first) >= 20.0,
+                        ("The relationships meeting at " + table.name + " are plainly different colours").c_str());
+
+        // Tables moved, one and then all of them, and carried into the view's
+        // edge: the lines are routed again, and no relationship changes colour.
+        const auto colourings = view->colourings();
+        const auto mouse = [&](QEvent::Type type, QPointF where, Qt::MouseButtons held)
+        {
+            QMouseEvent event(type, where, view->mapToGlobal(where.toPoint()),
+                              type == QEvent::MouseMove ? Qt::NoButton : Qt::LeftButton, held, Qt::NoModifier);
+            QApplication::sendEvent(view, &event);
+        };
+        const auto carry = [&](const std::string &table, QPointF by, int steps)
+        {
+            const auto boxes = view->table_boxes();
+            for (std::size_t t = 0; t < boxes.size(); ++t)
+                if (view->preview().tables[t].name == table)
+                {
+                    const QPointF grip(boxes[t].center().x(), boxes[t].top() + 13);
+                    mouse(QEvent::MouseButtonPress, grip, Qt::LeftButton);
+                    for (int i = 1; i <= steps; ++i)
+                        mouse(QEvent::MouseMove, grip + by * i, Qt::LeftButton);
+                    mouse(QEvent::MouseButtonRelease, grip + by * steps, Qt::NoButton);
+                    settle();
+                    return;
+                }
+            throw std::runtime_error("No table named " + table);
+        };
+        const auto routed_before = view->routings();
+        carry("Employee", QPointF(30, 0), 10);
+        require(colours() == first, "Employee carried 300 px, every relationship keeps its colour");
+        carry("Project", QPointF(-20, 25), 6);
+        require(colours() == first, "Another table carried, every relationship keeps its colour");
+        view->select_all();
+        settle();
+        carry("Department", QPointF(10, 12), 5);
+        view->select(std::nullopt);
+        settle();
+        require(colours() == first, "Every table carried together, every relationship keeps its colour");
+        {
+            auto *scroll = child<QScrollArea>(window, "schemaScroll");
+            auto *port = scroll->viewport();
+            const auto boxes = view->table_boxes();
+            const QPointF grip(boxes[0].center().x(), boxes[0].top() + 13);
+            mouse(QEvent::MouseButtonPress, grip, Qt::LeftButton);
+            mouse(QEvent::MouseMove, grip + QPointF(0, 10), Qt::LeftButton);
+            mouse(QEvent::MouseMove, QPointF(view->mapFrom(port, QPoint(port->width() / 2, port->height() + 30))),
+                  Qt::LeftButton);
+            QElapsedTimer clock;
+            clock.start();
+            while (clock.elapsed() < 150)
+                QApplication::processEvents(QEventLoop::AllEvents, 5);
+            mouse(QEvent::MouseButtonRelease,
+                  QPointF(view->mapFrom(port, QPoint(port->width() / 2, port->height() + 30))), Qt::NoButton);
+            settle();
+        }
+        require(colours() == first, "A table carried into the edge as the view scrolls on, every colour stays");
+        require(view->routings() > routed_before + 20, "The lines were routed again as the tables moved");
+        require(view->colourings() == colourings,
+                "Moving tables gives no relationship a colour again: colours are given when relationships change");
+
+        // Saved and opened again.
+        QTemporaryDir folder;
+        const auto path = folder.filePath("colours.erdx");
+        require(store.save(path.toStdString(), editor.project()).ok, "The schema saves");
+        editor.mark_saved(editor.revision());
+        require(window.open_path(path), "And opens again");
+        settle();
+        require(colours() == first, "Saved and opened again, every relationship has the colour it had");
+
+        // A relationship taken away, then put back by undo and taken away again
+        // by redo: the relationships at other tables keep their colours, and
+        // undoing and redoing give back exactly what there was.
+        const auto ends = joins();
+        std::optional<domain::ForeignKeyId> removed;
+        for (const auto &[key, at] : ends)
+            if (at.first == "Dependent" && at.second == "Employee")
+                removed = key;
+        require(removed.has_value(), "Dependent refers to Employee");
+        require(editor.erase_foreign_key(*removed).ok, "The relationship is taken away");
+        view->refresh();
+        settle();
+        const auto without = colours();
+        for (const auto &[key, colour] : without)
+        {
+            const auto &at = ends.at(key);
+            const bool elsewhere = at.first != "Dependent" && at.first != "Employee" && at.second != "Dependent" &&
+                                   at.second != "Employee";
+            if (elsewhere)
+                require(colour == first.at(key),
+                        ("Taking a relationship away recolours nothing at other tables (" + at.first + " -> " + at.second + ")")
+                            .c_str());
+        }
+        require(editor.undo().ok, "Undo puts it back");
+        view->refresh();
+        settle();
+        require(colours() == first, "Put back, every relationship has its colour again");
+        require(editor.redo().ok, "Redo takes it away again");
+        view->refresh();
+        settle();
+        require(colours() == without, "Taken away again, the colours are those it had without it");
+        require(editor.undo().ok, "And it is put back once more");
+        view->refresh();
+        settle();
+
+        // Another theme and back; a dark theme's colours are its own and plainly
+        // apart; Plain gives greys only.
+        window.set_theme(desktop::ThemeId::Dracula);
+        settle();
+        const auto dark = colours();
+        require(closest_at("Employee", dark) >= 20.0, "In a dark theme too, Employee's relationships are plainly apart");
+        window.set_theme(desktop::ThemeId::Plain);
+        settle();
+        const auto plain = colours();
+        bool grey = true;
+        for (const auto &[key, colour] : plain)
+            grey = grey && colour.red() == colour.green() && colour.green() == colour.blue();
+        require(grey, "In Plain every line is a grey");
+        {
+            // More relationships meet at Employee than there are greys to tell
+            // apart, so greys repeat there, each as seldom as it can.
+            std::map<QRgb, int> used;
+            const auto keys = meeting("Employee");
+            for (const auto &key : keys)
+                ++used[plain.at(key).rgb()];
+            const auto most = std::max_element(used.begin(), used.end(),
+                                               [](const auto &a, const auto &b) { return a.second < b.second; })
+                                  ->second;
+            require(keys.size() == 10 && used.size() == 5 && most == 2,
+                    "At Employee in Plain, its ten relationships use each of the five greys twice");
+            // And at every table: five relationships or fewer a grey each, more
+            // than five no grey more often than an even share.
+            for (const auto &table : view->preview().tables)
+            {
+                std::map<QRgb, int> at;
+                const auto meeting_here = meeting(table.name);
+                for (const auto &key : meeting_here)
+                    ++at[plain.at(key).rgb()];
+                int most_here = 0;
+                for (const auto &[shade, uses] : at)
+                    most_here = std::max(most_here, uses);
+                const auto share = static_cast<int>((meeting_here.size() + 4) / 5);
+                require(meeting_here.size() > 5 ? most_here <= share : at.size() == meeting_here.size(),
+                        ("In Plain, the relationships at " + table.name + " share the greys evenly").c_str());
+            }
+        }
+        window.set_theme(desktop::ThemeId::OfficeLight);
+        settle();
+        require(colours() == first, "Back in the first theme, every relationship has its first colour");
+        window.set_theme(desktop::ThemeId::Plain);
+        settle();
+        require(colours() == plain, "And in Plain again, every relationship has the grey it had there");
+        window.set_theme(desktop::ThemeId::OfficeLight);
+        settle();
+
+        // A picture of the schema carries the same colours.
+        {
+            desktop::PictureOptions png;
+            png.format = desktop::PictureFormat::Png;
+            png.background = desktop::PictureBackground::ThemeColour;
+            png.carry_project = false;
+            const auto picture = folder.filePath("colours.png");
+            require(window.export_picture(png, picture), "The schema exports as a picture");
+            const QImage image(picture);
+            const auto source = view->export_view().bounds(desktop::PictureExtent::WholeDiagram)
+                                    .adjusted(-png.margin, -png.margin, png.margin, png.margin);
+            const double scale = image.width() / source.width();
+            const auto shapes = view->line_shapes();
+            const auto drawn = view->line_colours();
+            // How near a point comes to a line's path.
+            const auto distance_to = [](const QPointF &p, const auto &path)
+            {
+                double nearest = std::numeric_limits<double>::max();
+                for (std::size_t k = 1; k < static_cast<std::size_t>(path.size()); ++k)
+                {
+                    const QPointF a = path[k - 1], ab = path[k] - path[k - 1];
+                    const double along = QPointF::dotProduct(ab, ab);
+                    const double t = along > 0 ? std::clamp(QPointF::dotProduct(p - a, ab) / along, 0.0, 1.0) : 0.0;
+                    nearest = std::min(nearest, QLineF(p, a + ab * t).length());
+                }
+                return nearest;
+            };
+            int found = 0, looked = 0;
+            for (std::size_t i = 0; i < shapes.size(); ++i)
+            {
+                // The middle of the line's longest run, where it is drawn whole --
+                // unless a line of another colour shares that stretch of channel
+                // and is drawn over it there, as the routes laid out in Windows'
+                // lettering have one do (2026-10-15). Then the nearest point
+                // along its runs that no line of another colour passes over (a
+                // line is at most 3.4 wide and lanes are 10 apart), kept clear of
+                // each run's ends. A line with no such point is not seen.
+                std::size_t longest = 1;
+                for (std::size_t k = 1; k < shapes[i].size(); ++k)
+                    if (QLineF(shapes[i][k - 1], shapes[i][k]).length() >
+                        QLineF(shapes[i][longest - 1], shapes[i][longest]).length())
+                        longest = k;
+                if (shapes[i].size() < 2 || QLineF(shapes[i][longest - 1], shapes[i][longest]).length() < 40)
+                    continue;
+                ++looked;
+                const auto alone = [&](const QPointF &p)
+                {
+                    for (std::size_t j = 0; j < shapes.size(); ++j)
+                        if (j != i && colour_distance(drawn[j], drawn[i]) >= 4.0 && distance_to(p, shapes[j]) < 5.0)
+                            return false;
+                    return true;
+                };
+                std::optional<QPointF> sample;
+                const auto look_along = [&](std::size_t k)
+                {
+                    const QLineF run(shapes[i][k - 1], shapes[i][k]);
+                    if (run.length() < 40)
+                        return;
+                    const double reach = std::max(0.0, run.length() / 2 - 24);
+                    for (double off = 0; off <= reach && !sample; off += 4)
+                        for (const double side : {1.0, -1.0})
+                            if (const auto p = run.pointAt(0.5 + side * off / run.length()); !sample && alone(p))
+                                sample = p;
+                };
+                look_along(longest);
+                for (std::size_t k = 1; k < shapes[i].size() && !sample; ++k)
+                    if (k != longest)
+                        look_along(k);
+                if (!sample)
+                    continue;
+                const auto middle = *sample;
+                const QPoint at(static_cast<int>((middle.x() - source.left()) * scale),
+                                static_cast<int>((middle.y() - source.top()) * scale));
+                bool seen = false;
+                for (int dy = -3; dy <= 3 && !seen; ++dy)
+                    for (int dx = -3; dx <= 3 && !seen; ++dx)
+                        if (image.valid(at + QPoint(dx, dy)) &&
+                            colour_distance(image.pixelColor(at + QPoint(dx, dy)), drawn[i]) < 4.0)
+                            seen = true;
+                found += seen ? 1 : 0;
+            }
+            require(looked > 10 && found == looked, "Every line in the picture is drawn in its relationship's colour");
+        }
+        editor.mark_saved(editor.revision());
+
+        // The same example opened again, in an editor of its own whose keys are
+        // made with new identities: every relationship has the colour it had,
+        // because a colour is worked out from what a relationship joins, which
+        // is the same every time, and never from an identity made afresh.
+        {
+            const auto by_name = [](desktop::SchemaView &schema)
+            {
+                std::map<domain::ForeignKeyId, std::string> name_of;
+                const auto &preview = schema.preview();
+                for (const auto &table : preview.tables)
+                    for (const auto &column : table.columns)
+                        if (column.key_id && column.references && *column.references < preview.tables.size())
+                            name_of[*column.key_id] += table.name + "." + column.name + ">" +
+                                                       preview.tables[*column.references].name + "|";
+                std::map<std::string, QColor> named;
+                const auto keys = schema.line_keys();
+                const auto drawn = schema.line_colours();
+                for (std::size_t i = 0; i < keys.size(); ++i)
+                    named[name_of.at(*keys[i])] = drawn[i];
+                return named;
+            };
+            application::Editor again(ids);
+            infrastructure::ErdxProjectStore again_store;
+            desktop::MainWindow opened_again(again, again_store, ids);
+            opened_again.resize(1440, 920);
+            opened_again.show();
+            opened_again.show_home(false);
+            settle();
+            opened_again.load_company_database_relational();
+            settle();
+            opened_again.open_schema(true);
+            settle();
+            require(by_name(*opened_again.schema()) == by_name(*view),
+                    "The same example opened again with new identities gives every relationship the same colour");
+            window.set_theme(desktop::ThemeId::Plain);
+            opened_again.set_theme(desktop::ThemeId::Plain);
+            settle();
+            require(by_name(*opened_again.schema()) == by_name(*view),
+                    "And in Plain, every relationship the same grey, Employee's ten among them");
+            window.set_theme(desktop::ThemeId::OfficeLight);
+            settle();
+            again.mark_saved(again.revision());
+        }
+
+        // A schema worked out from a diagram, whose relationships come from the
+        // diagram's: every line still knows its relationship, and those meeting
+        // at a table are plainly apart.
+        {
+            application::Editor drawn(ids);
+            infrastructure::ErdxProjectStore drawn_store;
+            desktop::MainWindow from_diagram(drawn, drawn_store, ids);
+            from_diagram.resize(1440, 920);
+            from_diagram.show();
+            from_diagram.show_home(false);
+            settle();
+            from_diagram.load_company_database();
+            settle();
+            from_diagram.open_schema(true);
+            settle();
+            auto *worked_out = from_diagram.schema();
+            std::map<domain::ForeignKeyId, QColor> by_key;
+            const auto keys = worked_out->line_keys();
+            const auto drawn_in = worked_out->line_colours();
+            for (std::size_t i = 0; i < keys.size(); ++i)
+            {
+                require(keys[i].has_value(), "Every line of a schema worked out from a diagram draws a foreign key");
+                const auto [at, added] = by_key.emplace(*keys[i], drawn_in[i]);
+                require(added || at->second == drawn_in[i], "Every line of one relationship there has its one colour");
+            }
+            std::map<std::size_t, std::vector<domain::ForeignKeyId>> at_table;
+            const auto &preview = worked_out->preview();
+            for (std::size_t t = 0; t < preview.tables.size(); ++t)
+                for (const auto &column : preview.tables[t].columns)
+                    if (column.key_id && column.references)
+                    {
+                        at_table[t].push_back(*column.key_id);
+                        at_table[*column.references].push_back(*column.key_id);
+                    }
+            for (auto &[table, met] : at_table)
+            {
+                std::sort(met.begin(), met.end());
+                met.erase(std::unique(met.begin(), met.end()), met.end());
+                if (met.size() > 16)
+                    continue;
+                for (std::size_t i = 0; i < met.size(); ++i)
+                    for (std::size_t j = i + 1; j < met.size(); ++j)
+                        require(colour_distance(by_key.at(met[i]), by_key.at(met[j])) >= 20.0,
+                                ("In a schema worked out from a diagram, the relationships meeting at " +
+                                 preview.tables[table].name + " are plainly apart")
+                                    .c_str());
+            }
+            drawn.mark_saved(drawn.revision());
+        }
+
+        // The University example in Plain, where two relationships at Programs
+        // once shared a grey: Students, at the other end of both, had used the
+        // greys up by the time the second was taken (2026-10-13). At every
+        // table, five relationships or fewer have a grey each, and more than
+        // five no grey more often than an even share.
+        {
+            application::Editor university(ids);
+            infrastructure::ErdxProjectStore university_store;
+            desktop::MainWindow university_window(university, university_store, ids);
+            university_window.resize(1440, 920);
+            university_window.show();
+            university_window.show_home(false);
+            settle();
+            university_window.load_university_database();
+            settle();
+            university_window.open_schema(true);
+            settle();
+            university_window.set_theme(desktop::ThemeId::Plain);
+            settle();
+            auto *schema = university_window.schema();
+            std::map<domain::ForeignKeyId, QRgb> grey_of;
+            const auto keys = schema->line_keys();
+            const auto drawn_in = schema->line_colours();
+            for (std::size_t i = 0; i < keys.size(); ++i)
+                grey_of[*keys[i]] = drawn_in[i].rgb();
+            std::map<std::string, std::set<domain::ForeignKeyId>> at_table;
+            const auto &preview = schema->preview();
+            for (const auto &table : preview.tables)
+                for (const auto &column : table.columns)
+                    if (column.key_id && column.references)
+                    {
+                        at_table[table.name].insert(*column.key_id);
+                        at_table[preview.tables[*column.references].name].insert(*column.key_id);
+                    }
+            require(at_table.contains("Programs") && at_table.at("Programs").size() == 2, "Programs is met by two relationships");
+            for (const auto &[table, met] : at_table)
+            {
+                std::map<QRgb, int> at;
+                for (const auto &key : met)
+                    ++at[grey_of.at(key)];
+                int most = 0;
+                for (const auto &[shade, uses] : at)
+                    most = std::max(most, uses);
+                require(met.size() > 5 ? most <= static_cast<int>((met.size() + 4) / 5) : at.size() == met.size(),
+                        ("In Plain, the relationships at the University's " + table + " share the greys evenly").c_str());
+            }
+            university.mark_saved(university.revision());
+        }
+        std::cout << "PASS each relationship keeps one colour of its own, plainly apart from its neighbours'\n";
+    }
+
+    // The schema's routing grid is written only by the router, which is what
+    // lets the view's memory of searches see every write (RouteMemory): code
+    // outside it can read the grid's cells but cannot write them.
+    template <class G>
+    concept writes_blocked_cells = requires(G grid) { grid.blocked_[0] = 1; };
+    template <class G>
+    concept writes_used_cells = requires(G grid) { grid.used_[0] = 1; };
+    static_assert(!writes_blocked_cells<desktop::schema_router::Grid>, "The grid's blocked cells are the router's to write");
+    static_assert(!writes_used_cells<desktop::schema_router::Grid>, "The grid's counts are the router's to write");
+
+    // A search the memory takes again finds exactly the path a fresh search
+    // finds, and is taken again only where nothing it read has changed
+    // (2026-10-13). Each pass is routed twice -- over a grid with the memory
+    // and over the same grid without -- and every path must agree.
+    void route_memory_router_tests()
+    {
+        using namespace desktop::schema_router;
+        struct Line
+        {
+            std::uint32_t id;
+            QPoint from;
+            QPoint to;
+            std::optional<QPoint> opens{};
+            bool trial_first = false;
+        };
+        const auto route = [](RouteMemory *memory, int columns, int rows, const std::vector<QRectF> &tables,
+                              const std::vector<Line> &lines, bool everything_moves)
+        {
+            Grid grid(columns, rows, tables, memory);
+            RouteMemory::Pass pass(memory, grid, everything_moves);
+            std::vector<std::vector<QPoint>> paths;
+            for (const auto &line : lines)
+            {
+                pass.line(line.id);
+                if (line.opens)
+                    open_cell(grid, *line.opens);
+                if (line.trial_first)
+                    (void)find_way_trial(grid, line.from + QPoint(0, 3), line.to + QPoint(0, 3));
+                auto path = find_way(grid, line.from, line.to);
+                std::vector<QPointF> corners;
+                for (const auto &at : path)
+                    corners.emplace_back(at.x() * cell + cell / 2.0, at.y() * cell + cell / 2.0);
+                mark(grid, corners);
+                paths.push_back(std::move(path));
+            }
+            return paths;
+        };
+        RouteMemory memory;
+        memory.set_checking(true);
+        // One pass, with and without the memory; how many searches it took again.
+        const auto pass = [&](const char *what, int columns, int rows, const std::vector<QRectF> &tables,
+                              const std::vector<Line> &lines, bool everything_moves = false)
+        {
+            const auto before = memory.account().taken_again;
+            const auto remembered = route(&memory, columns, rows, tables, lines, everything_moves);
+            const auto fresh = route(nullptr, columns, rows, tables, lines, everything_moves);
+            require(remembered == fresh, (std::string(what) + ": every path is the one a fresh search finds").c_str());
+            require(!fresh.empty() && !fresh.back().empty(), (std::string(what) + ": the lines find their way").c_str());
+            return memory.account().taken_again - before;
+        };
+        // Cells to pixels, for tables.
+        const auto table = [](int left, int top, int right, int bottom)
+        { return QRectF(left * cell, top * cell, (right - left) * cell, (bottom - top) * cell); };
+        const std::vector<QRectF> tables{table(25, 12, 29, 16)};
+        const Line a{1, {2, 10}, {55, 10}};
+        const Line b{2, {2, 13}, {55, 13}};
+
+        require(pass("The first pass", 60, 40, tables, {a, b}) == 0, "The first pass has nothing to take again");
+        require(pass("The same pass again", 60, 40, tables, {a, b}) == 2,
+                "The same pass again takes both searches again");
+        const std::vector<QRectF> moved{table(28, 12, 32, 16)};
+        require(pass("A table moved across both searches", 60, 40, moved, {a, b}) == 0,
+                "A table moved across what both searches read has both made again");
+        require(pass("And again", 60, 40, moved, {a, b}) == 2, "Unmoved since, both are taken again");
+        auto far = moved;
+        far.push_back(table(2, 30, 6, 35));
+        // Whether a search read that far depends on the search; what it finds,
+        // as ever, must be what a fresh search finds.
+        (void)pass("A table put far away", 60, 40, far, {a, b});
+        require(pass("And again", 60, 40, far, {a, b}) == 2, "Unmoved since, both are taken again");
+        require(pass("The grid made wider", 61, 40, far, {a, b}) == 0, "A grid of another size has every search made again");
+        require(pass("And again", 61, 40, far, {a, b}) == 2, "At that size since, both are taken again");
+        const Line a_lower{1, {2, 12}, {55, 12}};
+        require(pass("A line's ends moved", 61, 40, far, {a_lower, b}) == 0,
+                "A line from other cells is searched again, and the line after it, whose cells it now marks otherwise");
+        require(pass("And again", 61, 40, far, {a_lower, b}) == 2, "Unmoved since, both are taken again");
+        require(pass("The lines in the other order", 61, 40, far, {b, a_lower}) == 0,
+                "Routed in the other order, each finds the other's marks otherwise and is made again");
+        require(pass("And again", 61, 40, far, {b, a_lower}) == 2, "In that order since, both are taken again");
+        require(pass("Every table moving", 61, 40, far, {b, a_lower}, true) == 0 && memory.account().kept == 0,
+                "A pass in which every table moves takes nothing again and keeps nothing");
+        require(pass("After it", 61, 40, far, {b, a_lower}) == 0, "So the pass after it has nothing to take again");
+        const Line a_tried{1, {2, 12}, {55, 12}, std::nullopt, true};
+        const Line b_tried{2, {2, 13}, {55, 13}, std::nullopt, true};
+        (void)pass("Lines tried before they are routed", 61, 40, far, {a_tried, b_tried});
+        require(pass("And again", 61, 40, far, {a_tried, b_tried}) == 4,
+                "A trial puts back what it opened, so trials and searches alike are taken again");
+        // A cell opened by a line before another: opened then, closed now, the
+        // later search reads it otherwise. The line that opened it searched
+        // after writing, so its own search is never kept.
+        const Line opener{5, {2, 5}, {55, 5}, QPoint(30, 11)};
+        const Line not_opening{5, {2, 5}, {55, 5}};
+        (void)pass("A line opening a table's cell", 61, 40, moved, {opener, b});
+        require(pass("And again", 61, 40, moved, {opener, b}) == 1,
+                "A search made after its own line has written is not kept; the one after it is taken again");
+        require(pass("The line no longer opening it", 61, 40, moved, {not_opening, b}) == 0,
+                "A cell opened otherwise than before has the search after it, which read it, made again");
+        require(memory.account().mismatches == 0, "No search the memory took again differed from a fresh one");
+        std::cout << "PASS the router's memory of searches takes again only what a fresh search would find\n";
+    }
+
+    // On the schema itself: a large schema and the examples, carried every way,
+    // a line shaped by hand, undone and redone, saved and opened again, with
+    // every search the memory takes again checked against a fresh one; and the
+    // lines in the end exactly those the router draws without any memory.
+    void route_memory_view_tests(infrastructure::QtIdGenerator &ids)
+    {
+        const auto hold_for = [](int ms)
+        {
+            QElapsedTimer clock;
+            clock.start();
+            while (clock.elapsed() < ms)
+                QApplication::processEvents(QEventLoop::AllEvents, 5);
+        };
+        QTemporaryDir folder;
+        struct Schema
+        {
+            const char *name;
+            std::function<void(application::Editor &)> build;
+            std::function<void(desktop::MainWindow &)> load;
+        };
+        // A schema of some size, made the way a person makes one.
+        const auto larger = [](application::Editor &editor)
+        {
+            std::vector<domain::EntityId> entities;
+            constexpr int wanted = 24;
+            for (int i = 0; i < wanted; ++i)
+            {
+                const double x = (i % 6) * 420.0;
+                const double y = (i / 6) * 360.0;
+                const auto made = editor.create_entity("Entity " + std::to_string(i), {x, y, 150, 80});
+                const auto id = std::get<domain::EntityId>(*made.created);
+                entities.push_back(id);
+                const auto key = editor.create_attribute("Entity" + std::to_string(i) + " ID", {x - 40, y + 110, 120, 50},
+                                                         domain::ElementRef{id});
+                if (key.created)
+                    editor.set_attribute_kind(std::get<domain::AttributeId>(*key.created), domain::AttributeKind::Key);
+            }
+            for (int i = 0; i + 1 < wanted; ++i)
+            {
+                const auto first = entities[static_cast<std::size_t>(i)];
+                const auto second = entities[static_cast<std::size_t>((i * 7 + 3) % wanted)];
+                if (first != second)
+                    editor.relate(first, second, {(i % 6) * 420.0 + 210, (i / 6) * 360.0 + 200, 140, 80},
+                                  "Relates " + std::to_string(i));
+            }
+        };
+        const std::vector<Schema> schemas{
+            {"a larger schema", larger, {}},
+            {"the University schema", {}, [](desktop::MainWindow &w) { w.load_example(); }},
+            {"the Company relational schema", {}, [](desktop::MainWindow &w) { w.load_company_database_relational(); }},
+        };
+        for (const auto &one : schemas)
+        {
+            const std::string name = one.name;
+            const auto must = [&](bool ok, const std::string &what) { require(ok, (name + ": " + what).c_str()); };
+            application::Editor editor(ids);
+            if (one.build)
+                one.build(editor);
+            infrastructure::ErdxProjectStore store;
+            desktop::MainWindow window(editor, store, ids);
+            window.resize(1100, 720);
+            window.show();
+            window.show_home(false);
+            settle();
+            if (one.load)
+                one.load(window);
+            settle();
+            window.open_schema(true);
+            settle();
+            auto *view = window.schema();
+            view->check_route_memory(true);
+            view->refresh();
+            settle();
+            const auto mouse = [&](QEvent::Type type, QPointF where, Qt::MouseButtons held)
+            {
+                QMouseEvent event(type, where, view->mapToGlobal(where.toPoint()),
+                                  type == QEvent::MouseMove ? Qt::NoButton : Qt::LeftButton, held, Qt::NoModifier);
+                QApplication::sendEvent(view, &event);
+            };
+            // A table carried by its heading: `steps` moves of `by` each.
+            const auto carry = [&](std::size_t t, QPointF by, int steps)
+            {
+                const auto boxes = view->table_boxes();
+                if (t >= boxes.size())
+                    return;
+                const QPointF grip(boxes[t].center().x(), boxes[t].top() + 13);
+                mouse(QEvent::MouseButtonPress, grip, Qt::LeftButton);
+                for (int i = 1; i <= steps; ++i)
+                    mouse(QEvent::MouseMove, grip + by * i, Qt::LeftButton);
+                mouse(QEvent::MouseButtonRelease, grip + by * steps, Qt::NoButton);
+                settle();
+            };
+            const auto tables = view->table_boxes().size();
+            must(tables >= 5, "there are tables to carry");
+            // Small movements and large, every way, and a table carried back.
+            carry(0, QPointF(3, 2), 8);
+            carry(1, QPointF(0, 40), 4);
+            carry(2, QPointF(-30, 0), 3);
+            carry(tables / 2, QPointF(25, -25), 4);
+            carry(tables - 1, QPointF(0, -60), 2);
+            carry(0, QPointF(-3, -2), 8);
+            // Everything carried together, which the memory stands aside for.
+            view->select_all();
+            settle();
+            carry(0, QPointF(10, 10), 3);
+            view->select(std::nullopt);
+            settle();
+            // A table carried to the bottom of the view and held there.
+            {
+                auto *scroll = child<QScrollArea>(window, "schemaScroll");
+                auto *port = scroll->viewport();
+                const auto boxes = view->table_boxes();
+                const QPointF grip(boxes[1].center().x(), boxes[1].top() + 13);
+                mouse(QEvent::MouseButtonPress, grip, Qt::LeftButton);
+                mouse(QEvent::MouseMove, grip + QPointF(0, 10), Qt::LeftButton);
+                const auto edge = QPointF(view->mapFrom(port, QPoint(port->width() / 2, port->height() - 3)));
+                mouse(QEvent::MouseMove, edge, Qt::LeftButton);
+                hold_for(120);
+                mouse(QEvent::MouseButtonRelease, QPointF(view->mapFrom(port, QPoint(port->width() / 2, port->height() - 3))),
+                      Qt::NoButton);
+                settle();
+            }
+            // A line shaped by hand: one of its runs pushed aside, and then a
+            // table it joins carried.
+            {
+                const auto lines = view->line_shapes();
+                bool shaped = false;
+                for (const auto &line : lines)
+                {
+                    if (line.size() < 4)
+                        continue;
+                    const auto from = line[line.size() / 2 - 1];
+                    const auto to = line[line.size() / 2];
+                    if (std::hypot(to.x() - from.x(), to.y() - from.y()) < 40)
+                        continue;
+                    const auto middle = (from + to) / 2;
+                    const auto aside = std::abs(to.x() - from.x()) < 0.5 ? QPointF(24, 0) : QPointF(0, 24);
+                    mouse(QEvent::MouseButtonPress, middle, Qt::LeftButton);
+                    mouse(QEvent::MouseMove, middle + aside / 2, Qt::LeftButton);
+                    mouse(QEvent::MouseMove, middle + aside, Qt::LeftButton);
+                    mouse(QEvent::MouseButtonRelease, middle + aside, Qt::NoButton);
+                    settle();
+                    shaped = true;
+                    break;
+                }
+                must(shaped, "a line is shaped by hand");
+                carry(0, QPointF(20, 15), 3);
+            }
+            // Undone and redone, saved and opened again, then carried once more.
+            for (int i = 0; i < 3; ++i)
+            {
+                child<QAction>(window, "undoCommand")->trigger();
+                settle();
+            }
+            for (int i = 0; i < 2; ++i)
+            {
+                child<QAction>(window, "redoCommand")->trigger();
+                settle();
+            }
+            const auto path = folder.filePath(QString::fromStdString(name) + ".erdx");
+            must(store.save(path.toStdString(), editor.project()).ok, "it saves");
+            // Saved, so opening it again asks nothing about what is unsaved.
+            editor.mark_saved(editor.revision());
+            must(window.open_path(path), "it opens again");
+            settle();
+            carry(1, QPointF(-15, 20), 3);
+            const auto &account = view->route_memory().account();
+            must(account.taken_again > 0, "the memory took searches again");
+            must(account.mismatches == 0, "no search the memory took again differed from a fresh search");
+            // And the lines drawn are exactly the router's own, with no memory.
+            const auto remembered = view->line_shapes();
+            view->set_route_memory(false);
+            const auto fresh = view->line_shapes();
+            view->set_route_memory(true);
+            must(remembered == fresh, "every line is exactly the line the router draws without the memory");
+            editor.mark_saved(editor.revision());
+        }
+        std::cout << "PASS the schema's memory of searches leaves every line as the router draws it\n";
+    }
+
+    void schema_open_routing_tests(infrastructure::QtIdGenerator &ids)
+    {
+        application::Editor model(ids);
+        std::vector<domain::EntityId> entities;
+        for (int i = 0; i < 8; ++i)
+        {
+            const auto made = model.create_entity("Item" + std::to_string(i),
+                                                  {(i % 4) * 300.0, (i / 4) * 260.0, 112, 66});
+            require(made.ok, "An entity for the schema");
+            const auto entity = std::get<domain::EntityId>(*made.created);
+            entities.push_back(entity);
+            const auto key = model.create_attribute("id", {(i % 4) * 300.0, (i / 4) * 260.0 - 60, 80, 36},
+                                                    domain::AttributeOwner{entity});
+            require(key.ok && model.set_primary_key(std::get<domain::AttributeId>(*key.created), true).ok,
+                    "With a key");
+        }
+        const auto relate = [&](std::size_t a, std::size_t b, bool many_many)
+        {
+            const auto made = model.relate(entities[a], entities[b],
+                                           {static_cast<double>(a % 4) * 300.0 + 150, static_cast<double>(a / 4) * 260.0 + 120, 137, 79});
+            require(made.ok, "Two of them related");
+            const auto &sides = model.project().relationships.at(std::get<domain::RelationshipId>(*made.created)).participants;
+            require(model.set_cardinality(sides[1].id, domain::Cardinality::Many).ok, "One to many");
+            if (many_many)
+                require(model.set_cardinality(sides[0].id, domain::Cardinality::Many).ok, "Or many to many");
+        };
+        for (std::size_t i = 0; i + 1 < entities.size(); ++i)
+            relate(i, i + 1, false);
+        relate(0, 4, true);
+        relate(2, 6, true);
+        const auto same_bits = [](double a, double b) { return std::memcmp(&a, &b, sizeof a) == 0; };
+        const auto exactly = [&](const std::vector<std::vector<QPointF>> &a, const std::vector<std::vector<QPointF>> &b)
+        {
+            if (a.size() != b.size())
+                return false;
+            for (std::size_t l = 0; l < a.size(); ++l)
+            {
+                if (a[l].size() != b[l].size())
+                    return false;
+                for (std::size_t c = 0; c < a[l].size(); ++c)
+                    if (!same_bits(a[l][c].x(), b[l][c].x()) || !same_bits(a[l][c].y(), b[l][c].y()))
+                        return false;
+            }
+            return true;
+        };
+
+        // The view on its own, as the window keeps it: arranged and routed
+        // while put away, then shown.
+        {
+            QWidget host;
+            host.resize(400, 300);
+            desktop::SchemaView view(model, &host);
+            view.set_theme(desktop::theme(desktop::ThemeId::Azure));
+            require(view.routings() == 0, "Nothing is routed while the schema has no tables placed");
+            view.refresh();
+            require(view.routings() == 1 && !view.line_shapes().empty(), "Reading the schema routes its lines");
+            require(view.testAttribute(Qt::WA_PendingResizeEvent),
+                    "Growing the canvas while it is put away leaves Qt holding that resize back");
+            const auto routed_size = view.size();
+            const auto lines = view.line_shapes();
+            host.show();
+            settle();
+            require(!view.testAttribute(Qt::WA_PendingResizeEvent) && view.size() == routed_size,
+                    "Shown, the view is handed the resize, at the size it was routed at");
+            require(view.routings() == 1 && exactly(view.line_shapes(), lines),
+                    "And it does not route the same lines again for it");
+
+            // A genuine resize still routes.
+            view.resize(view.width() + 40, view.height() + 40);
+            settle();
+            require(view.routings() == 2, "A resize to another size routes the lines");
+
+            // So does a refresh at the same size: an edit that changes
+            // nothing about how big the canvas is -- one line given a way of
+            // its own, well inside it -- still reaches the lines.
+            const auto size_held = view.size();
+            const auto shapes_before = view.line_shapes();
+            const auto boxes_before = view.table_boxes();
+            std::optional<domain::LinkSource> link;
+            for (const auto &table : view.preview().tables)
+                for (const auto &column : table.columns)
+                    if (!link && column.link)
+                        link = column.link;
+            require(link.has_value(), "The schema has a line to shape");
+            require(model.shape_schema_line(*link, {{{20, 20}, {60, 20}, {60, 40}}, {}, {}}).ok,
+                    "One line given a way of its own");
+            view.refresh();
+            settle();
+            require(view.size() == size_held && view.table_boxes() == boxes_before,
+                    "The shaped line leaves the canvas the size it was");
+            require(view.routings() == 3 && !exactly(view.line_shapes(), shapes_before),
+                    "A refresh at the size the lines were routed at routes them again, the shaped line with them");
+            require(model.undo().ok, "The shape taken back");
+            view.refresh();
+            settle();
+            require(view.size() == size_held && view.routings() == 4 && exactly(view.line_shapes(), shapes_before),
+                    "And routing again at that size puts every line back exactly where it was");
+            host.hide();
+        }
+
+        // In the window, through the way a person opens the schema.
+        infrastructure::ErdxProjectStore store;
+        desktop::MainWindow window(model, store, ids);
+        window.resize(1440, 920);
+        window.show();
+        window.show_home(false);
+        settle();
+        auto *view = window.schema();
+        const auto routed_before = view->routings();
+        window.open_schema();
+        settle_for(400);
+        require(view->routings() == routed_before + 1,
+                "Opening the schema routes its lines once, not again for the resize Qt held back");
+        // What the dropped routing would have worked out is what routing the
+        // same schema at the same size works out, which a refresh does.
+        const auto opened_lines = view->line_shapes();
+        const auto opened_boxes = view->table_boxes();
+        const auto opened_size = view->size();
+        require(!opened_lines.empty(), "The opened schema has lines");
+        view->refresh();
+        settle();
+        require(view->routings() == routed_before + 2 && view->size() == opened_size,
+                "A refresh at the same size still routes");
+        require(exactly(view->line_shapes(), opened_lines) && view->table_boxes() == opened_boxes,
+                "And routes every line exactly where the opening left it, corner for corner");
+
+        // Undo and Redo route once each, as they did.
+        const auto boxes = view->table_boxes();
+        const QPointF header = boxes.front().topLeft() + QPointF(20, 8);
+        const auto mouse = [&](QEvent::Type type, QPointF where, Qt::MouseButtons held)
+        {
+            QMouseEvent event(type, where, view->mapToGlobal(where.toPoint()),
+                              type == QEvent::MouseMove ? Qt::NoButton : Qt::LeftButton, held, Qt::NoModifier);
+            QApplication::sendEvent(view, &event);
+        };
+        mouse(QEvent::MouseButtonPress, header, Qt::LeftButton);
+        mouse(QEvent::MouseMove, header + QPointF(30, 10), Qt::LeftButton);
+        mouse(QEvent::MouseButtonRelease, header + QPointF(30, 10), Qt::NoButton);
+        settle();
+        const auto moved = view->table_boxes();
+        require(moved != boxes, "A table is moved on the schema");
+        auto routed = view->routings();
+        child<QAction>(window, "undoCommand")->trigger();
+        settle();
+        require(view->table_boxes() == boxes && view->routings() == routed + 1, "Undo routes the lines once");
+        routed = view->routings();
+        child<QAction>(window, "redoCommand")->trigger();
+        settle();
+        require(view->table_boxes() == moved && view->routings() == routed + 1, "Redo routes the lines once");
+
+        // A theme put on routes the lines, as it always has.
+        routed = view->routings();
+        window.set_theme(desktop::ThemeId::Forest);
+        settle();
+        require(view->routings() == routed + 1, "Another theme routes the lines");
+        window.set_theme(desktop::ThemeId::Azure);
+        settle();
+        model.mark_saved(model.revision());
+    }
+
     // The schema drawn by hand, each check in a window of its own: the Schema
     // Explorer, connections drawn from a key and let go, the schema's tools,
     // and where a line being drawn would land.
@@ -2504,7 +5832,7 @@ namespace
             tree_window.show_home(false);
             settle();
             tree_window.open_schema();
-            settle_for(300);
+            settle_motion(tree_window);
             auto *tree = child<QTreeView>(tree_window, "schemaExplorer");
             auto *view = tree_window.schema();
             require(child<QDockWidget>(tree_window, "explorerDock")->widget() == tree && tree->isVisible(),
@@ -3188,6 +6516,9 @@ namespace
         {
             application::Editor model(ids);
             model.new_schema_project();
+            // Connect with its constraints on, as these checks are about
+            // (they are off unless turned on, Zain 2026-10-23).
+            require(bool(model.set_connect_constraints(true)), "Connect's constraints are turned on");
             std::map<std::string, domain::RelationId> made;
             const auto table = [&](const char *name, double x, double y)
             {
@@ -3236,7 +6567,7 @@ namespace
             connect_window.resize(1440, 920);
             connect_window.show();
             connect_window.show_home(false);
-            settle_for(300);
+            settle_schema_full(connect_window);
             auto *view = connect_window.schema();
             require(view && view->isVisible(), "The hand-drawn schema is in front");
             auto *properties_dock = child<QDockWidget>(connect_window, "propertiesDock");
@@ -3451,6 +6782,7 @@ namespace
         {
             application::Editor model(ids);
             model.new_schema_project();
+            require(bool(model.set_connect_constraints(true)), "Connect's constraints are turned on");
             std::map<std::string, domain::RelationId> made;
             const auto table = [&](const char *name, double x, double y)
             {
@@ -3491,7 +6823,7 @@ namespace
             pk_window.resize(1440, 920);
             pk_window.show();
             pk_window.show_home(false);
-            settle_for(300);
+            settle_schema_full(pk_window);
             auto *view = pk_window.schema();
             require(view && view->isVisible(), "The hand-drawn schema is in front");
             auto *properties_dock = child<QDockWidget>(pk_window, "propertiesDock");
@@ -3896,6 +7228,7 @@ namespace
         {
             application::Editor model(ids);
             model.new_schema_project();
+            require(bool(model.set_connect_constraints(true)), "Connect's constraints are turned on");
             std::map<std::string, domain::RelationId> made;
             const auto table = [&](const char *name, double x, double y)
             {
@@ -3912,7 +7245,7 @@ namespace
             tool_window.resize(1440, 920);
             tool_window.show();
             tool_window.show_home(false);
-            settle_for(300);
+            settle_schema_full(tool_window);
             auto *view = tool_window.schema();
             require(view && view->isVisible(), "The hand-drawn schema is in front");
             auto *select = child<QAction>(tool_window, "schemaSelectTool");
@@ -4164,6 +7497,7 @@ namespace
         {
             application::Editor model(ids);
             model.new_schema_project();
+            require(bool(model.set_connect_constraints(true)), "Connect's constraints are turned on");
             std::map<std::string, domain::RelationId> made;
             const auto table = [&](const char *name, double x, double y)
             {
@@ -4201,7 +7535,7 @@ namespace
             lit_window.resize(1440, 920);
             lit_window.show();
             lit_window.show_home(false);
-            settle_for(300);
+            settle_schema_full(lit_window);
             auto *view = lit_window.schema();
             auto *select = child<QAction>(lit_window, "schemaSelectTool");
             auto *connecting = child<QAction>(lit_window, "schemaConnectTool");
@@ -4537,59 +7871,2200 @@ namespace
             model.mark_saved(model.revision());
         }
     }
+
+    // Each workspace's search keeps its kinds and options a press away (C8,
+    // 2026-10-14; Zain). A filter mark at the far end of either search field
+    // opens that workspace's bar with nothing typed. The Schema's bar asks the
+    // diagram's questions (ADR-018) in the schema's terms: tables, columns,
+    // keys or relationships; only what matches or what it is joined to as
+    // well; the rest faded or taken away, from the canvas, from what can be
+    // pressed or chosen, and from a picture. A search is answered together
+    // with the narrowing by where tables came from. Closing puts the whole
+    // schema back, and none of it reaches the project or its history.
+    void search_filter_tests(infrastructure::QtIdGenerator &ids)
+    {
+        application::Editor model(ids);
+        infrastructure::ErdxProjectStore store;
+        desktop::MainWindow window(model, store, ids);
+        window.resize(1440, 920);
+        window.show();
+        window.show_home(false);
+        settle();
+        window.load_example();
+        window.set_theme(desktop::ThemeId::OfficeLight);
+        settle();
+        const auto as_opened = model.project();
+        const auto steps = model.history().size();
+
+        // The diagram: its mark opens the bar, and a kind chosen with nothing
+        // typed keeps every element of that kind.
+        auto *diagram_filters = window.findChild<QAction *>("conceptualSearchFilters");
+        auto *diagram_bar = window.findChild<QWidget *>("searchBar");
+        require(diagram_filters && !diagram_filters->icon().isNull() && diagram_bar && !diagram_bar->isVisible(),
+                "The diagram's search field carries a filter mark, and its bar is put away");
+        diagram_filters->trigger();
+        settle();
+        require(diagram_bar->isVisible() && window.findChild<QLineEdit *>("conceptualSearch")->text().isEmpty(),
+                "The mark opens the diagram's search bar with nothing typed");
+        diagram_bar->findChild<QComboBox *>("searchKind")->setCurrentIndex(1);
+        settle();
+        require(diagram_bar->findChild<QLabel *>("searchCount")->text() ==
+                    QString("%1 found").arg(as_opened.entities.size()),
+                "Entities chosen with nothing typed finds every entity");
+        diagram_bar->findChild<QToolButton *>("searchClose")->click();
+        settle();
+        require(!diagram_bar->isVisible(), "And the bar closes as it always has");
+
+        // The schema: typing searches at once, as it always has, and leaves its
+        // bar put away; the mark opens the bar.
+        window.open_schema(true);
+        settle();
+        auto *view = window.schema();
+        const auto &preview = view->preview();
+        const auto tables = preview.tables.size();
+        require(tables >= 4, "The University schema has tables enough to search among");
+        auto *field = window.findChild<QLineEdit *>("schemaSearch");
+        auto *filters = window.findChild<QAction *>("schemaSearchFilters");
+        auto *bar = window.findChild<QWidget *>("schemaSearchBar");
+        require(field && filters && !filters->icon().isNull() && bar && !bar->isVisible(),
+                "The schema's search field carries a filter mark, and its bar is put away");
+        const auto first = QString::fromStdString(preview.tables[0].name);
+        field->setText(first);
+        require(view->looking_for() == first && !bar->isVisible(), "Typing in the schema's field searches at once, bar or none");
+        field->clear();
+        filters->trigger();
+        settle();
+        require(bar->isVisible() && field->text().isEmpty(), "The mark opens the schema's search bar with nothing typed");
+        auto *kind = bar->findChild<QComboBox *>("searchKind");
+        QAction *relatives = nullptr;
+        QAction *hide = nullptr;
+        QAction *fade = nullptr;
+        QAction *only = nullptr;
+        for (auto *action : bar->findChildren<QAction *>())
+        {
+            if (action->objectName() == "searchRelatives") relatives = action;
+            if (action->objectName() == "searchHideRest") hide = action;
+            if (action->objectName() == "searchFadeRest") fade = action;
+            if (action->objectName() == "searchKeepMatches") only = action;
+        }
+        require(kind && kind->count() == 5 && kind->itemText(1) == "Tables" && kind->itemText(2) == "Columns" &&
+                    kind->itemText(3) == "Keys" && kind->itemText(4) == "Relationships" && relatives && hide && fade && only,
+                "The schema's bar offers its own kinds, and the diagram's two questions");
+
+        // What the view keeps, table by table, read through the rest being hidden.
+        hide->trigger();
+        settle();
+        const auto kept = [&]
+        {
+            const auto hidden = view->hidden_tables();
+            std::vector<bool> kept(tables, true);
+            for (std::size_t t = 0; t < hidden.size(); ++t) kept[t] = !hidden[t];
+            return kept;
+        };
+        const auto expect = [&](const std::function<bool(std::size_t)> &keeps, const char *what)
+        {
+            const auto now = kept();
+            std::size_t count = 0;
+            for (std::size_t t = 0; t < tables; ++t)
+            {
+                require(now[t] == keeps(t), what);
+                count += keeps(t) ? 1 : 0;
+            }
+            require(view->found() == count, "And says how many it found");
+        };
+        const auto contains = [](const std::string &name, const QString &part)
+        { return part.isEmpty() || QString::fromStdString(name).contains(part, Qt::CaseInsensitive); };
+        kind->setCurrentIndex(1);
+        settle();
+        expect([](std::size_t) { return true; }, "Tables, with nothing typed, keeps every table");
+        field->setText(first.left(4));
+        expect([&](std::size_t t) { return contains(preview.tables[t].name, first.left(4)); },
+               "Tables keeps the tables whose names hold what is typed");
+        // A column, a key and a relationship to look for, taken from the schema.
+        std::optional<std::pair<std::size_t, std::size_t>> plain, foreign;
+        for (std::size_t t = 0; t < tables; ++t)
+            for (std::size_t c = 0; c < preview.tables[t].columns.size(); ++c)
+            {
+                const auto &column = preview.tables[t].columns[c];
+                if (column.ignored) continue;
+                if (!plain && !column.primary_key && !column.foreign_key) plain = std::pair{t, c};
+                if (!foreign && column.foreign_key && column.references) foreign = std::pair{t, c};
+            }
+        require(plain && foreign, "The schema has an ordinary column and a foreign key to look for");
+        const auto column_name = [&](std::pair<std::size_t, std::size_t> at)
+        { return QString::fromStdString(preview.tables[at.first].columns[at.second].name); };
+        const auto any_column = [&](std::size_t t, const QString &part, bool keys)
+        {
+            return std::any_of(preview.tables[t].columns.begin(), preview.tables[t].columns.end(), [&](const auto &column)
+                               { return !column.ignored && (!keys || column.primary_key || column.foreign_key) &&
+                                        contains(column.name, part); });
+        };
+        kind->setCurrentIndex(2);
+        field->setText(column_name(*plain));
+        expect([&](std::size_t t) { return any_column(t, column_name(*plain), false); },
+               "Columns keeps the tables holding a column of that name");
+        kind->setCurrentIndex(3);
+        field->setText(column_name(*foreign));
+        expect([&](std::size_t t) { return any_column(t, column_name(*foreign), true); },
+               "Keys keeps the tables holding a key column of that name");
+        // Relationships, with nothing typed: every table a foreign key is held
+        // in or points at; and with the name of the table one points at, at
+        // least that key's two tables.
+        kind->setCurrentIndex(4);
+        field->clear();
+        const auto joined = [&](std::size_t t)
+        {
+            for (std::size_t o = 0; o < tables; ++o)
+                for (const auto &column : preview.tables[o].columns)
+                    if (column.foreign_key && column.references && (o == t || *column.references == t))
+                        return true;
+            return false;
+        };
+        expect(joined, "Relationships, with nothing typed, keeps every table a foreign key joins");
+        const auto holder = foreign->first;
+        const auto target = *preview.tables[holder].columns[foreign->second].references;
+        field->setText(QString::fromStdString(preview.tables[target].name));
+        require(kept()[holder] && kept()[target], "A relationship found brings both its tables");
+
+        // What a match is joined to, one step out both ways.
+        kind->setCurrentIndex(1);
+        field->setText(QString::fromStdString(preview.tables[holder].name));
+        const auto named_holder = [&](std::size_t t)
+        { return contains(preview.tables[t].name, QString::fromStdString(preview.tables[holder].name)); };
+        relatives->trigger();
+        settle();
+        expect([&](std::size_t t)
+               {
+            if (named_holder(t)) return true;
+            for (std::size_t o = 0; o < tables; ++o)
+                for (const auto &column : preview.tables[o].columns)
+                    if (column.references && ((named_holder(o) && *column.references == t) ||
+                                              (o == t && named_holder(*column.references))))
+                        return true;
+            return false; },
+               "What a match touches is kept too, one step out both ways");
+        only->trigger();
+        settle();
+
+        // Hidden is gone: not drawn, not pressed, not chosen, not in a picture.
+        const auto hidden = view->hidden_tables();
+        const auto gone = static_cast<std::size_t>(std::find(hidden.begin(), hidden.end(), true) - hidden.begin());
+        require(gone < tables, "Something is hidden to check");
+        const auto boxes = view->table_boxes();
+        const auto canvas = view->grab().toImage();
+        const auto ratio = canvas.devicePixelRatio();
+        const auto middle = boxes[gone].center();
+        require(canvas.pixelColor(static_cast<int>(middle.x() * ratio), static_cast<int>(middle.y() * ratio)) ==
+                    desktop::theme(desktop::ThemeId::OfficeLight).canvas,
+                "A hidden table is not drawn");
+        QMouseEvent press(QEvent::MouseButtonPress, QPointF(middle.x(), boxes[gone].top() + 13),
+                          view->mapToGlobal(QPoint(static_cast<int>(middle.x()), static_cast<int>(boxes[gone].top() + 13))),
+                          Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(view, &press);
+        QMouseEvent release(QEvent::MouseButtonRelease, press.position(), press.globalPosition(), Qt::LeftButton,
+                            Qt::NoButton, Qt::NoModifier);
+        QApplication::sendEvent(view, &release);
+        settle();
+        require(!view->selected(), "Nor can it be pressed");
+        view->select_all();
+        require(view->selection().size() == view->found(), "Nor is it chosen with everything else");
+        view->select(std::nullopt);
+        const auto framed = view->export_view().bounds(desktop::PictureExtent::WholeDiagram);
+        require(!framed.intersects(boxes[gone]), "Nor is it in a picture, whose frame is drawn round what is left");
+        fade->trigger();
+        settle();
+        require(view->hidden_tables().empty() &&
+                    view->export_view().bounds(desktop::PictureExtent::WholeDiagram).intersects(boxes[gone]),
+                "Faded instead, everything is there again");
+
+        // The narrowing by where tables came from and a search together.
+        kind->setCurrentIndex(1);
+        field->clear();
+        hide->trigger();
+        settle();
+        window.findChild<QPushButton *>("schemaShowFromentities")->click();
+        settle();
+        expect([&](std::size_t t)
+               { return preview.tables[t].origin_kind == domain::TableOrigin::Entity ||
+                        preview.tables[t].origin_kind == domain::TableOrigin::Subtype; },
+               "A search among the tables from entities keeps only those");
+        window.findChild<QPushButton *>("schemaShowEverything")->click();
+        settle();
+
+        // Closing puts the whole schema back, and nothing was ever written.
+        field->setText(first);
+        bar->findChild<QToolButton *>("searchClose")->click();
+        settle();
+        require(!bar->isVisible() && field->text().isEmpty() && view->search() == desktop::SchemaSearch{} &&
+                    view->hidden_tables().empty() && kind->currentIndex() == 0 && fade->isChecked() && only->isChecked(),
+                "Closing the bar puts the whole schema back, and its answers to their defaults");
+        require(model.project() == as_opened && model.history().size() == steps,
+                "None of it reaches the project or its history");
+        model.mark_saved(model.revision());
+        std::cout << "PASS each workspace's search opens its kinds and options from its field\n";
+    }
+
+    // File, Home and Settings are the window's only top navigation (Zain,
+    // 2026-10-10; ADR-022 section 9.1). Where the menu bar is not the system's
+    // it is put away, and every command it carried still answers its keys:
+    // the same commands, given to the window as well, on Home and in both
+    // workspaces. Where the system owns the bar it is left to the system.
+    void menu_bar_shortcut_tests(infrastructure::QtIdGenerator &ids)
+    {
+        application::Editor editor(ids);
+        infrastructure::ErdxProjectStore store;
+        desktop::MainWindow window(editor, store, ids);
+        window.show();
+        window.activateWindow();
+        settle();
+        auto *bar = window.menuBar();
+        if (bar->isNativeMenuBar())
+        {
+            require(!bar->isHidden(), "Where the system owns the menu bar, it keeps its menus");
+            return;
+        }
+        require(bar->isHidden(), "A menu bar that is not the system's is not shown inside the window");
+
+        // Every command the bar carries with a key, each once, though some are
+        // in two of its menus.
+        std::vector<QAction *> keyed;
+        const std::function<void(QMenu *)> gather = [&](QMenu *menu)
+        {
+            for (auto *action : menu->actions())
+                if (action->menu())
+                    gather(action->menu());
+                else if (!action->shortcuts().isEmpty() &&
+                         std::find(keyed.begin(), keyed.end(), action) == keyed.end())
+                    keyed.push_back(action);
+        };
+        for (auto *top : bar->actions())
+            if (top->menu())
+                gather(top->menu());
+        for (const char *wanted : {"Ctrl+N", "Ctrl+O", "Ctrl+Shift+S", "Ctrl+Shift+E", "Ctrl+Shift+C",
+                                   "Ctrl+Shift+I", "Ctrl+Shift+H", "Ctrl+D", "Ctrl+F", "Ctrl+Shift+=",
+                                   "Ctrl+Shift+-", "Ctrl+1", "Ctrl++", "Ctrl+-", "Ctrl+Shift+M",
+                                   "Ctrl+S", "Ctrl+Z", "Ctrl+Y", "Ctrl+R", "Ctrl+0"})
+            require(std::any_of(keyed.begin(), keyed.end(), [&](QAction *action)
+                                { return action->shortcuts().contains(QKeySequence(QString::fromLatin1(wanted))); }),
+                    "Each key the menu bar's commands answer is among them");
+        for (auto *action : keyed)
+            require(window.actions().contains(action), "The window carries the menu bar's own command, not a copy");
+
+        // A key is heard, and stopped, at the command it belongs to: the
+        // command is not carried out, since many of them open a dialog. One
+        // that cannot act yet is let act for the moment of the test, as it
+        // would once there was something to act on.
+        struct Listener final : QObject
+        {
+            std::map<QObject *, int> heard;
+            bool eventFilter(QObject *watched, QEvent *event) override
+            {
+                if (event->type() != QEvent::Shortcut)
+                    return false;
+                if (!static_cast<QShortcutEvent *>(event)->isAmbiguous())
+                    ++heard[watched];
+                return true;
+            }
+        } listener;
+        const auto every_key_answers = [&](const char *where)
+        {
+            window.activateWindow();
+            settle();
+            for (auto *action : keyed)
+            {
+                if (!action->isVisible())
+                    continue;
+                const bool enabled = action->isEnabled();
+                action->setEnabled(true);
+                action->installEventFilter(&listener);
+                for (const auto &key : action->shortcuts())
+                {
+                    listener.heard.clear();
+                    QTest::keySequence(&window, key);
+                    if (listener.heard[action] != 1)
+                        throw std::runtime_error(action->text().remove('&').toStdString() + " does not answer " +
+                                                 key.toString().toStdString() + " " + where +
+                                                 " with the menu bar put away");
+                }
+                action->removeEventFilter(&listener);
+                action->setEnabled(enabled);
+            }
+        };
+        require(window.showing_home(), "The window opens on Home");
+        every_key_answers("on Home");
+        window.show_home(false);
+        settle();
+        require(child<QAction>(window, "tabFile")->isVisible() && child<QAction>(window, "tabHome")->isVisible() &&
+                    child<QAction>(window, "tabSettings")->isVisible(),
+                "File, Home and Settings stand at the top of the work");
+        for (auto *menus : window.findChildren<QMenuBar *>())
+            require(!menus->isVisible(), "And no row of menus stands above them");
+        every_key_answers("in the Conceptual workspace");
+        window.open_schema(true);
+        settle();
+        for (auto *menus : window.findChildren<QMenuBar *>())
+            require(!menus->isVisible(), "Nor above the schema");
+        every_key_answers("in the Schema workspace");
+    }
+
+    // Dr.icons (Item 9, 2026-10-14): seventeen illustrations of what an entity
+    // stands for, put on the conceptual diagram as pictures from a gallery on
+    // Insert (Zain chose pictures over a property of the entity, 2026-10-14).
+    // The keys and labels are his and fixed. Each icon is compiled in as a
+    // transparent, square PNG; placing one adds a picture carrying exactly
+    // those bytes, named by the label, as tall as a new entity, and touches no
+    // entity. It undoes, saves and reopens as any picture does, is drawn
+    // without a plate in every theme and every picture format, and is never
+    // stretched. Relational Design, which has no pictures, does not offer it.
+    void dr_icons_tests(infrastructure::QtIdGenerator &ids)
+    {
+        // The contract: the seventeen keys, labels and order. The two
+        // families share a label (Zain, 2026-10-15).
+        const std::vector<std::pair<QString, QString>> wanted{
+            {"student", "Student"}, {"course", "Course"}, {"family", "Family"}, {"family_2", "Family"},
+            {"identification_card", "Identification Card"}, {"order", "Order"}, {"product", "Product"},
+            {"book", "Book"}, {"project", "Project"}, {"employee", "Employee"}, {"person", "Person"},
+            {"seat", "Seat"}, {"task", "Task"}, {"car", "Car"}, {"mobile_line", "Mobile Line"},
+            {"phone_ext", "Phone Ext."}, {"desk", "Desk"}};
+        const auto &icons = desktop::dr_icons();
+        require(icons.size() == wanted.size(), "There are seventeen Dr.icons");
+        std::set<QByteArray> seen;
+        for (std::size_t i = 0; i < icons.size(); ++i)
+        {
+            const auto &icon = icons[i];
+            const auto key = QString::fromLatin1(icon.key);
+            require(key == wanted[i].first && QString::fromUtf8(icon.label) == wanted[i].second,
+                    "Each Dr.icon has its own key and label, in the agreed order");
+            require(desktop::dr_icon(key) && QString::fromLatin1(desktop::dr_icon(key)->key) == key,
+                    "And is found by its key");
+            // Compiled in, so it is there without any file beside the program.
+            require(desktop::dr_icon_resource(icon).startsWith(":/"), "Its picture is a compiled-in resource");
+            const auto png = desktop::dr_icon_bytes(icon);
+            require(png.startsWith("\x89PNG"), "Which is a PNG");
+            require(seen.insert(png).second, "And no two icons share a picture");
+            QImage image;
+            require(image.loadFromData(png, "PNG"), "That decodes");
+            require(image.size() == QSize(384, 384) && image.hasAlphaChannel(), "Square, 384 pixels, with transparency");
+            image = image.convertToFormat(QImage::Format_ARGB32);
+            for (const QPoint corner : {QPoint(0, 0), QPoint(383, 0), QPoint(0, 383), QPoint(383, 383)})
+                require(qAlpha(image.pixel(corner)) == 0, "Transparent at every corner, so it carries no plate");
+            int left = 384, top = 384, right = -1, bottom = -1;
+            long ink = 0;
+            for (int y = 0; y < 384; ++y)
+                for (int x = 0; x < 384; ++x)
+                    if (qAlpha(image.pixel(x, y)) >= 16)
+                    {
+                        ++ink;
+                        left = std::min(left, x), right = std::max(right, x);
+                        top = std::min(top, y), bottom = std::max(bottom, y);
+                    }
+            require(ink > 384 * 384 / 10, "Something is drawn in it");
+            require(left > 0 && top > 0 && right < 383 && bottom < 383, "And nothing drawn is cut by its edge");
+        }
+        require(!desktop::dr_icon("unicorn"), "A key that is not one of the seventeen finds nothing");
+
+        application::Editor model(ids);
+        infrastructure::ErdxProjectStore store;
+        desktop::MainWindow window(model, store, ids);
+        window.resize(1440, 920);
+        window.show();
+        window.show_home(false);
+        settle();
+        window.load_university_database();
+        window.set_theme(desktop::ThemeId::OfficeLight);
+        settle();
+
+        // Insert offers it after Symbols, in the menu and on Home's Insert.
+        auto *entry = child<QAction>(window, "insertDrIcons");
+        auto *menu = child<QMenu>(window, "insertMenu");
+        const auto entries = menu->actions();
+        require(entries.indexOf(entry) == entries.indexOf(child<QAction>(window, "insertSymbols")) + 1,
+                "Insert offers Dr.icons straight after Symbols");
+        require(child<QToolButton>(window, "insertButton")->menu() == menu, "Home's Insert offers it too");
+        require(entry->isVisible() && !entry->icon().isNull() && !entry->toolTip().isEmpty(),
+                "With a glyph and a tooltip");
+
+        // The gallery: seventeen buttons, each its icon over its label.
+        entry->trigger();
+        settle();
+        auto *gallery = child<QDialog>(window, "drIconPicker");
+        require(gallery->isVisible(), "Dr.icons opens its gallery");
+        for (const auto &[key, label] : wanted)
+        {
+            auto *button = gallery->findChild<QToolButton *>("drIcon_" + key);
+            require(button && button->text() == label && button->toolTip() == label && !button->icon().isNull(),
+                    "The gallery shows every icon with its label");
+            require(button->focusPolicy() == Qt::NoFocus, "And leaves the keyboard with the diagram");
+        }
+
+        // Placing every one: a picture each, with exactly the icon's bytes and
+        // its label, as tall as a new entity, and nothing else touched.
+        const auto before = model.project();
+        const auto steps = model.history().size();
+        std::map<QString, domain::PictureId> placed;
+        for (const auto &[key, label] : wanted)
+        {
+            const auto had = model.project().pictures;
+            gallery->findChild<QToolButton *>("drIcon_" + key)->click();
+            settle();
+            const auto &now = model.project().pictures;
+            require(now.size() == had.size() + 1, "Picking an icon places one picture");
+            for (const auto &[id, picture] : now)
+                if (!had.contains(id))
+                    placed[key] = id;
+            const auto &picture = now.at(placed.at(key));
+            const auto png = desktop::dr_icon_bytes(*desktop::dr_icon(key));
+            require(QByteArray(reinterpret_cast<const char *>(picture.image.data()), static_cast<qsizetype>(picture.image.size())) == png,
+                    "Carrying exactly that icon's picture");
+            require(QString::fromStdString(picture.name) == label, "Named by the icon's label");
+            const auto &box = model.project().layout.at(domain::ElementRef{placed.at(key)});
+            require(box.width == desktop::entity_body.height && box.height == desktop::entity_body.height,
+                    "Square, and as tall as a new entity");
+        }
+        require(model.project().entities == before.entities && model.project().relationships == before.relationships &&
+                    model.project().attributes == before.attributes && model.project().specializations == before.specializations,
+                "Placing icons changes no entity, relationship or attribute");
+        require(window.canvas()->selected_elements().empty(), "A placed icon is left unchosen, as a placed symbol is");
+        std::set<std::pair<double, double>> corners;
+        for (const auto &[key, id] : placed)
+        {
+            const auto &box = model.project().layout.at(domain::ElementRef{id});
+            corners.insert({box.x, box.y});
+        }
+        require(corners.size() == wanted.size(), "Icons placed one after another do not land on one another");
+        require(model.history().size() == steps + wanted.size(), "Each is one step of history");
+        require(!window.place_dr_icon("unicorn") && model.project().pictures.size() == before.pictures.size() + wanted.size(),
+                "An unknown key places nothing");
+
+        // Undo and Redo, and placing again after undoing, keep the mapping.
+        child<QAction>(window, "undoCommand")->trigger();
+        settle();
+        require(!model.project().pictures.contains(placed.at("desk")), "Undo takes the last icon away");
+        child<QAction>(window, "redoCommand")->trigger();
+        settle();
+        require(model.project().pictures.contains(placed.at("desk")), "Redo puts it back");
+        for (int round = 0; round < 3; ++round)
+        {
+            require(window.place_dr_icon("family"), "An icon is placed again");
+            const auto &last = model.project().pictures;
+            const auto png = desktop::dr_icon_bytes(*desktop::dr_icon("family"));
+            const bool right = std::any_of(last.begin(), last.end(), [&](const auto &entry)
+                                           { return entry.second.name == "Family" &&
+                                                    QByteArray(reinterpret_cast<const char *>(entry.second.image.data()),
+                                                               static_cast<qsizetype>(entry.second.image.size())) == png; });
+            require(right, "With the same picture every time");
+            child<QAction>(window, "undoCommand")->trigger();
+            settle();
+        }
+        require(model.project().pictures.size() == before.pictures.size() + wanted.size(),
+                "Placing and undoing leaves exactly what was there");
+
+        // Saved and opened again, every icon is still its own picture.
+        QTemporaryDir folder;
+        require(folder.isValid(), "A folder to save in");
+        const auto path = folder.filePath("dr-icons.erdx");
+        const auto kept = model.project();
+        require(store.save(path.toStdString(), kept).ok, "The project with its icons saves");
+        model.mark_saved(model.revision());
+        require(window.open_path(path), "And opens again");
+        settle();
+        require(model.project().pictures == kept.pictures && model.project().layout == kept.layout,
+                "With every icon's picture, name and place as they were");
+
+        // With the schema in front (2026-10-15) Dr.icons is offered there too,
+        // and what it puts down goes on the schema, never on the diagram behind.
+        window.show_dr_icons();
+        settle();
+        gallery = child<QDialog>(window, "drIconPicker");
+        window.open_schema(true);
+        settle_schema_full(window);
+        require(entry->isVisible() && gallery->isVisible(), "With the schema in front Dr.icons is still offered");
+        {
+            const auto diagram_pictures = model.project().pictures;
+            gallery->findChild<QToolButton *>("drIcon_course")->click();
+            settle();
+            require(model.project().pictures == diagram_pictures && model.project().schema_pictures.size() == 1,
+                    "And an icon picked then goes on the schema");
+            const auto &put = model.project().schema_pictures.begin()->second;
+            require(put.name == "Course" &&
+                        QByteArray(reinterpret_cast<const char *>(put.image.data()), static_cast<qsizetype>(put.image.size())) ==
+                            desktop::dr_icon_bytes(*desktop::dr_icon("course")),
+                    "As that icon's picture, named by its label");
+            child<QAction>(window, "undoCommand")->trigger();
+            settle();
+            require(model.project().schema_pictures.empty(), "One undo takes it off the schema");
+        }
+        child<QPushButton>(window, "schemaFull")->click();
+        settle();
+        require(entry->isVisible(), "And the diagram has it too");
+        gallery->hide();
+
+        // Room for many: every placed icon keeps its own copy, and a project
+        // file holds 8 MiB, so forty of the largest still save.
+        {
+            const auto *largest = &icons.front();
+            for (const auto &icon : icons)
+                if (desktop::dr_icon_bytes(icon).size() > desktop::dr_icon_bytes(*largest).size())
+                    largest = &icon;
+            const auto png = desktop::dr_icon_bytes(*largest);
+            application::Editor many(ids);
+            for (int i = 0; i < 40; ++i)
+                require(bool(many.create_picture(largest->label, domain::Rect{i * 90.0, 0, 77, 77},
+                                                 std::vector<std::uint8_t>(png.begin(), png.end()))),
+                        "Forty of the largest icon are placed");
+            require(store.save(folder.filePath("forty.erdx").toStdString(), many.project()).ok,
+                    "A project carrying forty of the largest icon is still within the file limit");
+        }
+
+        // Drawn: on the theme's own colour in a light, a dark and the plain
+        // theme, then on no ground as PNG and SVG, and as a PDF. Only one icon
+        // is kept on an otherwise empty diagram, so the picture is the icon.
+        model.mark_saved(model.revision());
+        application::Editor empty(ids);
+        infrastructure::ErdxProjectStore empty_store;
+        desktop::MainWindow drawing(empty, empty_store, ids);
+        drawing.resize(1440, 920);
+        drawing.show();
+        drawing.show_home(false);
+        settle();
+        require(drawing.place_dr_icon("student") && empty.project().pictures.size() == 1, "One icon on an empty diagram");
+        const auto id = empty.project().pictures.begin()->first;
+        const auto draw = [&](desktop::PictureFormat format, desktop::PictureBackground ground)
+        {
+            desktop::PictureOptions options;
+            options.format = format;
+            options.background = ground;
+            options.scale = 2.0;
+            options.carry_project = false;
+            QByteArray bytes;
+            const auto result = desktop::draw_picture(desktop::ExportView(*drawing.canvas()), options, {}, bytes);
+            require(result.ok, "The diagram with its icon is drawn");
+            return std::pair{result, bytes};
+        };
+        const auto as_image = [](const desktop::PictureResult &result, const QByteArray &bytes, desktop::PictureFormat format)
+        {
+            QImage image;
+            if (format == desktop::PictureFormat::Svg)
+            {
+                QSvgRenderer renderer(bytes);
+                image = QImage(result.pixels, QImage::Format_ARGB32_Premultiplied);
+                image.fill(Qt::transparent);
+                QPainter painter(&image);
+                renderer.render(&painter);
+            }
+            else
+                image.loadFromData(bytes, "png");
+            return image.convertToFormat(QImage::Format_ARGB32);
+        };
+        // The icon's drawn box within a picture of it: the picture is the
+        // diagram's bounds plus the margin, at the scale asked for.
+        const auto ink_box = [](const QImage &image, const std::function<bool(QRgb)> &drawn)
+        {
+            QRect box;
+            for (int y = 0; y < image.height(); ++y)
+                for (int x = 0; x < image.width(); ++x)
+                    if (drawn(image.pixel(x, y)))
+                        box |= QRect(x, y, 1, 1);
+            return box;
+        };
+        const auto source = QImage(desktop::dr_icon_resource(*desktop::dr_icon("student"))).convertToFormat(QImage::Format_ARGB32);
+        const auto source_box = ink_box(source, [](QRgb pixel) { return qAlpha(pixel) >= 128; });
+        const auto source_ratio = double(source_box.width()) / source_box.height();
+        for (const auto theme : {desktop::ThemeId::OfficeLight, desktop::ThemeId::Dracula, desktop::ThemeId::Plain})
+        {
+            drawing.set_theme(theme);
+            settle();
+            const auto ground = desktop::theme(theme).canvas;
+            const auto [result, bytes] = draw(desktop::PictureFormat::Png, desktop::PictureBackground::ThemeColour);
+            const auto image = as_image(result, bytes, desktop::PictureFormat::Png);
+            const auto off_ground = [&](QRgb pixel)
+            {
+                return std::abs(qRed(pixel) - ground.red()) + std::abs(qGreen(pixel) - ground.green()) +
+                           std::abs(qBlue(pixel) - ground.blue()) > 60;
+            };
+            const auto box = ink_box(image, off_ground);
+            require(!box.isEmpty(), "The icon is drawn in every theme");
+            for (const QPoint corner : {QPoint(1, 1), QPoint(image.width() - 2, 1), QPoint(1, image.height() - 2),
+                                        QPoint(image.width() - 2, image.height() - 2)})
+                require(!off_ground(image.pixel(corner)), "On the theme's own colour, with no plate around it");
+        }
+        drawing.set_theme(desktop::ThemeId::OfficeLight);
+        settle();
+        for (const auto format : {desktop::PictureFormat::Png, desktop::PictureFormat::Svg})
+        {
+            const auto [result, bytes] = draw(format, desktop::PictureBackground::Transparent);
+            if (format == desktop::PictureFormat::Svg)
+                require(bytes.contains("<image"), "An SVG picture carries the icon as an image");
+            const auto image = as_image(result, bytes, format);
+            const auto box = ink_box(image, [](QRgb pixel) { return qAlpha(pixel) >= 128; });
+            require(!box.isEmpty(), "The icon is drawn on no ground");
+            for (const QPoint corner : {QPoint(0, 0), QPoint(image.width() - 1, 0), QPoint(0, image.height() - 1),
+                                        QPoint(image.width() - 1, image.height() - 1)})
+                require(qAlpha(image.pixel(corner)) == 0, "And nothing is laid behind it");
+            require(std::abs(double(box.width()) / box.height() - source_ratio) < 0.06, "In its own proportions");
+        }
+        {
+            const auto [result, bytes] = draw(desktop::PictureFormat::Pdf, desktop::PictureBackground::White);
+            require(bytes.startsWith("%PDF") && bytes.contains("/Image"), "A PDF page carries the icon as an image");
+        }
+        // Pulled wide, it is fitted rather than stretched.
+        const auto square = draw(desktop::PictureFormat::Png, desktop::PictureBackground::Transparent).first.pixels;
+        const auto box = empty.project().layout.at(domain::ElementRef{id});
+        require(bool(empty.move({{domain::ElementRef{id}, domain::Rect{box.x, box.y, box.width * 2, box.height}}})),
+                "The icon's picture is pulled to twice its width");
+        drawing.canvas()->synchronize();
+        settle();
+        {
+            const auto [result, bytes] = draw(desktop::PictureFormat::Png, desktop::PictureBackground::Transparent);
+            require(result.pixels.width() - square.width() >= int(box.width * 2) - 4 && result.pixels.height() == square.height(),
+                    "The diagram holds the wider picture");
+            const auto image = as_image(result, bytes, desktop::PictureFormat::Png);
+            const auto drawn = ink_box(image, [](QRgb pixel) { return qAlpha(pixel) >= 128; });
+            require(std::abs(double(drawn.width()) / drawn.height() - source_ratio) < 0.06,
+                    "And the icon keeps its proportions in it");
+        }
+        empty.mark_saved(empty.revision());
+        std::cout << "PASS Dr.icons: seventeen compiled-in icons placed as pictures, kept, undone, drawn and exported\n";
+    }
+
+    // Text and Insert on the Relational Schema (Zain, 2026-10-15): text put
+    // down by the header's Text tool and written in place, and the diagram's
+    // Insert -- a picture, symbols, Dr.icons -- putting them on the schema
+    // while it is in front. Each is the schema's own, never the diagram's:
+    // chosen, carried, pulled by its handles in proportion, deleted and undone
+    // there, framed and drawn in its pictures, saved and opened again.
+    void schema_figures_tests(infrastructure::QtIdGenerator &ids)
+    {
+        application::Editor model(ids);
+        infrastructure::ErdxProjectStore store;
+        desktop::MainWindow window(model, store, ids);
+        window.resize(1440, 920);
+        window.show();
+        window.show_home(false);
+        settle();
+        // A diagram of two entities, so its schema has room beside its tables.
+        require(bool(model.create_entity("Student", {0, 0, 133, 77})) && bool(model.create_entity("Course", {300, 0, 133, 77})),
+                "A small diagram is drawn");
+        window.set_theme(desktop::ThemeId::OfficeLight);
+        settle();
+        const auto diagram = model.project();
+        window.open_schema(true);
+        settle_schema_full(window);
+        child<QAction>(window, "tabHome")->trigger();
+        settle();
+        auto *schema = window.schema();
+        const auto shown = [&](const char *name)
+        { auto *button = window.findChild<QToolButton *>(name); return button && button->isVisible(); };
+        require(shown("schemaText") && shown("schemaInsert"), "A diagram's schema offers Text and Insert in its header");
+        require(!shown("schemaSelect") && !shown("schemaAddTable") && !shown("schemaConnect") && !shown("schemaTopArrange"),
+                "And none of the tools only a schema drawn by hand has");
+        require(child<QToolButton>(window, "schemaInsert")->menu() == child<QMenu>(window, "insertMenu"),
+                "Its Insert is the diagram's own menu");
+        const auto pointer = [&](QEvent::Type type, QPointF at, Qt::MouseButton button, Qt::MouseButtons buttons)
+        {
+            QMouseEvent event(type, at, schema->mapToGlobal(at), button, buttons, Qt::NoModifier);
+            QApplication::sendEvent(schema, &event);
+            settle();
+        };
+        const auto press_and_let_go = [&](QPointF at)
+        {
+            pointer(QEvent::MouseButtonPress, at, Qt::LeftButton, Qt::LeftButton);
+            pointer(QEvent::MouseButtonRelease, at, Qt::LeftButton, Qt::NoButton);
+        };
+        const auto haul = [&](QPointF from, QPointF by)
+        {
+            pointer(QEvent::MouseButtonPress, from, Qt::LeftButton, Qt::LeftButton);
+            pointer(QEvent::MouseMove, from + by / 2, Qt::NoButton, Qt::LeftButton);
+            pointer(QEvent::MouseMove, from + by, Qt::NoButton, Qt::LeftButton);
+            pointer(QEvent::MouseButtonRelease, from + by, Qt::LeftButton, Qt::NoButton);
+        };
+        const auto view = schema->visibleRegion().boundingRect();
+        const QPointF spot = QPointF(view.topLeft()) + QPointF(30, 30);
+
+        // Text: the tool, a press, typing; then one use and back to Select.
+        auto *text_tool = child<QAction>(window, "schemaTextTool");
+        text_tool->trigger();
+        settle();
+        require(schema->writing(), "Text in hand on the schema");
+        press_and_let_go(spot);
+        auto *field = child<QPlainTextEdit>(window, "schemaInlineText");
+        require(field->isVisible() && schema->writing_text(), "A press puts text down and opens it for writing");
+        require(!text_tool->isChecked() && !schema->writing(), "Text is put down after one use, as Table is");
+        field->setPlainText("Reviewed with the DBA");
+        schema->finish_text(false);
+        settle();
+        require(model.project().schema_notes.size() == 1, "The text is on the schema");
+        const auto text = model.project().schema_notes.begin()->first;
+        require(model.project().schema_notes.at(text).free_text &&
+                    model.project().schema_notes.at(text).description == "Reviewed with the DBA",
+                "Holding what was written");
+        require(model.undo_label() == "Edit text", "Written as one step after it was put down");
+        // Put down and left empty, or abandoned, it is taken back, leaving no step.
+        const auto before_empty = model.revision();
+        text_tool->trigger();
+        settle();
+        press_and_let_go(spot + QPointF(0, 120));
+        schema->finish_text(true);
+        settle();
+        require(model.project().schema_notes.size() == 1 && model.revision() >= before_empty &&
+                    model.undo_label() == "Edit text",
+                "Text abandoned as it was put down is taken back without a trace in the history");
+        // A double click opens it again.
+        const auto text_box = model.project().schema_figures.at(domain::ElementRef{text});
+        const QPointF on_text(text_box.x + 6, text_box.y + text_box.height / 2);
+        // A double click is a press and a release, then the second press.
+        press_and_let_go(on_text);
+        QMouseEvent twice(QEvent::MouseButtonDblClick, on_text, schema->mapToGlobal(on_text), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(schema, &twice);
+        settle();
+        require(field->isVisible() && field->toPlainText() == "Reviewed with the DBA", "A double click opens the text for writing");
+        field->setPlainText("Reviewed with the DBA\nAgain");
+        schema->finish_text(false);
+        settle();
+        require(model.project().schema_notes.at(text).description == "Reviewed with the DBA\nAgain", "And writes it");
+        // Locked by a double click, Text places until Escape.
+        const auto notes_before = model.project().schema_notes.size();
+        QMouseEvent lock(QEvent::MouseButtonDblClick, QPointF(5, 5), QPointF(5, 5), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(child<QToolButton>(window, "schemaText"), &lock);
+        settle();
+        require(schema->writing() && text_tool->text().contains(QStringLiteral("🔒")), "A double click locks Text, and says so");
+        for (const auto at : {spot + QPointF(0, 200), spot + QPointF(0, 260)})
+        {
+            press_and_let_go(at);
+            field->setPlainText("Locked");
+            schema->finish_text(false);
+            settle();
+        }
+        require(schema->writing() && model.project().schema_notes.size() == notes_before + 2, "Locked, Text keeps placing");
+        QTest::keyClick(schema, Qt::Key_Escape);
+        settle();
+        require(!schema->writing() && !text_tool->isChecked(), "Escape puts Text down");
+        for (int step = 0; step < 4; ++step)
+            child<QAction>(window, "undoCommand")->trigger();
+        settle();
+        require(model.project().schema_notes.size() == notes_before, "Both placings undo");
+
+        // Insert, with the schema in front, puts on the schema, where the
+        // pointer last was: here a stretch of the schema with no table on it,
+        // since a picture lies beneath the tables as it lies beneath the
+        // diagram's shapes.
+        schema->setFocus();
+        settle();
+        {
+            const auto tables = schema->table_boxes();
+            QPointF empty;
+            bool found = false;
+            for (int y = view.top() + 60; y < view.bottom() - 60 && !found; y += 20)
+                for (int x = view.left() + 60; x < view.right() - 60 && !found; x += 20)
+                {
+                    const QRectF room(x - 90, y - 60, 180, 120);
+                    if (std::none_of(tables.begin(), tables.end(), [&](const QRectF &box) { return box.intersects(room); }) &&
+                        std::none_of(model.project().schema_figures.begin(), model.project().schema_figures.end(),
+                                     [&](const auto &entry) { return QRectF(entry.second.x, entry.second.y, entry.second.width, entry.second.height).intersects(room); }))
+                    {
+                        empty = QPointF(x, y);
+                        found = true;
+                    }
+                }
+            require(found, "The schema has an empty stretch in view");
+            pointer(QEvent::MouseMove, empty, Qt::NoButton, Qt::NoButton);
+        }
+        require(window.insert_symbol(QStringLiteral("⋈")), "A symbol is put on the schema");
+        QTemporaryDir pictures;
+        require(pictures.isValid(), "Temporary picture directory");
+        QImage sample(120, 60, QImage::Format_ARGB32);
+        sample.fill(Qt::transparent);
+        {
+            QPainter painter(&sample);
+            painter.fillRect(QRectF(10, 10, 100, 40), QColor(30, 120, 220));
+        }
+        const auto file = pictures.filePath("banner.png");
+        require(sample.save(file), "Write a sample picture");
+        require(window.insert_picture(file), "A picture from a file is put on the schema");
+        require(model.project().schema_pictures.size() == 1 && model.project().schema_notes.size() == notes_before + 1,
+                "Both are the schema's");
+        const domain::ElementRef picture{model.project().schema_pictures.begin()->first};
+        require(schema->chosen_figure() == picture, "And the picture is chosen there");
+        require(model.project().notes == diagram.notes && model.project().pictures == diagram.pictures &&
+                    model.project().layout == diagram.layout,
+                "Nothing is put on the diagram behind");
+
+        // Carried by a press inside it -- by its left end, since the symbol
+        // put down at the same place stands over its middle, and what stands
+        // over the tables answers first.
+        const auto start = model.project().schema_figures.at(picture);
+        haul(QPointF(start.x + 14, start.y + start.height / 2), QPointF(40, 30));
+        auto now = model.project().schema_figures.at(picture);
+        require(now.x == start.x + 40 && now.y == start.y + 30 && now.width == start.width && now.height == start.height,
+                "Carried where the hand takes it");
+        require(model.undo_label() == "Move on the schema", "As one step");
+        // Pulled by its bottom right corner, in proportion.
+        schema->choose_figure(picture);
+        const auto grip = std::clamp(std::min(now.width, now.height) / 4, 4.0, 9.0);
+        haul(QPointF(now.x + now.width - grip / 2, now.y + now.height - grip / 2), QPointF(60, 60));
+        const auto pulled = model.project().schema_figures.at(picture);
+        require(pulled.x == now.x && pulled.y == now.y && pulled.width > now.width &&
+                    std::abs(pulled.width / pulled.height - now.width / now.height) < 0.01,
+                "Its corner makes it larger, from the corner opposite, keeping its proportions");
+        require(model.undo_label() == "Resize picture", "As one step");
+        // Delete takes it away; undo brings it back.
+        schema->choose_figure(picture);
+        schema->setFocus();
+        QTest::keyClick(schema, Qt::Key_Delete);
+        settle();
+        require(!model.project().schema_pictures.contains(std::get<domain::PictureId>(picture)), "Delete takes it off the schema");
+        child<QAction>(window, "undoCommand")->trigger();
+        settle();
+        require(model.project().schema_figures.at(picture) == pulled, "And undo puts it back as it was");
+
+        // In its pictures: framed with the rest, drawn, and never chosen.
+        schema->choose_figure(picture);
+        const auto exported = schema->export_view();
+        const auto frame = exported.bounds(desktop::PictureExtent::WholeDiagram);
+        for (const auto &[ref, box] : schema->figure_boxes())
+            require(frame.contains(box), "Everything put on the schema is inside its picture's frame");
+        {
+            desktop::PictureOptions options;
+            options.format = desktop::PictureFormat::Png;
+            options.background = desktop::PictureBackground::Transparent;
+            options.carry_project = false;
+            QByteArray bytes;
+            const auto result = desktop::draw_picture(exported, options, {}, bytes);
+            require(result.ok, "The schema's picture is drawn");
+            QImage drawn;
+            drawn.loadFromData(bytes, "png");
+            const auto source = frame.adjusted(-options.margin, -options.margin, options.margin, options.margin);
+            const auto scale = drawn.width() / source.width();
+            const auto at = [&](QPointF point)
+            { return QPoint(static_cast<int>((point.x() - source.left()) * scale), static_cast<int>((point.y() - source.top()) * scale)); };
+            const QPointF middle(pulled.x + pulled.width / 2, pulled.y + pulled.height / 2);
+            require(qAlpha(drawn.pixel(at(middle))) > 0, "The picture put on the schema is in its picture");
+            // The sample's own corner is clear, so anything there would be the
+            // outline a chosen picture wears on screen. (The bottom right: the
+            // symbol put down first now stands over its top left.)
+            require(qAlpha(drawn.pixel(at(QPointF(pulled.x + pulled.width - 3, pulled.y + pulled.height - 3)))) == 0,
+                    "With nothing chosen drawn round it");
+        }
+
+        // Saved and opened again, as it was.
+        model.mark_saved(model.revision());
+        QTemporaryDir folder;
+        require(folder.isValid(), "A folder to save in");
+        const auto path = folder.filePath("schema-figures.erdx");
+        const auto kept = model.project();
+        require(store.save(path.toStdString(), kept).ok, "The project with what is on its schema saves");
+        require(window.open_path(path), "And opens again");
+        settle();
+        require(model.project().schema_notes == kept.schema_notes && model.project().schema_pictures == kept.schema_pictures &&
+                    model.project().schema_figures == kept.schema_figures,
+                "With everything on its schema as it was");
+        // Out of full view the diagram is in front, and the schema's Text and
+        // Insert go from the header with it.
+        window.open_schema(true);
+        settle_schema_full(window);
+        child<QPushButton>(window, "schemaFull")->click();
+        settle();
+        require(!shown("schemaText") && !shown("schemaInsert"), "With the diagram in front, the schema's Text and Insert are put away");
+        model.mark_saved(model.revision());
+        std::cout << "PASS text, symbols and pictures put on the schema are its own\n";
+    }
+
+    // A locked tool's padlock is seen whatever room its row has and whatever
+    // fonts the machine has (2026-10-09, 2026-10-10). It once followed the name
+    // as a character, so it went with the name where the row was too narrow for
+    // names, and it was only as good as the font. Now ERDFlow paints it on the
+    // tool's icon, gold, grey under Plain, with the name or without, and the
+    // name is only the name. The tools are taken up and locked as somebody
+    // does it: one press, then a second on the same button, which the system
+    // makes a double click; and put down by pressing Select.
+    void tool_lock_mark_tests(infrastructure::QtIdGenerator &ids)
+    {
+        application::Editor editor(ids);
+        infrastructure::ErdxProjectStore store;
+        desktop::MainWindow window(editor, store, ids);
+        window.resize(1440, 920);
+        window.show();
+        window.activateWindow();
+        window.show_home(false);
+        settle_until([&]
+                     {
+            auto *row = window.findChild<QToolBar *>("modelTools");
+            auto *entity = window.findChild<QAction *>("toolEntity");
+            auto *button = row && entity ? qobject_cast<QToolButton *>(row->widgetForAction(entity)) : nullptr;
+            return button && button->isVisible() && button->toolButtonStyle() == Qt::ToolButtonIconOnly; },
+                     "Away from Home the diagram's tools are laid out in their row");
+        const auto drawn = [](QWidget *button)
+        {
+            QImage image(button->size() * 2, QImage::Format_ARGB32_Premultiplied);
+            image.setDevicePixelRatio(2);
+            image.fill(button->palette().color(QPalette::Window));
+            button->render(&image);
+            return image;
+        };
+        // Pixels of the padlock's gold: strong, bright, and near its hue, which
+        // leaves room for the shading across it and the smoothing of its edges,
+        // and is stronger than the coloured fringes a name's letters are
+        // smoothed with.
+        // Under Plain the padlock is grey, the grey of the button it is on, so
+        // there it is found by what it changes and only its gold is looked for.
+        const auto inked = [](const QImage &image)
+        {
+            const auto ink = desktop::MainWindow::tool_lock_ink(false);
+            int count = 0;
+            for (int y = 0; y < image.height(); ++y)
+                for (int x = 0; x < image.width(); ++x)
+                {
+                    const auto colour = image.pixelColor(x, y);
+                    if (colour.hsvSaturation() > 150 && colour.value() > 150 && std::abs(colour.hsvHue() - ink.hsvHue()) <= 11)
+                        ++count;
+                }
+            return count;
+        };
+        // Where two drawings of one button differ, and how much.
+        const auto changed = [](const QImage &one, const QImage &other)
+        {
+            QRect where;
+            int count = 0;
+            for (int y = 0; y < std::min(one.height(), other.height()); ++y)
+                for (int x = 0; x < std::min(one.width(), other.width()); ++x)
+                {
+                    const auto a = one.pixelColor(x, y);
+                    const auto b = other.pixelColor(x, y);
+                    if (std::max({std::abs(a.red() - b.red()), std::abs(a.green() - b.green()), std::abs(a.blue() - b.blue())}) > 48)
+                    {
+                        ++count;
+                        where |= QRect(x, y, 1, 1);
+                    }
+                }
+            return std::pair{count, where};
+        };
+        // A press on the button's own part, not on the arrow beside it.
+        const auto press = [&](QToolButton *button, int delay)
+        {
+            const QPoint local(std::min(button->width() / 2, button->iconSize().width() / 2 + 6), button->height() / 2);
+            QTest::mouseClick(window.windowHandle(), Qt::LeftButton, {}, button->mapTo(&window, local), delay);
+            settle();
+        };
+        auto *row = child<QToolBar>(window, "modelTools");
+        const auto button_for = [&](const char *name)
+        { return qobject_cast<QToolButton *>(row->widgetForAction(child<QAction>(window, name))); };
+        auto *select = button_for("toolSelect");
+        child<QAction>(window, "isaGeneralization")->trigger();
+        press(select, 0);
+        const std::array<std::tuple<const char *, desktop::Tool, QToolButton *>, 6> tools{{
+            {"Entity", desktop::Tool::Entity, button_for("toolEntity")},
+            {"Attribute", desktop::Tool::Attribute, button_for("toolAttribute")},
+            {"Relationship", desktop::Tool::Relationship, button_for("toolRelationship")},
+            {"Generalization", desktop::Tool::Generalization, child<QToolButton>(window, "isaButton")},
+            {"Connect", desktop::Tool::Connect, child<QToolButton>(window, "connectButton")},
+            {"Text", desktop::Tool::Text, button_for("toolText")},
+        }};
+        const auto marked = [](QToolButton *button)
+        { return button->defaultAction()->property("toolLocked").toBool(); };
+        // One tool, from taken up to locked to put down, in whichever mode its
+        // row is showing.
+        const auto lock_and_unlock = [&](const char *name, desktop::Tool tool, QToolButton *button, bool colourless)
+        {
+            press(button, 0);
+            require(window.canvas()->tool() == tool && !window.canvas()->tool_locked() && !marked(button),
+                    "A tool taken up once is not locked");
+            require(button->text() == QString::fromLatin1(name), "Its button carries its name and nothing more");
+            const auto once = drawn(button);
+            require(inked(once) == 0, "And no padlock is drawn on it");
+            press(button, 80);
+            require(window.canvas()->tool() == tool && window.canvas()->tool_locked() && marked(button),
+                    "Pressed again, the tool is locked");
+            require(button->text() == QString::fromLatin1(name), "Its name stays its name: the padlock is not a character");
+            const auto locked = drawn(button);
+            require(locked.size() == once.size(), "Locking does not change the button's size");
+            const auto [count, where] = changed(locked, once);
+            require(count >= 60, "A locked tool's button wears a padlock");
+            if (colourless)
+                require(inked(locked) == 0 && desktop::MainWindow::tool_lock_ink(true).hsvSaturation() == 0,
+                        "Under Plain the padlock is grey");
+            else
+                require(inked(locked) >= 40, "The padlock is gold");
+            // On the icon: in its lower half, and short of the name where the
+            // name follows it. Where the icon and the name are is found from
+            // what the button draws, not from fractions of its width: how much
+            // room the style puts round them, and how wide a name's letters
+            // are, differ between platforms (2026-10-11: on Windows "Note" left
+            // the icon reaching past half its button).
+            const auto icon = button->iconSize().width() * 2;
+            require(where.top() >= locked.height() / 2 - icon / 4, "The padlock sits on the lower part of the icon");
+            const bool named = button->toolButtonStyle() == Qt::ToolButtonTextBesideIcon;
+            QRect name_at;
+            if (named)
+            {
+                // The name is what drawing the button without it takes away.
+                auto *action = button->defaultAction();
+                action->setText(QString());
+                const auto nameless = drawn(button);
+                action->setText(QString::fromLatin1(name));
+                require(nameless.size() == locked.size(), "Drawn without its name at the same size");
+                name_at = changed(locked, nameless).second;
+                require(!name_at.isEmpty(), "Its name is drawn beside its icon");
+            }
+            // The icon is what the button draws, before its name, on its own
+            // background, away from its frame.
+            const auto ground = once.pixelColor(6, once.height() / 2);
+            QRect icon_at;
+            for (int y = 6; y < once.height() - 6; ++y)
+                for (int x = 6; x < (named ? name_at.left() : once.width() - 6); ++x)
+                {
+                    const auto a = once.pixelColor(x, y);
+                    if (std::max({std::abs(a.red() - ground.red()), std::abs(a.green() - ground.green()),
+                                  std::abs(a.blue() - ground.blue())}) > 48)
+                        icon_at |= QRect(x, y, 1, 1);
+                }
+            require(!icon_at.isEmpty(), "The tool's icon is drawn");
+            require(where.left() >= icon_at.left() && where.left() < icon_at.right() && where.intersects(icon_at),
+                    "The padlock is on the icon");
+            if (named)
+                require(where.right() < name_at.left(), "Beside the name, on the icon, not over the name");
+            press(select, 0);
+            require(window.canvas()->tool() == desktop::Tool::Select && !window.canvas()->tool_locked() && !marked(button),
+                    "Select pressed, the tool is put down and unlocked");
+            press(button, 0);
+            require(changed(drawn(button), once).first == 0, "Taken up once again, its button is drawn as before, padlock gone");
+            press(select, 0);
+        };
+        for (const auto theme : {desktop::ThemeId::Azure, desktop::ThemeId::Midnight, desktop::ThemeId::HighContrast,
+                                 desktop::ThemeId::Plain})
+        {
+            window.set_theme(theme);
+            settle();
+            for (const auto &[name, tool, button] : tools)
+            {
+                require(button && button->toolButtonStyle() == Qt::ToolButtonIconOnly,
+                        "At 1440 wide the diagram's tools show their icons alone");
+                lock_and_unlock(name, tool, button, theme == desktop::ThemeId::Plain);
+            }
+        }
+        // With room for names, the same padlock on the same icon.
+        window.resize(2400, 920);
+        settle_until([&]
+                     { return std::all_of(tools.begin(), tools.end(), [](const auto &tool)
+                                          { return std::get<2>(tool)->toolButtonStyle() == Qt::ToolButtonTextBesideIcon; }); },
+                     "Widened, the row makes room for the tools' names");
+        for (const auto theme : {desktop::ThemeId::Azure, desktop::ThemeId::Plain})
+        {
+            window.set_theme(theme);
+            settle();
+            for (const auto &[name, tool, button] : tools)
+            {
+                require(button->toolButtonStyle() == Qt::ToolButtonTextBesideIcon, "At 2400 wide the tools show their names");
+                lock_and_unlock(name, tool, button, theme == desktop::ThemeId::Plain);
+            }
+        }
+        window.set_theme(desktop::ThemeId::Azure);
+    }
 }
+
+void appearance_hover_tests()
+{
+    infrastructure::QtIdGenerator ids;
+    application::Editor editor(ids);
+    infrastructure::ErdxProjectStore store;
+    desktop::MainWindow window(editor, store, ids);
+    window.resize(1200, 800);
+    window.show(); window.load_example(); settle();
+    editor.mark_saved(editor.revision());
+    const auto revision = editor.revision();
+    const auto project = editor.project();
+    const auto undo_label = editor.undo_label();
+    const bool visual = QCoreApplication::arguments().contains("--appearance-preview");
+    const auto capture = [&](const char *name) {
+        if (visual) window.grab().save(QString("/tmp/erdflow-hover-%1.png").arg(name));
+    };
+    const auto before = window.canvas()->viewport()->grab().toImage();
+    auto *background = child<QMenu>(window, "backgroundMenu");
+    background->popup(window.mapToGlobal(QPoint(200, 100))); settle();
+    child<QAction>(window, "backgroundSquares")->activate(QAction::Hover); settle();
+    require(window.canvas()->viewport()->grab().toImage() != before, "Background hover visibly previews the paper");
+    require(editor.project() == project && editor.revision() == revision, "Background preview never edits or dirties the project");
+    require(!child<QAction>(window, "backgroundSquares")->isChecked(), "Hover does not select the paper choice");
+    const auto squares = window.canvas()->viewport()->grab().toImage();
+    capture("background-squares");
+    child<QAction>(window, "backgroundLines")->activate(QAction::Hover); settle();
+    const auto ruled = window.canvas()->viewport()->grab().toImage();
+    require(ruled != squares && ruled != before, "Moving to Lines immediately previews its different paper");
+    capture("background-lines");
+    child<QAction>(window, "backgroundDots")->activate(QAction::Hover); settle();
+    require(window.canvas()->viewport()->grab().toImage() != ruled, "Moving again to Dots replaces the previous preview");
+    capture("background-dots");
+    require(!editor.dirty() && editor.undo_label() == undo_label && editor.revision() == revision,
+            "Several paper previews leave dirty state and Undo history unchanged");
+    background->hide(); settle();
+    require(window.canvas()->viewport()->grab().toImage() == before, "Leaving Background restores the exact previous appearance");
+    capture("background-canceled");
+    background->popup(window.mapToGlobal(QPoint(200, 100))); settle();
+    child<QAction>(window, "backgroundSquares")->activate(QAction::Hover);
+    QTest::keyClick(background, Qt::Key_Escape); settle();
+    require(!background->isVisible() && window.canvas()->viewport()->grab().toImage() == before && !editor.dirty(),
+            "Escape dismisses paper preview and restores the committed background without edits");
+    background->popup(window.mapToGlobal(QPoint(200, 100))); settle();
+    child<QAction>(window, "backgroundSquares")->activate(QAction::Hover);
+    child<QAction>(window, "backgroundSquares")->trigger(); background->hide(); settle();
+    require(editor.project().background.style == domain::BackgroundStyle::Squares && editor.revision() == revision + 1,
+            "Clicking Background commits exactly one project edit");
+    const auto committed_paper = window.canvas()->viewport()->grab().toImage();
+    capture("background-committed");
+    editor.mark_saved(editor.revision());
+    background->popup(window.mapToGlobal(QPoint(200, 100))); settle();
+    child<QAction>(window, "backgroundDots")->activate(QAction::Hover); settle();
+    background->hide(); settle();
+    require(window.canvas()->viewport()->grab().toImage() == committed_paper && !editor.dirty() &&
+                editor.project().background.style == domain::BackgroundStyle::Squares && editor.revision() == revision + 1,
+            "Reopened paper preview cancels to the latest committed background without history");
+    auto *lines = child<QToolButton>(window, "connectButton")->menu();
+    const auto original = window.canvas()->line_style();
+    const auto line_revision = editor.revision();
+    lines->popup(window.mapToGlobal(QPoint(200, 100))); settle();
+    // Lines start straight (Zain, 2026-10-15), so it is right angles that are
+    // previewed and then chosen.
+    child<QAction>(window, "lineElbow")->activate(QAction::Hover);
+    require(window.canvas()->line_style() == desktop::LineStyle::Elbow && editor.revision() == line_revision,
+            "Line hover previews without project edits");
+    require(child<QAction>(window, "lineStraight")->isChecked(), "Hover preserves the committed line choice");
+    settle(); capture("lines-right-angle");
+    require(window.canvas()->viewport()->grab().toImage() != committed_paper, "Line hover visibly redraws existing connectors");
+    child<QAction>(window, "lineCurved")->activate(QAction::Hover); settle();
+    require(window.canvas()->line_style() == desktop::LineStyle::Curved, "Moving between Lines options updates the preview");
+    capture("lines-curved");
+    lines->hide();
+    require(window.canvas()->line_style() == original, "Leaving Lines restores the chosen connector style");
+    require(editor.project().background.style == domain::BackgroundStyle::Squares && !editor.dirty() && editor.revision() == line_revision,
+            "Canceling Lines keeps the independently committed Background and creates no project edit");
+    lines->popup(window.mapToGlobal(QPoint(200, 100))); settle();
+    child<QAction>(window, "lineElbow")->activate(QAction::Hover);
+    QTest::keyClick(lines, Qt::Key_Escape); settle();
+    require(!lines->isVisible() && window.canvas()->line_style() == original, "Escape restores committed Lines");
+    lines->popup(window.mapToGlobal(QPoint(200, 100))); settle();
+    child<QAction>(window, "lineElbow")->activate(QAction::Hover);
+    child<QAction>(window, "lineElbow")->trigger(); lines->hide();
+    require(window.canvas()->line_style() == desktop::LineStyle::Elbow && child<QAction>(window, "lineElbow")->isChecked(),
+            "Clicking Lines keeps the selected style after the menu closes");
+    settle(); capture("lines-committed");
+    lines->popup(window.mapToGlobal(QPoint(200, 100))); settle();
+    child<QAction>(window, "lineCurved")->activate(QAction::Hover); lines->hide();
+    require(window.canvas()->line_style() == desktop::LineStyle::Elbow, "A later canceled preview restores the newly committed style");
+    background->popup(window.mapToGlobal(QPoint(200, 100))); settle();
+    child<QAction>(window, "backgroundDots")->activate(QAction::Hover); background->hide(); settle();
+    require(window.canvas()->line_style() == desktop::LineStyle::Elbow && editor.project().background.style == domain::BackgroundStyle::Squares,
+            "Canceling Background keeps the independently committed Lines choice");
+    require(!editor.dirty() && editor.revision() == line_revision, "Line previews and selections preserve existing project history behavior");
+    require(editor.undo().ok, "The chosen paper has one Undo step"); window.canvas()->synchronize();
+    require(editor.project() == project && editor.undo_label() == undo_label, "One Undo restores the original stored paper and history");
+}
+
+void navigation_foldout_tests()
+{
+    infrastructure::QtIdGenerator ids;
+    application::Editor editor(ids);
+    infrastructure::ErdxProjectStore store;
+    desktop::MainWindow window(editor, store, ids);
+    window.resize(1440, 900);
+    window.show();
+    window.show_home(false);
+    window.activateWindow();
+    settle();
+    auto *tabs = child<QToolBar>(window, "ribbonTabs");
+    const auto top_names = [&] {
+        QStringList names;
+        for (auto *action : tabs->actions())
+            if (action->isVisible() && !action->isSeparator()) names << action->text();
+        return names;
+    };
+    require(top_names() == QStringList{"File", "Home", "Settings"}, "Permanent navigation is exactly File / Home / Settings");
+    for (const char *name : {"tabFile", "tabHome", "tabSettings"})
+        require(!child<QAction>(window, name)->icon().isNull(), "Each permanent navigation icon remains");
+    for (const char *name : {"tabDesign", "tabView", "tabHelp"})
+        require(!window.findChild<QAction*>(name), "Design, View and Help are no longer top-level tabs");
+    auto *settings = child<QMenu>(window, "navigationSettingsMenu");
+    auto *settings_button = qobject_cast<QToolButton*>(tabs->widgetForAction(child<QAction>(window, "tabSettings")));
+    require(settings_button && settings_button->menu() == settings &&
+                settings_button->popupMode() == QToolButton::InstantPopup && !settings_button->icon().isNull() &&
+                settings_button->toolButtonStyle() == Qt::ToolButtonTextBesideIcon,
+            "Settings keeps its visible icon and opens its menu directly");
+    const auto labels = [](QMenu *menu) {
+        QStringList names;
+        for (auto *action : menu->actions()) if (action->isVisible()) names << action->text();
+        return names;
+    };
+    require(labels(settings) == QStringList{"Design", "View", "Help"}, "Settings contains only Design, View, Help");
+    auto *design = settings->actions()[0]->menu();
+    auto *view = settings->actions()[1]->menu();
+    require(design && view && !settings->actions()[2]->menu(), "Design and View have real submenus; Help is direct");
+    require(labels(design) == QStringList{"Background", "Icons", "Lines"}, "Design contains exactly Background, Icons, Lines");
+    require(labels(view) == QStringList{"Grid", "Align Grid", "On-canvas Controls"}, "View contains exactly Grid, Align Grid, On-canvas Controls");
+    require(design->actions()[0] == child<QMenu>(window, "backgroundMenu")->menuAction() &&
+                design->actions()[1] == child<QMenu>(window, "iconMenu")->menuAction() &&
+                design->actions()[2]->menu() == child<QToolButton>(window, "connectButton")->menu(),
+            "Design reuses existing menus and line actions");
+    const auto before = editor.revision();
+    auto *home = child<QToolBar>(window, "modelTools");
+    child<QAction>(window, "tabSettings")->trigger();
+    settle();
+    require(settings->isVisible() && home->isVisible() && editor.revision() == before, "Settings unfolds without changing Home or the project");
+    if (QCoreApplication::arguments().contains("--navigation-preview")) {
+        window.grab().save("/tmp/erdflow-navigation-window.png");
+        settings->grab().save("/tmp/erdflow-navigation-settings.png");
+        design->popup(settings->mapToGlobal(QPoint(settings->width(), 0)));
+        settle(); design->grab().save("/tmp/erdflow-navigation-design.png"); design->hide();
+        view->popup(settings->mapToGlobal(QPoint(settings->width(), 0)));
+        settle(); view->grab().save("/tmp/erdflow-navigation-view.png"); view->hide();
+    }
+    settings->hide();
+    child<QAction>(window, "backgroundSquares")->trigger();
+    require(editor.project().background.style == domain::BackgroundStyle::Squares, "Background still changes the project paper");
+    child<QAction>(window, "iconsoutline")->trigger();
+    require(child<QAction>(window, "iconsoutline")->isChecked(), "Icons still updates its shared state");
+    child<QAction>(window, "lineStraight")->trigger();
+    require(window.canvas()->line_style() == desktop::LineStyle::Straight, "Lines still changes the canvas style");
+    for (const char *name : {"viewShowGrid", "viewAlignToGrid", "viewCanvasControls"}) {
+        auto *action = child<QAction>(window, name);
+        require(view->actions().contains(action), "View uses the existing toggle action");
+        const auto checked = action->isChecked(); action->trigger();
+        require(action->isChecked() != checked, "The shared View toggle still works"); action->trigger();
+    }
+    require(child<QWidget>(window, "canvasControls")->isVisible(), "On-canvas Controls can be restored");
+    for (const char *name : {"viewFullView", "viewFit", "viewActualSize", "viewZoomIn", "viewZoomOut"})
+        require(!view->actions().contains(child<QAction>(window, name)), "Duplicate framing actions remain outside Settings View");
+    require(!design->actions().contains(child<QMenu>(window, "themeMenu")->menuAction()) &&
+                !design->actions().contains(child<QMenu>(window, "notationMenu")->menuAction()), "Theme and Notation remain outside Settings Design");
+    for (const char *name : {"themeMenu", "notationMenu"})
+        require(child<QMenu>(window, "settingsMenu")->actions().contains(child<QMenu>(window, name)->menuAction()), "Home Settings keeps Theme and Notation access");
+    auto *actual_size = child<QAction>(window, "viewActualSize");
+    require(actual_size->shortcut() == QKeySequence("Ctrl+1"), "The removed Actual size exposure keeps Ctrl+1 registered");
+    require(actual_size->isEnabled() && actual_size->isVisible(), "The shared Actual size action remains available");
+    window.canvas()->zoom_in();
+    require(std::abs(window.canvas()->zoom_factor() - 1) > 0.001, "Actual size is tested from a different zoom");
+    actual_size->trigger();
+    settle();
+    require(std::abs(window.canvas()->zoom_factor() - 1) < 0.001, "The removed Actual size action still restores 100% zoom");
+    bool help_opened = false;
+    QTimer close_help;
+    close_help.setInterval(20);
+    QObject::connect(&close_help, &QTimer::timeout, [&] {
+        for (auto *widget : QApplication::topLevelWidgets())
+            if (auto *box = qobject_cast<QMessageBox*>(widget); box && box->isVisible()) {
+                help_opened = true; close_help.stop(); box->accept();
+            }
+    });
+    close_help.start();
+    require(settings->actions()[2] == child<QAction>(window, "quickGuide"), "Settings reuses the existing Help action");
+    settings->actions()[2]->trigger();
+    require(help_opened, "Help still opens the existing quick guide");
+    for (const char *name : {"tabFile", "tabImport", "tabExport", "tabHome"}) {
+        child<QAction>(window, name)->trigger(); settle();
+        require(top_names() == QStringList{"File", "Home", "Settings"}, "File and Home never add top-level items");
+    }
+    require(child<QToolButton>(window, "fileMenuButton")->menu() == child<QMenu>(window, "fileMenu"), "File retains the original Open and Save menu");
+    require(window.menuBar()->isNativeMenuBar() || !window.menuBar()->isVisible(), "The old non-native seven-item menu row stays hidden");
+}
+
+void minmax_display_menu_tests()
+{
+    using desktop::MinMaxDisplayMode;
+    infrastructure::QtIdGenerator ids;
+    application::Editor editor(ids);
+    infrastructure::ErdxProjectStore store;
+    desktop::MainWindow window(editor, store, ids);
+    window.resize(1440, 900);
+    window.show();
+    window.load_example();
+    settle();
+    auto *picker = child<QComboBox>(window, "notationPicker");
+    auto *notation = child<QMenu>(window, "notationMenu");
+    auto *menu = child<QMenu>(window, "minmaxDisplayMenu");
+    auto *only = child<QAction>(window, "minmaxCardinalityOnly");
+    auto *combined = child<QAction>(window, "minmaxCardinalityOrdinality");
+    auto *group = window.findChild<QActionGroup *>("minmaxDisplayGroup");
+    require(group && group->isExclusive() && only->actionGroup() == group && combined->actionGroup() == group,
+            "Min-max display uses one exclusive action group");
+    require(menu->actions() == QList<QAction *>{only, combined}
+            && only->text() == "Cardinality only" && combined->text() == "Cardinality + ordinality",
+            "Display submenu has exactly the two approved choices");
+    require(only->isCheckable() && combined->isCheckable() && !only->isChecked() && combined->isChecked(),
+            "Combined mode is the checked default");
+    require(picker->count() == 4 && notation->actions().size() == 5
+            && notation->actions().back() == menu->menuAction(), "Four notations remain, followed by one real submenu");
+    for (const char *name : {"notationChen", "notationMinmax", "notationCrowsfoot", "notationBachman"})
+        require(notation->actions().contains(child<QAction>(window, name)), "Existing notation actions stay intact");
+    require(!menu->menuAction()->isVisible() && !only->isEnabled() && !combined->isEnabled(),
+            "Display choices are hidden and disabled outside Min-max");
+    require(child<QMenu>(window, "settingsMenu")->actions().contains(notation->menuAction())
+            && window.findChildren<QMenu *>("minmaxDisplayMenu").size() == 1
+            && window.findChildren<QAction *>("minmaxCardinalityOnly").size() == 1,
+            "Home Settings reuses the one actual Notation submenu and its actions");
+    picker->setCurrentIndex(static_cast<int>(desktop::Notation::MinMax));
+    settle();
+    require(menu->menuAction()->isVisible() && only->isEnabled() && combined->isEnabled(), "Picker enables Min-max display choices");
+    const auto preview = picker->itemIcon(static_cast<int>(desktop::Notation::MinMax)).pixmap(58, 22).toImage();
+    const auto settings = QSettings().allKeys();
+    editor.mark_saved(editor.revision());
+    const auto project = editor.project();
+    const auto bytes = infrastructure::ErdxProjectStore::encode(project);
+    const auto revision = editor.revision();
+    const auto undo = editor.undo_label(), redo = editor.redo_label();
+    const auto history = editor.history_bytes();
+    only->trigger(); settle();
+    require(only->isChecked() && !combined->isChecked() && window.canvas()->minmax_display_mode() == MinMaxDisplayMode::CardinalityOnly,
+            "Only action updates the primary canvas and exclusive checks");
+    require(picker->itemIcon(static_cast<int>(desktop::Notation::MinMax)).pixmap(58, 22).toImage() != preview,
+            "Mode controller updates the picker Min-max icon");
+    auto *secondary = dynamic_cast<desktop::DiagramView *>(window.findChild<QWidget *>("conceptualPreview"));
+    require(secondary && secondary->minmax_display_mode() == MinMaxDisplayMode::CardinalityOnly,
+            "Secondary Conceptual view receives the primary canvas mode");
+    child<QAction>(window, "notationChen")->trigger(); settle();
+    require(!menu->menuAction()->isVisible() && !only->isEnabled() && only->isChecked(), "Leaving Min-max hides choices and retains mode");
+    child<QAction>(window, "notationMinmax")->trigger(); settle();
+    require(menu->menuAction()->isVisible() && only->isEnabled() && only->isChecked()
+            && window.canvas()->minmax_display_mode() == MinMaxDisplayMode::CardinalityOnly,
+            "Returning through notation action retains the session choice");
+    window.open_schema(true); settle();
+    const auto schema = window.schema()->grab().toImage();
+    combined->trigger(); settle();
+    require(combined->isChecked() && !only->isChecked()
+            && secondary->minmax_display_mode() == MinMaxDisplayMode::CardinalityAndOrdinality,
+            "Combined action synchronizes both Conceptual views");
+    require(window.schema()->grab().toImage() == schema, "Conceptual display choice leaves Schema rendering unchanged");
+    require(editor.project() == project && infrastructure::ErdxProjectStore::encode(editor.project()) == bytes
+            && editor.revision() == revision && !editor.dirty() && editor.history_bytes() == history
+            && editor.undo_label() == undo && editor.redo_label() == redo,
+            "Mode changes preserve domain, project bytes, revision, dirty and Undo/Redo history");
+    require(QSettings().allKeys() == settings, "No persistent preference is added for Min-max display");
+    only->trigger();
+    application::Editor fresh_editor(ids);
+    desktop::MainWindow fresh(fresh_editor, store, ids);
+    require(fresh.canvas()->minmax_display_mode() == MinMaxDisplayMode::CardinalityAndOrdinality
+            && child<QAction>(fresh, "minmaxCardinalityOrdinality")->isChecked(),
+            "A fresh independent window always defaults to combined mode");
+    const auto loaded = infrastructure::ErdxProjectStore::decode(bytes);
+    require(loaded && loaded.project, "Current format project still reopens without a display field");
+    require(fresh_editor.replace_project(*loaded.project).ok, "Open saved project in the fresh session");
+    fresh.canvas()->synchronize();
+    fresh.set_notation(desktop::Notation::MinMax);
+    require(fresh.canvas()->minmax_display_mode() == MinMaxDisplayMode::CardinalityAndOrdinality,
+            "Opening a project without display state preserves the existing combined default");
+}
+
+// The waits the window's checks are paced by (2026-10-12). A move is carried
+// to its end rather than waited out: each here is far longer than
+// settle_motion's own ten-second limit, so waiting one out would fail. Each
+// lands where it would have landed and finishes as it would have finished,
+// whichever way it runs, alone or in a group, and a move begun as another
+// finishes is carried to rest as well. What a timer brings about is waited
+// for until it has come about.
+void settling_tests()
+{
+    QWidget stage;
+    stage.resize(400, 300);
+    QWidget panel(&stage);
+    panel.setGeometry(0, 300, 400, 260);
+    const auto move = [&stage](int from, int to)
+    {
+        auto *animation = new QVariantAnimation(&stage);
+        animation->setDuration(30000);
+        animation->setStartValue(from);
+        animation->setEndValue(to);
+        return animation;
+    };
+    auto *rise = move(300, 40);
+    QObject::connect(rise, &QVariantAnimation::valueChanged, &panel, [&panel](const QVariant &at)
+                     { panel.move(0, at.toInt()); });
+    auto *after = move(0, 100);
+    bool landed = false;
+    QObject::connect(rise, &QVariantAnimation::finished, &stage, [&]
+                     { landed = true; after->start(); });
+    auto *back = move(0, 100);
+    back->setDirection(QAbstractAnimation::Backward);
+    auto *group = new QSequentialAnimationGroup(&stage);
+    auto *first = new QVariantAnimation(group);
+    first->setDuration(30000);
+    first->setStartValue(0);
+    first->setEndValue(10);
+    auto *second = new QVariantAnimation(group);
+    second->setDuration(30000);
+    second->setStartValue(0);
+    second->setEndValue(20);
+    group->addAnimation(first);
+    group->addAnimation(second);
+    rise->start();
+    back->start();
+    group->start();
+    settle_motion(stage);
+    require(panel.y() == 40 && landed && rise->state() == QAbstractAnimation::Stopped,
+            "A move is carried to where it lands, and finishes as it would have");
+    require(after->state() == QAbstractAnimation::Stopped && after->currentValue().toInt() == 100,
+            "A move begun as another finishes comes to rest as well");
+    require(back->state() == QAbstractAnimation::Stopped && back->currentValue().toInt() == 0,
+            "A move run backwards is carried back to its start");
+    require(group->state() == QAbstractAnimation::Stopped && first->currentValue().toInt() == 10 &&
+                second->currentValue().toInt() == 20,
+            "A group's moves are carried through to its last");
+
+    bool told = false;
+    QTimer::singleShot(50, &stage, [&told]
+                       { told = true; });
+    settle_until([&told] { return told; }, "What a timer brings about is waited for");
+}
+
+void toolbar_fitting_tests() {
+    infrastructure::QtIdGenerator ids;
+    application::Editor editor(ids);
+    infrastructure::ErdxProjectStore store;
+    desktop::MainWindow window(editor, store, ids);
+    window.resize(1920, 820); window.show(); window.show_home(false); settle();
+    auto* bar = child<QToolBar>(window, "modelTools");
+    auto* picker = child<QComboBox>(window, "notationPicker");
+    const auto actions = bar->actions();
+    const auto text = actions.indexOf(child<QAction>(window, "toolText"));
+    require(text > 0 && text + 1 < actions.size()
+            && bar->widgetForAction(actions[text - 1]) == child<QToolButton>(window, "connectButton")
+            && bar->widgetForAction(actions[text + 1]) == child<QToolButton>(window, "insertButton"),
+            "Toolbar fitting preserves Connect, Text, Insert order");
+    require(!window.findChild<QAction*>("toolNote"), "There is no Note tool (2026-10-15)");
+    require(bar->toolButtonStyle() == Qt::ToolButtonTextBesideIcon, "A wide window shows the names");
+    require(picker->isVisible(), "A wide window keeps Notation");
+    // Find the actual compact boundary rather than assume a platform's font
+    // metrics. The smallest labeled row must be tried before names are lost.
+    int last_labeled_icon = bar->iconSize().width();
+    bool icon_only = false;
+    for (int width = 1916; width >= 1280; width -= 4) {
+        window.resize(width, 820); settle();
+        require(bar->actions() == actions, "Compact fitting loses no toolbar actions");
+        if (bar->toolButtonStyle() == Qt::ToolButtonIconOnly) { icon_only = true; break; }
+        last_labeled_icon = bar->iconSize().width();
+        require(picker->isVisible(), "Labeled tools keep Notation");
+    }
+    require(icon_only && last_labeled_icon == 20, "Compact labeled tools fit before falling back to icon-only");
+    window.resize(1280, 820); settle();
+    require(picker->isVisible(), "A tighter one keeps Notation beside the corner controls");
+    require(bar->actions() == actions, "1280 fitting loses no toolbar actions");
+    window.resize(700, 620); settle();
+    require(bar->toolButtonStyle() == Qt::ToolButtonIconOnly && !picker->isVisible(),
+            "Small windows use icon-only tools and put Notation away");
+    require(bar->actions() == actions, "Small fitting loses no toolbar actions");
+    window.resize(1920, 820); settle();
+    require(bar->toolButtonStyle() == Qt::ToolButtonTextBesideIcon && picker->isVisible(),
+            "Widening restores the names and Notation");
+}
+
+void free_text_desktop_tests() {
+    infrastructure::QtIdGenerator ids;
+    application::Editor editor(ids);
+    infrastructure::ErdxProjectStore store;
+    desktop::MainWindow window(editor, store, ids);
+    window.resize(1600, 900); window.show(); window.show_home(false); settle();
+    auto* tool = child<QAction>(window, "toolText");
+    auto* toolbar = child<QToolBar>(window, "modelTools");
+    const auto actions = toolbar->actions();
+    const auto index = actions.indexOf(tool);
+    require(index > 0 && toolbar->widgetForAction(actions[index - 1]) == child<QToolButton>(window, "connectButton")
+            && !window.findChild<QAction*>("toolNote"),
+            "Text follows Connect: the Note tool is gone (2026-10-15)");
+    require(index + 1 < actions.size() && toolbar->widgetForAction(actions[index + 1]) == child<QToolButton>(window, "insertButton"),
+            "Text immediately precedes the existing Picture/Insert control");
+    require(child<QToolButton>(window, "insertButton")->menu()->actions().contains(child<QAction>(window, "insertPicture")), "Picture remains in Insert");
+    require(toolbar->widgetForAction(tool)->isVisible() && tool->text() == "Text" && !tool->icon().isNull(), "Text is a visible toolbar tool");
+    QMouseEvent lock(QEvent::MouseButtonDblClick, QPointF(10, 10), QPointF(10, 10), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(toolbar->widgetForAction(tool), &lock);
+    require(window.canvas()->tool() == desktop::Tool::Text && window.canvas()->tool_locked(), "Text inherits double-click placement locking");
+    window.canvas()->set_tool(desktop::Tool::Select);
+    const auto height = toolbar->height();
+    tool->trigger();
+    QTest::mouseClick(window.canvas()->viewport(), Qt::LeftButton, Qt::NoModifier, window.canvas()->mapFromScene(QPointF(0, 0)));
+    settle();
+    auto* inline_text = child<QPlainTextEdit>(window, "inlineText");
+    require(inline_text->isVisible(), "Toolbar placement opens multiline editing");
+    inline_text->setPlainText("Customer data imported from CRM\nReviewed"); window.canvas()->commit_rename(); settle();
+    const auto id = editor.project().notes.begin()->first;
+    require(child<QLabel>(window, "propertyHeading")->text() == "Text", "Properties identifies Text");
+    require(!window.findChild<QLineEdit*>("elementName") && !window.findChild<QSpinBox*>("symbolSize"), "Text has no title or symbol size fields");
+    auto* properties = child<QPlainTextEdit>(window, "elementText");
+    properties->setPlainText("Properties edit\nStill plain");
+    QFocusEvent leave(QEvent::FocusOut); QApplication::sendEvent(properties, &leave); settle();
+    require(editor.project().notes.at(id).description == "Properties edit\nStill plain", "Properties uses text editing history");
+    auto* explorer = child<QTreeView>(window, "explorer");
+    require(!explorer->model()->match(explorer->model()->index(0, 0), Qt::DisplayRole, "Notes", 1, Qt::MatchExactly | Qt::MatchRecursive).isEmpty(), "Text reuses Notes group");
+    require(!explorer->model()->match(explorer->model()->index(0, 0), Qt::DisplayRole, "Text · Properties edit", 1, Qt::MatchExactly | Qt::MatchRecursive).isEmpty(), "Explorer shows useful Text preview");
+    require(toolbar->height() == height, "Text placement does not change toolbar row height");
+    const auto symbol = editor.create_symbol("⋈", {400, 100, 56, 56});
+    window.canvas()->synchronize(); window.canvas()->select_elements({*symbol.created}); settle();
+    require(child<QLabel>(window, "propertyHeading")->text() == "Symbol" && window.findChild<QSpinBox*>("symbolSize"),
+            "Existing Symbol retains its size Properties");
+    window.open_schema(true);
+    settle_until([&] { return child<QPushButton>(window, "schemaFull")->isChecked(); },
+                 "The schema opens full once its panel has risen");
+    require(!toolbar->widgetForAction(tool)->isVisible(), "Schema workspace does not show Conceptual Text tool");
+}
+
+void entity_kind_terminology_tests()
+{
+    infrastructure::QtIdGenerator ids;
+    application::Editor editor(ids);
+    infrastructure::ErdxProjectStore store;
+    desktop::MainWindow window(editor, store, ids);
+    window.resize(1440, 900);
+    window.show_home(false);
+    window.show();
+    require(child<QAction>(window, "toolEntity")->text() == "Entity", "Creation tool stays Entity");
+    const auto made = editor.create_entity("Owner", {0, 0, 133, 77});
+    require(made.ok && made.created, "Create an ordinary entity");
+    const auto id = std::get<domain::EntityId>(*made.created);
+    window.canvas()->synchronize();
+    window.canvas()->select_elements({id});
+    settle();
+    const auto expect_kind = [&](int index) {
+        auto *kind = child<QComboBox>(window, "entityKind");
+        require(kind->count() == 2 && kind->itemText(0) == "Strong — identified by its own key"
+                && kind->itemText(1) == "Weak — identified through a relationship",
+                "Entity Kind uses exactly the approved Strong and Weak wording");
+        require(kind->currentIndex() == index && editor.project().entities.at(id).weak == (index == 1),
+                "Displayed kind follows the existing weak boolean");
+        return kind;
+    };
+    expect_kind(0);
+    auto *kind = expect_kind(0);
+    kind->setCurrentIndex(1);
+    QMetaObject::invokeMethod(kind, "activated", Q_ARG(int, 1));
+    settle();
+    expect_kind(1);
+    child<QAction>(window, "undoCommand")->trigger();
+    settle();
+    expect_kind(0);
+    kind = expect_kind(0);
+    kind->setCurrentIndex(1);
+    QMetaObject::invokeMethod(kind, "activated", Q_ARG(int, 1));
+    settle();
+    kind = expect_kind(1);
+    kind->setCurrentIndex(0);
+    QMetaObject::invokeMethod(kind, "activated", Q_ARG(int, 0));
+    settle();
+    expect_kind(0);
+    const auto relationship = editor.create_relationship("Link", {220, 0, 171, 99});
+    require(relationship.ok && relationship.created, "Create a regular relationship");
+    window.canvas()->synchronize();
+    window.canvas()->select_elements({*relationship.created});
+    settle();
+    auto *relationship_kind = child<QComboBox>(window, "relationshipKind");
+    require(relationship_kind->currentIndex() == 0 && relationship_kind->itemText(0) == "Regular",
+            "Relationship Kind retains Regular terminology");
+}
+
+
+// A schema converted to its diagram makes each element for its name, as one
+// drawn on the diagram is (Zain, 2026-10-12): short names smaller, long ones
+// taller in lines. The diagram stays laid out as it was -- nothing overlaps,
+// every table still one entity -- and Undo, Redo and a file keep it exactly.
+void converted_shapes_fit_their_names_tests(infrastructure::QtIdGenerator &ids)
+{
+    for (const bool lengthen : {false, true})
+    {
+        application::Editor editor(ids);
+        infrastructure::ErdxProjectStore store;
+        desktop::MainWindow window(editor, store, ids);
+        window.resize(1440, 920);
+        window.show();
+        settle();
+        window.show_home(false);
+        window.load_company_database_relational();
+        settle_motion(window);
+        require(editor.project().schema.standalone, "A schema drawn by hand, to convert");
+        if (lengthen)
+        {
+            std::vector<std::pair<domain::RelationId, std::string>> tables;
+            std::vector<std::pair<domain::SchemaColumnId, std::string>> columns;
+            for (const auto &[id, relation] : editor.project().schema.relations)
+                tables.emplace_back(id, "Department Of International " + relation.name);
+            for (const auto &[table, added] : editor.project().schema.added)
+            {
+                (void)table;
+                for (const auto &column : added)
+                    columns.emplace_back(column.id, column.name + " Of The Whole University");
+            }
+            for (const auto &[id, renamed] : tables)
+                require(bool(editor.rename(domain::ElementRef{id}, renamed)), "A table given a long name");
+            for (const auto &[id, renamed] : columns)
+                require(bool(editor.rename_schema_column(id, renamed)), "A column given a long name");
+            settle();
+        }
+        const auto tables = editor.project().schema.relations.size();
+        const auto before = editor.project();
+        child<QAction>(window, "designConvert")->trigger();
+        settle_motion(window);
+        const auto &project = editor.project();
+        // A bridge table becomes a relationship rather than an entity, as it
+        // always has; which is which is the conversion's own business.
+        require(!project.schema.standalone && !project.entities.empty() && project.entities.size() <= tables,
+                "Converted to the diagram of its tables");
+        const auto font = window.canvas()->font();
+        struct Placed
+        {
+            QRectF box;
+            desktop::NamedShape shape;
+            QString name;
+        };
+        std::vector<Placed> placed;
+        const auto add = [&](const domain::ElementRef &ref, desktop::NamedShape shape)
+        {
+            const auto &rect = project.layout.at(ref);
+            const auto name = QString::fromStdString(domain::name(project, ref));
+            const auto fitted = desktop::fitted_body(shape, name, font);
+            require(rect.width == fitted.width && rect.height == fitted.height,
+                    "Each element is made the size its name is fitted to");
+            placed.push_back({QRectF(rect.x, rect.y, rect.width, rect.height), shape, name});
+        };
+        for (const auto &[id, entity] : project.entities) { (void)entity; add(id, desktop::NamedShape::Entity); }
+        for (const auto &[id, attribute] : project.attributes) { (void)attribute; add(id, desktop::NamedShape::Attribute); }
+        for (const auto &[id, relationship] : project.relationships) { (void)relationship; add(id, desktop::NamedShape::Relationship); }
+        for (std::size_t i = 0; i < placed.size(); ++i)
+            for (std::size_t j = i + 1; j < placed.size(); ++j)
+                require(!placed[i].box.adjusted(0.5, 0.5, -0.5, -0.5).intersects(placed[j].box.adjusted(0.5, 0.5, -0.5, -0.5)),
+                        "Nothing in the converted diagram overlaps anything else");
+        for (const auto &one : placed)
+        {
+            const auto laid = desktop::name_layout(one.shape, one.name, font, 1.0, QRectF(QPointF(0, 0), one.box.size()));
+            if (!lengthen)
+                require(!laid.elided, "Every name of the example is written whole");
+            else if (laid.elided)
+                require(laid.lines.size() == 3, "A name is cut short only after three lines");
+        }
+        const auto converted = editor.project();
+        require(editor.undo() && editor.project() == before, "Undo puts the schema drawn by hand back exactly");
+        require(editor.redo() && editor.project() == converted, "Redo makes the same diagram again");
+        const auto bytes = infrastructure::ErdxProjectStore::encode(editor.project());
+        const auto reopened = infrastructure::ErdxProjectStore::decode(bytes);
+        require(reopened && reopened.project->layout == editor.project().layout,
+                "A file keeps every converted element at its size");
+        editor.mark_saved(editor.revision());
+        window.close();
+        settle();
+    }
+}
+
+    // Help -> Licences (2026-10-15): beside About, it names ERDFlow's licence
+    // and the Qt it uses, and finds the licence files wherever a package put
+    // them (docs/QT_LGPL_COMPLIANCE.md, section 3).
+    // Practice Data (Zain, 2026-10-23): the schema's tables as cards of rows in
+    // place of the schema, held to its keys and rules, and the way back to the
+    // schema exactly as it was.
+    void practice_data_tests(infrastructure::QtIdGenerator &ids)
+    {
+        application::Editor model(ids);
+        infrastructure::ErdxProjectStore store;
+        desktop::MainWindow window(model, store, ids);
+        window.resize(1440, 1000);
+        window.show();
+        // A schema drawn by hand: Department, and Professor pointing at it.
+        model.new_schema_project();
+        const auto department = std::get<domain::RelationId>(*model.create_relation("Department").created);
+        const auto professor = std::get<domain::RelationId>(*model.create_relation("Professor").created);
+        const auto column = [&](domain::RelationId in, const std::string &name)
+        {
+            for (const auto &one : model.project().schema.added.at(in))
+                if (one.name == name)
+                    return one.id;
+            throw std::runtime_error("no column " + name);
+        };
+        require(bool(model.add_schema_column(domain::ElementRef{department}, "DepartmentName")) &&
+                    bool(model.set_schema_column_type(column(department, "DepartmentName"), domain::LogicalType::Varchar)) &&
+                    bool(model.set_schema_column_size(column(department, "DepartmentName"), 30, 0)) &&
+                    bool(model.set_schema_column_rules(column(department, "DepartmentName"), false, true, false)) &&
+                    bool(model.add_schema_column(domain::ElementRef{professor}, "DepartmentID")) &&
+                    bool(model.add_foreign_key(professor, column(professor, "DepartmentID"), department,
+                                               column(department, "DepartmentID"))),
+                "A small schema is drawn");
+        window.show_home(false);
+        settle();
+        const auto schema = model.project().schema;
+        const auto layout = model.project().schema_layout;
+        const auto value = [&](domain::RelationId in, std::size_t row, domain::SchemaColumnId of) -> domain::PracticeValue
+        {
+            const auto &values = model.project().practice.tables.at(in).rows.at(row).values;
+            const auto found = values.find(domain::ColumnIdentity{of});
+            return found == values.end() ? std::nullopt : found->second;
+        };
+
+        require(!window.findChild<QPushButton *>("practiceDataMode"),
+                "The workspace switch is left as it was: Practice Data is reached by converting");
+        auto *menu = child<QToolButton>(window, "headerModel")->menu();
+        emit menu->aboutToShow();
+        require(menu->actions().contains(child<QAction>(window, "convertToTables")),
+                "The Model menu offers Convert All to Tables");
+        child<QAction>(window, "convertToTables")->trigger();
+        settle();
+        auto *page = static_cast<desktop::PracticeDataView *>(child<QWidget>(window, "practiceData"));
+        // It rises over the stage as the schema rises over the diagram.
+        settle_until([&] { return page->isVisible() && page->geometry() == page->parentWidget()->rect(); },
+                     "Converting raises Practice Data over the whole stage");
+        require(page->findChildren<QWidget *>("practiceCategory").isEmpty() &&
+                    !page->findChild<QWidget *>("practiceSchemaHidden"),
+                "No kinds of table to choose between, and no Schema hidden: the grid follows the controls");
+        require(!child<QDockWidget>(window, "explorerDock")->isVisible() &&
+                    !child<QDockWidget>(window, "propertiesDock")->isVisible(),
+                "The side panels are put away with the schema they describe");
+        require(model.project().schema == schema && model.project().schema_layout == layout,
+                "Converting changes nothing in the schema");
+        const auto card_of = [&](const QString &name) -> QFrame *
+        {
+            for (auto *card : page->findChildren<QFrame *>("practiceCard"))
+                if (card->findChild<QLabel *>("practiceCardName")->text() == name)
+                    return card;
+            throw std::runtime_error("no card for " + name.toStdString());
+        };
+        require(page->findChildren<QFrame *>("practiceCard").size() == 2, "A card for every table");
+        require(child<QLabel>(window, "practiceStatusCount")->text() == "2 tables converted",
+                "The page counts the tables it converted");
+        auto *departments = card_of("Department")->findChild<QTableView *>("practiceTable")->model();
+        require(departments->rowCount() == 3 && departments->columnCount() == 2 &&
+                    departments->headerData(0, Qt::Horizontal).toString() == "DepartmentID" &&
+                    departments->headerData(1, Qt::Horizontal).toString() == "DepartmentName",
+                "Each card holds its table's own columns, and the rows it starts with");
+        require(card_of("Department")->findChild<QLabel *>("practiceTrouble")->isHidden() &&
+                    !card_of("Department")->findChild<QLabel *>("practiceReady"),
+                "Rows that keep every rule leave the name alone on its line");
+
+        // A key that is already there is refused, and the card says why.
+        departments->setData(departments->index(1, 0), "1", Qt::EditRole);
+        settle();
+        settle();
+        auto *said = card_of("Department")->findChild<QLabel *>("practiceMessage");
+        require(said->isVisible() && said->text().contains("Primary Key violation") &&
+                    said->text().contains("already exists"),
+                "A duplicate primary key is refused, and the card says which rule and why");
+        require(value(department, 1, column(department, "DepartmentID")) == domain::PracticeValue("2"),
+                "And nothing is changed");
+        // A good value is kept, and undoes like any other change.
+        departments->setData(departments->index(0, 1), "Mathematics", Qt::EditRole);
+        settle();
+        settle();
+        require(value(department, 0, column(department, "DepartmentName")) == domain::PracticeValue("Mathematics") &&
+                    !said->isVisible(),
+                "A value that keeps the rules is kept, and what was said before goes");
+        child<QAction>(window, "undoCommand")->trigger();
+        settle();
+        require(value(department, 0, column(department, "DepartmentName")) == domain::PracticeValue("Department 1") &&
+                    departments->data(departments->index(0, 1)).toString() == "Department 1",
+                "Undo takes it back, on the card too");
+
+        // A foreign key is chosen from the rows it can point at, by what they hold.
+        auto *professors_view = card_of("Professor")->findChild<QTableView *>("practiceTable");
+        auto *professors = professors_view->model();
+        // A view declines to open an editor until it is ready to, so it is
+        // asked until it does.
+        settle_until([&]
+                     {
+            if (!professors_view->findChild<QComboBox *>("practiceChoice"))
+                professors_view->edit(professors->index(0, 1));
+            return professors_view->findChild<QComboBox *>("practiceChoice") != nullptr; },
+                     "A foreign key's cell opens to a choice");
+        auto *choice = professors_view->findChild<QComboBox *>("practiceChoice");
+        require(choice && choice->count() == 3 && choice->itemText(0) == "1 — Department 1" &&
+                    choice->itemData(0).toString() == "1",
+                "A foreign key offers the rows it can point at, each named by what it holds");
+        professors_view->setFocus();
+        settle();
+        settle();
+        // Add Row opens a row to type into, saved only if it keeps every rule.
+        card_of("Professor")->findChild<QPushButton *>("practiceAddRow")->click();
+        settle();
+        require(professors->rowCount() == 4, "Add Row opens a row to type into");
+        professors->setData(professors->index(3, 0), "4", Qt::EditRole);
+        professors->setData(professors->index(3, 1), "99", Qt::EditRole);
+        card_of("Professor")->findChild<QPushButton *>("practiceSaveRow")->click();
+        settle();
+        require(model.project().practice.tables.at(professor).rows.size() == 3 &&
+                    card_of("Professor")->findChild<QLabel *>("practiceMessage")->text().contains(
+                        "DepartmentID 99 does not exist in Department"),
+                "A row pointing at nothing is refused, and the card says what it points at");
+        professors->setData(professors->index(3, 1), "2", Qt::EditRole);
+        card_of("Professor")->findChild<QPushButton *>("practiceSaveRow")->click();
+        settle();
+        require(model.project().practice.tables.at(professor).rows.size() == 4 && professors->rowCount() == 4,
+                "Put right, it is added");
+
+        // With constraints off, what breaks a rule is kept and shown.
+        child<QCheckBox>(window, "practiceConstraints")->click();
+        settle();
+        require(!model.project().practice.enforced &&
+                    child<QLabel>(window, "practiceConstraintsWords")->text() == "Constraints off",
+                "Constraints can be turned off");
+        departments->setData(departments->index(1, 0), "1", Qt::EditRole);
+        settle();
+        settle();
+        require(value(department, 1, column(department, "DepartmentID")) == domain::PracticeValue("1") &&
+                    card_of("Department")->findChild<QLabel *>("practiceTrouble")->isVisible() &&
+                    card_of("Department")->findChild<QLabel *>("practiceTrouble")->text().contains("break"),
+                "And a duplicate key is kept, the card marked as breaking a rule");
+        child<QAction>(window, "undoCommand")->trigger();
+        child<QAction>(window, "undoCommand")->trigger();
+        settle();
+        require(model.project().practice.enforced, "Undo turns them back on");
+
+        // Finding a table among many.
+        auto *search = child<QLineEdit>(window, "practiceSearch");
+        search->setText("prof");
+        settle();
+        require(card_of("Department")->isHidden() && card_of("Professor")->isVisible(),
+                "Search narrows the cards to the tables it names");
+        search->clear();
+        settle();
+        settle();
+        // Each card shows its whole table, every column and every row, and the
+        // cards stand side by side while they fit, the next below where not.
+        for (const auto *name : {"Department", "Professor"})
+        {
+            auto *rows = card_of(name)->findChild<QTableView *>("practiceTable");
+            require(!rows->horizontalScrollBar()->isVisible() && !rows->verticalScrollBar()->isVisible(),
+                    "A card shows its whole table, with nothing to scroll");
+        }
+        require(card_of("Department")->geometry().top() == card_of("Professor")->geometry().top() &&
+                    page->columns_across() == 2,
+                "Two small tables stand side by side");
+        // The page narrowed until the two no longer fit side by side, measured
+        // from the cards themselves: how wide they are depends on the
+        // platform's font, and the window may not be let narrower than both.
+        {
+            const int both = card_of("Department")->width() + 16 + card_of("Professor")->width();
+            const int room = child<QScrollArea>(window, "practiceScroll")->viewport()->width() - 4;
+            page->resize(page->width() - (room - both) - 40, page->height());
+        }
+        settle();
+        settle();
+        require(child<QScrollArea>(window, "practiceScroll")->viewport()->width() - 4 <
+                    card_of("Department")->width() + 16 + card_of("Professor")->width(),
+                "The page narrows below the two cards side by side");
+        require(card_of("Professor")->geometry().top() > card_of("Department")->geometry().bottom(),
+                "Where the second does not fit beside the first, it goes below");
+        page->setGeometry(page->parentWidget()->rect());
+        window.resize(1440, 1000);
+        settle();
+        settle();
+        child<QToolButton>(window, "practiceList")->click();
+        settle();
+        require(page->columns_across() == 1, "And one to a line in the list");
+        child<QToolButton>(window, "practiceGrid")->click();
+        settle();
+
+        // A card is put exactly where it is let go, held where it was taken;
+        // the place it left stays empty and the other card does not move.
+        {
+            auto *host = child<QWidget>(window, "practiceCards");
+            auto *moved = card_of("Professor");
+            const auto left_behind = moved->geometry();
+            const auto department_was = card_of("Department")->geometry();
+            const auto &bytes = professor.value.bytes;
+            QMimeData carried;
+            carried.setData("application/x-erdflow-practice-table",
+                            QByteArray(reinterpret_cast<const char *>(bytes.data()), static_cast<qsizetype>(bytes.size())));
+            carried.setData("application/x-erdflow-practice-hold", "30,12");
+            const QPoint at(department_was.left() + 60, department_was.bottom() + 300);
+            QDragEnterEvent enter(at, Qt::MoveAction, &carried, Qt::LeftButton, Qt::NoModifier);
+            QApplication::sendEvent(host, &enter);
+            QDragMoveEvent over(at, Qt::MoveAction, &carried, Qt::LeftButton, Qt::NoModifier);
+            QApplication::sendEvent(host, &over);
+            auto *mark = child<QFrame>(window, "practiceDropMark");
+            require(mark->isVisible() && mark->geometry().topLeft() == at - QPoint(30, 12),
+                    "An outline shows where the card will land");
+            QDropEvent drop(QPointF(at), Qt::MoveAction, &carried, Qt::LeftButton, Qt::NoModifier);
+            QApplication::sendEvent(host, &drop);
+            settle();
+            settle();
+            require(card_of("Professor")->geometry().topLeft() == at - QPoint(30, 12),
+                    "The card stands exactly where it was let go");
+            require(card_of("Department")->geometry() == department_was,
+                    "The other card stays where it stood");
+            for (auto *card : page->findChildren<QFrame *>("practiceCard"))
+                require(!card->isVisible() || !card->geometry().intersects(left_behind),
+                        "And the place the card left stays empty");
+            require(model.project().practice.places.size() == 2 && model.project().schema == schema,
+                    "Both places are kept; the schema is untouched");
+            window.resize(1920, 1000);
+            settle();
+            settle();
+            require(card_of("Professor")->geometry().topLeft() == at - QPoint(30, 12) &&
+                        card_of("Department")->geometry().topLeft() == department_was.topLeft(),
+                    "A wider window rearranges nothing");
+            window.resize(1440, 1000);
+            settle();
+            child<QAction>(window, "undoCommand")->trigger();
+            settle();
+            settle();
+            require(model.project().practice.places.empty() &&
+                        card_of("Department")->geometry().top() == card_of("Professor")->geometry().top(),
+                    "Undo puts the cards back in the grid");
+        }
+
+        // A card is pulled to another size by its corner; the size is kept,
+        // the card's table scrolls inside it, and Undo gives the size back.
+        {
+            auto *card = card_of("Department");
+            const auto was = card->geometry();
+            const QPoint corner(card->width() - 2, card->height() - 2);
+            const auto pointer = [&](QEvent::Type type, QPoint at, Qt::MouseButton button, Qt::MouseButtons buttons)
+            {
+                QMouseEvent event(type, QPointF(at), QPointF(card->mapToGlobal(at)), button, buttons, Qt::NoModifier);
+                QApplication::sendEvent(card, &event);
+            };
+            pointer(QEvent::MouseMove, corner, Qt::NoButton, Qt::NoButton);
+            require(card->cursor().shape() == Qt::SizeFDiagCursor, "The corner offers to pull the card");
+            pointer(QEvent::MouseButtonPress, corner, Qt::LeftButton, Qt::LeftButton);
+            pointer(QEvent::MouseMove, corner + QPoint(120, -40), Qt::NoButton, Qt::LeftButton);
+            pointer(QEvent::MouseButtonRelease, corner + QPoint(120, -40), Qt::LeftButton, Qt::NoButton);
+            settle();
+            settle();
+            const auto &place = model.project().practice.places.at(department);
+            require(place.width == was.width() + 120 && place.height == was.height() - 40 &&
+                        card_of("Department")->geometry() == QRect(was.topLeft(), QSize(was.width() + 120, was.height() - 40)),
+                    "The card is the size it was pulled to, and keeps it");
+            require(model.history().back().description == "Resized Department", "A pull is one step of history");
+            require(card_of("Department")->findChild<QTableView *>("practiceTable")->verticalScrollBar()->isVisible(),
+                    "Pulled shorter than its rows, its table scrolls");
+            child<QAction>(window, "undoCommand")->trigger();
+            settle();
+            settle();
+            require(model.project().practice.places.empty() && card_of("Department")->geometry() == was,
+                    "Undo gives the card its whole size back");
+        }
+
+        // Every theme, Plain's greys included.
+        for (const auto theme : {desktop::ThemeId::Plain, desktop::ThemeId::Midnight, desktop::ThemeId::Azure})
+        {
+            window.set_theme(theme);
+            settle();
+        }
+
+        // Show Schema goes back to the schema exactly as it was.
+        child<QPushButton>(window, "practiceShowSchema")->click();
+        settle_until([&] { return !page->isVisible(); }, "Show Schema lowers the page away");
+        require(window.schema()->isVisible() && child<QPushButton>(window, "schemaModeSchema")->isChecked(),
+                "Back to the schema, the switch as it was");
+        require(child<QDockWidget>(window, "explorerDock")->isVisible() &&
+                    child<QDockWidget>(window, "propertiesDock")->isVisible(),
+                "The side panels come back");
+        require(model.project().schema == schema && model.project().schema_layout == layout,
+                "And the schema is exactly as it was");
+        child<QAction>(window, "convertToTables")->trigger();
+        settle_until([&] { return page->isVisible() && page->geometry() == page->parentWidget()->rect(); },
+                     "Convert All to Tables shows the page again");
+        require(professors->rowCount() == 4 && model.project().practice.tables.at(professor).rows.size() == 4,
+                "With the rows it had: converting again gives rows only to a table that has none");
+
+        // From a diagram, the schema it converts to is raised to the whole
+        // window underneath, so Show Schema comes back to the schema.
+        {
+            application::Editor drawn(ids);
+            desktop::MainWindow diagram(drawn, store, ids);
+            diagram.resize(1440, 1000);
+            diagram.show();
+            require(bool(drawn.create_entity("Student", {0, 0, 133, 77})), "A diagram of one entity");
+            diagram.show_home(false);
+            settle();
+            child<QAction>(diagram, "convertToTables")->trigger();
+            settle_schema_full(diagram);
+            auto *practice = child<QWidget>(diagram, "practiceData");
+            settle_until([&] { return practice->geometry() == practice->parentWidget()->rect(); },
+                         "From the diagram, the page lands over the whole stage");
+            require(practice->isVisible() && child<QLabel>(diagram, "workspaceBadge")->text() == "PRACTICE DATA",
+                    "Converting from the diagram shows Practice Data, and the header says so");
+            require(drawn.project().practice.tables.size() == 1, "Its one table is converted");
+            child<QPushButton>(diagram, "practiceShowSchema")->click();
+            settle_until([&] { return !practice->isVisible(); }, "Show Schema lowers the page away");
+            require(child<QPushButton>(diagram, "schemaFull")->isChecked() &&
+                        child<QLabel>(diagram, "workspaceBadge")->text() == "RELATIONAL DESIGN",
+                    "Show Schema comes back to the schema, with the whole window");
+            diagram.open_practice_data();
+            settle();
+            require(practice->isVisible(), "Practice Data is there again");
+            child<QAction>(diagram, "undoCommand")->trigger();
+            settle_until([&] { return !practice->isVisible(); }, "Undoing the conversion lowers the page");
+            require(!drawn.project().practice.converted,
+                    "Undoing the conversion takes the page away with it");
+            drawn.mark_saved(drawn.revision());
+        }
+        model.mark_saved(model.revision());
+        std::cout << "PASS Practice Data converts the schema into tables of rows held to its rules, and goes back\n";
+    }
+
+    void licences_tests(infrastructure::QtIdGenerator &ids)
+    {
+        application::Editor editor(ids);
+        infrastructure::ErdxProjectStore store;
+        desktop::MainWindow window(editor, store, ids);
+        QStringList help;
+        for (auto *action : child<QMenu>(window, "helpMenu")->actions())
+            help << action->objectName();
+        require(help == QStringList({"quickGuide", "aboutErdflow", "licencesErdflow"}),
+                "Help offers the quick guide, About ERDFlow and then Licences");
+        require(child<QAction>(window, "licencesErdflow")->text() == "Licences", "Named Licences");
+
+        // Each package's own layout, as packaging/packaging.cmake installs it.
+        QTemporaryDir root;
+        require(root.isValid(), "A folder to lay packages out in");
+        const auto lay = [&](const QString &program, const QString &licences)
+        {
+            QDir().mkpath(root.filePath(program));
+            if (!licences.isEmpty())
+            {
+                QDir().mkpath(root.filePath(licences));
+                QFile licence(root.filePath(licences + "/LICENSE"));
+                require(licence.open(QIODevice::WriteOnly), "The package's LICENSE is written");
+            }
+            return desktop::installed_licences_folder(root.filePath(program));
+        };
+        const auto same = [&](const QString &found, const QString &licences)
+        { return QFileInfo(found).canonicalFilePath() == QFileInfo(root.filePath(licences)).canonicalFilePath(); };
+        require(same(lay("mac/ERDFlow.app/Contents/MacOS", "mac/ERDFlow.app/Contents/Resources/Licenses"),
+                     "mac/ERDFlow.app/Contents/Resources/Licenses"),
+                "In ERDFlow.app, the licences are in its Resources");
+        require(same(lay("windows/bin", "windows/licenses"), "windows/licenses"),
+                "On Windows, beside the program's bin folder");
+        require(same(lay("linux/usr/bin", "linux/usr/share/doc/erdflow"), "linux/usr/share/doc/erdflow"),
+                "In the AppImage, in its share/doc/erdflow");
+        require(lay("built/bin", {}).isEmpty(), "A build that was not installed has none");
+
+        const auto installed = desktop::licences_text("0.1.0", "6.11.2", root.filePath("windows/licenses"));
+        require(installed.contains("ERDFlow 0.1.0") && installed.contains("MIT licence") &&
+                    installed.contains("Zain Orwa") && installed.contains("Qt 6.11.2") &&
+                    installed.contains("GNU Lesser General Public License version 3") &&
+                    installed.contains("replace the Qt libraries") && installed.contains("Monocypher") &&
+                    installed.contains(QDir::toNativeSeparators(root.filePath("windows/licenses"))),
+                "Licences names ERDFlow's licence and holder, the Qt it uses under the LGPL, and the folder");
+        require(desktop::licences_text("0.1.0", "6.11.2", {}).contains("packaging/notices"),
+                "And says where the files are when the build was not installed");
+        std::cout << "PASS Help names ERDFlow's licence and Qt's, and finds the licence files of every package\n";
+    }
 
 int main(int argc, char **argv)
 {
     QApplication app(argc, argv);
-    // CTest runs the suite in four parts, each a process of its own with a
+    // CTest runs the suite in six parts, each a process of its own with a
     // timeout of its own (2026-10-09): Export's commands; Relational Design's
-    // checks, which each make their own window; the main window's, which carry
-    // one window through both workspaces; and the new projects', each started
-    // afresh -- from the schema, from the Editor, or in a window of its own.
-    // Run with none of them asked for, it runs whole, in the order it always
-    // has, the new projects in the same window as the rest.
+    // checks, which each make their own window; the schema's lines -- their
+    // remembered routes, colours, ends and the guides of a carried table --
+    // which each make their own window too (split off 2026-10-15, when the
+    // Relational Design part neared its limit on the macOS Intel runner);
+    // the main window's tools --
+    // fitting, Free Text, terminology, hover, navigation, the menu bar and the
+    // tool lock -- which each make their own window too (split off 2026-10-12);
+    // the main window's, which carry one window through both workspaces; and
+    // the new projects', each started afresh -- from the schema, from the
+    // Editor, or in a window of its own. Run with none of them asked for, it
+    // runs whole, in the order it always has, the new projects in the same
+    // window as the rest.
     const auto arguments = QCoreApplication::arguments();
+    const bool appearance_only = arguments.contains("--appearance-hover-only");
+    const bool navigation_only = arguments.contains("--navigation-only");
+    const bool text_only = arguments.contains("--free-text-only");
+    const bool toolbar_fit_only = arguments.contains("--toolbar-fit-only");
+    const bool entity_kind_only = arguments.contains("--entity-kind-only");
     const bool export_part = arguments.contains("--export-state");
     const bool relational_part = arguments.contains("--relational-part");
+    const bool relational_lines_part = arguments.contains("--relational-lines-part");
+    const bool window_tools_part = arguments.contains("--window-tools-part");
     const bool window_part = arguments.contains("--window-part");
     const bool new_projects_part = arguments.contains("--new-projects-part");
-    const bool whole = !export_part && !relational_part && !window_part && !new_projects_part;
+    const bool whole = !export_part && !relational_part && !relational_lines_part && !window_tools_part && !window_part &&
+                       !new_projects_part;
     // The window remembers the chosen theme. Point that at a throwaway domain so
     // running the tests cannot disturb the real preferences -- a domain for
     // each part, so that parts run side by side cannot disturb each other's.
     QCoreApplication::setOrganizationName("ERDFlowTests");
-    QCoreApplication::setApplicationName(relational_part     ? "ERDFlowTests-Relational"
+    QCoreApplication::setApplicationName(appearance_only ? "ERDFlowTests-AppearanceHover" : navigation_only ? "ERDFlowTests-Navigation" : relational_part     ? "ERDFlowTests-Relational"
+                                         : relational_lines_part ? "ERDFlowTests-RelationalLines"
+                                         : window_tools_part ? "ERDFlowTests-WindowTools"
                                          : window_part       ? "ERDFlowTests-Window"
                                          : new_projects_part ? "ERDFlowTests-NewProjects"
                                                              : "ERDFlowTests");
     // Start from nothing, so a remembered value has to be written by this run
     // rather than left behind by the last one.
     QSettings().clear();
+    // Every part draws only what its checks ask to see.
+    std::optional<PaintingOnRequest> painting_on_request(std::in_place);
     try
     {
+        if (whole || window_tools_part) settling_tests();
+        if (toolbar_fit_only || whole || window_tools_part) toolbar_fitting_tests();
+        if (toolbar_fit_only) { std::cout << "Toolbar fitting tests passed\n"; return 0; }
+        if (text_only || whole || window_tools_part) free_text_desktop_tests();
+        if (text_only) { std::cout << "Free Text desktop tests passed\n"; return 0; }
+        if (entity_kind_only || whole || window_tools_part) entity_kind_terminology_tests();
+        if (entity_kind_only) { std::cout << "Entity Kind terminology tests passed\n"; return 0; }
+        if (appearance_only || whole || window_tools_part) appearance_hover_tests();
+        if (appearance_only) { std::cout << "Appearance hover tests passed\n"; return 0; }
+        if (navigation_only || whole || window_tools_part) { navigation_foldout_tests(); minmax_display_menu_tests(); }
+        if (navigation_only) {
+            infrastructure::QtIdGenerator ids;
+            menu_bar_shortcut_tests(ids);
+            tool_lock_mark_tests(ids);
+            std::cout << "Navigation foldout tests passed\n";
+            return 0;
+        }
         if (whole || export_part)
         {
             export_state_tests();
+            export_halo_tests();
+            export_page_tests();
             if (export_part)
                 return 0;
         }
         infrastructure::QtIdGenerator ids;
         if (whole || relational_part)
         {
+            // Relational Design's own checks look at what the schema really
+            // paints on screen as it is scrolled, so they are drawn as usual.
+            painting_on_request.reset();
             relational_design_tests(ids);
+            painting_on_request.emplace();
             if (arguments.contains("--schema-connections-only"))
             {
                 std::cout << "PASS schema row connections and manual endpoint overrides\n";
                 return 0;
             }
             schema_drawing_tests(ids);
+            schema_open_routing_tests(ids);
         }
         if (relational_part)
         {
             std::cout << "Relational Design desktop tests passed\n";
             return 0;
         }
+        if (whole || relational_lines_part)
+        {
+            route_memory_router_tests();
+            route_memory_view_tests(ids);
+            schema_colour_allocation_tests();
+            schema_line_colour_tests(ids);
+            schema_line_colour_rename_tests(ids);
+            schema_endpoint_separation_tests(ids);
+            schema_shared_key_colour_tests(ids);
+            schema_alignment_guide_tests(ids);
+        }
+        if (relational_lines_part)
+        {
+            std::cout << "Schema line desktop tests passed\n";
+            return 0;
+        }
+        if (whole || window_tools_part)
+        {
+            menu_bar_shortcut_tests(ids);
+            tool_lock_mark_tests(ids);
+            search_filter_tests(ids);
+            dr_icons_tests(ids);
+            schema_figures_tests(ids);
+            licences_tests(ids);
+            practice_data_tests(ids);
+        }
+        if (window_tools_part)
+        {
+            std::cout << "Main window tool tests passed\n";
+            return 0;
+        }
+        if (whole || new_projects_part)
+            converted_shapes_fit_their_names_tests(ids);
         application::Editor editor(ids);
         infrastructure::ErdxProjectStore project_store;
         desktop::MainWindow window(editor, project_store, ids);
@@ -4669,8 +10144,10 @@ int main(int argc, char **argv)
                     "The model tools belong to the work, so they wait behind it");
             for (auto *bar : window.findChildren<QToolBar *>())
                 require(!bar->isVisible(), "No ribbon row stands over the home screen");
-            require(window.menuBar()->isVisible() || window.menuBar()->isNativeMenuBar(),
-                    "The native menu bar stays, so Home is never without its menus");
+            // Where the system owns the menu bar its menus stay there; anywhere
+            // else no second row of menus stands in the window (Zain, 2026-10-10).
+            require(window.menuBar()->isNativeMenuBar() ? !window.menuBar()->isHidden() : !window.menuBar()->isVisible(),
+                    "The system's menu bar stays where it has one, and no other is shown");
             auto *brand_bar = home->top_bar();
             require(brand_bar->isVisible(), "Home's slim bar is in the ribbon's place");
             require(brand_bar->theme_button()->menu() == window.findChild<QMenu *>("themeMenu"),
@@ -4682,8 +10159,26 @@ int main(int argc, char **argv)
             require(home->sidebar()->button(desktop::HomeSection::Settings)->isVisible(),
                     "Settings is the sidebar's row");
             auto *settings = window.findChild<QMenu *>("settingsMenu");
-            require(settings != nullptr && settings->actions().size() == 3 && settings->actions()[0]->menu() == window.findChild<QMenu *>("themeMenu"),
-                    "Its Settings holds the application's own choices: theme, icons, notation");
+            require(settings != nullptr && settings->actions().size() == 5 && settings->actions()[0]->menu() == window.findChild<QMenu *>("themeMenu"),
+                    "Its Settings holds the application's own choices: theme, icons, notation, and updates");
+            // Automatic updates, after the three and apart from them (Zain,
+            // 2026-10-23): on until turned off, and remembered.
+            {
+                auto *updates = settings->actions()[4];
+                require(settings->actions()[3]->isSeparator() && updates->objectName() == "automaticUpdates" &&
+                            updates->isCheckable(),
+                        "Automatic Updates follows them, apart");
+                QSettings().remove(infrastructure::automatic_updates_key);
+                updates->setChecked(true);
+                require(QSettings().value(infrastructure::automatic_updates_key, true).toBool(), "Updates start on");
+                updates->setChecked(false);
+                require(!QSettings().value(infrastructure::automatic_updates_key, true).toBool() &&
+                            !infrastructure::automatic_updates_on(),
+                        "Turned off, it is remembered and the updater reads it");
+                updates->setChecked(true);
+                require(infrastructure::automatic_updates_on(), "And turned on again");
+                QSettings().remove(infrastructure::automatic_updates_key);
+            }
             // A panel somebody had closed must not be reopened merely because
             // they passed through the home screen.
             auto *checks = child<QDockWidget>(window, "validationDock");
@@ -5381,8 +10876,10 @@ int main(int argc, char **argv)
                 for (const auto &[id, entity] : project.entities)
                 {
                     const auto &at = project.layout.at(domain::ElementRef{id});
-                    require(at.width == desktop::entity_body.width && at.height == desktop::entity_body.height,
-                            "Entities at the size the canvas makes them");
+                    // The card's picture is a composition of its own, at the
+                    // figures it was drawn at (ADR-022 9.21): it kept them when
+                    // the canvas's defaults were made smaller (2026-10-11).
+                    require(at.width == 148 && at.height == 86, "Entities at the size the card was composed at");
                 }
             }
 
@@ -6281,6 +11778,21 @@ int main(int argc, char **argv)
         window.canvas()->setFocus();
         settle();
         require(window.editor().project().entities.at(student).name == "UniversityStudent", "Name commits through properties on focus loss");
+        {
+            // Properties rename fits the shape to its name as inline rename
+            // does (2026-10-12), about the same centre; a shape resized by
+            // hand keeps its size.
+            const auto &was = original.layout.at(domain::ElementRef{student});
+            const auto &now = window.editor().project().layout.at(domain::ElementRef{student});
+            const bool by_hand = original.lettering.contains(domain::ElementRef{student});
+            const auto fitted = desktop::fitted_body(desktop::NamedShape::Entity, "UniversityStudent",
+                                                     window.canvas()->font());
+            require(by_hand ? now == was
+                            : now.width == fitted.width && now.height == fitted.height
+                                  && std::abs(now.x + now.width / 2 - (was.x + was.width / 2)) < 0.01
+                                  && std::abs(now.y + now.height / 2 - (was.y + was.height / 2)) < 0.01,
+                    "Properties rename fits the shape to its name about its centre, or keeps a hand's size");
+        }
         require(window.editor().dirty() && window.isWindowModified(), "Applied field edit marks project dirty");
         auto *undo = child<QAction>(window, "undoCommand");
         require(undo->isEnabled(), "Undo action reflects history");
@@ -6573,7 +12085,9 @@ int main(int argc, char **argv)
         QApplication::sendEvent(button, &double_click);
         settle();
         require(window.canvas()->tool_locked(), "Double-clicking the button locks the tool");
-        require(entity_tool->text().startsWith("Entity") && entity_tool->text() != "Entity",
+        // Marked with a padlock painted on the button (tool_lock_mark_tests), so
+        // the name stays the name.
+        require(entity_tool->property("toolLocked").toBool() && entity_tool->text() == "Entity",
                 "A locked tool button is marked");
         click_canvas(*window.canvas(), QPointF(360, 250));
         click_canvas(*window.canvas(), QPointF(520, 250));
@@ -6760,7 +12274,7 @@ int main(int argc, char **argv)
         settle();
         require(window.canvas()->tool_locked() && window.canvas()->tool() == desktop::Tool::Generalization,
                 "Double-clicking ISA locks the chosen direction");
-        require(isa->text().startsWith("Generalization") && isa->text() != "Generalization",
+        require(isa->property("toolLocked").toBool() && isa->text() == "Generalization",
                 "The locked ISA button is marked");
         child<QAction>(window, "isaSpecialization")->trigger();
         settle();
@@ -6769,27 +12283,27 @@ int main(int argc, char **argv)
 
         // The line style sits on the Connect button's own arrow, with each
         // option drawn rather than only named.
-        require(window.canvas()->line_style() == desktop::LineStyle::Elbow,
-                "Lines break at right angles unless told otherwise");
+        require(window.canvas()->line_style() == desktop::LineStyle::Straight,
+                "Lines are straight unless told otherwise");
         auto *straight = child<QAction>(window, "lineStraight");
         auto *curved = child<QAction>(window, "lineCurved");
         auto *elbow = child<QAction>(window, "lineElbow");
         require(!straight->icon().isNull() && !curved->icon().isNull() && !elbow->icon().isNull(),
                 "Each line style is drawn, not just named");
-        require(elbow->isChecked() && !curved->isChecked() && !straight->isChecked(),
+        require(straight->isChecked() && !curved->isChecked() && !elbow->isChecked(),
                 "The menu marks the style in use");
-        straight->trigger();
+        elbow->trigger();
         settle();
-        require(window.canvas()->line_style() == desktop::LineStyle::Straight, "The menu changes the line style");
-        require(straight->isChecked() && !curved->isChecked() && !elbow->isChecked(), "The mark follows the choice");
+        require(window.canvas()->line_style() == desktop::LineStyle::Elbow, "The menu changes the line style");
+        require(elbow->isChecked() && !curved->isChecked() && !straight->isChecked(), "The mark follows the choice");
         // Choosing a style must not silently change which tool is active.
         const auto tool_before = window.canvas()->tool();
         curved->trigger();
         settle();
         require(window.canvas()->line_style() == desktop::LineStyle::Curved, "And the other two are offered too");
-        elbow->trigger();
+        straight->trigger();
         settle();
-        require(window.canvas()->line_style() == desktop::LineStyle::Elbow, "And back again");
+        require(window.canvas()->line_style() == desktop::LineStyle::Straight, "And back again");
         require(window.canvas()->tool() == tool_before, "Choosing a line style leaves the active tool alone");
         // The button still behaves like a tool, including its double-click lock.
         auto *connect_button = child<QToolButton>(window, "connectButton");
@@ -7372,8 +12886,8 @@ int main(int argc, char **argv)
                         !bar->actions().contains(child<QAction>(window, "checkModel")),
                     "Check model is not on Home: it is offered from the header's Model menu (Zain, 2026-10-07)");
             require(!child<QToolButton>(window, "themeButton")->isVisible() &&
-                        child<QToolBar>(window, "designTools")->actions().contains(child<QMenu>(window, "themeMenu")->menuAction()),
-                    "The theme is chosen from Settings' Design row, not from Home (Zain, 2026-10-06)");
+                        child<QMenu>(window, "settingsMenu")->actions().contains(child<QMenu>(window, "themeMenu")->menuAction()),
+                    "The Home Settings menu retains Theme while the hidden toolbar button stays hidden");
             const auto wide = bar->iconSize().width();
 
             // Compact labels before dropping Notation to accommodate the
@@ -7383,6 +12897,7 @@ int main(int argc, char **argv)
             window.resize(1280, 820);
             settle();
             require(picker->isVisible(), "A tighter one keeps Notation beside the corner controls");
+            require(bar->actions().size() == tools, "1280 keeps every toolbar action");
             require(bar->iconSize().width() <= wide, "Compact tools use no larger icons than the wide row");
 
             window.resize(700, 620);
@@ -7972,7 +13487,10 @@ int main(int argc, char **argv)
             window.canvas()->select_elements({entity_id});
             settle();
             auto *entity_kind = child<QComboBox>(window, "entityKind");
-            require(entity_kind->count() == 2 && entity_kind->currentIndex() == 0, "An entity starts regular");
+            require(entity_kind->count() == 2 && entity_kind->currentIndex() == 0
+                        && entity_kind->itemText(0) == "Strong — identified by its own key"
+                        && entity_kind->itemText(1) == "Weak — identified through a relationship",
+                    "An entity starts Strong with the approved Kind labels");
             entity_kind->setCurrentIndex(1);
             QMetaObject::invokeMethod(entity_kind, "activated", Q_ARG(int, 1));
             settle();
@@ -8015,10 +13533,11 @@ int main(int argc, char **argv)
         {
             auto *insert = child<QToolButton>(window, "insertButton");
             auto *picture_action = child<QAction>(window, "insertPicture");
-            auto *note_tool = child<QAction>(window, "toolNote");
+            auto *text_tool = child<QAction>(window, "toolText");
             require(insert->menu() && insert->menu()->actions().contains(picture_action), "Home's Insert offers a picture");
-            require(child<QToolBar>(window, "modelTools")->actions().contains(note_tool), "The note tool is on Home");
-            require(!picture_action->icon().isNull() && !note_tool->icon().isNull(), "Each with a glyph of its own");
+            require(child<QToolBar>(window, "modelTools")->actions().contains(text_tool), "The Text tool is on Home");
+            require(!window.findChild<QAction *>("toolNote"), "And there is no Note tool (2026-10-15)");
+            require(!picture_action->icon().isNull() && !text_tool->icon().isNull(), "Each with a glyph of its own");
             require(child<QMenu>(window, "insertMenu")->actions().contains(picture_action),
                     "And the Insert menu offers the picture too");
 
@@ -8052,21 +13571,24 @@ int main(int argc, char **argv)
             }
             require(listed, "The explorer lists the picture under a group of its own");
 
-            note_tool->trigger();
+            text_tool->trigger();
             click_canvas(*window.canvas(), QPointF(700, 400));
-            require(window.editor().project().notes.size() == 1, "The note tool places a note");
-            require(window.canvas()->renaming(), "Which opens for its title");
+            require(window.editor().project().notes.size() == 1, "The Text tool places text");
+            auto *typed = child<QPlainTextEdit>(window, "inlineText");
+            require(typed->isVisible(), "Which opens for writing");
+            typed->setPlainText("Assumptions");
             window.canvas()->commit_rename();
             settle();
-            require(child<QLabel>(window, "propertyHeading")->text() == "Note", "Properties show it as a note");
+            require(child<QLabel>(window, "propertyHeading")->text() == "Text", "Properties show it as text");
 
             // A file that is not a picture is refused, and says so.
             dismiss(QMessageBox::Ok);
             require(!window.insert_picture(pictures.filePath("missing.png")), "A missing file inserts nothing");
             require(window.editor().project().pictures.size() == count + 1, "And leaves the project alone");
 
-            child<QAction>(window, "undoCommand")->trigger();
-            child<QAction>(window, "undoCommand")->trigger();
+            // The text is two steps, placed and then written, and the picture one.
+            for (int step = 0; step < 3; ++step)
+                child<QAction>(window, "undoCommand")->trigger();
             require(window.editor().project().notes.empty() && window.editor().project().pictures.size() == count,
                     "Undo takes both away again");
             child<QAction>(window, "tabHome")->trigger();
@@ -8082,7 +13604,7 @@ int main(int argc, char **argv)
         {
             auto *tabs = child<QToolBar>(window, "ribbonTabs");
             auto *home = child<QToolBar>(window, "modelTools");
-            require(window.toolBarArea(tabs) == Qt::TopToolBarArea && window.toolBarBreak(home),
+            require(window.toolBarArea(tabs) == Qt::TopToolBarArea && window.toolBarBreak(child<QToolBar>(window, "fileSections")),
                     "The tabs are at the top, and the tools start a line of their own beneath them");
             require(tabs->isVisible() && tabs->y() + tabs->height() <= home->y(), "The tabs are above the tools");
             auto *file_tab = child<QAction>(window, "tabFile");
@@ -8109,16 +13631,25 @@ int main(int argc, char **argv)
             require(tabs->height() <= 30, "And the row of tabs is no taller for it");
             const auto row_height = home->height();
 
-            // What Insert carried is on Home, after Note: one button dropping
-            // the Insert menu.
+            // What Insert carried is on Home, after Text: one button dropping
+            // the Insert menu. Text follows Connect, the Note tool being gone
+            // (2026-10-15).
             auto *insert = child<QToolButton>(window, "insertButton");
-            auto *note_tool = child<QAction>(window, "toolNote");
+            auto *text_tool = child<QAction>(window, "toolText");
             const auto home_actions = home->actions();
             int insert_at = -1;
+            int connect_at = -1;
             for (int i = 0; i < home_actions.size(); ++i)
+            {
                 if (home->widgetForAction(home_actions[i]) == insert)
                     insert_at = i;
-            require(insert_at == home_actions.indexOf(note_tool) + 1, "Insert stands on Home right after Note");
+                if (home->widgetForAction(home_actions[i]) == child<QToolButton>(window, "connectButton"))
+                    connect_at = i;
+            }
+            require(home_actions.indexOf(text_tool) == connect_at + 1
+                    && insert_at == home_actions.indexOf(text_tool) + 1,
+                    "Text stands between Connect and the existing Insert control");
+            require(!window.findChild<QAction *>("toolNote"), "With no Note tool on Home");
             require(insert->menu() == child<QMenu>(window, "insertMenu") && insert->popupMode() == QToolButton::InstantPopup &&
                         !insert->icon().isNull(),
                     "It drops the Insert menu, picture and symbols, and wears an icon");
@@ -8126,98 +13657,50 @@ int main(int argc, char **argv)
                         insert->menu()->actions().contains(child<QAction>(window, "insertSymbols")),
                     "Both of what Insert's row offered");
 
-            // The note is a tool among the elements, after Connect, and locks
-            // by a double click exactly as they do.
-            require(home_actions.indexOf(note_tool) > home_actions.indexOf(child<QAction>(window, "toolSelect")),
-                    "Note sits on Home with the element tools");
+            // Text is a tool among the elements, after Connect, and locks by
+            // a double click exactly as they do.
+            require(home_actions.indexOf(text_tool) > home_actions.indexOf(child<QAction>(window, "toolSelect")),
+                    "Text sits on Home with the element tools");
             const auto count = window.editor().project().notes.size();
-            auto *note_button = home->widgetForAction(note_tool);
-            require(note_button != nullptr, "The note tool has a button on Home");
+            auto *text_button = home->widgetForAction(text_tool);
+            require(text_button != nullptr, "The Text tool has a button on Home");
             QMouseEvent twice(QEvent::MouseButtonDblClick, QPointF(5, 5), QPointF(5, 5),
                               Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
-            QApplication::sendEvent(note_button, &twice);
+            QApplication::sendEvent(text_button, &twice);
             settle();
-            require(window.canvas()->tool() == desktop::Tool::Note && window.canvas()->tool_locked(),
-                    "Double-clicking the note tool locks it");
-            require(note_tool->text() != "Note", "And the button is marked");
-            click_canvas(*window.canvas(), QPointF(700, 250));
-            window.canvas()->commit_rename();
-            click_canvas(*window.canvas(), QPointF(860, 250));
-            window.canvas()->commit_rename();
-            require(window.editor().project().notes.size() == count + 2, "A locked note tool keeps placing");
+            require(window.canvas()->tool() == desktop::Tool::Text && window.canvas()->tool_locked(),
+                    "Double-clicking the Text tool locks it");
+            require(text_tool->property("toolLocked").toBool() && text_tool->text() == "Text", "And the button is marked");
+            for (const QPointF at : {QPointF(700, 250), QPointF(860, 250)})
+            {
+                click_canvas(*window.canvas(), at);
+                child<QPlainTextEdit>(window, "inlineText")->setPlainText("Placed");
+                window.canvas()->commit_rename();
+            }
+            require(window.editor().project().notes.size() == count + 2, "A locked Text tool keeps placing");
             child<QAction>(window, "toolSelect")->trigger();
             settle();
-            child<QAction>(window, "undoCommand")->trigger();
-            child<QAction>(window, "undoCommand")->trigger();
+            for (int step = 0; step < 4; ++step)
+                child<QAction>(window, "undoCommand")->trigger();
             require(window.editor().project().notes.size() == count, "Both placings undo");
 
-            // Settings gathers Design, View and Help, and opens on Design.
-            auto *design = child<QToolBar>(window, "designTools");
+            auto *settings_menu = child<QMenu>(window, "navigationSettingsMenu");
             settings_tab->trigger();
             settle();
-            require(design->isVisible() && !home->isVisible(), "Settings brings up Design in place of Home");
-            require(settings_tab->isChecked() && !home_tab->isChecked() && child<QAction>(window, "tabDesign")->isChecked(),
-                    "Settings is marked chosen, and Design with it");
-            require(showing_tabs() == QStringList{"tabFile", "tabHome", "tabSettings", "tabDesign", "tabView", "tabHelp"},
-                    "Its rows' own tabs stand beside the three while it is chosen");
-            require(design->height() == row_height, "The rows are one height, so nothing beneath them moves");
-            auto *theme_menu = child<QMenu>(window, "themeMenu");
-            require(design->actions().contains(theme_menu->menuAction()), "Design offers the theme menu the View menu has");
-            auto *theme_on_design = qobject_cast<QToolButton *>(design->widgetForAction(theme_menu->menuAction()));
-            require(theme_on_design && theme_on_design->popupMode() == QToolButton::InstantPopup,
-                    "A click on it opens the menu rather than doing nothing");
-            require(child<QToolButton>(window, "designLinesButton")->menu() == child<QToolButton>(window, "connectButton")->menu(),
-                    "Lines is Connect's own line-style menu");
-
-            // Fitting the window resizes Home's icons, and the rows follow,
-            // whichever of them is showing at the time.
-            window.resize(700, 620);
-            settle();
-            require(design->iconSize() == home->iconSize(), "The Design row follows Home as the window narrows");
-            window.resize(1920, 820);
-            settle();
-            require(design->height() == row_height, "And comes back to Home's height with it");
-
-            auto *view = child<QToolBar>(window, "viewTools");
-            child<QAction>(window, "tabView")->trigger();
-            settle();
-            require(view->isVisible() && !design->isVisible() && view->height() == row_height, "View has a row of the same height");
-            require(settings_tab->isChecked() && child<QAction>(window, "tabView")->isChecked() && !child<QAction>(window, "tabDesign")->isChecked(),
-                    "Under Settings still");
-            require(view->actions().contains(child<QAction>(window, "viewFit")), "With the View menu's commands on it");
-            require(!view->actions().contains(theme_menu->menuAction()), "The View menu's submenus are on Design, not here");
-            require(!view->actions().contains(child<QAction>(window, "viewSidePanels")),
-                    "The side panels' one button stays on the diagram's raft here");
-
-            // File gathers Export and Import, with the File menu beside them.
+            require(settings_menu->isVisible() && home->isVisible(), "Settings unfolds without replacing Home tools");
+            require(showing_tabs() == QStringList{"tabFile", "tabHome", "tabSettings"}, "Settings adds no top-level tabs");
+            settings_menu->hide();
             file_tab->trigger();
             settle();
-            auto *exporting = child<QToolBar>(window, "exportTools");
-            require(exporting->isVisible() && !view->isVisible() && file_tab->isChecked() && !settings_tab->isChecked(),
-                    "File brings up Export");
-            require(showing_tabs() == QStringList{"tabFile", "tabHome", "tabSettings", "fileMenuButton", "tabExport", "tabImport"},
-                    "With the File menu, Export and Import beside the three");
-            auto *file_menu = child<QToolButton>(window, "fileMenuButton");
-            require(file_menu->menu() == child<QMenu>(window, "fileMenu") && file_menu->popupMode() == QToolButton::InstantPopup,
-                    "The File menu drops from beside them");
-            require(file_menu->menu()->actions().contains(child<QAction>(window, "saveProject")), "With Save in it");
-            settings_tab->trigger();
+            require(child<QToolBar>(window, "exportTools")->isVisible() && file_tab->isChecked(), "File still opens Export");
+            require(showing_tabs() == QStringList{"tabFile", "tabHome", "tabSettings"}, "File also keeps only the three top items");
+            require(child<QToolBar>(window, "fileSections")->isVisible(), "File retains its existing section controls on its row");
+            child<QAction>(window, "tabImport")->trigger();
             settle();
-            require(view->isVisible() && child<QAction>(window, "tabView")->isChecked(),
-                    "Settings comes back on the row last chosen under it");
-            child<QAction>(window, "tabHelp")->trigger();
-            settle();
-            require(child<QToolBar>(window, "helpTools")->isVisible(), "Help has a row of its own");
-            settings_tab->trigger();
-            settle();
-            require(child<QToolBar>(window, "helpTools")->isVisible() && settings_tab->isChecked(),
-                    "A second press on a chosen tab leaves it chosen, on the same row");
-
+            require(child<QToolBar>(window, "importTools")->isVisible(), "File Import still opens its existing row");
             home_tab->trigger();
             settle();
-            require(home->isVisible() && !view->isVisible() && !child<QToolBar>(window, "helpTools")->isVisible(),
-                    "Home brings the tool row back");
-            require(showing_tabs() == QStringList{"tabFile", "tabHome", "tabSettings"}, "And the three stand alone again");
+            require(home->isVisible() && !child<QToolBar>(window, "fileSections")->isVisible(), "Home restores its unchanged tools");
             require(home->height() == row_height, "At the height it had");
         }
 
@@ -8464,7 +13947,8 @@ int main(int argc, char **argv)
             // settles, and Escape puts everything back and clears the field.
             field->setFocus();
             field->setText("Course");
-            settle_for(400);
+            settle_until([&] { return window.canvas()->search().text == "Course"; },
+                         "The diagram is searched once the typing settles");
             require(bar->isVisible() && window.canvas()->search().text == "Course" &&
                         window.canvas()->found_elements().size() == 1 && !window.editor().dirty(),
                     "Typing in the field opens the bar and narrows the diagram to what carries the name");
@@ -8730,7 +14214,9 @@ int main(int argc, char **argv)
             settle();
             require(explorer_dock->isVisible() && explorer_dock->widget() == child<QWidget>(window, "schemaExplorer") && child<QDockWidget>(window, "propertiesDock")->isVisible() && child<QDockWidget>(window, "propertiesDock")->widget() == child<QWidget>(window, "schemaProperties"),
                     "Full keeps the schema's own Explorer and Properties either side of it");
-            settle_for(200);
+            settle_until([&]
+                         { return panel->x() == 0 && panel->width() == child<QWidget>(window, "workspaceStage")->width(); },
+                         "Full lays the panel out across the stage");
             require(panel->x() == 0 && panel->width() == child<QWidget>(window, "workspaceStage")->width(),
                     "And the panel fills the stage between them");
             require(!child<QLabel>(window, "canvasInstructions")->isVisible(),
@@ -8760,8 +14246,10 @@ int main(int argc, char **argv)
                         reachable = true;
                 require(!reachable, "No conceptual drawing tool is on screen in Relational Design");
             }
-            require(!child<QAction>(window, "insertPicture")->isVisible(),
-                    "Nor Insert's picture, which is placed on the hidden diagram");
+            // Insert's picture stays: with the schema in front it goes on the
+            // schema (Zain, 2026-10-15).
+            require(child<QAction>(window, "insertPicture")->isVisible(),
+                    "Insert's picture stays, putting a picture on the schema");
             require(child<QWidget>(window, "schemaArrange")->isVisible() && child<QWidget>(window, "schemaAppearance")->isVisible(),
                     "Its own Arrange and Appearance are there instead");
             // The tabs stay, so the window is found in the same place in both
@@ -8769,32 +14257,21 @@ int main(int argc, char **argv)
             // the other rows keep to what can act on the schema.
             {
                 auto *tabs = child<QToolBar>(window, "ribbonTabs");
-                auto *view_row = child<QToolBar>(window, "viewTools");
+                auto *view_menu = child<QMenu>(window, "settingsViewMenu");
                 require(tabs->isVisible() && child<QAction>(window, "tabHome")->isChecked(),
                         "File, Home and Settings stand above the schema too");
                 child<QAction>(window, "tabHome")->trigger();
                 settle();
                 require(!child<QToolBar>(window, "modelTools")->isVisible(), "Home brings up no drawing tools here");
-                child<QAction>(window, "tabView")->trigger();
-                settle();
-                require(view_row->isVisible() && child<QAction>(window, "tabSettings")->isChecked(),
-                        "Settings brings up View");
-                require(view_row->actions().contains(child<QDockWidget>(window, "explorerDock")->toggleViewAction()) &&
-                            view_row->actions().contains(child<QDockWidget>(window, "propertiesDock")->toggleViewAction()) &&
-                            view_row->actions().contains(child<QAction>(window, "viewSidePanels")),
-                        "With the panels' switches, and the panels' one button the diagram's raft carries");
-                for (const char *conceptual : {"viewFit", "viewZoomIn", "viewShowGrid", "viewAlignToGrid", "viewFullView",
-                                               "viewCanvasControls", "viewShowComments"})
-                    require(!view_row->actions().contains(child<QAction>(window, conceptual)),
-                            "And without what frames or marks up the hidden diagram");
+                require(view_menu->actions() == QList<QAction*>{child<QAction>(window, "viewShowGrid"),
+                            child<QAction>(window, "viewAlignToGrid"), child<QAction>(window, "viewCanvasControls")},
+                        "The same three Settings View entries remain in the schema workspace");
                 require(child<QMenu>(window, "viewMenu")->actions().contains(child<QAction>(window, "viewFit")),
-                        "The View menu is left as it was");
-                require(!child<QToolBar>(window, "designTools")->actions().contains(child<QMenu>(window, "backgroundMenu")->menuAction()),
-                        "Design keeps to the theme, the icons and the notation");
+                        "Underlying native View actions remain intact");
                 const auto both = [&]
                 { return child<QDockWidget>(window, "explorerDock")->isVisible() && child<QDockWidget>(window, "propertiesDock")->isVisible(); };
                 require(both(), "Both of the schema's panels are out");
-                qobject_cast<QToolButton *>(view_row->widgetForAction(child<QAction>(window, "viewSidePanels")))->click();
+                child<QAction>(window, "viewSidePanels")->trigger();
                 settle();
                 require(!child<QDockWidget>(window, "explorerDock")->isVisible() && child<QDockWidget>(window, "propertiesDock")->isVisible(),
                         "Panels puts the Explorer away beside the schema");
@@ -8811,19 +14288,19 @@ int main(int argc, char **argv)
             settle();
             require(child<QPushButton>(window, "previewSchema")->text() == "Convert to Schema",
                     "And from the diagram it converts to the schema");
-            require(child<QToolBar>(window, "viewTools")->actions().contains(child<QAction>(window, "viewFit")) &&
-                        !child<QToolBar>(window, "viewTools")->actions().contains(child<QAction>(window, "viewSidePanels")),
-                    "The View row has the diagram's commands back, each where it stood");
+            require(child<QMenu>(window, "settingsViewMenu")->actions().contains(child<QAction>(window, "viewShowGrid")),
+                    "The same Settings View menu remains after returning to Conceptual");
             require(child<QLabel>(window, "workspaceBadge")->text() == "CONCEPTUAL",
                     "Leaving it names the conceptual workspace again");
-            require(child<QAction>(window, "insertPicture")->isVisible(), "And gives Insert its picture back");
+            require(child<QAction>(window, "insertPicture")->isVisible(), "And Insert still has its picture");
             // The conceptual workspace's own family, as the specification
             // names it, on the row it opens on.
             for (const char *conceptual : {"toolSelect", "toolEntity", "toolAttribute", "toolRelationship",
-                                           "toolIsa", "toolConnect", "toolNote"})
+                                           "toolIsa", "toolConnect", "toolText"})
                 require(window.findChild<QAction *>(conceptual) != nullptr,
                         "The conceptual workspace offers Select, Entity, Attribute, Relationship, "
-                        "Specialization, Connect and Note");
+                        "Specialization, Connect and Text");
+            require(!window.findChild<QAction *>("toolNote"), "And no Note (2026-10-15)");
             require(explorer_dock->isVisible(), "Leaving it brings them back");
             require(child<QToolBar>(window, "modelTools")->isVisible(), "The drawing tools with them");
             // Undo and redo stay beside the schema while it is open, sharing
@@ -9477,14 +14954,16 @@ int main(int argc, char **argv)
             {
                 const auto wearing = window.canvas()->theme_id();
                 window.set_theme(desktop::ThemeId::Plain);
-                settle_for(200);
+                settle_until([&] { return window.canvas()->theme_id() == desktop::ThemeId::Plain; },
+                             "Plain is put on the window");
                 // Photographed with its lettering smoothed in greys, as the
                 // whole window is: names, types and keys are written in grey,
                 // which subpixel smoothing would fringe with colour of its own.
                 require(coloured_pixels(grab_without_subpixel_text(*schema)) == 0,
                         "Under Plain the schema's lines, keys and tables have no colour");
                 window.set_theme(wearing);
-                settle_for(200);
+                settle_until([&] { return window.canvas()->theme_id() == wearing; },
+                             "The theme worn before is put back");
             }
             require(schema->shaped_lines() == 0, "None of them has been shaped by hand yet");
 
@@ -11031,7 +16510,7 @@ int main(int argc, char **argv)
                     "Home is not, being the drawing tools, which their icons already tell apart");
             require(window.findChild<QToolBar *>("insertTools") == nullptr,
                     "Insert has no row of its own any more: what it carried is on Home");
-            for (const char *row : {"designTools", "exportTools", "importTools", "viewTools", "helpTools"})
+            for (const char *row : {"exportTools", "importTools"})
                 require(child<QToolBar>(window, row)->property("ribbonRow").toBool(), row);
             // The menu's group headings are entries that cannot be chosen,
             // which reads well in a menu and would be a button nobody can
@@ -11258,7 +16737,7 @@ int main(int argc, char **argv)
             auto *relational = home->cards()[1];
             require(relational->isEnabled(), "The Relational Schema card can be taken");
             relational->create_button()->click();
-            settle_for(700);
+            settle_schema_full(window);
             require(!window.showing_home(), "Its + Create leaves Home");
             require(editor.project().schema.standalone && editor.project().schema.relations.empty(),
                     "For an empty project that starts from its schema");
@@ -11276,7 +16755,7 @@ int main(int argc, char **argv)
                 for (auto *action : menu->actions())
                     if (action->isVisible() && !action->isSeparator())
                         names << (action->menu() ? action->menu()->objectName() : action->objectName());
-                require(names == QStringList({"designConvert", "openRelationalExampleMenu"}) &&
+                require(names == QStringList({"designConvert", "convertToTables", "openRelationalExampleMenu"}) &&
                             child<QAction>(window, "designConvert")->text() == "Convert to Conceptual",
                         "A schema drawn by hand: Model offers Convert to Conceptual and its own examples");
                 require(child<QToolButton>(window, "headerModel")->isVisible() &&
@@ -11291,20 +16770,21 @@ int main(int argc, char **argv)
             auto *add_table = child<QToolButton>(window, "schemaAddTable");
             auto *convert = child<QPushButton>(window, "schemaConvert");
             auto *header_tools = child<QWidget>(window, "schemaTopTools");
-            require(header_tools->isVisible() && add_table->isVisible() && add_table->text() == "Table" && child<QToolButton>(window, "schemaSelect")->isVisible() && child<QToolButton>(window, "schemaConnect")->isVisible() && child<QToolButton>(window, "schemaTopArrange")->isVisible() && child<QToolButton>(window, "schemaTopAppearance")->isVisible(),
-                    "The header offers Select, Table, Connect, Arrange and Appearance");
+            require(header_tools->isVisible() && add_table->isVisible() && add_table->text() == "Table" && child<QToolButton>(window, "schemaSelect")->isVisible() && child<QToolButton>(window, "schemaConnect")->isVisible() && child<QToolButton>(window, "schemaTopArrange")->isVisible() && child<QToolButton>(window, "schemaTopAppearance")->isVisible() && child<QToolButton>(window, "schemaText")->isVisible() && child<QToolButton>(window, "schemaInsert")->isVisible(),
+                    "The header offers Select, Table, Connect, Text, Insert, Arrange and Appearance");
             {
                 const auto x = [&](const char *name)
                 { return child<QToolButton>(window, name)->x(); };
-                require(x("schemaSelect") < x("schemaAddTable") && x("schemaAddTable") < x("schemaConnect") && x("schemaConnect") < x("schemaTopArrange") && x("schemaTopArrange") < x("schemaTopAppearance") && child<QAction>(window, "schemaSelectTool")->isChecked() && !add_table->isChecked() && !child<QAction>(window, "schemaConnectTool")->isChecked(),
-                        "In that order, Select | Table | Connect | Arrange | Appearance, with Select in hand");
+                require(x("schemaSelect") < x("schemaAddTable") && x("schemaAddTable") < x("schemaConnect") && x("schemaConnect") < x("schemaText") && x("schemaText") < x("schemaInsert") && x("schemaInsert") < x("schemaTopArrange") && x("schemaTopArrange") < x("schemaTopAppearance") && child<QAction>(window, "schemaSelectTool")->isChecked() && !add_table->isChecked() && !child<QAction>(window, "schemaConnectTool")->isChecked(),
+                        "In that order, Select | Table | Connect | Text | Insert | Arrange | Appearance, with Select in hand");
             }
             require(add_table->parentWidget() == header_tools, "Table is in the header, not on the schema");
             require(header_tools->parentWidget()->minimumSizeHint().width() <= 1440,
                     "And the header still fits a window 1440 wide, whatever the project is called");
-            // With Select in the row it fits by Arrange and Appearance giving up
-            // their words where the header is too narrow for every word (Zain,
-            // 2026-10-01), and taking them back where it is wide enough.
+            // It fits by its tools giving up their words where the header is too
+            // narrow for every word (Zain, 2026-10-01 for Arrange and Appearance;
+            // 2026-10-15 for every tool, once Text and Insert joined them), and
+            // taking them back where it is wide enough.
             {
                 auto *arranged = child<QToolButton>(window, "schemaTopArrange");
                 auto *appearing = child<QToolButton>(window, "schemaTopAppearance");
@@ -11313,15 +16793,26 @@ int main(int argc, char **argv)
                     return child<QToolButton>(window, name)->toolButtonStyle() == Qt::ToolButtonTextBesideIcon;
                 };
                 const auto size_was = window.size();
-                window.resize(1900, size_was.height());
+                // Room for every word in any platform's lettering: 1900 was
+                // room enough in macOS's, not in the wider letters of Linux
+                // (2026-10-15), so a window 4K wide.
+                const int roomy = 3840;
+                window.resize(roomy, size_was.height());
                 settle();
-                require(worded("schemaSelect") && worded("schemaAddTable") && worded("schemaConnect") && worded("schemaTopArrange") && worded("schemaTopAppearance"),
+                const std::vector<const char *> tools{"schemaSelect", "schemaAddTable", "schemaConnect", "schemaText",
+                                                      "schemaInsert", "schemaTopArrange", "schemaTopAppearance"};
+                require(window.width() == roomy && std::all_of(tools.begin(), tools.end(), worded),
                         "With room, every tool in the header says its name");
                 window.resize(1440, size_was.height());
                 settle();
-                require(window.width() == 1440 && !worded("schemaTopArrange") && !worded("schemaTopAppearance") && arranged->toolTip() == "Arrange" && appearing->toolTip() == "Appearance" && worded("schemaSelect") && worded("schemaAddTable") && worded("schemaConnect"),
-                        "1440 wide, Arrange and Appearance show their icons, named on hover, and Select, Table and "
-                        "Connect keep their words");
+                require(window.width() == 1440 && std::none_of(tools.begin(), tools.end(), worded) &&
+                            arranged->toolTip() == "Arrange" && appearing->toolTip() == "Appearance" &&
+                            std::all_of(tools.begin(), tools.end(), [&](const char *name)
+                                        { return !child<QToolButton>(window, name)->toolTip().isEmpty(); }),
+                        "1440 wide, every tool in the header shows its icon, named on hover");
+                require(header_tools->parentWidget()->minimumSizeHint().width() <= 1440 &&
+                            header_tools->parentWidget()->width() <= 1440,
+                        "And the header fits");
                 window.resize(size_was);
                 settle();
             }
@@ -11359,7 +16850,7 @@ int main(int argc, char **argv)
                 {
                     QStringList showing;
                     for (auto *row : window.findChildren<QToolBar *>())
-                        if (row->isVisible() && row->objectName() != "ribbonTabs")
+                        if (row->isVisible() && row->objectName() != "ribbonTabs" && row->objectName() != "fileSections")
                             showing << row->objectName();
                     return showing;
                 };
@@ -11382,8 +16873,7 @@ int main(int argc, char **argv)
                         "Under Home the header's working tools show, and no other row");
                 for (const auto &[tab, row] : std::vector<std::pair<const char *, const char *>>{
                          {"tabFile", "exportTools"}, {"tabImport", "importTools"}, {"tabExport", "exportTools"},
-                         {"tabSettings", nullptr}, {"tabView", "viewTools"}, {"tabHelp", "helpTools"},
-                         {"tabDesign", "designTools"}})
+                         })
                 {
                     child<QAction>(window, tab)->trigger();
                     settle();
@@ -11678,6 +17168,36 @@ int main(int argc, char **argv)
             type_name("ManagerID");
             require(schema->preview().tables[0].columns.size() == 2, "The table has its second column");
 
+            // With Connect's constraints off, as a project starts (Zain,
+            // 2026-10-23), the same drag joins the rows at once: nothing is
+            // asked and nothing is said.
+            require(!window.editor().project().connect_constraints, "Connect starts with its constraints off");
+            {
+                const auto rows_now = schema->row_boxes().front();
+                const QPointF key_gutter(rows_now[0].left() + 22, rows_now[0].center().y());
+                const QPointF onto(rows_now[1].center().x(), rows_now[1].center().y());
+                bool questioned = false;
+                QTimer::singleShot(300, &window, [&]
+                                   {
+                    if (auto *box = window.findChild<QMessageBox *>()) { questioned = true; box->reject(); } });
+                const auto steps = window.editor().history().size();
+                mouse(QEvent::MouseButtonPress, key_gutter, Qt::LeftButton);
+                mouse(QEvent::MouseMove, (key_gutter + onto) / 2, Qt::LeftButton);
+                mouse(QEvent::MouseMove, onto, Qt::LeftButton);
+                mouse(QEvent::MouseButtonRelease, onto, Qt::NoButton);
+                settle();
+                const auto &held = schema->preview().tables[0].columns[1];
+                require(!questioned && held.foreign_key && held.references == std::size_t{0} &&
+                            held.references_column == 0 && held.type == domain::LogicalType::Int &&
+                            window.editor().history().size() == steps + 1,
+                        "With constraints off, the drag makes the foreign key at once, asking nothing");
+                child<QAction>(window, "undoCommand")->trigger();
+                settle();
+                require(!schema->preview().tables[0].columns[1].foreign_key, "And it undoes");
+            }
+            child<QAction>(window, "schemaConnectConstrained")->trigger();
+            settle();
+            require(window.editor().project().connect_constraints, "Constraints active turns them on");
             // A foreign key drawn by hand, from the key it is to reference --
             // EmployeeID's key gutter -- onto the column that is to hold it,
             // ManagerID, which is asked about first (Zain, 2026-10-01: the
@@ -13405,7 +18925,7 @@ int main(int argc, char **argv)
                                     editor.project().relationships.size() == relationships_before + 2,
                                 "Converted, both foreign keys are relationships on the diagram");
                         undo_once();
-                        settle_for(700);
+                        settle_schema_full(window);
                         require(editor.project().schema.standalone && card("Department", 1) == "PK, FK, NOT NULL",
                                 "Undone, the schema drawn by hand is back as it was");
                     }
@@ -13485,7 +19005,7 @@ int main(int argc, char **argv)
             // One step: undone it is the schema drawn by hand again, and redone
             // the diagram once more.
             child<QAction>(window, "undoCommand")->trigger();
-            settle_for(700);
+            settle_schema_full(window);
             require(editor.project().schema.standalone && !convert->isHidden() && child<QAction>(window, "designConvert")->isVisible(),
                     "Undo takes it back to the schema drawn by hand");
             require(header_tools->isVisible() && child<QWidget>(window, "schemaBar")->isHidden(),
@@ -13798,7 +19318,7 @@ int main(int argc, char **argv)
                 converting_window.show_home(false);
                 settle();
                 converting_window.open_schema();
-                settle_for(300);
+                settle_motion(converting_window);
                 const auto &project = converting.project();
                 const auto &tables = converting_window.schema()->preview().tables;
                 const auto table_for = [&](domain::ElementRef origin)
@@ -13841,7 +19361,7 @@ int main(int argc, char **argv)
             sided_window.load_example();
             settle();
             sided_window.open_schema();
-            settle_for(300);
+            settle_motion(sided_window);
             auto *view = sided_window.schema();
             auto *dock = child<QDockWidget>(sided_window, "propertiesDock");
             const auto panel = [&]() -> const QWidget &

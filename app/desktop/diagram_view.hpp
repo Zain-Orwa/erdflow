@@ -24,14 +24,16 @@ namespace erdflow::desktop {
 // in direction. Specialization works top-down: name the supertype and attach
 // subtypes afterwards. Generalization works bottom-up: select the subtypes
 // first, then name the entity that generalises them.
-// Note places a note, the one visual aid put down by a click; a picture comes
+// Note places a card and Text places prose; a picture comes
 // from a file, so it is an action of the window rather than a tool.
-enum class Tool { Select, Entity, Attribute, Relationship, Specialization, Generalization, Connect, Pan, Note };
+enum class Tool { Select, Entity, Attribute, Relationship, Specialization, Generalization, Connect, Pan, Text };
 
 // How each participant end is drawn. The model is the same in every notation:
 // participation supplies the minimum (0 or 1) and cardinality the maximum
 // (1 or M), so every notation reads the same two values off each participant.
 enum class Notation { Chen, MinMax, CrowsFoot, Bachman };
+// Session-only text choice for Conceptual Min-max; the model keeps both bounds.
+enum class MinMaxDisplayMode { CardinalityOnly, CardinalityAndOrdinality };
 
 // The surface colours a hand may put on an element, and one of them drawn as
 // an icon for a menu. Given out rather than kept to the canvas: the Relational
@@ -57,21 +59,28 @@ enum class JoinMode { Automatic, WhereClicked };
 // associative relationship adopts the entity size, because that is what it
 // behaves as on the diagram.
 //
-// THESE ARE THE DEFAULTS AND ARE NOT TO BE CHANGED. They are the size an
-// element is *created* at, not a limit on it: every element is resized freely
-// by its corners and edges on the canvas, or by typing a width and a height
-// into the Properties panel, and a size given by hand is kept for that element
-// and stored with the document. So this decides what somebody meets when they
-// draw one, and nothing more.
+// THESE ARE THE DEFAULTS AND ARE NOT TO BE CHANGED without Zain. They are the
+// size an element is *created* at, not a limit on it: every element is resized
+// freely by its corners and edges on the canvas, or by typing a width and a
+// height into the Properties panel, and a size given by hand is kept for that
+// element and stored with the document. So this decides what somebody meets
+// when they draw one, and nothing more.
 //
-// The entity's figures are the ones Zain settled on by drawing one and sizing
-// it until it looked right; everything else is proportioned to sit beside it.
+// The entity's figures were first the ones Zain settled on by drawing one and
+// sizing it until it looked right, 148 x 86, with the attribute at 150 x 60 and
+// the relationship at 190 x 110. Zain then made all three smaller and let each
+// grow to fit normal names (2026-10-11). Since 2026-10-12 they are the
+// proportions a shape is made in rather than its least size: a new or renamed
+// shape is fitted to its name by fitted_body below -- smaller for a short
+// name, though no narrower than "Attributes" needs, no wider than
+// "Relationship" needs, taller for a name written in more lines. A shape
+// resized by hand keeps its size, and a diagram opened is drawn at exactly the
+// sizes it was saved with.
 struct BodySize { double width, height; };
-inline constexpr BodySize entity_body{148, 86};
-inline constexpr BodySize attribute_body{150, 60};
-inline constexpr BodySize relationship_body{190, 110};
+inline constexpr BodySize entity_body{133, 77};
+inline constexpr BodySize attribute_body{135, 54};
+inline constexpr BodySize relationship_body{171, 99};
 inline constexpr BodySize isa_body{96, 74};
-inline constexpr BodySize note_body{200, 120};
 
 // What is drawn *on* the diagram rather than sized by it, at its own scale.
 //
@@ -105,14 +114,39 @@ inline constexpr double scaled_whole(double measure) {
 inline constexpr BodySize symbol_body{scaled_whole(56), scaled_whole(56)};
 inline constexpr double symbol_step = 1.25;
 
-// How wide a new entity, attribute or relationship has to be for its name to
-// be written whole on the canvas, at the lettering the canvas uses: the
-// default above where that is wide enough, and more where it is not. The
-// defaults are unchanged by it; it is for a diagram drawn from something else
-// -- a schema converted into one -- so it does not open on names cut short,
-// as the template's wider diamond does not (Zain, 2026-09-27).
-enum class NamedShape { Entity, Attribute, Relationship };
+// Automatic width for a named shape, using its default height and font, never
+// under the default. Fits names only up to the rendered Relationship budget.
+// This cap never limits a manual size or changes saved geometry. Used where a
+// diagram is worked out from a schema.
+enum class NamedShape { Entity, Attribute, Relationship, Generalization, Specialization };
 [[nodiscard]] double width_for_name(NamedShape shape, const QString& name, const QFont& base);
+// The size a shape is made at, and remade at when it is renamed, for its name
+// (Zain, 2026-10-12): as small as the name allows, in proportion to the
+// default, though never narrower than "Attributes" needs on one line (Zain,
+// 2026-10-13); no wider than "Relationship" needs, which
+// is always written whole on one line; and a longer name made taller to be
+// written in up to three lines, the third cut short if even that is not
+// enough. Measured with the lettering and the room the name is painted in. A
+// shape resized by hand keeps its size, and a diagram opened is drawn at the
+// sizes it was saved with.
+[[nodiscard]] BodySize fitted_body(NamedShape shape, const QString& name, const QFont& base);
+// The least width a shape of that kind and height needs for the name to be
+// written whole, with its lettering drawn at that factor of ordinary, measured
+// as it is painted: the room a box, an oval or a diamond leaves the name, and
+// for an oval its curve as well. No default is put under it.
+[[nodiscard]] double name_room_width(NamedShape shape, const QString& name, const QFont& base, double lettering,
+                                     double height);
+// How a name is written inside a shape of these bounds, its lettering at that
+// factor of ordinary (2026-10-12): the lines, where each stands, and whether
+// the last was cut short because three were not enough. It is what the shape
+// paints, so what is read here is what is drawn.
+struct NameLayout {
+    std::vector<QString> lines;
+    std::vector<QRectF> rects;
+    bool elided = false;
+};
+[[nodiscard]] NameLayout name_layout(NamedShape shape, const QString& name, const QFont& base, double lettering,
+                                     const QRectF& bounds);
 
 // What a search is looking for. Everything is the ordinary state, and the rest
 // narrow it to one kind, so "only the entities" is asked for by choosing a kind
@@ -147,6 +181,11 @@ public:
     explicit DiagramView(application::Editor& editor, QWidget* parent = nullptr);
     ~DiagramView() override;
     void synchronize();
+    // Renames an element as Editor::rename does, and an entity, attribute or
+    // relationship whose box is too narrow for the new name to be written whole
+    // is widened just enough, in the same step of history. A shorter name never
+    // narrows it. Every rename made on the diagram or its panels comes here.
+    application::EditResult rename(const domain::ElementRef& ref, const std::string& name);
     // A tool used once returns to Select; a locked tool stays until changed, so
     // several elements can be placed without reaching for the toolbar each time.
     void set_tool(Tool tool, bool locked = false);
@@ -165,8 +204,11 @@ public:
     // Draws the diagram, and none of the editor looking at it: no grid, no
     // selection rings, no handles and no paper. The background an exported
     // picture stands on is the caller's choice, so it is painted by the
-    // caller before this is called rather than assumed here.
-    void render_diagram(QPainter& painter, const QRectF& target, const QRectF& source);
+    // caller before this is called rather than assumed here; given as
+    // `ground` (which may be no colour at all), it is also what the marks
+    // that need paper of their own are laid on, in place of the canvas.
+    void render_diagram(QPainter& painter, const QRectF& target, const QRectF& source,
+                        std::optional<QColor> ground = std::nullopt);
     // The canvas colour of the theme in use, for a picture asked to stand on it.
     [[nodiscard]] QColor canvas_colour() const;
     void actual_size();
@@ -177,6 +219,8 @@ public:
     void set_join_mode(JoinMode mode);
     [[nodiscard]] JoinMode join_mode() const;
     void set_notation(Notation notation);
+    void set_minmax_display_mode(MinMaxDisplayMode mode);
+    [[nodiscard]] MinMaxDisplayMode minmax_display_mode() const;
     // A sample of how a notation draws one participant end, for the picker.
     // It uses the same drawing code as the canvas, so it cannot misrepresent it.
     //
@@ -226,6 +270,8 @@ public:
     // element is not magnified to fill the window: being found should move the
     // diagram, not change how close it is being looked at beyond reason.
     void frame_found();
+    // Try a paper style without changing the stored project or Undo history.
+    void preview_background(std::optional<domain::BackgroundStyle> style);
     void set_grid_visible(bool enabled);
     // Aligning to the grid rounds a dragged or placed element's position to
     // the nearest grid point, so elements put down near each other line up.
@@ -255,6 +301,7 @@ public:
     // Editing a name on the canvas itself, as an alternative to the properties
     // panel. Commit writes the pending text through the normal command path.
     void begin_rename(const domain::ElementRef& element);
+    application::EditResult edit_free_text(domain::NoteId id, const QString& text);
     [[nodiscard]] bool renaming() const;
     void commit_rename();
     [[nodiscard]] double zoom_factor() const;
@@ -307,6 +354,8 @@ protected:
     void wheelEvent(QWheelEvent*) override;
     void keyPressEvent(QKeyEvent*) override;
     void contextMenuEvent(QContextMenuEvent*) override;
+    void focusOutEvent(QFocusEvent*) override;
+    void hideEvent(QHideEvent*) override;
 
 private:
     // The connector menu. It finds the line itself rather than being handed one,

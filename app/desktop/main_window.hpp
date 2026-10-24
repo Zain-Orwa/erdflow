@@ -15,6 +15,7 @@
 #include "schema_view.hpp"
 #include "application/project_store.hpp"
 
+#include <QColor>
 #include <QMainWindow>
 #include <QPointF>
 #include <QIcon>
@@ -39,6 +40,7 @@ class QScrollArea;
 class QPushButton;
 class QToolButton;
 class QVBoxLayout;
+class QVariantAnimation;
 class QStandardItemModel;
 class QTreeView;
 class QTreeWidget;
@@ -46,6 +48,8 @@ class QTreeWidget;
 namespace erdflow::desktop
 {
 
+    class DrIconPicker;
+    class PracticeDataView;
     class Ribbon;
     class SearchBar;
     class SymbolPicker;
@@ -59,6 +63,10 @@ namespace erdflow::desktop
         bool open_path(const QString &path);
         // Applies a theme to the window and its canvas, and remembers it.
         void set_theme(ThemeId id);
+        // The gold of the padlock a locked tool's button wears, or its grey where
+        // the theme has no colour. Public so a test can look for the padlock in
+        // what the button draws rather than take the lock's word for it.
+        [[nodiscard]] static QColor tool_lock_ink(bool colourless);
         // Which of the two pages is in front. The home screen is where the
         // application starts; the workspace is where the work is. Public because
         // starting a project moves between them, and because a test has no other
@@ -128,6 +136,9 @@ namespace erdflow::desktop
         // wanted drives it, including a screenshot taken with nobody there to
         // click the button.
         void open_schema(bool full = false);
+        // Practice Data over the whole stage, converting the schema the first
+        // time, as Convert All to Tables does. Public for the same reason.
+        void open_practice_data();
         // Chooses the notation every end is drawn in, on the diagram and on the
         // schema alike. Public so that anything already knowing which notation is
         // wanted can drive it, a screenshot of one of the four included.
@@ -135,6 +146,12 @@ namespace erdflow::desktop
         // Opens the search bar, or closes it and puts the whole diagram back.
         void open_search(const QString &looking_for = {});
         void close_search();
+        // The schema's search bar (C8, 2026-10-14; Zain): opened from the
+        // filter mark in the schema's search field, applied to the schema as
+        // its answers change, and closed with the whole schema put back.
+        void open_schema_search();
+        void search_schema();
+        void close_schema_search();
         // Leaves a remark on the given things, asking for the words. With text
         // supplied it asks nothing, which is how anything that already has the
         // words drives it. One remark covers everything it is given at once.
@@ -162,6 +179,13 @@ namespace erdflow::desktop
         // carrying that character, since putting a character somewhere is the
         // whole purpose of picking one. False only if the edit itself was refused.
         bool insert_symbol(const QString &character);
+        // Opens the Dr.icons gallery, built the first time it is asked for and
+        // kept afterwards.
+        void show_dr_icons();
+        // Puts the Dr.icon with this key on the diagram as a picture, where the
+        // pointer last was. False for a key that is not one of them, or if the
+        // edit was refused.
+        bool place_dr_icon(const QString &key);
 
     protected:
         void closeEvent(QCloseEvent *event) override;
@@ -221,6 +245,19 @@ namespace erdflow::desktop
         void place_schema_header_tools();
         bool schema_full_ = false;
         bool laying_out_schema_ = false;
+        // Practice Data (Zain, 2026-10-23): the schema's tables as cards of
+        // rows, laid over the whole stage in place of the schema, which waits
+        // underneath exactly as it was. The first time, the schema is converted
+        // into practice tables; Show Schema puts the page away again.
+        PracticeDataView *practice_ = nullptr;
+        bool practice_open_ = false;
+        QPointer<QVariantAnimation> practice_motion_;
+        QAction *convert_to_tables_ = nullptr;
+        // The side panels, and the schema's own tools, put away while the
+        // page is up, to come back as they were.
+        std::vector<QPointer<QWidget>> hidden_for_practice_;
+        std::vector<QPointer<QWidget>> stilled_for_practice_;
+        void show_practice_data(bool shown);
         // The diagram's own furniture, put away while the schema has the window.
         std::vector<QPointer<QWidget>> hidden_for_schema_;
         bool schema_took_full_view_ = false;
@@ -291,6 +328,7 @@ namespace erdflow::desktop
         // another; the schema turned into the diagram it would have come from.
         void add_schema_table(std::optional<QPointF> at);
         void link_schema_rows(const SchemaView::Linked &link);
+        void connect_schema_rows_freely(const SchemaView::Linked &link);
         void convert_schema_to_diagram();
         // What the window offers follows whether the project starts from its
         // schema: while it does, Relational Design has the whole window and
@@ -327,12 +365,26 @@ namespace erdflow::desktop
             Table,
             Connect,
             // The floating controls' Pan (Zain, 2026-10-08), as the diagram's.
-            Pan
+            Pan,
+            // Text put on the schema where it is pressed (Zain, 2026-10-15).
+            Text
         };
         SchemaTool schema_tool_ = SchemaTool::Select;
         bool schema_tool_locked_ = false;
         QAction *schema_select_ = nullptr;
         QAction *schema_table_ = nullptr;
+        // Text and Insert in the schema's header (Zain, 2026-10-15), after
+        // Connect; and the header's tools that only a schema drawn by hand
+        // has, put away for a schema worked out from a diagram.
+        QAction *schema_text_ = nullptr;
+        QToolButton *schema_insert_button_ = nullptr;
+        std::vector<QWidget *> schema_drawn_only_;
+        // Whether what Insert puts down goes on the schema: it does while the
+        // schema is in front.
+        [[nodiscard]] bool inserting_on_schema() const;
+        // Something put on the schema from Insert, where the pointer last was
+        // over it, stepping past anything already standing exactly there.
+        [[nodiscard]] domain::Rect schema_spot(double width, double height) const;
         void choose_schema_tool(SchemaTool tool, bool locked);
         // A press elsewhere in the window puts the schema's tool down, as one
         // puts the diagram's down.
@@ -387,6 +439,10 @@ namespace erdflow::desktop
         // written anywhere.
         bool schema_properties_rebuilding_ = false;
         QAction *schema_search_mark_ = nullptr;
+        // The filter mark at the far end of each search field, which opens that
+        // workspace's search bar without anything typed (C8, 2026-10-14; Zain).
+        QAction *schema_search_filters_ = nullptr;
+        QAction *conceptual_search_filters_ = nullptr;
         // The diagram's search field, in its row as the schema's is in its header
         // (Zain, 2026-10-08): the search bar's own text box, moved up.
         QLineEdit *conceptual_search_ = nullptr;
@@ -482,6 +538,8 @@ namespace erdflow::desktop
         QAction *shrink_ = nullptr;
         std::map<Tool, QAction *> tool_actions_;
         std::map<Notation, QAction *> notation_actions_;
+        QMenu *minmax_display_menu_ = nullptr;
+        std::map<MinMaxDisplayMode, QAction *> minmax_display_actions_;
         std::map<ThemeId, QAction *> theme_actions_;
         std::map<QAction *, Glyph> action_glyphs_;
         // The ribbon's tabs, whose icons are drawn small and follow the tab's own
@@ -561,6 +619,7 @@ namespace erdflow::desktop
         Tool isa_mode_ = Tool::Specialization;
         QAction *isa_action_ = nullptr;
         std::map<LineStyle, QAction *> line_actions_;
+        std::optional<LineStyle> line_preview_original_;
         QComboBox *notation_box_ = nullptr;
         QWidget *canvas_controls_ = nullptr;
         QAction *notation_action_ = nullptr;
@@ -621,7 +680,9 @@ namespace erdflow::desktop
         std::vector<QDockWidget *> hidden_panels_;
         Ribbon *ribbon_ = nullptr;
         SearchBar *search_bar_ = nullptr;
+        SearchBar *schema_search_bar_ = nullptr;
         SymbolPicker *symbols_ = nullptr;
+        DrIconPicker *dr_icons_ = nullptr;
         // The text field a picked character goes into: the last one that was being
         // written in. Committing an edit rebuilds the properties panel and takes
         // the widget with it, so the field is remembered by name as well and looked
@@ -705,6 +766,7 @@ namespace erdflow::desktop
         [[nodiscard]] QIcon line_style_icon(LineStyle style) const;
         [[nodiscard]] QWidget *toolbar_widget(QAction *action) const;
         void choose_notation(Notation notation);
+        void choose_minmax_display_mode(MinMaxDisplayMode mode);
         void refresh();
         void refresh_explorer();
         void highlight_explorer();

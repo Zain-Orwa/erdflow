@@ -97,6 +97,23 @@ now on the diagram.
 
 This is a pull-forward of Phase 42, which depends on nothing later.
 
+## Addendum, 2026-10-14: reached from its field, and the schema's too
+
+Zain's answers of 2026-10-14, recorded here so the decision stays with the
+search it extends:
+
+- Since the search became a field in the diagram's row (2026-10-08), the bar
+  came only once something was typed. A **filter mark** at the far end of the
+  field now opens it with nothing typed, and the schema's field has the same
+  mark.
+- The **Relational Schema has the same bar and the same two questions**, over
+  its own kinds: tables, columns, keys and relationships, a relationship being
+  a foreign key in the words the Schema Explorer lists it in.
+- On a diagram's schema a search is **answered together with the narrowing by
+  where tables came from**, rather than over it.
+- What the schema's search **hides is left out of a picture**, as on the
+  diagram; what it fades is drawn faded there, as before.
+
 ## Final principle
 
 > On a list, search finds one thing among many. On a diagram, the many are the

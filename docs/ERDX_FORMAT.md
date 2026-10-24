@@ -707,6 +707,102 @@ reported as a picture that carries no project, not as a damaged one. A project
 opened out of a picture has no project file of its own, so the next save asks
 where it should go rather than overwriting the picture with project bytes.
 
+## Version 35: Conceptual free-text annotations
+
+The current writer emits version 35. Each note has exactly `id`, `name`,
+`description`, `plain`, and the required boolean `free_text`. Legal presentations
+are:
+
+| `plain` | `free_text` | Presentation |
+| --- | --- | --- |
+| `false` | `false` | Existing titled card note |
+| `true` | `false` | Existing scalable symbol |
+| `false` | `true` | Borderless plain text; `description` is the visible prose |
+
+Both flags being `true` is invalid. Free-text creation leaves `name` empty and
+uses the ordinary note ID and layout rectangle. Multiline Unicode prose is saved
+without rich-text interpretation. It has no database or Schema semantics.
+
+Versions 1–34 retain their strict historical field sets and must not contain
+`free_text`. Opening them defaults that flag to `false`, preserving cards and
+symbols exactly. Version 35 rejects missing, non-boolean, or conflicting
+presentation flags. Saving an older project writes version 35.
+
+**The titled card note is retired (2026-10-15).** ERDFlow no longer makes or
+draws a card. A note read with both flags `false` — in version 35, or any note
+that is not a symbol in versions 11–34 — is read as free text: `free_text`
+becomes `true`, `description` becomes the card's `name` on the first line and
+its `description` beneath (either alone when the other is empty, cut between
+characters to the description limit), and `name` becomes empty. Its identity,
+layout, colour, transparency and any comments pinned to it are kept. The writer
+never emits a card, so a project opened with one is written back with it as free
+text; the field set and version are unchanged. The model rejects a note that is
+neither a symbol nor free text.
+
+## Version 36: Text, symbols and pictures on the Relational Schema
+
+The current writer emits version 36 (2026-10-15). The project object gains one
+required field, `schema_figures`, an object with exactly two arrays:
+
+- `pictures`: each with exactly `id`, `name`, `description`, `image` (base64
+  PNG or JPEG, as a diagram picture's), `x`, `y`, `width` and `height`.
+- `notes`: each with exactly `id`, `name`, `description`, `plain`, `free_text`,
+  `x`, `y`, `width` and `height`. Exactly one flag is `true`: free text (its
+  `description` is the visible prose, `name` empty) or a symbol (its `name` is
+  the character).
+
+These are the schema's own, never the diagram's: their places are in the
+schema's coordinates, and they appear in no other part of the project. Their
+identifiers share the project's one identity space, so none may repeat a
+diagram element's. A place must be finite, positive and within the supported
+canvas, and every entry must have one. One field holds both lists so the
+project object keeps within the twenty fields a document's objects may have.
+
+Versions 1-35 must not contain `schema_figures` and open with nothing on the
+schema. Version 36 rejects a missing field, an extra key in an entry, a note
+with both flags or neither, an image that is not one, and a place that is not
+positive. Saving an older project writes version 36.
+
+## Version 37: Practice Data rows
+
+The current writer emits version 37 (2026-10-23). The project object gains one
+required field, `practice`, an object with exactly `converted` (boolean),
+`enforced` (boolean), `places` (where each card was put by hand: entries of
+exactly `relation`, `x`, `y`, `width` and `height`, the card's top-left corner
+on the page and its size, a height of `0` meaning as tall as its rows; each
+table at most once and never off the top or left of the page; empty until a
+card is first moved or resized) and `tables`, an array whose
+entries have exactly
+`relation` (a relation's identity) and `rows`. Each row is an array of cells,
+and each cell has exactly `column` (a column identity, written as a column
+order writes one: `attribute`, `column`, `foreign_key`, `key` or
+`discriminator`) and `value`, which is text or `null`.
+
+The rows are the project's own practice data and never part of the schema: a
+relation or column named here need not exist in the schema as it reads now,
+and its rows are kept for it coming back. `null` is SQL's NULL and is kept
+apart from the empty string; a cell that is absent reads as NULL too, and a
+reader keeps NULL as no value at all. A row may name a column only once, and a
+relation may appear only once. Values are bounded as descriptions are (16 KiB),
+and the project holds at most 10,000 practice rows.
+
+Version 37 also gives the project `connect_constraints` (boolean): whether
+Connect, on a schema drawn by hand, holds a connection to its own rules or
+connects at once without asking. It is `false` unless turned on, and a file
+written before it opens with it off.
+
+With `practice` and `connect_constraints` the project object has twenty-two
+fields, so the preflight that bounds an object's fields before the real parse
+now allows twenty-four (it was twenty, exactly the project's width at version
+36).
+
+Versions 1-36 must contain neither `practice` nor `connect_constraints`, and
+open with no practice tables and Connect's constraints off.
+Version 37 rejects a missing field, an extra key, a value that is neither text
+nor `null`, a row that names a column twice, a table placed twice, and a
+place off the page. Saving an older project
+writes version 37.
+
 ## Verification
 
 `tests/persistence_tests.cpp` covers exact graph and Unicode roundtrips, copied

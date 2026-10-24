@@ -74,7 +74,305 @@ read as still to do.
   downward, the canvas gives the lowest dragged table about one viewport of
   temporary room below it, then returns to normal sizing on release. The same
   drag can continue while the user scrolls with the wheel or trackpad; there is
-  no timer or automatic edge-autoscroll.
+  no timer or automatic edge-autoscroll. *Superseded in part by C6 (next
+  entry): the view now also scrolls by itself at its edges. The downward-only
+  room described here is unchanged.*
+- **Edge auto-scroll on both canvases** (C6, 2026-10-12):
+  a band being drawn, or tables / shapes being carried (one, a gathered group
+  or Select All), held within 24 px of an edge of the view or past it, scrolls
+  the view that way, diagonally in a corner, and goes on while the pointer is
+  held still (`EdgeScroll`, `edge_scroll.cpp`; a step about every 16 ms, one
+  pixel at the inside of the strip up to 40 px far past the edge). It stops
+  when the pointer comes back in, on release, when the view can go no further,
+  when the canvas loses the keyboard or is put away, and on Escape's
+  `cancel_interaction` on the diagram. The band stays anchored where it was
+  pressed and covers what comes into view; what is carried follows the pointer
+  and is written as one edit on release, as before. On the schema each step
+  carries the tables exactly as a pointer move to that place would, so the
+  downward drag room above and the top/left stop of a carried group are
+  unchanged and no extra room is given upward or across. On the diagram Qt
+  replays the pointer through the view on each scroll. Resizing by a handle,
+  shaping or pulling a line, drawing a connection and Pan do not auto-scroll.
+
+  *What was decided before, and what C6 changes:*
+
+  | | Before C6 | With C6 |
+  |---|---|---|
+  | View at an edge during a band or a carry | stays; scroll by hand | scrolls by itself |
+  | Diagram's room during a carry | fixed until the move is let go ("grows only at command boundaries, never during pointer movement", 2026-09-14) | **superseded:** grows while shapes are carried to reach 800 px past them (`make_room_for_carry`), in every direction, only ever growing during the drag; measured afresh, as before, when the move is let go |
+  | Diagram's room after a command | `default_paper` united with everything plus 800 px | unchanged |
+  | Schema room below a downward carry | one view's height (2026-10-09) | unchanged |
+  | Schema room across or upward | none; the canvas reaches just past the tables | unchanged |
+  | Schema top and left | nought; a carried group stops there as a whole | unchanged; no stored table position is shifted to make room |
+  | Coordinates, history, files | | unchanged: positions stay where they are, a carry is one edit, nothing new is saved |
+
+  On the 159-table schema each auto-scroll step of a carry routes every line,
+  as a pointer move does (about 520 ms with the C2 routing), so the view
+  advances in steps of up to 40 px rather than smoothly.
+- **The schema remembers its searches** (2026-10-13, not yet committed): each
+  Relational Schema view keeps the router's searches from its last pass
+  (`schema_router::RouteMemory`, owned by `SchemaView`) and takes a search's
+  path again only where that is exactly the path the search would find: same
+  line, same cells, same grid size, and -- within the cells it read -- no table
+  blocking otherwise, no line opening a cell otherwise, and every cell's capped
+  count as it was, worked out from what each line wrote then and now. Nothing
+  is compared by digest. Searches not asked for in a pass are let go of; a pass
+  in which every table moves (Select All) keeps nothing. The grid's cells are
+  private to the router (`schema_router::Grid`), so nothing else can write them
+  behind the memory's back. Every line is drawn exactly as before; tests check
+  each search taken again against a fresh one and the lines against routing
+  with no memory.
+- **Each relationship keeps one colour of its own** (C3a, 2026-10-13, not yet
+  committed; Zain approved the five shared greys and name-derived colours):
+  a Schema line's colour is its relationship's -- the lines of one foreign
+  key (`key_id`, shared by every column of a key of several) are one
+  relationship -- worked out from what it joins, its tables and columns by
+  name, rather than from the order lines are routed in, which changed with
+  every table moved (18 of 25 Company lines recoloured by one drag). Names
+  rather than `key_id` decide the colour because an example's keys are given
+  new identities each time it is opened; renaming a joined table or column
+  therefore recolours that relationship, at once, and may recolour those it
+  meets. `schema_colours` gives the relationships meeting at a table colours
+  of their own from sixteen chosen to stand plainly apart (no two nearer than
+  22 in CIEDE2000, every one 3:1 against its canvas), a light set and a dark
+  one; each keeps the colour worked out from it unless a relationship it
+  meets already has it, and is looked at again once all have colours. Plain
+  shares out five greys the same way (8.4 apart; more greys could not be told
+  apart): five relationships or fewer at a table have a grey each, and more
+  share them evenly, no grey used more often than its even share where the
+  tables at the other ends allow (Employee's ten use each grey twice).
+  Colours are given again only when the relationships, their names or the
+  palette change -- never while tables move -- and stay the same through
+  saving, opening, undo and redo. Routes are unchanged. *Supersedes* the
+  golden-angle colours by routing order (2026-09-22) and the golden-ratio grey
+  for each line (2026-09-24).
+- **Ends landing on one key's row are fanned on each side apart** (C3c-1,
+  2026-10-13; Zain approved): several foreign keys referring to one primary
+  key land fanned across its row, and the fan's places are now counted for
+  each side of the table apart (`arriving` keyed by table, column and side in
+  `SchemaView::reroute`) rather than for both sides together, which ran out
+  of places sooner and put two ends on one point, their last runs one on top
+  of the other. Same-side ends on one point went from 1 to 0 in each of the
+  four examples, and from 13 to 6 and 24 to 11 with 12 and 17 references to
+  one key. A row of the standard depth has five places a side, so past five
+  ends on one side some still share one, and crow's feet a few pixels apart
+  still overlap. Every end stays on the row it refers to; an end put by hand,
+  which the fan never placed, stays where it was put, and a line shaped by
+  hand keeps its corners. Routes change where their ends moved (total length
+  within 0.6 % on the examples; in the University example the line from
+  Students.ProfessorID now leaves to the left and runs round the top), and
+  the route memory still takes again only what a fresh search finds.
+- **Relationships meeting at one key are told apart there first** (C3c-2,
+  2026-10-14, built in the release laboratory, awaiting Zain's review): where
+  several foreign keys land on one key's row their ends crowd into one point,
+  and C3a kept them only as far apart as any two relationships meeting at a
+  table (at Employee's key in the Company example the closest two were 23.6
+  apart, with five pairs of one family). Each line now says the rows it leaves
+  and lands on (`schema_colours::Line::from_column`, `to_column`), and the
+  relationships meeting at a row are weighed before those meeting at a table:
+  first a colour of a family none of them has (hues within 25 degrees,
+  `schema_colours::kindred`), then one at least 30 apart from theirs (in Plain,
+  any grey but theirs), then the row's even share; C3a's table rule follows
+  unchanged. On the examples, no two relationships at a shared key row are of
+  one colour or one family in light or dark; the closest two at Employee are
+  32.4 apart in light and 26.4 in dark (from 23.6 and 22.5); every table keeps
+  its relationships 22 apart or more; Plain repeats a grey at a row only as
+  often as the row's size asks. Up to four relationships at a row are always
+  30 apart or more, and up to nine 22 apart and never of one family; past that
+  families repeat as seldom as the palette allows. At rows of five to seven a
+  pair can stay between 26 and 30 apart although the palette could hold them
+  farther: each relationship is placed one at a time. It recolours, once, up to
+  14 of an example's 25 or 26 relationships (Company relational in light; in
+  Plain at most 5); one relationship added can recolour a few further away (4
+  of 50 made-up schemas, at most 3; at tables alone 2 and 1). Lines whose rows
+  no other line shares keep exactly C3a's colours. Routes, hover, selection
+  and line drawing are unchanged.
+- **Exported pictures carry no halo** (C4, 2026-10-14, built in the release
+  laboratory, awaiting Zain's review): a picture's drawing is now told the
+  ground it stands on (`ExportView::paint` takes it; `PictureBackground`
+  decides it), and whatever a workspace lays under a mark to keep a line off
+  it is laid in that ground instead of in the theme's canvas -- the Schema's
+  Chen and min-max label patches and the hollow of an optional end, the
+  diagram's cardinality and role label patches and its hollow ends
+  (`participant_hollows`, beside the shared `draw_participant_end`). On no
+  ground at all nothing is laid: the line is clipped out of those places
+  instead. The canvas-coloured stroke every Schema line stood on is gone: it
+  was drawn under all the lines before any line, so it could never be seen
+  on the canvas, and in a transparent picture it was a white or dark halo
+  round every line. Measured on the Company examples: canvas-coloured pixels
+  where they do not belong went from 18,413 to 0 (Schema, transparent PNG and
+  SVG), 17,611 to 0 (Schema, white from a dark theme), and 5,238-23,675 to 0
+  (diagram, transparent, crow's foot and Chen). A picture on the theme's own
+  colour is byte for byte what it was, and the canvas on screen is unchanged
+  (every visual-suite picture identical).
+- **A PDF page is lettered as its PNG is** (C5, 2026-10-14, built in the
+  release laboratory, awaiting Zain's review): Qt sizes a font given in points
+  by the dots per inch of what it is drawn on, and a PDF writer's are the
+  resolution asked for (300 unless changed), while every name was measured,
+  and every shape and column sized to it, at a raster picture's. A PDF's
+  lettering therefore came out three or four times too large for its shapes
+  and was cut down to a letter or two ("Em…", "artm"), in both workspaces;
+  that was the damaged macOS file. The page is now drawn through `PdfPage`
+  (`picture_export.cpp`), which gives Qt the writer's own engine, page and
+  resolution and reports only a raster picture's dots per inch for
+  lettering: one pass, still vector, its text still embedded and selectable.
+  Nothing else about a PDF changes: its page size, the resolution option,
+  and SVG, PNG and the other rasters are as they were, as is the PDF
+  document, whose diagram is a PNG. Measured on the Company examples, the
+  PDF drawn back differs from the PNG in 0.02-0.19% of pixels, where it was
+  1.3-6.8%, at 72, 300 and 1200 dpi, offscreen and on macOS; Apple's PDFKit
+  draws it as the PNG and reads back every name whole, where it read 164
+  cut short. Not yet seen on Windows or Linux.
+- **A carried Schema table shows what it lines up with** (C7, 2026-10-14,
+  built in the release laboratory, awaiting Zain's review): while a table is
+  carried, `SchemaView::alignment_guides` finds, among the tables left
+  standing, the edge or middle nearest to one of the carried table's own --
+  left, middle or right down the schema, top, middle or bottom across it --
+  and a guide is drawn along it, one down and one across at most, reaching 26
+  px past both tables in the theme's warning colour: the diagram's reach (7
+  px), choice and look. Unlike the diagram's, nothing is snapped: the table
+  goes exactly where the hand takes it, as a Schema table always has, so a
+  guide drawn on the standing table's line shows any gap still to close. The
+  guides are worked out from the carry as it is painted and are never kept,
+  so nothing reaches the project or its history before the table is let go,
+  letting go takes them away, and a picture never has them. On the 159-table
+  generated schema they cost about 1.3 µs a movement, against 123 ms for the
+  movement's routing.
+- **Each workspace's search opens its kinds and options from its field** (C8,
+  2026-10-14, built in the release laboratory, awaiting Zain's review; his
+  four answers of that day). Since the diagram's search became a field in its
+  row (2026-10-08) its bar -- the kind, What to keep, Fade it or Hide it, the
+  count -- came only once something was typed, or from Find. A filter mark
+  (Lucide's funnel, line art in every icon set) now stands at the far end of
+  both search fields and opens that workspace's bar with nothing typed. The
+  Relational Schema has the bar too (`SearchBar` with `SearchSubject::Schema`,
+  between the narrowing chips and the tables): the same two questions, over
+  All kinds, Tables, Columns, Keys and Relationships (a key is a column of a
+  primary or foreign key; a relationship is a foreign key in the words the
+  Schema Explorer lists it in, and brings both its tables), with "what it
+  touches" one step out along foreign keys both ways. A search is now
+  answered together with the narrowing by where tables came from rather than
+  over it. Hidden tables, and every line with one at either end, are not
+  drawn, pressed, banded, chosen by Select All or framed in a picture; faded
+  ones are drawn as before, in a picture too. Typing in the schema's field
+  searches at once as it always did, without opening the bar; closing the bar
+  puts the whole schema back and clears the field, as closing the diagram's
+  does. `SchemaView::set_search` carries the whole search, `set_looking_for`
+  its words alone. On the 159-table generated schema, working out what is
+  hidden costs 13-113 µs and a repaint with most of it hidden 0.4-0.6 ms.
+- **Dr.icons are put on the diagram from Insert** (Item 9, 2026-10-14, built
+  in the release laboratory, awaiting Zain's review): seventeen illustrations
+  of what an entity commonly stands for -- Student, Course, two called Family,
+  Identification Card, Order, Product, Book, Project, Employee, Person, Seat,
+  Task, Car, Mobile Line, Phone Ext. and Desk -- in a gallery of their own,
+  **Insert → Dr.icons…**, after Symbols, offered while the diagram is in front
+  as Picture is. ERDFlow had no illustrations of entities to plug them into,
+  and Zain chose (2026-10-14) to place them as pictures rather than make one a
+  property of an entity, which would have needed a new project-file version.
+  Picking one puts an ordinary picture where the pointer last was, square and
+  as tall as a new entity, named by the icon's label and left unchosen, as a
+  picked symbol is; it is moved beside its entity by hand, and is resized,
+  undone, saved, reopened and exported as any picture is. Nothing matches an
+  icon to an entity by name, and placing one changes no entity. The icons are
+  compiled in (`erdflow_dr_icons`, `assets/dr-icons/<key>.png`, 384 px
+  transparent PNGs, 71-135 KB; `dr_icons.hpp` maps the seventeen keys to
+  their labels). Each placed icon keeps its own copy in the project, and a project
+  file holds 8 MiB, so 384 px was chosen over 512: sharp at an entity's height
+  to 250% zoom on a high-density screen, with room for about twice as many
+  icons (some 55-60 of the largest before the limit, against 28-41). Eight of
+  the first batch are Zain's approved artwork scaled down from 1254 px. Student
+  and Employee were exchanged (Zain, 2026-10-15) for full-length figures -- the
+  student holding books, the employee with a briefcase -- and a second Family
+  added straight after the first; all three are cut from Zain's other sheet of
+  sixteen, at the 380-410 px it holds them at, the employee placed on its
+  canvas unscaled rather than enlarged. The four rows of the gallery became
+  four full rows and a fifth holding Desk. The six of the second batch (Seat, Task, Car, Mobile Line, Phone Ext., Desk) were
+  redrawn in the first batch's 3D style (Zain, 2026-10-14), supplied as one
+  transparent sheet, cut apart into masters of 496-682 px and scaled down;
+  they replaced the first, flatter drawings under the same file names. A
+  project saved with the earlier drawings keeps them, since a placed picture
+  carries its own pixels.
+- **A picture is pulled by any edge or corner** (2026-10-15, built in the
+  release laboratory at Zain's request for the Dr.icons, awaiting his review):
+  a chosen picture -- a Dr.icon or one inserted from a file -- shows the eight
+  handles an entity has, just inside its outline. A picture is drawn fitted
+  and never stretched, so whichever handle is pulled the whole picture is
+  scaled and keeps its proportions: a corner travels with the hand while the
+  corner opposite stays; an edge travels while the edge opposite stays, the
+  picture staying centred along it, so an icon stood level with its entity
+  stays level with it. It goes down to 16 px and up to 4000 px, a symbol's
+  bounds (`min_picture_size`, `max_picture_size`); below 36 px its handles
+  shrink with it, to a quarter of its shorter side and never under 4 px, so a
+  small picture is still seen while it is chosen. It is drawn at the new size as
+  it is pulled, and is written once on letting go as one step, "Resize
+  picture" (`Editor::resize_pictures`), place and size together; Escape
+  abandons a pull, and a handle clicked without travelling writes nothing.
+- **The titled Note is gone; Text stays** (2026-10-15, built in the release
+  laboratory at Zain's request, awaiting his review): Conceptual Design's Note
+  tool, its button on Home, and Insert → Note in the canvas's right-click menu
+  are removed, with the titled card itself (`Tool::Note`, `place_note`,
+  `Editor::create_note`, the card's drawing and its default size). Text and the
+  placed symbols, which are notes underneath, are unchanged, and Text now
+  follows Connect directly. A card in a project saved earlier is read as Text
+  -- its title on the first line and its text beneath, in the place it stood --
+  and is written back as Text when the project is saved (Zain chose this over
+  keeping old cards); the model no longer admits a card. The Explorer's group
+  is still called Notes, as it was for Text and symbols.
+- **Text and Insert on the Relational Schema** (2026-10-15, built in the
+  release laboratory at Zain's request, awaiting his review): the schema's
+  header offers Text and Insert after Connect, as the diagram's row does --
+  on a schema drawn by hand beside Select, Table, Connect, Arrange and
+  Appearance, and on a diagram's schema, while it is in front, on their own.
+  Text is put down where the schema is pressed and written in place (Ctrl+
+  Return or leaving it finishes, Escape abandons, a double click opens it
+  again; put down and left empty it is taken back with no step left behind),
+  handed back after one use and locked by a double click, as Table is.
+  Insert is the diagram's own menu: with the schema in front, Picture...,
+  Symbols... and Dr.icons... put what they put on the schema, where the
+  pointer last was over it. What is put there is the schema's own and never
+  the diagram's (`Project::schema_notes`, `schema_pictures`, `schema_figures`,
+  file version 36): pictures lie beneath the tables, as on the diagram, and
+  text and symbols over them; one is chosen at a time, apart from the tables,
+  carried by a press inside it, a picture or symbol pulled by its handles in
+  proportion, taken away by Delete, every one of those one step of history
+  (`Editor::create_schema_text`, `create_schema_symbol`,
+  `create_schema_picture`, `edit_schema_text`, `move_schema_figures`,
+  `resize_schema_figures`, `erase_schema_figures`). The schema's pictures and
+  its export frame carry them. To fit a window 1440 wide in the default
+  theme, every tool in a schema's header now gives up its word where the
+  header is too narrow for every word, as Arrange and Appearance always have
+  (Zain, 2026-10-15): at 1440 they show their icons, named on hover. Whether
+  the words fit is now worked out from the header's natural width rather than
+  its least, which also ends a defect older than this: between about 1500 and
+  1750 wide, Model and Theme kept their words and had them cut to an
+  ellipsis, because a row short of room squeezes every button in it.
+- **The three line styles shape every line** (2026-10-15, built in the release
+  laboratory at Zain's request, awaiting his review): Connect's Right-angle,
+  Curved and Straight lines now each draw what they name, and choosing one
+  redraws the diagram at once, before, while or after it is drawn. Curved had
+  never been built for anything but a specialization's lines, and attribute
+  lines were straight in every style (Zain, 2026-09-26); asked, Zain chose
+  that they follow the style too. Straight is unchanged. Curved: a line nobody
+  has shaped is the right-angle line rounded off (it leaves and arrives square
+  to the same faces and bends towards where that one turns, so shapes standing
+  in line still join by one straight run); one bent by hand curves through its
+  bend; one routed by hand, or a recursive loop, keeps its corners and is
+  rounded off between them; an attribute's line leaves its owner's shared
+  point halfway between square to the side and straight at the attribute, so
+  lines sharing the point part there, and arrives pointing at it. Right-angle:
+  relationship lines as before; an attribute's line leaves the shared point
+  square to the side, crosses at one level shared by every attribute on that
+  side (halfway out to the nearest of them) and goes straight into its own
+  end, or, where that last run would pass through another of the owner's
+  attributes, goes round and in at the attribute's near side
+  (`EdgeItem::attribute_route`). Carrying an attribute moves its neighbours'
+  level as it goes. A total participation's double line keeps its distance
+  round every curve. Lines are drawn Straight until another style is chosen
+  (Zain, 2026-10-15; until then the starting style was Right-angle), so a
+  diagram opens with every line straight, as does the Home screen's
+  Conceptual card. The chosen style is what every picture, PDF and document
+  exported carries, since each is drawn from the canvas as it stands. Nothing
+  is written into the project and the file format is unchanged.
 - **Desktop timeout risk reduced without weakening coverage** (committed in
   `7b12b70`): the old single `desktop` CTest entry is split into
   `desktop_export`, `desktop_relational` and `desktop_window` (the last since
@@ -96,6 +394,54 @@ read as still to do.
   was removed and no timeout was raised; `desktop_tests` with no flag still
   runs the complete historical sequence in one window. The split is for CI
   runtime reliability only; the application's behaviour is unchanged.
+- **The main window's desktop tests made faster, and their tools run apart**
+  (2026-10-12): `desktop_window` had grown back to 23.5 s locally and reached
+  60 s on the macOS Intel CI runner. Measurement found no hang: half the time
+  was the tests' own waiting. `settle_motion` now carries a running panel move
+  to its end through Qt's `setCurrentTime` instead of watching it for 280 ms;
+  seven fixed waits that only covered the window's next pass or a timed
+  follow-up now wait for the state the next check reads (`settle_until`);
+  waits that check timing itself are kept. The main window's tool checks,
+  each in a window of its own, now run as `desktop_window_tools`
+  (`desktop_tests --window-tools-part`). The five desktop entries keep their
+  60 s TIMEOUT; no assertion was removed and production code was not changed.
+  Measured on the macOS Intel runner, a third of what remained was repainting
+  windows no check looks at, so the desktop tests now paint on request: a
+  window's UpdateRequest is set aside while the checks run, and every pixel
+  check draws what it reads through `grab()` or `render()`. Relational
+  Design's own checks (`relational_design_tests`) read what the schema really
+  paints as it is scrolled, so they paint as usual. Fixed waits in the
+  relational and new-project parts that covered only padding or a panel's
+  rise now use `settle_motion`; those that covered the 320 ms step to a
+  full-window schema wait for it (`settle_schema_full`), which also removes a
+  race where a 300 ms wait could end just before that step.
+- **The schema's line checks run as a part of their own** (Zain, 2026-10-15,
+  for the release candidate): `desktop_relational` had grown to about 20 s
+  locally, and at the slowdown seen on the macOS Intel runner it would reach
+  its 60 s TIMEOUT. Route memory, line colours, endpoint separation,
+  shared-key colours and alignment guides now run as
+  `desktop_relational_lines` (`desktop_tests --relational-lines-part`, about
+  9 s locally); Relational Design, drawing and open routing stay in
+  `desktop_relational` (about 12 s). The six desktop entries keep their 60 s
+  TIMEOUT; no assertion was removed or changed, production code was not
+  changed, and `desktop_tests` with no part named still runs every check in
+  the same order.
+- **Help -> Licences, and the packages made ready for release** (2026-10-15,
+  release preparation for 0.1.0): Help gains *Licences* after *About
+  ERDFlow*, which is unchanged. It names ERDFlow's MIT licence and its holder
+  (read from `LICENSE`), the Qt version and the LGPL terms ERDFlow uses it
+  under, and the folder the package installed the licence files in
+  (`installed_licences_folder`: `Contents/Resources/Licenses`, `licenses`
+  beside `bin`, or `share/doc/erdflow`), with *Show Licence Files* and *About
+  Qt*. The packages carry the Qt source offer (published with each release),
+  the AppImage runtime's component licences, the Inno Setup licence and the
+  exact Visual C++ runtime versions; the AppImage no longer carries Qt's
+  translations, as macOS and Windows never did. Each package gets an SPDX
+  bill of materials, checked with the SPDX tools. macOS Developer ID signing
+  and notarization and an OpenPGP signature of `SHA256SUMS` run once their
+  secrets are set, and every package says it is a test candidate until the
+  release owner sets `ERDFLOW_REDISTRIBUTION_APPROVED`. The record and what
+  remains: `docs/RELEASE_0.1.0.md`.
 
 **Column reordering is not built.** Task 4A is complete. Task 4B is
 complete as a foundation: a derived table can be listed in a stored order,
@@ -1162,7 +1508,7 @@ to build in Part 1* at the end. The state of the test suites is under
 - A row of tabs above the toolbar, the way an office application arranges its
   commands. Three stand there for good (Zain, 2026-10-06), each with an icon
   before its name: **File**, **Home** and **Settings**. **Home** is the
-  modeling toolbar, with Note after Connect and then **Insert ▾**, which drops
+  modeling toolbar, with Note after Connect, **Text**, and then **Insert ▾**, which drops
   the Insert menu (Picture and Symbols; Insert has no tab of its own any
   more). Home's Theme button is put away there -- Settings' Design row offers
   the theme -- so the modeling row keeps its words and the notation picker at
@@ -1276,6 +1622,19 @@ to build in Part 1* at the end. The state of the test suites is under
   duplicated, deleted, undone and saved like elements, appear in the explorer
   under groups of their own, and are not database objects: nothing connects to
   them and no attribute belongs to them. Project files are version 11.
+- **Text** is a visible Conceptual toolbar tool immediately before the
+  existing Insert control containing Picture. It places borderless annotations
+  and reuses the Note icon and
+  Note/NoteId storage with `free_text = true`, independently of card notes and
+  symbols. Placement opens a transient multiline plain-text editor; double-click
+  edits it again, Ctrl+Return or focus loss commits, and Escape cancels. Only
+  normal-weight prose appears when deselected, with no fill, border or icon;
+  selection uses a temporary dashed outline. Measured bounds preserve the
+  origin, without wrapping or resize handles. Properties has only Text content;
+  Explorer uses Notes with a first-line preview. Movement, duplication, deletion
+  and Undo/Redo use existing note history. Format 35 persists the presentation;
+  older formats default it off. Text has no connectors or Schema semantics,
+  appears in visual exports and is absent from structured database listings.
 - Connections join where they are clicked. With **Connect ▾ → Join where I
   click** (the default, remembered between sessions) each end of a new line is
   pinned to the point clicked on its shape, in the same edit as the connection;
@@ -1497,7 +1856,7 @@ to build in Part 1* at the end. The state of the test suites is under
   join setting, so each slides round its shapes as they move, until it is
   locked by hand. Every other connection Connect makes is unchanged.
 - Weak entities and identifying relationships: an entity's **Kind** in
-  Properties is Regular or Weak, and a relationship's is Regular, Identifying
+  Properties is Strong or Weak, and a relationship's is Regular, Identifying
   or Associative. A weak entity is drawn with a double border and its key
   attribute as a partial key with a dashed underline; an identifying
   relationship as a double diamond. A weak entity without an identifying
@@ -1505,12 +1864,54 @@ to build in Part 1* at the end. The state of the test suites is under
   wears **d** or **o** for disjoint or overlapping, and a total specialization
   draws its link to the supertype as a double line. Project files are version 13.
 - **A default is a starting size, not a ruling.** A newly drawn entity is
-  148 by 86, and every other body is proportioned to sit beside it. The
+  133 by 77, a relationship 171 by 99 and an attribute 135 by 54 (Zain,
+  2026-10-11; they were 148 by 86, 190 by 110 and 150 by 60), and these are
+  the least each is made at: an entity, relationship or attribute whose name
+  would be cut short is widened just enough for it when it is named or
+  renamed, in the same step of history, measured from the name's own lettering
+  and the room its shape gives a name as it is painted -- a diamond's middle,
+  and for an oval its curve as well. A shorter name never narrows it, and
+  nothing is fitted when a diagram is opened. The placing tools still put each
+  down at its default, under its placeholder name, since that is named next. The
   figures are marked in the source as defaults that are not to be changed:
   they decide what somebody meets when they draw an element and nothing more,
   since every element is then pulled about by its corners and edges or given
   a width and a height in the Properties panel, and a size given by hand is
-  kept for that element and stored with the document.
+  kept for that element and stored with the document. (Superseded on
+  2026-10-12 by the entry below.)
+- **Shapes are made for their names** (Zain, 2026-10-12; committed in
+  `974230b`). A new or renamed entity, attribute, relationship,
+  generalization or specialization is made the size its name needs
+  (`fitted_body`): smaller for a short name, never under 70 by 44 and in
+  proportion to its default; no wider than the narrowest width that writes
+  "Relationship" whole on one line; taller for a longer name, written in up to
+  three lines inside the shape's outline, the third ending in an ellipsis with
+  the full name on hover if even three are not enough. The placing tools put
+  each down at the size its placeholder is fitted to. A rename refits about
+  the centre in one step of history (`Editor::rename_to_fit`); a shape resized
+  by hand keeps its size and its name wraps inside it; a diagram opens at the
+  sizes it was saved with, a long name in an older shape now written in the
+  lines it has room for rather than cut to one. Each shape keeps its name's
+  layout until the name, size or lettering changes, so a diagram of long
+  names paints as fast as before.
+- **No shape is made narrower than "Attributes" needs** (Zain, 2026-10-13;
+  implemented and verified locally, not merged; cross-platform CI pending).
+  The least width a new or renamed entity, attribute, relationship,
+  generalization or specialization is made at is the width that writes
+  "Attributes" whole on one line, measured for each kind of shape with its
+  own lettering and name room, the same way "Relationship" is measured for
+  the widest (`fitted_body`). A short name such as "ID" or "User" makes a
+  shape that wide; a name that needs more room grows as before, up to
+  "Relationship"; the height stays in proportion to the default, and a longer
+  name still takes up to three lines. The placing tools therefore put down
+  larger entities, attributes and hierarchy triangles than before; the
+  relationship's placeholder already needed more. The defaults, the
+  lettering, a size given by hand and the sizes a saved diagram opens at are
+  unchanged: nothing is refitted when a diagram is opened, and a saved shape
+  narrower than the new least keeps its size until it is renamed. The Debug
+  and Release functional suites pass, and every picture the visual test
+  renders is identical to `main`'s. *Supersedes*, for sizes made to fit a
+  name, the "never under 70 by 44" of the entry above.
 - **An attribute is sized by hand, as an entity is.** Both hold a name, and
   how wide and how tall each is are two separate questions — a long name
   wants width where a second line wants height — so both answer to each of
@@ -2873,6 +3274,97 @@ Not built yet, though some of it is on screen:
 - Reference pictures exist for one system and release. The audit is
   offscreen and does not prove what a real screen reader announces.
 
+## Practice Data (2026-10-23)
+
+The first form of the Data workspace (ADR-023). *Convert All to Tables* (Model
+and Design menus) raises a page over the whole stage in place of the schema,
+as the schema rises over the diagram: a header (*Practice Data*, *Show
+Schema*, and how many tables were converted), one bar (Search tables,
+Constraints active, grid or list) and a card for every table the schema has,
+each as big as its whole table and flowing side by side while they fit. A card
+is resized by any edge or corner. Tables are not
+grouped into kinds. A card is dragged by its heading and stays exactly where it
+is let go; the first move pins every card where it stood, gaps stay gaps, the
+places are saved and each move undoes. The navigation and the
+workspace switch are unchanged.
+
+A card shows the table's name alone on its line, its row count (and, only when some do, how many rows break a
+rule), Add Row, Reset and a ⋯ menu (Delete Selected Rows, Set Cell to NULL,
+Clear Table), and the rows under column heads marked with the schema's own
+golden key and PK, FK and UQ. A foreign key's cell offers the rows it can point
+at, named by what they hold ("1 — Computer Science"). A refused change is
+explained in the card ("Primary Key violation — DepartmentID 1 already
+exists…") and in the status bar. An identity column is counted up and not
+typed over.
+
+- Domain: `domain/practice_data.{hpp,cpp}` (columns, values, rules, starter
+  rows); `PracticeData` in `domain/model.hpp`, on `Project::practice`.
+- Editor: `convert_to_practice_tables`, `set_practice_value`,
+  `add_practice_row`, `delete_practice_rows`, `reset_practice_table`,
+  `clear_practice_table`, `enforce_practice_constraints`,
+  `move_practice_table`, `resize_practice_table` -- each one step of
+  history, refused whole while constraints are enforced.
+- File: format 37, `practice` (see `ERDX_FORMAT.md`).
+- Desktop: `app/desktop/practice_data_view.{hpp,cpp}`; `MainWindow`
+  `show_practice_data` / `open_practice_data`, `convertToTables`,
+  `--practice-data` for screenshots.
+- Tests: core `practice data follows the schema`; persistence `practice rows
+  persist`; desktop (window-tools part) `practice_data_tests`.
+
+Not built: the DataSource port of ADR-012 (one source so far); sorting and
+filtering rows; import and export of rows.
+
+## Connect's constraints (2026-10-23)
+
+On a schema drawn by hand, Connect's menu gains *Constraints active* and
+*Constraints off* under *How the lines run* (Zain, 2026-10-23). A project
+starts with them **off**: a line from a primary-key or unique row, let go on
+any row or table -- another table or its own -- connects at once, asking
+nothing and saying nothing. The column let go on takes the key's type, a
+foreign key it already had is pointed here instead, and a column made for it
+is numbered on where its name is taken. Only what the model itself cannot hold
+-- a reference to a column that is neither the only primary key column nor
+unique, or a column to itself -- is not made, silently. *Constraints active*
+is Connect exactly as it was before: its questions and its refusals. The
+choice is the project's (`Project::connect_constraints`, format 37) and is an
+undoable step. A schema worked out from a diagram has no Connect and is
+unchanged.
+
+- Editor: `connect_foreign_key_freely`, `set_connect_constraints`.
+- Desktop: `MainWindow::connect_schema_rows_freely`; `SchemaView::link_target`
+  lights a landing by the same rule while a line is drawn.
+- Tests: core `connect without constraints`; persistence `practice rows
+  persist`; desktop new-projects part (the free drag), and the existing
+  Connect checks now turn constraints on first.
+
+## Automatic updates (2026-10-23)
+
+An installed ERDFlow keeps itself up to date (ADR-024; Zain chose all three
+when asked: put in place on closing, every release signed, a switch in
+Settings). Five seconds after opening, it fetches the newest release's
+`SHA256SUMS` and `SHA256SUMS.ed25519` with the system's `curl`, checks the
+Ed25519 signature against the key it carries, and, where the line for its own
+computer is newer than itself, fetches that package and checks its SHA-256. On
+closing, the last ERDFlow open puts it in place: the bundle swapped in by a
+shell once ERDFlow has exited (macOS), the installer run with nothing shown
+(Windows), the AppImage renamed over itself (Linux). Anything that fails is let
+go silently and tried again next time. Only packaged builds that were
+installed do this; a build from source never does.
+
+- Infrastructure: `infrastructure/updater.{hpp,cpp}` -- `read_offer`,
+  `signed_by`, `is_newer`, `package_platform`, and `Updater` (`look`,
+  `put_in_place`); Monocypher 4.0.2 in `third_party/monocypher`, unmodified.
+- Desktop: `main.cpp` starts it, except with `--smoke-test` or
+  `--screenshot`; Home's Settings menu gains *Automatic Updates* (on by
+  default, `updates/automatic`); Help -> Licences credits Monocypher.
+- Release: the package workflow signs `SHA256SUMS` with
+  `ERDFLOW_UPDATE_SIGNING_KEY` and checks the key is the one ERDFlow carries;
+  `assemble-release.sh` gathers and checks the signature.
+- Tests: `update` suite (RFC 8032 vector, signed lists, refusals, unsafe
+  names); desktop window part (the Settings switch, the Licences credit).
+- Not yet seen end to end: the first release to carry this must be installed
+  by hand, and only the release after it can be fetched by one.
+
 ## System qualities in this implementation
 
 | Requirement | Concrete evidence | Current limit |
@@ -2884,6 +3376,51 @@ Not built yet, though some of it is on screen:
 | Usable | Focused property editing, named undo actions, usable example, warnings that permit unfinished drafts, protected open/save. | Screen-reader support, broader keyboard/high-DPI/device checks, and production polish remain unverified. |
 
 ## Verification
+
+**2026-10-15**, on `release/0.1.0-rc1`: `desktop_relational` is split over
+the same `desktop_tests` binary, so the desktop entries are six, each with a
+60 s TIMEOUT; the new one is `desktop_relational_lines
+--relational-lines-part`. No timeout was raised and no assertion was removed
+or changed. Counting the distinct checks each run executes, the two parts
+together execute exactly the 1,215 the single part did; the no-flag run
+executes the same 3,274 as before, and every other part the same as before.
+Local Release: `desktop_relational` 20.3 s before, now 11.6 s, and
+`desktop_relational_lines` 8.4 s; Debug 33.2 s before, now 14.0 s and 18.6 s.
+The two pass side by side (`ctest -j2`). All functional suites pass in Debug
+and Release; `visual` differs on the same six reference pictures as before,
+and none was retaken.
+
+**2026-10-12**, at `fix/desktop-window-timeout`, after painting on request
+and the relational and new-project waits: executed assertions are identical
+to the run before them in every desktop part and in the no-flag run (15,551),
+and grabs taken with and without painting on request are byte-identical
+where the picture is deterministic. Local Release: `desktop_relational`
+13.5 s to 8.3 s, `desktop_new_projects` 12.3 s to 8.8 s, `desktop_window`
+10.6 s, `desktop_window_tools` 3.0 s, no-flag `desktop_tests` 40.2 s to
+31.1 s; each part passed ten times in Release and five in Debug. Desktop CI
+(run 38222393199) passed on all four platforms. `desktop_window`: Linux
+11.1 s, Apple Silicon 15.6 s, Windows 22.0 s, macOS Intel 30.5 s (on a runner
+whose untouched suites ran 1.3-2x slower than usual; four Intel runs with
+painting on request took 21.9-35.5 s, where the entry had taken 35-60 s).
+`desktop_relational` 8.8 / 12.3 / 15.2 / 27.3 s and `desktop_new_projects`
+9.1 / 11.7 / 14.8 / 33.6 s in the same order. No timeout was raised and no
+visual reference was retaken.
+
+**2026-10-12**, on `fix/desktop-window-timeout` from `3888aba`: the desktop
+entries are five -- `desktop_export`, `desktop_relational`,
+`desktop_window_tools --window-tools-part`, `desktop_window --window-part`
+and `desktop_new_projects` -- each with a 60 s TIMEOUT. In equivalent local
+Release builds `desktop_window` went from 24.1 s to 14.1 s and the new
+`desktop_window_tools` takes 3.5 s; `desktop_relational` 14.5 s to 13.7 s,
+`desktop_new_projects` 13.0 s to 12.4 s, and `desktop_tests` with no flag
+53.2 s to 45.1 s. `require(` 2,183 before, 2,188 after (five new checks of the
+waits themselves, which fail against the old `settle_motion`); `must(` 31 and
+`require_table_properties(` 15 unchanged. The assertions executed by the two
+window parts together are exactly those the old `desktop_window` executed,
+and the no-flag run executes the same assertions as before. All functional
+suites pass in Debug and Release, ten repeats of each window part pass, and
+the desktop parts pass side by side (`ctest -j4`). `visual` differs on the
+same six reference pictures as before; none was retaken.
 
 **2026-10-09**, after `656599a` (*Make Plain rendering checks
 platform-neutral*): `desktop_window` is split in two over the same
@@ -3091,14 +3628,13 @@ building:
   it has the same File, Home and Settings tabs, keeps its tools in its
   header, and its rows leave out what acts on the diagram alone.
 - The gesture for reordering columns.
-- *Strong* or *Regular* for an entity that is not weak. Today an entity is
-  *Regular* or *Weak*, and a relationship *Regular* or *Identifying*.
+- ~~The name for an entity that is not weak~~ -- **decided**: an entity's Kind
+  is *Strong* or *Weak*. Relationship *Regular* terminology remains unchanged.
 - What optimization is to cover.
 - What icon and information polish is to cover. Known: the Outline icons'
   "on" drawing is hard to see on the Conceptual Explorer's open group rows.
-- Borderless, free text boxes on the diagram, and whether notes or text
-  belong on the schema. Already available on the diagram: the card note, the
-  plain note and review comments.
+- Whether notes or text belong on the schema. Conceptual already has card
+  notes, symbols, borderless free-text annotations and review comments.
 - Any presentation of cardinality and optionality beyond what is there: the
   four notations (Chen, Min–max, Crow's foot -- the default -- and Bachman,
   chosen from either canvas's Appearance menu) and *Show constraints on this

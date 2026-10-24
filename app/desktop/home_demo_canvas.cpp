@@ -32,8 +32,10 @@ public:
 
 void build_conceptual_example(application::Editor& editor) {
     using namespace domain;
-    // At the sizes the canvas makes each element at (diagram_view.hpp):
-    // entity 148 x 86, relationship 190 x 110, attribute 150 x 60. Laid out
+    // At the sizes the canvas made each element at when the card was composed,
+    // entity 148 x 86, relationship 190 x 110, attribute 150 x 60, which the
+    // card keeps as its own (the canvas's defaults are smaller since
+    // 2026-10-11; see diagram_view.hpp). Laid out
     // on one line, Student, Enrolled, Course, as the card has read since
     // 2026-09-24, with each side's attributes over it and the relationship's
     // own under it.

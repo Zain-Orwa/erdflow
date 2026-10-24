@@ -343,8 +343,10 @@ struct Picture {
     std::vector<std::uint8_t> image;
     auto operator<=>(const Picture&) const = default;
 };
-// A note is free text: its name is drawn as a title and its description as
-// the text beneath, which is why it has the same two fields as everything else.
+// A note is one of two things put on the canvas beside the model: free text,
+// or a symbol. The titled card a note once was is gone (Zain, 2026-10-15); one
+// in an older file is read as free text holding its title and then its text.
+// The two fields are kept because the file has always carried them.
 struct Note {
     NoteId id;
     std::string name;
@@ -354,6 +356,9 @@ struct Note {
     // sits in a line of chat. It is still a note in every other way, so it is
     // moved, coloured, copied, deleted and undone like one.
     bool plain = false;
+    // Plain prose, distinct from both a titled card and a scalable symbol.
+    // Its visible content is description; name is unused.
+    bool free_text = false;
     auto operator<=>(const Note&) const = default;
 };
 // The paper a diagram is drawn on. Theme leaves the canvas the plain colour
@@ -728,6 +733,54 @@ struct SchemaOverrides {
     auto operator<=>(const SchemaOverrides&) const = default;
 };
 
+// Practice Data (Zain, 2026-10-23): the rows a student puts into the tables the
+// schema describes, to see what its keys and rules do to real data without
+// writing SQL. It is the Data workspace ADR-022 names, reached before SQL.
+//
+// The schema stays the only description of the tables. Nothing here says what
+// a table or a column is: a row is kept against the relation's own identity and
+// each value against the column's (ColumnIdentity), so renaming a column or
+// listing it elsewhere keeps its values, and a column the schema gains later
+// simply has none yet. Nothing done to a row ever reaches the schema.
+//
+// One value as it was typed, or NULL. NULL is not the empty string and not
+// nought, and is kept apart from both.
+using PracticeValue = std::optional<std::string>;
+
+struct PracticeRow {
+    // A column with no entry holds NULL.
+    std::map<ColumnIdentity, PracticeValue> values;
+    auto operator<=>(const PracticeRow&) const = default;
+};
+
+struct PracticeTable {
+    std::vector<PracticeRow> rows;
+    auto operator<=>(const PracticeTable&) const = default;
+};
+
+struct PracticeData {
+    // Whether the schema has been converted into practice tables at all.
+    bool converted = false;
+    // Whether a change that breaks a constraint is refused, as a database
+    // refuses it, or kept and marked so it can be looked at.
+    bool enforced = true;
+    // A table with no entry has not been given any rows yet. Rows kept for a
+    // table the schema no longer has are kept, as an order kept for a column
+    // that has gone is, for the table coming back.
+    std::map<RelationId, PracticeTable> tables;
+    // Where each card was put by hand (Zain, 2026-10-23): its top-left corner
+    // on the page, its width, and its height where it was pulled to one --
+    // nought means as tall as its rows ask for.
+    // Until a card is moved there are none, and the cards stand in a grid that
+    // follows the window. The first card moved puts every card where it stood,
+    // and from then on each stays exactly where it is, gaps and all; a table
+    // with no place is put below them. A place kept for a table the schema
+    // does not have at the moment waits for it.
+    std::map<RelationId, Rect> places;
+    [[nodiscard]] bool empty() const { return !converted && enforced && tables.empty() && places.empty(); }
+    auto operator<=>(const PracticeData&) const = default;
+};
+
 struct Project {
     ProjectId id;
     std::string name = "Untitled";
@@ -751,6 +804,15 @@ struct Project {
     SchemaOverrides schema;
     // Where the schema has been arranged by hand, beside the diagram's own.
     SchemaLayout schema_layout;
+    // Text, symbols and pictures put on the Relational Schema (Zain,
+    // 2026-10-15). They are the schema's own, never the diagram's: placed in
+    // the schema's coordinates, and drawn, saved and undone with it. A note
+    // here is free text or a symbol, as on the diagram, and a picture keeps
+    // its bytes as a diagram picture does. Each stands where schema_figures
+    // says, keyed as the diagram's layout is.
+    std::map<NoteId, Note> schema_notes;
+    std::map<PictureId, Picture> schema_pictures;
+    std::map<ElementRef, Rect> schema_figures;
     std::map<ElementRef, Rect> layout;
     // How the user has shaped each connector they have touched. An absent entry
     // means the connector is bent and joined entirely automatically.
@@ -774,6 +836,16 @@ struct Project {
     std::map<ElementRef, LetteringBase> lettering;
     // The paper the diagram is drawn on.
     Background background;
+    // The rows put into the schema's tables to practise with, kept apart from
+    // the schema they are put into.
+    PracticeData practice;
+    // Whether Connect, on a schema drawn by hand, holds a connection to its
+    // own rules -- asking before it makes or uses a column, and turning away
+    // what it would not make -- or connects whatever it is asked to at once
+    // (Zain, 2026-10-23). Off unless turned on. Either way a foreign key the
+    // model cannot hold -- to a column that is neither the primary key nor
+    // unique -- is never made.
+    bool connect_constraints = false;
     auto operator<=>(const Project&) const = default;
 };
 
@@ -819,6 +891,11 @@ inline constexpr double max_coordinate = 100000;
 // it is drawn on. Between them a symbol can be enlarged and shrunk freely.
 inline constexpr double min_symbol_size = 16;
 inline constexpr double max_symbol_size = 4000;
+// A picture is drawn fitted to its box, never stretched, so the box is how big
+// it is drawn. It is pulled by any edge or corner (Zain, 2026-10-15) between the
+// same bounds as a symbol: down to a mark beside a name, up to a region's head.
+inline constexpr double min_picture_size = min_symbol_size;
+inline constexpr double max_picture_size = max_symbol_size;
 // How small and how large an entity's box may be pulled. Small enough for a
 // compact diagram of short names, large enough to hold a long one without
 // shortening it, and bounded at both ends so a pull that runs away cannot

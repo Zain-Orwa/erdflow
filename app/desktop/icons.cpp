@@ -548,7 +548,7 @@ void draw(QPainter& painter, Glyph glyph, const Theme& colors, qreal side) {
     case Glyph::AlignToGrid: case Glyph::CanvasControls: case Glyph::Comments: case Glyph::History:
     case Glyph::Guide: case Glyph::About:
     case Glyph::FileTab: case Glyph::Home: case Glyph::Insert: case Glyph::Settings: case Glyph::NoPanels:
-    case Glyph::Model:
+    case Glyph::Model: case Glyph::Filter:
         break;
     }
 }
@@ -650,6 +650,7 @@ QString icon_name(Glyph glyph) {
     case Glyph::NoPanels: return QStringLiteral("no-panels");
     // Lucide's network, which both sets have as the Home screen's conceptual.
     case Glyph::Model: return QStringLiteral("conceptual");
+    case Glyph::Filter: return QStringLiteral("filter");
     }
     return QStringLiteral("select");
 }
@@ -729,7 +730,7 @@ bool line_art_only(Glyph glyph) {
     case Glyph::AlignToGrid: case Glyph::CanvasControls: case Glyph::Comments: case Glyph::History:
     case Glyph::Guide: case Glyph::About:
     case Glyph::FileTab: case Glyph::Home: case Glyph::Insert: case Glyph::Settings: case Glyph::NoPanels:
-    case Glyph::Model:
+    case Glyph::Model: case Glyph::Filter:
         return true;
     default:
         return false;

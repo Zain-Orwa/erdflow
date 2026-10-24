@@ -5,6 +5,7 @@
 // and whether it is a gain or a loss. He decides. Fixing a real defect is not
 // covered by this — fix it and say what was wrong. Full rule: CLAUDE.md.
 #include "application/editor.hpp"
+#include "domain/practice_data.hpp"
 #include "domain/schema_preview.hpp"
 
 #include <algorithm>
@@ -74,6 +75,17 @@ std::size_t payload(const Connector& value) { return value.waypoints.capacity() 
 // A comment holds its text and the list of what it is pinned to on the heap.
 std::size_t payload(const Comment& value) {
     return value.text.capacity() + value.targets.capacity() * sizeof(CommentTarget);
+}
+// A practice table's rows, and every value in them.
+std::size_t payload(const PracticeTable& value) {
+    std::size_t result = value.rows.capacity() * sizeof(PracticeRow);
+    for (const auto& row : value.rows)
+        for (const auto& [column, held] : row.values) {
+            (void)column;
+            result += sizeof(std::pair<const ColumnIdentity, PracticeValue>) + 4 * sizeof(void*)
+                    + (held ? held->capacity() : 0);
+        }
+    return result;
 }
 
 // The three fields history swaps whole rather than key by key. They are the
@@ -169,6 +181,18 @@ struct Delta {
     Changes<ElementRef, Colour> colours;
     Changes<ElementRef, std::uint8_t> transparency;
     Changes<ElementRef, LetteringBase> lettering;
+    // What is put on the schema, each changed one by one as the diagram's own
+    // are, so moving a table never copies a picture into the history.
+    Changes<NoteId, Note> schema_notes;
+    Changes<PictureId, Picture> schema_pictures;
+    Changes<ElementRef, Rect> schema_figures;
+    // Practice rows, a table at a time, so a value typed into one table never
+    // copies the others into the history.
+    Changes<RelationId, PracticeTable> practice_tables;
+    std::optional<bool> practice_converted;
+    std::optional<bool> practice_enforced;
+    std::optional<std::map<RelationId, Rect>> practice_places;
+    std::optional<bool> connect_constraints;
     std::size_t bytes = 0;
     std::uint64_t before_state = 0;
     std::uint64_t after_state = 0;
@@ -179,7 +203,10 @@ struct Delta {
             && relationships.keys.empty() && specializations.keys.empty()
             && pictures.keys.empty() && notes.keys.empty() && comments.keys.empty()
             && layout.keys.empty() && connectors.keys.empty() && colours.keys.empty()
-            && transparency.keys.empty() && lettering.keys.empty();
+            && transparency.keys.empty() && lettering.keys.empty()
+            && schema_notes.keys.empty() && schema_pictures.keys.empty() && schema_figures.keys.empty()
+            && practice_tables.keys.empty() && !practice_converted && !practice_enforced && !practice_places
+            && !connect_constraints;
     }
     void toggle(Project& project) {
         if (project_name) project.name.swap(*project_name);
@@ -200,6 +227,14 @@ struct Delta {
         colours.toggle(project.colours);
         transparency.toggle(project.transparency);
         lettering.toggle(project.lettering);
+        schema_notes.toggle(project.schema_notes);
+        schema_pictures.toggle(project.schema_pictures);
+        schema_figures.toggle(project.schema_figures);
+        practice_tables.toggle(project.practice.tables);
+        if (practice_converted) std::swap(project.practice.converted, *practice_converted);
+        if (practice_enforced) std::swap(project.practice.enforced, *practice_enforced);
+        if (practice_places) std::swap(project.practice.places, *practice_places);
+        if (connect_constraints) std::swap(project.connect_constraints, *connect_constraints);
     }
     [[nodiscard]] std::size_t estimate(const Project& project) const {
         return sizeof(Delta) + sizeof(std::unique_ptr<Delta>) + label.capacity()
@@ -217,7 +252,12 @@ struct Delta {
             + cost(comments, project.comments)
             + cost(layout, project.layout) + cost(connectors, project.connectors)
             + cost(colours, project.colours) + cost(transparency, project.transparency)
-            + cost(lettering, project.lettering);
+            + cost(lettering, project.lettering)
+            + cost(schema_notes, project.schema_notes) + cost(schema_pictures, project.schema_pictures)
+            + cost(schema_figures, project.schema_figures)
+            + cost(practice_tables, project.practice.tables)
+            + (practice_places ? entries(practice_places->size() + project.practice.places.size(),
+                                         sizeof(std::pair<const RelationId, Rect>)) : 0);
     }
 };
 
@@ -257,9 +297,9 @@ std::vector<HistoryChange> summarise(const Delta& delta, const Project& now) {
         const auto id = std::get<NoteId>(ref);
         const auto found = now.notes.find(id);
         const auto was = delta.notes.alternate.find(id);
-        const bool plain = found != now.notes.end() ? found->second.plain
-                         : was != delta.notes.alternate.end() && was->second.plain;
-        return plain ? "Symbol" : "Note";
+        const bool free_text = found != now.notes.end() ? found->second.free_text
+                             : was != delta.notes.alternate.end() && was->second.free_text;
+        return free_text ? "Text" : "Symbol";
     };
     // Created, deleted, renamed or otherwise changed, for each kind of element
     // whose only question is its name.
@@ -294,6 +334,50 @@ std::vector<HistoryChange> summarise(const Delta& delta, const Project& now) {
     walk(delta.specializations, now.specializations);
     walk(delta.pictures, now.pictures);
     walk(delta.notes, now.notes);
+    // What is put on the schema: made, deleted, moved or resized there. It is
+    // not on the diagram, so it is named but carries no element to go to.
+    {
+        const auto schema_noun = [&](const ElementRef& ref) -> std::string {
+            if (std::holds_alternative<PictureId>(ref)) return "Picture";
+            const auto id = std::get<NoteId>(ref);
+            const auto found = now.schema_notes.find(id);
+            const auto was = delta.schema_notes.alternate.find(id);
+            const bool free_text = found != now.schema_notes.end() ? found->second.free_text
+                                 : was != delta.schema_notes.alternate.end() && was->second.free_text;
+            return free_text ? "Text" : "Symbol";
+        };
+        std::set<ElementRef> told;
+        const auto tell = [&](const auto& changed, const auto& live) {
+            for (const auto& id : changed.keys) {
+                const bool was = changed.alternate.contains(id);
+                const auto after = live.find(id);
+                const bool is = after != live.end();
+                if (was == is) continue;
+                told.insert(ElementRef{id});
+                changes.push_back({.kind = is ? Kind::Created : Kind::Deleted, .noun = schema_noun(ElementRef{id}),
+                                   .name = is ? after->second.name : changed.alternate.at(id).name,
+                                   .other = "the schema"});
+            }
+        };
+        tell(delta.schema_pictures, now.schema_pictures);
+        tell(delta.schema_notes, now.schema_notes);
+        for (const auto& ref : delta.schema_figures.keys) {
+            if (told.contains(ref)) continue;
+            const auto before = delta.schema_figures.alternate.find(ref);
+            const auto after = now.schema_figures.find(ref);
+            if (before == delta.schema_figures.alternate.end() || after == now.schema_figures.end()) continue;
+            const bool sized = before->second.width != after->second.width || before->second.height != after->second.height;
+            changes.push_back({.kind = sized ? Kind::Resized : Kind::Moved, .noun = schema_noun(ref), .other = "the schema"});
+        }
+        for (const auto& id : delta.schema_notes.keys) {
+            const ElementRef ref{id};
+            if (told.contains(ref)) continue;
+            const auto before = delta.schema_notes.alternate.find(id);
+            const auto after = now.schema_notes.find(id);
+            if (before != delta.schema_notes.alternate.end() && after != now.schema_notes.end() && before->second != after->second)
+                changes.push_back({.kind = Kind::Changed, .noun = schema_noun(ref), .name = after->second.name, .other = "the schema"});
+        }
+    }
     // An attribute also has an owner it can be attached to or taken from.
     for (const auto& id : delta.attributes.keys) {
         const auto before = delta.attributes.alternate.find(id);
@@ -839,20 +923,117 @@ EditResult Editor::create_picture(std::string name, Rect rect, std::vector<std::
         return EditResult{true, {}, ElementRef{id}, {}};
     });
 }
-EditResult Editor::create_note(std::string name, Rect rect, std::string text) {
-    return impl_->edit("Insert note", [&](Delta& delta) {
-        const NoteId id{impl_->next_id()};
-        delta.notes.put(id, Note{id, std::move(name), std::move(text), false});
-        delta.layout.put(ElementRef{id}, rect);
-        return EditResult{true, {}, ElementRef{id}, {}};
-    });
-}
 EditResult Editor::create_symbol(std::string character, Rect rect) {
     return impl_->edit("Insert symbol", [&](Delta& delta) {
         const NoteId id{impl_->next_id()};
         delta.notes.put(id, Note{id, std::move(character), {}, true});
         delta.layout.put(ElementRef{id}, rect);
         return EditResult{true, {}, ElementRef{id}, {}};
+    });
+}
+EditResult Editor::create_free_text(std::string text, Rect rect) {
+    return impl_->edit("Insert text", [&](Delta& delta) {
+        const NoteId id{impl_->next_id()};
+        delta.notes.put(id, Note{id, {}, std::move(text), false, true});
+        delta.layout.put(ElementRef{id}, rect);
+        return EditResult{true, {}, ElementRef{id}, {}};
+    });
+}
+EditResult Editor::edit_free_text(NoteId id, std::string text, Rect rect) {
+    return impl_->edit("Edit text", [&](Delta& delta) {
+        const auto found = project().notes.find(id);
+        if (found == project().notes.end() || !found->second.free_text)
+            return failure("The text annotation no longer exists.");
+        auto value = found->second;
+        value.description = std::move(text);
+        if (value != found->second) delta.notes.put(id, std::move(value));
+        const ElementRef ref{id};
+        if (project().layout.at(ref) != rect) delta.layout.put(ref, rect);
+        return EditResult{};
+    });
+}
+// What is put on the schema (Zain, 2026-10-15): text, a symbol or a picture,
+// the schema's own. Each is one step of history, as its diagram twin is.
+EditResult Editor::create_schema_text(std::string text, Rect rect) {
+    return impl_->edit("Insert text", [&](Delta& delta) {
+        const NoteId id{impl_->next_id()};
+        delta.schema_notes.put(id, Note{id, {}, std::move(text), false, true});
+        delta.schema_figures.put(ElementRef{id}, rect);
+        return EditResult{true, {}, ElementRef{id}, {}};
+    });
+}
+EditResult Editor::create_schema_symbol(std::string character, Rect rect) {
+    return impl_->edit("Insert symbol", [&](Delta& delta) {
+        const NoteId id{impl_->next_id()};
+        delta.schema_notes.put(id, Note{id, std::move(character), {}, true, false});
+        delta.schema_figures.put(ElementRef{id}, rect);
+        return EditResult{true, {}, ElementRef{id}, {}};
+    });
+}
+EditResult Editor::create_schema_picture(std::string name, Rect rect, std::vector<std::uint8_t> image) {
+    return impl_->edit("Insert picture", [&](Delta& delta) {
+        const PictureId id{impl_->next_id()};
+        delta.schema_pictures.put(id, Picture{id, std::move(name), {}, std::move(image)});
+        delta.schema_figures.put(ElementRef{id}, rect);
+        return EditResult{true, {}, ElementRef{id}, {}};
+    });
+}
+EditResult Editor::edit_schema_text(NoteId id, std::string text, Rect rect) {
+    return impl_->edit("Edit text", [&](Delta& delta) {
+        const auto found = project().schema_notes.find(id);
+        if (found == project().schema_notes.end() || !found->second.free_text)
+            return failure("The text on the schema no longer exists.");
+        auto value = found->second;
+        value.description = std::move(text);
+        if (value != found->second) delta.schema_notes.put(id, std::move(value));
+        const ElementRef ref{id};
+        if (project().schema_figures.at(ref) != rect) delta.schema_figures.put(ref, rect);
+        return EditResult{};
+    });
+}
+EditResult Editor::move_schema_figures(const std::map<ElementRef, Rect>& places) {
+    return impl_->edit("Move on the schema", [&](Delta& delta) {
+        for (const auto& [ref, rect] : places) {
+            const auto found = project().schema_figures.find(ref);
+            if (found == project().schema_figures.end()) return failure("It is no longer on the schema.");
+            auto moved = found->second;
+            moved.x = std::clamp(rect.x, -max_coordinate, max_coordinate - moved.width);
+            moved.y = std::clamp(rect.y, -max_coordinate, max_coordinate - moved.height);
+            if (moved != found->second) delta.schema_figures.put(ref, moved);
+        }
+        return EditResult{};
+    });
+}
+EditResult Editor::resize_schema_figures(const std::map<ElementRef, Rect>& boxes) {
+    const bool pictures = !boxes.empty() && std::holds_alternative<PictureId>(boxes.begin()->first);
+    return impl_->edit(pictures ? "Resize picture" : "Resize symbol", [&](Delta& delta) {
+        for (const auto& [ref, box] : boxes) {
+            const auto found = project().schema_figures.find(ref);
+            if (found == project().schema_figures.end()) return failure("It is no longer on the schema.");
+            // Text is as large as its words; a picture and a symbol are drawn to
+            // their box, between a symbol's bounds, as on the diagram.
+            const auto* note = std::get_if<NoteId>(&ref);
+            if (note && project().schema_notes.at(*note).free_text) return failure("Text is as large as its words.");
+            auto sized = box;
+            sized.width = std::clamp(sized.width, min_picture_size, max_picture_size);
+            sized.height = std::clamp(sized.height, min_picture_size, max_picture_size);
+            sized.x = std::clamp(sized.x, -max_coordinate, max_coordinate - sized.width);
+            sized.y = std::clamp(sized.y, -max_coordinate, max_coordinate - sized.height);
+            if (sized != found->second) delta.schema_figures.put(ref, sized);
+        }
+        return EditResult{};
+    });
+}
+EditResult Editor::erase_schema_figures(const std::vector<ElementRef>& figures) {
+    return impl_->edit("Delete from the schema", [&](Delta& delta) {
+        for (const auto& ref : figures) {
+            if (!project().schema_figures.contains(ref)) return failure("It is no longer on the schema.");
+            if (const auto* id = std::get_if<PictureId>(&ref)) delta.schema_pictures.remove(*id);
+            else if (const auto* note = std::get_if<NoteId>(&ref)) delta.schema_notes.remove(*note);
+            else return failure("Only what is put on the schema is deleted here.");
+            delta.schema_figures.remove(ref);
+        }
+        return EditResult{};
     });
 }
 EditResult Editor::set_inheritance_direction(SpecializationId specialization, Inheritance direction) {
@@ -1104,7 +1285,29 @@ EditResult Editor::merge_project(const Project& other, double dx, double dy) {
 // it is given another, the attribute has no name of its own yet.
 constexpr std::string_view placed_attribute_name = "Attribute";
 
-EditResult Editor::rename(ElementRef ref, std::string name) {
+EditResult Editor::rename(ElementRef ref, std::string name, double least_width) {
+    return rename_resizing(ref, std::move(name), [least_width](const Rect& was) -> std::optional<Rect> {
+        if (was.width >= least_width) return std::nullopt;
+        auto widened = was;
+        widened.width = std::min(least_width, max_entity_width);
+        widened.x = std::clamp(was.x - (widened.width - was.width) / 2, -max_coordinate, max_coordinate - widened.width);
+        return widened;
+    });
+}
+EditResult Editor::rename_to_fit(ElementRef ref, std::string name, double width, double height) {
+    const bool by_hand = project().lettering.contains(ref);
+    return rename_resizing(ref, std::move(name), [&](const Rect& was) -> std::optional<Rect> {
+        if (by_hand) return std::nullopt;
+        Rect fitted = was;
+        fitted.width = std::clamp(width, min_entity_width, max_entity_width);
+        fitted.height = std::max(height, min_entity_height);
+        fitted.x = std::clamp(was.x + (was.width - fitted.width) / 2, -max_coordinate, max_coordinate - fitted.width);
+        fitted.y = std::clamp(was.y + (was.height - fitted.height) / 2, -max_coordinate, max_coordinate - fitted.height);
+        return fitted;
+    });
+}
+EditResult Editor::rename_resizing(ElementRef ref, std::string name,
+                                   const std::function<std::optional<Rect>(const Rect&)>& resized) {
     return impl_->edit("Rename element", [&](Delta& delta) {
         const auto characters = character_count(name);
         // Attributes are placed first and named afterwards, several at a time,
@@ -1126,6 +1329,10 @@ EditResult Editor::rename(ElementRef ref, std::string name) {
                 if (named_now) value.creation_order = *named_now;
         });
         if (result) hold_anchors(project(), delta, ref, TextField::Name, characters);
+        if (result && (std::holds_alternative<EntityId>(ref) || std::holds_alternative<RelationshipId>(ref)
+                       || std::holds_alternative<AttributeId>(ref) || std::holds_alternative<SpecializationId>(ref)))
+            if (const auto found = project().layout.find(ref); found != project().layout.end())
+                if (const auto box = resized(found->second); box && *box != found->second) delta.layout.put(ref, *box);
         return result;
     });
 }
@@ -1555,6 +1762,77 @@ EditResult Editor::connect_foreign_key(RelationId referencing, std::optional<Sch
         carry_type(value, key);
         delta.schema = std::move(value);
         if (made) *made = id;
+        return EditResult{};
+    });
+}
+
+EditResult Editor::connect_foreign_key_freely(RelationId referencing, std::optional<SchemaColumnId> column,
+                                              std::string name, RelationId referenced, SchemaColumnId target,
+                                              ForeignKeyId* made) {
+    return impl_->edit("Connect tables", [&](Delta& delta) {
+        const auto& schema = project().schema;
+        if (!schema.relations.contains(referencing) || !schema.relations.contains(referenced))
+            return failure("Choose two existing tables.");
+        const auto owns = [&](RelationId table, SchemaColumnId id) {
+            const auto found = schema.added.find(table);
+            return found != schema.added.end()
+                && std::any_of(found->second.begin(), found->second.end(),
+                               [&](const SchemaColumn& one) { return one.id == id; });
+        };
+        if (!owns(referenced, target)) return failure("The column no longer exists.");
+        const auto& pointed = *find_schema_column(schema, target);
+        const auto keys = std::count_if(schema.added.at(referenced).begin(), schema.added.at(referenced).end(),
+                                        [](const SchemaColumn& one) { return one.identifier; });
+        if (!pointed.unique && !(pointed.identifier && keys == 1))
+            return failure("A foreign key refers to a primary key or a unique column.");
+        auto value = schema;
+        SchemaColumnId holding;
+        if (column) {
+            if (!owns(referencing, *column)) return failure("The column no longer exists.");
+            if (*column == target) return failure("A column cannot reference itself.");
+            // Pointed here instead of wherever it pointed before.
+            for (auto at = value.foreign_keys.begin(); at != value.foreign_keys.end();) {
+                if (at->second.column != *column) {
+                    ++at;
+                    continue;
+                }
+                if (at->second.target == target) return EditResult{};
+                at = value.foreign_keys.erase(at);
+            }
+            auto& held = *find_schema_column(value, *column);
+            held.logical_type = pointed.logical_type;
+            held.length = pointed.length;
+            held.scale = pointed.scale;
+            holding = *column;
+        } else {
+            auto& own = value.added[referencing];
+            const auto taken = [&](const std::string& called) {
+                return std::any_of(own.begin(), own.end(), [&](const SchemaColumn& one) { return one.name == called; });
+            };
+            if (name.empty()) name = pointed.name;
+            auto chosen = name;
+            for (int n = 2; taken(chosen); ++n) chosen = name + std::to_string(n);
+            SchemaColumn fresh;
+            fresh.id = SchemaColumnId{impl_->next_id()};
+            fresh.name = std::move(chosen);
+            fresh.logical_type = pointed.logical_type;
+            fresh.length = pointed.length;
+            fresh.scale = pointed.scale;
+            holding = fresh.id;
+            own.push_back(std::move(fresh));
+        }
+        const ForeignKeyId id{impl_->next_id()};
+        value.foreign_keys[id] = SchemaForeignKey{id, referencing, referenced, holding, target};
+        if (const auto why = broken_reference(value); !why.empty()) return failure(why);
+        delta.schema = std::move(value);
+        if (made) *made = id;
+        return EditResult{};
+    });
+}
+
+EditResult Editor::set_connect_constraints(bool constrained) {
+    return impl_->edit(constrained ? "Turn Connect constraints on" : "Turn Connect constraints off", [&](Delta& delta) {
+        if (project().connect_constraints != constrained) delta.connect_constraints = constrained;
         return EditResult{};
     });
 }
@@ -2513,6 +2791,24 @@ EditResult Editor::resize_symbols(const std::map<ElementRef, Rect>& boxes) {
         return EditResult{};
     });
 }
+EditResult Editor::resize_pictures(const std::map<ElementRef, Rect>& boxes) {
+    return impl_->edit("Resize picture", [&](Delta& delta) {
+        for (const auto& [ref, box] : boxes) {
+            if (!std::holds_alternative<PictureId>(ref)) return failure("Only a picture can be resized here.");
+            if (!exists(project(), ref)) return failure("The picture no longer exists.");
+            // Clamped rather than refused, as a symbol's size is: a drag that
+            // runs past the end is asking for the end.
+            auto sized = box;
+            sized.width = std::clamp(sized.width, min_picture_size, max_picture_size);
+            sized.height = std::clamp(sized.height, min_picture_size, max_picture_size);
+            sized.x = std::clamp(sized.x, -max_coordinate, max_coordinate - sized.width);
+            sized.y = std::clamp(sized.y, -max_coordinate, max_coordinate - sized.height);
+            const auto found = project().layout.find(ref);
+            if (found == project().layout.end() || found->second != sized) delta.layout.put(ref, sized);
+        }
+        return EditResult{};
+    });
+}
 EditResult Editor::resize_entities(const std::map<ElementRef, Rect>& boxes) {
     return impl_->edit("Resize entity", [&](Delta& delta) {
         for (const auto& [ref, box] : boxes) {
@@ -3010,6 +3306,175 @@ EditResult Editor::duplicate(const std::vector<ElementRef>& elements, double dx,
         return result;
     });
 }
+
+namespace {
+// Where a relation stands in the schema as it reads now, if it is still there.
+std::optional<std::size_t> practice_table(const SchemaPreview& preview, RelationId id) {
+    for (std::size_t t = 0; t < preview.tables.size(); ++t)
+        if (preview.tables[t].id == id) return t;
+    return std::nullopt;
+}
+EditResult refused(const PracticeProblem& problem) { return failure(problem.title + "\n" + problem.message); }
+std::string practice_name(const SchemaPreview& preview, std::optional<std::size_t> t) {
+    return t ? preview.tables[*t].name : std::string("the table");
+}
+} // namespace
+
+EditResult Editor::convert_to_practice_tables() {
+    return impl_->edit("Convert All to Tables", [&](Delta& delta) {
+        const auto preview = schema_preview(project());
+        if (preview.tables.empty()) return failure("The schema has no tables to convert yet. Add a table first.");
+        const auto& before = project().practice;
+        const auto after = converted_to_practice(preview, before);
+        for (const auto& [id, table] : after.tables)
+            if (!before.tables.contains(id)) delta.practice_tables.put(id, table);
+        if (!before.converted) delta.practice_converted = true;
+        return EditResult{};
+    });
+}
+
+EditResult Editor::set_practice_value(RelationId table, std::size_t row, ColumnIdentity column, PracticeValue value) {
+    const auto preview = schema_preview(project());
+    const auto t = practice_table(preview, table);
+    return impl_->edit("Edit a value in " + practice_name(preview, t), [&](Delta& delta) {
+        if (!t) return failure("The table is no longer in the schema.");
+        const auto& shape = preview.tables[*t];
+        const auto found = project().practice.tables.find(table);
+        if (found == project().practice.tables.end() || row >= found->second.rows.size())
+            return failure("The row no longer exists.");
+        const auto columns = practice_columns(shape);
+        const auto at = std::find_if(columns.begin(), columns.end(),
+                                     [&](std::size_t c) { return column_identity(shape.columns[c]) == column; });
+        if (at == columns.end()) return failure("The column is no longer in the table.");
+        const auto& described = shape.columns[*at];
+        auto after = project().practice;
+        auto& values = after.tables[table].rows[row].values;
+        if (value) values[column] = std::move(value);
+        else values.erase(column);
+        if (after == project().practice) return EditResult{};
+        if (after.enforced && described.auto_increment)
+            return failure("Identity column\n" + described.name + " counts itself up (IDENTITY). The database gives "
+                           "each new row the next number, so it is not typed over by hand.");
+        if (after.enforced)
+            if (const auto why = practice_refusal(preview, project().practice, after, *t, row, {*at}))
+                return refused(*why);
+        delta.practice_tables.put(table, after.tables.at(table));
+        return EditResult{};
+    });
+}
+
+EditResult Editor::add_practice_row(RelationId table, PracticeRow row) {
+    const auto preview = schema_preview(project());
+    const auto t = practice_table(preview, table);
+    return impl_->edit("Add a row to " + practice_name(preview, t), [&](Delta& delta) {
+        if (!t) return failure("The table is no longer in the schema.");
+        const auto& shape = preview.tables[*t];
+        auto after = project().practice;
+        auto& rows = after.tables[table];
+        const auto columns = practice_columns(shape);
+        PracticeRow made;
+        for (const auto c : columns) {
+            const auto& described = shape.columns[c];
+            const auto identity = *column_identity(described);
+            if (described.auto_increment) {
+                made.values[identity] = next_counted_value(rows, described);
+                continue;
+            }
+            const auto typed = row.values.find(identity);
+            if (typed != row.values.end() && typed->second) made.values[identity] = typed->second;
+        }
+        rows.rows.push_back(std::move(made));
+        if (after.enforced)
+            if (const auto why = practice_refusal(preview, project().practice, after, *t, rows.rows.size() - 1, columns))
+                return refused(*why);
+        delta.practice_tables.put(table, rows);
+        return EditResult{};
+    });
+}
+
+EditResult Editor::delete_practice_rows(RelationId table, std::vector<std::size_t> rows) {
+    const auto preview = schema_preview(project());
+    const auto t = practice_table(preview, table);
+    std::sort(rows.begin(), rows.end());
+    rows.erase(std::unique(rows.begin(), rows.end()), rows.end());
+    const auto label = rows.size() == 1 ? "Delete a row from " + practice_name(preview, t)
+                                        : "Delete " + std::to_string(rows.size()) + " rows from " + practice_name(preview, t);
+    return impl_->edit(label, [&](Delta& delta) {
+        if (!t) return failure("The table is no longer in the schema.");
+        const auto found = project().practice.tables.find(table);
+        if (rows.empty() || found == project().practice.tables.end() || rows.back() >= found->second.rows.size())
+            return failure("The row no longer exists.");
+        auto after = project().practice;
+        auto& kept = after.tables[table].rows;
+        for (auto at = rows.rbegin(); at != rows.rend(); ++at) kept.erase(kept.begin() + static_cast<std::ptrdiff_t>(*at));
+        if (after.enforced)
+            if (const auto why = practice_refusal(preview, project().practice, after, *t, std::nullopt, {}))
+                return refused(*why);
+        delta.practice_tables.put(table, after.tables.at(table));
+        return EditResult{};
+    });
+}
+
+EditResult Editor::reset_practice_table(RelationId table) {
+    const auto preview = schema_preview(project());
+    const auto t = practice_table(preview, table);
+    return impl_->edit("Reset " + practice_name(preview, t), [&](Delta& delta) {
+        if (!t) return failure("The table is no longer in the schema.");
+        auto after = project().practice;
+        after.tables[table].rows = starter_rows(preview, project().practice, *t);
+        if (after == project().practice) return EditResult{};
+        if (after.enforced)
+            if (const auto why = practice_refusal(preview, project().practice, after, *t, std::nullopt, {}))
+                return refused(*why);
+        delta.practice_tables.put(table, after.tables.at(table));
+        return EditResult{};
+    });
+}
+
+EditResult Editor::clear_practice_table(RelationId table) {
+    const auto preview = schema_preview(project());
+    const auto t = practice_table(preview, table);
+    return impl_->edit("Clear " + practice_name(preview, t), [&](Delta& delta) {
+        if (!t) return failure("The table is no longer in the schema.");
+        auto after = project().practice;
+        after.tables[table].rows.clear();
+        if (after == project().practice) return EditResult{};
+        if (after.enforced)
+            if (const auto why = practice_refusal(preview, project().practice, after, *t, std::nullopt, {}))
+                return refused(*why);
+        delta.practice_tables.put(table, after.tables.at(table));
+        return EditResult{};
+    });
+}
+
+EditResult Editor::enforce_practice_constraints(bool enforced) {
+    return impl_->edit(enforced ? "Turn constraints on" : "Turn constraints off", [&](Delta& delta) {
+        if (project().practice.enforced != enforced) delta.practice_enforced = enforced;
+        return EditResult{};
+    });
+}
+
+EditResult Editor::move_practice_table(RelationId table, std::map<RelationId, Rect> places) {
+    return place_practice(table, std::move(places), "Move ");
+}
+
+EditResult Editor::resize_practice_table(RelationId table, std::map<RelationId, Rect> places) {
+    return place_practice(table, std::move(places), "Resize ");
+}
+
+EditResult Editor::place_practice(RelationId table, std::map<RelationId, Rect> places, const std::string& verb) {
+    const auto preview = schema_preview(project());
+    const auto t = practice_table(preview, table);
+    return impl_->edit(verb + practice_name(preview, t), [&](Delta& delta) {
+        if (!t) return failure("The table is no longer in the schema.");
+        // What was kept for tables the schema does not have now stays kept.
+        for (const auto& [kept, place] : project().practice.places) places.emplace(kept, place);
+        if (places == project().practice.places) return EditResult{};
+        delta.practice_places = std::move(places);
+        return EditResult{};
+    });
+}
+
 EditResult Editor::undo() {
     if (!can_undo()) return failure("There is nothing to undo.");
     auto& delta = impl_->history[impl_->cursor - 1];

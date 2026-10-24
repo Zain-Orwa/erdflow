@@ -14,7 +14,7 @@ Optimization is intentionally last.
 
 ### 1. Chen / Min–max entity-end label positioning
 
-Status: PENDING / VERIFY IMPLEMENTATION
+Status: DONE
 
 Make sure Chen and Min–max cardinality/ordinality labels are positioned close to the entity end of the relationship connector.
 
@@ -36,7 +36,7 @@ Do not redesign cardinality.
 
 ### 2. Conceptual Min–max display mode
 
-Status: PENDING
+Status: DONE
 
 The underlying cardinality and ordinality system already exists.
 
@@ -58,7 +58,7 @@ It must not change the relationship model.
 
 ### 3. Rename Regular Entity to Strong Entity
 
-Status: PENDING
+Status: DONE
 
 Change the user-facing Conceptual terminology:
 
@@ -85,7 +85,7 @@ This is a terminology correction only.
 
 ### 4. Conceptual free-text object
 
-Status: PENDING
+Status: DONE
 
 Add a lightweight borderless text object that can be placed freely on the Conceptual canvas.
 

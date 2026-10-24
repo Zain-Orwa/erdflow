@@ -27,10 +27,26 @@ namespace erdflow::desktop {
 // It holds what to look for, which kind to look among, and the two choices that
 // decide how much of the rest survives. It knows nothing about the diagram: it
 // says what was asked for and the window hands that to the canvas.
+//
+// The Relational Schema has one too (C8, 2026-10-14; Zain): the same bar and
+// the same two questions, over the schema's own kinds and in its own words.
+enum class SearchSubject { Diagram, Schema };
+
 class SearchBar final : public QWidget {
 public:
-    explicit SearchBar(QWidget* parent = nullptr);
+    explicit SearchBar(QWidget* parent = nullptr, SearchSubject subject = SearchSubject::Diagram);
+    // What was asked, for the diagram.
     [[nodiscard]] DiagramSearch search() const;
+    // What was asked, answer by answer, for whichever subject the bar has:
+    // the words, the kind (a SearchKind or a SchemaSearchKind), whether what a
+    // match touches is kept, and whether the rest is hidden.
+    [[nodiscard]] QString text() const;
+    [[nodiscard]] int kind() const;
+    [[nodiscard]] bool with_relatives() const;
+    [[nodiscard]] bool hide_the_rest() const;
+    // Every answer back to its default: all kinds, only what matches, the
+    // rest faded. The words are left to whoever holds them.
+    void reset();
     // Opens the bar and puts the caret in the box, keeping whatever was last
     // looked for so pressing the shortcut twice does not throw the search away.
     void open();
@@ -45,7 +61,10 @@ public:
     // search field, as the schema's does, and the bar keeps the rest of the
     // search -- the kind, the options, the count and the way to close it.
     // Typing there opens the bar, and Escape there closes it, as in its own.
-    void use_text(QLineEdit* field);
+    // The schema's field searches by itself as it always has, so typing there
+    // leaves the bar where it is, and Escape closes the bar only while it is
+    // open (typing_opens false).
+    void use_text(QLineEdit* field, bool typing_opens = true);
 
     // Called when what is being looked for changes. Typing settles first: a
     // name is filtered on once the typing pauses rather than on every letter,
@@ -64,9 +83,12 @@ private:
     QComboBox* kind_ = nullptr;
     QToolButton* settings_ = nullptr;
     QLabel* count_ = nullptr;
+    QAction* only_matches_ = nullptr;
     QAction* relatives_ = nullptr;
+    QAction* fade_rest_ = nullptr;
     QAction* hide_rest_ = nullptr;
     QTimer* settling_ = nullptr;
+    bool typing_opens_ = true;
     void changed(bool at_once);
 };
 

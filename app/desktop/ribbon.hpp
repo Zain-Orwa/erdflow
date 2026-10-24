@@ -27,19 +27,15 @@ namespace erdflow::desktop {
 // lays out its commands. Three tabs stand there for good (Zain, 2026-10-06):
 // File, for the project and what goes in and out of it; Home, the window's own
 // tool row, left exactly as it was; and Settings, for how the window looks and
-// what it shows, and help. File and Settings each gather several rows, and
-// while one of them is chosen its rows' own tabs stand beside the three --
-// Export and Import, or Design, View and Help -- each bringing up its row, as
-// every tab used to. The rows are built from actions the window already has,
-// so nothing on them can disagree with the menus about what is active or
-// checked.
+// what it shows, and help. Settings unfolds real Design and View submenus
+// and the existing Help action. File's existing section controls stand on
+// its tool row, keeping the top navigation permanently at three items.
 class Ribbon final : public QObject {
 public:
     // Built over the window's "modelTools" row, which becomes Home.
     explicit Ribbon(QMainWindow& window);
-    // Brings a tab to the front by name. tabFile, tabHome and tabSettings
-    // bring up the row they last showed; tabExport, tabImport, tabDesign,
-    // tabView and tabHelp bring up their own, with File or Settings chosen.
+    // Brings Home or a File section to the front by name. Settings is a
+    // foldout menu rather than a tool row.
     void show_tab(const QString& name);
 
     // Whether the Relational Schema is the workspace in front. Its tools are
@@ -86,6 +82,7 @@ private:
     QMainWindow& window_;
     QToolBar* tabs_ = nullptr;
     QToolBar* home_ = nullptr;
+    QToolBar* file_sections_ = nullptr;
     QToolButton* file_menu_button_ = nullptr;
     // Each row's own tab with the row it brings up. Home's is the Home tab.
     std::vector<std::pair<QAction*, QToolBar*>> rows_;

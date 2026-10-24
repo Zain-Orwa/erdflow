@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(ERDFlow VERSION 0.1.0 LANGUAGES CXX)
+project(ERDFlow VERSION 0.3.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -21,29 +21,46 @@ if(ERDFLOW_SANITIZERS AND NOT MSVC)
     target_link_options(erdflow_warnings INTERFACE -fsanitize=address,undefined)
 endif()
 
-add_library(erdflow_domain domain/model.cpp domain/schema_preview.cpp domain/diagram_from_schema.cpp)
+add_library(erdflow_domain domain/model.cpp domain/schema_preview.cpp domain/diagram_from_schema.cpp
+                           domain/practice_data.cpp)
 target_include_directories(erdflow_domain PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(erdflow_domain PRIVATE erdflow_warnings)
 
 add_library(erdflow_application application/editor.cpp application/history.cpp)
 target_link_libraries(erdflow_application PUBLIC erdflow_domain PRIVATE erdflow_warnings)
 
-add_library(erdflow_infrastructure infrastructure/project_store.cpp)
-target_link_libraries(erdflow_infrastructure PUBLIC erdflow_application Qt6::Core PRIVATE erdflow_warnings)
+add_library(erdflow_infrastructure infrastructure/project_store.cpp infrastructure/updater.cpp)
+target_link_libraries(erdflow_infrastructure PUBLIC erdflow_application Qt6::Core PRIVATE erdflow_warnings erdflow_monocypher)
+
+# Monocypher checks the signature on an update before it is put in place, and
+# is used for nothing else (ADR-024). Its files are upstream's, unmodified
+# (third_party/monocypher/README.md), so they are compiled as they are, without
+# ERDFlow's own warnings.
+enable_language(C)
+add_library(erdflow_monocypher STATIC third_party/monocypher/monocypher.c
+                                      third_party/monocypher/monocypher-ed25519.c)
 
 
 # The canvas draws the diagram, so it is also what draws a picture of it.
 # Qt6::Svg brings the generator that writes one as SVG.
 add_library(erdflow_canvas app/desktop/diagram_view.cpp app/desktop/theme.cpp app/desktop/picture_export.cpp
-                          app/desktop/document_export.cpp)
+                          app/desktop/document_export.cpp app/desktop/edge_scroll.cpp)
 target_link_libraries(erdflow_canvas PUBLIC erdflow_application Qt6::Widgets Qt6::Svg PRIVATE erdflow_warnings)
 
-add_library(erdflow_desktop app/desktop/main_window.cpp app/desktop/schema_view.cpp app/desktop/schema_router.cpp app/desktop/schema_explorer.cpp app/desktop/schema_facts.cpp
+add_library(erdflow_desktop app/desktop/main_window.cpp app/desktop/schema_view.cpp app/desktop/schema_router.cpp app/desktop/schema_colours.cpp app/desktop/schema_explorer.cpp app/desktop/schema_facts.cpp
                             app/desktop/notice.cpp
                             app/desktop/home_page.cpp app/desktop/home_live_demo.cpp app/desktop/home_demo_scenes.cpp app/desktop/home_demo_canvas.cpp app/desktop/conceptual_examples.cpp app/desktop/relational_examples.cpp app/desktop/app_top_bar.cpp app/desktop/home_sidebar.cpp app/desktop/home_learning_panel.cpp app/desktop/start_route_card.cpp app/desktop/project_details_form.cpp app/desktop/welcome_flow_illustration.cpp app/desktop/ribbon.cpp app/desktop/icons.cpp
                             app/desktop/symbols.cpp app/desktop/symbol_picker.cpp
-                            app/desktop/export_dialog.cpp app/desktop/search_bar.cpp)
+                            app/desktop/dr_icons.cpp app/desktop/dr_icon_picker.cpp
+                            app/desktop/export_dialog.cpp app/desktop/search_bar.cpp
+                            app/desktop/practice_data_view.cpp
+                            app/desktop/licences.cpp)
 target_link_libraries(erdflow_desktop PUBLIC erdflow_canvas Qt6::Svg PRIVATE erdflow_warnings)
+# Help -> Licences names ERDFlow's copyright holder as LICENSE does, so there
+# is one source for it (2026-10-15).
+file(STRINGS "${CMAKE_SOURCE_DIR}/LICENSE" erdflow_licence_copyright REGEX "^Copyright" LIMIT_COUNT 1)
+set_property(SOURCE app/desktop/licences.cpp APPEND PROPERTY COMPILE_DEFINITIONS
+             ERDFLOW_COPYRIGHT="${erdflow_licence_copyright}")
 # The Relational Schema's router is compiled optimised even in a Debug build.
 # Routing every line is the costliest thing a schema drag does, and unoptimised
 # the same search, finding the same routes, is some fourteen times slower;
@@ -141,6 +158,9 @@ qt_add_resources(erdflow_desktop "erdflow_icons_outline"
         assets/icons-outline/sparkles.svg
         # The schema's Arrange, in the header of a schema drawn by hand.
         assets/icons-outline/layers.svg
+        # The mark in either workspace's search field that opens the search's
+        # kinds and options (C8, 2026-10-14).
+        assets/icons-outline/filter.svg
         # The ribbon's tabs and the commands on the Design, Export, Import,
         # View and Help rows, named for what they stand for so another icon set
         # can draw its own under the same names.
@@ -163,13 +183,37 @@ qt_add_resources(erdflow_desktop "erdflow_icons_outline"
         assets/icons-outline/file.svg assets/icons-outline/insert.svg
         assets/icons-outline/no-panels.svg
 )
+# Dr.icons: illustrations put on the conceptual diagram as pictures, from
+# Insert (2026-10-14). Painted artwork, so shipped as the transparent PNGs it
+# is, 384 pixels square; each file is named by the icon's key.
+qt_add_resources(erdflow_desktop "erdflow_dr_icons"
+    PREFIX "/erdflow/dr-icons"
+    BASE "assets/dr-icons"
+    FILES
+        assets/dr-icons/student.png assets/dr-icons/course.png
+        assets/dr-icons/family.png assets/dr-icons/family_2.png
+        assets/dr-icons/identification_card.png
+        assets/dr-icons/order.png assets/dr-icons/product.png
+        assets/dr-icons/book.png assets/dr-icons/project.png
+        assets/dr-icons/employee.png assets/dr-icons/person.png
+        assets/dr-icons/seat.png assets/dr-icons/task.png
+        assets/dr-icons/car.png assets/dr-icons/mobile_line.png
+        assets/dr-icons/phone_ext.png assets/dr-icons/desk.png
+)
 
 add_executable(erdflow app/desktop/main.cpp)
 target_link_libraries(erdflow PRIVATE erdflow_desktop erdflow_infrastructure erdflow_warnings)
+# The application version is the project version above, and only that: the
+# program reports it, and every package carries it.
+target_compile_definitions(erdflow PRIVATE ERDFLOW_VERSION="${PROJECT_VERSION}")
 
 if(BUILD_TESTING)
     add_executable(editor_benchmark tests/editor_benchmark.cpp)
     target_link_libraries(editor_benchmark PRIVATE erdflow_canvas erdflow_infrastructure erdflow_warnings)
+    # Measurements for the pre-release milestone, run by hand before and after
+    # each change rather than as a suite (2026-10-12).
+    add_executable(prerelease_baseline tests/prerelease_baseline.cpp)
+    target_link_libraries(prerelease_baseline PRIVATE erdflow_desktop erdflow_infrastructure erdflow_warnings)
 
     add_executable(core_tests tests/core_tests.cpp)
     target_link_libraries(core_tests PRIVATE erdflow_application erdflow_warnings)
@@ -179,21 +223,36 @@ if(BUILD_TESTING)
     target_link_libraries(persistence_tests PRIVATE erdflow_infrastructure erdflow_warnings)
     add_test(NAME persistence COMMAND persistence_tests)
 
+    add_executable(update_tests tests/update_tests.cpp)
+    target_link_libraries(update_tests PRIVATE erdflow_infrastructure erdflow_warnings)
+    add_test(NAME update COMMAND update_tests)
+
     add_executable(canvas_tests tests/canvas_tests.cpp)
-    target_link_libraries(canvas_tests PRIVATE erdflow_canvas erdflow_warnings)
+    target_link_libraries(canvas_tests PRIVATE erdflow_canvas erdflow_infrastructure erdflow_warnings)
     add_test(NAME canvas COMMAND canvas_tests)
 
     add_executable(theme_tests tests/theme_tests.cpp)
     target_link_libraries(theme_tests PRIVATE erdflow_canvas erdflow_warnings)
     add_test(NAME theme COMMAND theme_tests)
+    # Qt Test is used only to press the mouse and keys the way the system
+    # does: two presses on one button arrive as a press and then a double
+    # click, and a shortcut is heard through the window's own shortcut map.
+    find_package(Qt6 REQUIRED COMPONENTS Test)
     add_executable(desktop_tests tests/desktop_tests.cpp)
-    target_link_libraries(desktop_tests PRIVATE erdflow_desktop erdflow_infrastructure erdflow_warnings)
-    # The desktop suite runs as four parts, each a process with its own
+    target_link_libraries(desktop_tests PRIVATE erdflow_desktop erdflow_infrastructure erdflow_warnings Qt6::Test)
+    # The desktop suite runs as six parts, each a process with its own
     # timeout, rather than as one that had grown to within a few seconds of
-    # its limit in Debug (2026-10-09). Together they are the whole suite;
-    # run with no part named, desktop_tests still runs all of it.
+    # its limit in Debug (2026-10-09). The main window's tools, each checked
+    # in a window of its own, have run apart from the window carried through
+    # both workspaces since 2026-10-12. The schema's line checks -- remembered
+    # routes, colours, ends and alignment guides -- have run apart from
+    # Relational Design's since 2026-10-15, when that part neared its limit on
+    # the macOS Intel runner. Together they are the whole suite; run with no
+    # part named, desktop_tests still runs all of it.
     add_test(NAME desktop_export COMMAND desktop_tests --export-state)
     add_test(NAME desktop_relational COMMAND desktop_tests --relational-part)
+    add_test(NAME desktop_relational_lines COMMAND desktop_tests --relational-lines-part)
+    add_test(NAME desktop_window_tools COMMAND desktop_tests --window-tools-part)
     add_test(NAME desktop_window COMMAND desktop_tests --window-part)
     add_test(NAME desktop_new_projects COMMAND desktop_tests --new-projects-part)
     add_test(NAME desktop_smoke COMMAND erdflow --example --smoke-test)
@@ -213,12 +272,29 @@ if(BUILD_TESTING)
     if(WIN32)
         list(APPEND erdflow_offscreen_test_environment "QT_QPA_FONTDIR=C:/Windows/Fonts")
     endif()
-    set_tests_properties(canvas theme desktop_export desktop_relational desktop_window desktop_new_projects
-                         desktop_smoke visual
+    set_tests_properties(canvas theme desktop_export desktop_relational desktop_relational_lines
+                         desktop_window_tools desktop_window desktop_new_projects desktop_smoke visual
                          PROPERTIES ENVIRONMENT "${erdflow_offscreen_test_environment}" TIMEOUT 30)
     # The desktop suite drives the whole window through both workspaces and
     # outgrew 30 s in Debug with the Schema Explorer's tests (Zain, 2026-09-29).
     # Each of its parts keeps the limit the whole suite had.
-    set_tests_properties(desktop_export desktop_relational desktop_window desktop_new_projects
-                         PROPERTIES TIMEOUT 60)
+    set_tests_properties(desktop_export desktop_relational desktop_relational_lines desktop_window_tools
+                         desktop_window desktop_new_projects PROPERTIES TIMEOUT 60)
+    # On the Windows CI runners the canvas suite, about 11 s, went past 30 s
+    # three times in runs where the other suites passed, once on a runner
+    # slow from the start; 30 runs in a row there took 10-12 s each, so it is
+    # the runner, not a stall (2026-10-16). Windows gives it the desktop
+    # parts' 60 s; elsewhere it keeps 30 s.
+    if(WIN32)
+        set_tests_properties(canvas PROPERTIES TIMEOUT 60)
+    endif()
+endif()
+
+# Installable packages (packaging/README.md). Off for ordinary builds, which
+# stay exactly as they are; the package workflow turns it on.
+option(ERDFLOW_PACKAGING "Build ERDFlow as an installable application and prepare its packages" OFF)
+if(ERDFLOW_PACKAGING)
+    # Only a packaged ERDFlow updates itself; a build from source never does.
+    target_compile_definitions(erdflow_infrastructure PRIVATE ERDFLOW_PACKAGED_BUILD)
+    include(packaging/packaging.cmake)
 endif()

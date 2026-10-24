@@ -8,6 +8,7 @@
 #include "ribbon.hpp"
 #include "theme.hpp"
 #include "infrastructure/project_store.hpp"
+#include "infrastructure/updater.hpp"
 
 #include <QApplication>
 #include <QCommandLineParser>
@@ -17,7 +18,7 @@
 int main(int argc, char* argv[]) {
     QApplication app(argc, argv);
     QCoreApplication::setApplicationName("ERDFlow");
-    QCoreApplication::setApplicationVersion("0.1.0");
+    QCoreApplication::setApplicationVersion(ERDFLOW_VERSION); // project(VERSION) in CMakeLists.txt
     QCoreApplication::setOrganizationName("ERDFlow");
     // The theme owns both the application palette and the diagram colours, so a
     // remembered choice is applied before any window is built.
@@ -60,6 +61,9 @@ int main(int argc, char* argv[]) {
     // options above it.
     parser.addOption({"theme", "Wear this theme, such as midnight, for this run only.", "key"});
     parser.addOption({"schema-full", "Raise Relational Design at full height."});
+    // Shows Practice Data, converting the schema first if it never has been.
+    // Development tooling like the options above it.
+    parser.addOption({"practice-data", "Show Practice Data in place of the schema."});
     // The window's size for a screenshot, such as 1440x1080 -- the reference
     // viewport the visual comparisons are made at (ADR-022 section 9.6).
     // Development tooling like the options above it.
@@ -108,6 +112,7 @@ int main(int argc, char* argv[]) {
         }
         if (parser.isSet("schema") || parser.isSet("schema-full"))
             window.open_schema(parser.isSet("schema-full"));
+        if (parser.isSet("practice-data")) window.open_practice_data();
         QTimer::singleShot(900, &window, [&] {
             if (parser.isSet("screenshot") && !window.grab().save(parser.value("screenshot"))) {
                 app.exit(1);
@@ -124,5 +129,15 @@ int main(int argc, char* argv[]) {
             }
         });
     });
+    // ERDFlow keeps itself up to date (ADR-024): an installed copy looks for a
+    // newer release a little after it has opened, fetches it in the
+    // background, and puts it in place as it closes, so the next start is the
+    // new version. Never in a run that only checks the build or takes a
+    // picture.
+    erdflow::infrastructure::Updater updater(ERDFLOW_VERSION);
+    if (!parser.isSet("smoke-test") && !parser.isSet("screenshot")) {
+        QTimer::singleShot(5000, &app, [&updater] { updater.look(); });
+        QObject::connect(&app, &QCoreApplication::aboutToQuit, &app, [&updater] { updater.put_in_place(); });
+    }
     return app.exec();
 }

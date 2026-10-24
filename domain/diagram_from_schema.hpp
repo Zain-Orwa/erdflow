@@ -43,14 +43,21 @@ namespace erdflow::domain {
 // what the schema said, the conversion says so in words rather than hiding it.
 
 // How big each kind of element is drawn when it is made. The desktop owns
-// these figures; the conversion is only told them.
+// these figures (desktop::entity_body and the two beside it); the conversion is
+// only told them, and these repeat them for whatever is not told.
+// How wide and how tall an element is made for its name (2026-10-12).
+struct DiagramBox {
+    double width = 0;
+    double height = 0;
+};
+
 struct DiagramSizes {
-    double entity_width = 148;
-    double entity_height = 86;
-    double attribute_width = 150;
-    double attribute_height = 60;
-    double relationship_width = 190;
-    double relationship_height = 110;
+    double entity_width = 133;
+    double entity_height = 77;
+    double attribute_width = 135;
+    double attribute_height = 54;
+    double relationship_width = 171;
+    double relationship_height = 99;
     // How wide each kind of element has to be for a name to be written whole,
     // told by whatever draws the names. An element is made at the size above
     // unless its name needs more, as the template's diamond is drawn wider
@@ -59,6 +66,16 @@ struct DiagramSizes {
     std::function<double(const std::string& name)> entity_fit;
     std::function<double(const std::string& name)> attribute_fit;
     std::function<double(const std::string& name)> relationship_fit;
+    // How wide and how tall each kind of element is made for its name, told
+    // by whatever draws the names (2026-10-12): a short name a smaller
+    // element, a long one a taller element written in lines. Given, they are
+    // used instead of the fits and the heights above; absent, the fits are
+    // used and every element of a kind is as tall as the others. The grid the
+    // diagram is laid out on is never made tighter than the sizes above give
+    // it, so smaller elements do not crowd it.
+    std::function<DiagramBox(const std::string& name)> entity_size;
+    std::function<DiagramBox(const std::string& name)> attribute_size;
+    std::function<DiagramBox(const std::string& name)> relationship_size;
 };
 
 struct DiagramFromSchema {

@@ -11,8 +11,10 @@
 #include "domain/model.hpp"
 
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -79,6 +81,18 @@ public:
     EditResult add_foreign_key(domain::RelationId from, domain::SchemaColumnId column,
                                domain::RelationId to, domain::SchemaColumnId target);
     EditResult erase_foreign_key(domain::ForeignKeyId id);
+    // Connect with its constraints off (Zain, 2026-10-23): the column made to
+    // refer to `target`, asking nothing. A column that already refers
+    // somewhere is pointed here instead; it takes the target's type and size;
+    // where no column is given one is made, named `name` or, where that is
+    // taken, numbered on from it. Refused only where the model itself would
+    // refuse the key: a target that is neither its table's only primary key
+    // column nor unique, or a column referring to itself.
+    EditResult connect_foreign_key_freely(domain::RelationId referencing, std::optional<domain::SchemaColumnId> column,
+                                          std::string name, domain::RelationId referenced,
+                                          domain::SchemaColumnId target, domain::ForeignKeyId* made = nullptr);
+    // Whether Connect holds a connection to its rules.
+    EditResult set_connect_constraints(bool constrained);
     // A foreign key made by Connect (Zain, 2026-10-01, Stage 5 of the Schema
     // workspace): the referencing table's column pointing at the referenced
     // table's key, in one edit, so one Undo takes all of it back. Either an
@@ -121,15 +135,28 @@ public:
     // neither a supertype nor subtypes.
     EditResult create_specialization(std::string name, domain::Rect rect, domain::Inheritance direction);
     // Visual aids. A picture is inserted with the encoded bytes of its image,
-    // which are kept as given; a note with the text drawn beneath its title.
-    // Both are then named, described, moved, coloured, copied and deleted like
-    // any other element, through the same commands.
+    // which are kept as given. It is then named, described, moved, coloured,
+    // copied and deleted like any other element, through the same commands.
     EditResult create_picture(std::string name, domain::Rect rect, std::vector<std::uint8_t> image);
-    EditResult create_note(std::string name, domain::Rect rect, std::string text = {});
     // One character placed on the diagram on its own, drawn bare. It is a note
     // underneath, so everything that can be done to a note can be done to it;
     // it is a separate command only so that the history says "symbol".
     EditResult create_symbol(std::string character, domain::Rect rect);
+    EditResult create_free_text(std::string text, domain::Rect rect);
+    EditResult edit_free_text(domain::NoteId id, std::string text, domain::Rect rect);
+    // Text, a symbol or a picture put on the Relational Schema (2026-10-15):
+    // the schema's own, kept apart from the diagram's, in the schema's
+    // coordinates. Made, written, moved, resized and deleted only through
+    // these, each one step of history.
+    EditResult create_schema_text(std::string text, domain::Rect rect);
+    EditResult create_schema_symbol(std::string character, domain::Rect rect);
+    EditResult create_schema_picture(std::string name, domain::Rect rect, std::vector<std::uint8_t> image);
+    EditResult edit_schema_text(domain::NoteId id, std::string text, domain::Rect rect);
+    // A place for each, its size kept; and a size for each picture or symbol,
+    // clamped to a picture's bounds. Text is as large as its words.
+    EditResult move_schema_figures(const std::map<domain::ElementRef, domain::Rect>& places);
+    EditResult resize_schema_figures(const std::map<domain::ElementRef, domain::Rect>& boxes);
+    EditResult erase_schema_figures(const std::vector<domain::ElementRef>& figures);
     EditResult set_supertype(domain::SpecializationId specialization, std::optional<domain::EntityId> supertype);
     EditResult set_inheritance_direction(domain::SpecializationId specialization, domain::Inheritance direction);
     EditResult attach_subtype(domain::SpecializationId specialization, domain::EntityId subtype);
@@ -158,7 +185,16 @@ public:
     // clear of what is already drawn. The paper and the project's own name are
     // left alone: what is imported is the work, not the document around it.
     EditResult merge_project(const domain::Project& other, double dx, double dy);
-    EditResult rename(domain::ElementRef ref, std::string name);
+    // An entity, attribute or relationship narrower than least_width is widened
+    // to it about its centre in the same edit, for a name that would otherwise
+    // be cut short (2026-10-11); its height, and the size its name is lettered
+    // for, are left as they are. Nothing is ever narrowed by a rename.
+    EditResult rename(domain::ElementRef ref, std::string name, double least_width = 0);
+    // Renamed and made the size its new name is fitted to, about its centre,
+    // in the same edit (2026-10-12): smaller for a shorter name as well as
+    // larger for a longer one. An element resized by hand -- one whose name
+    // has a size of its own to be lettered for -- keeps its size.
+    EditResult rename_to_fit(domain::ElementRef ref, std::string name, double width, double height);
     EditResult describe(domain::ElementRef ref, std::string description);
     // What this becomes in the schema's own words, for the three things that
     // become tables and columns. Refused for anything else, so a note or a
@@ -377,6 +413,11 @@ public:
     // symbols is enlarged together, and it refuses anything that is not a
     // symbol so the command cannot quietly reshape the rest of the diagram.
     EditResult resize_symbols(const std::map<domain::ElementRef, domain::Rect>& boxes);
+    // A picture's box is how big the picture is drawn, so its size is a
+    // property of it as a symbol's is: its own named edit, refusing anything
+    // that is not a picture, with a pull on a left or top edge writing the new
+    // place and the new size together.
+    EditResult resize_pictures(const std::map<domain::ElementRef, domain::Rect>& boxes);
     // An entity's box is pulled by its own edges and corners, each of which
     // moves one side and leaves the opposite one where it was. Its own named
     // edit rather than a move that happens to change a size, so the history
@@ -433,10 +474,49 @@ public:
                      const std::vector<domain::AttributeId>& detached_attributes = {},
                      const std::vector<InheritanceLink>& detached_inheritance = {});
     EditResult duplicate(const std::vector<domain::ElementRef>& elements, double dx = 32, double dy = 32);
+
+    // Practice Data (Zain, 2026-10-23): rows put into the schema's tables, each
+    // change one step of history like any other. None of them touches the
+    // schema. While constraints are enforced, a change that breaks one is
+    // refused whole and the refusal says which rule and why, its first line
+    // the rule ("Primary Key violation") and the rest the explanation; while
+    // they are not, the change is kept and the rows that break a rule show it.
+    //
+    // Converting gives every table that has no rows yet the rows it starts
+    // with; a table that has rows keeps them.
+    EditResult convert_to_practice_tables();
+    // One value of one row, NULL where none is given. A value the database
+    // counts up itself is not typed over while constraints are enforced.
+    EditResult set_practice_value(domain::RelationId table, std::size_t row, domain::ColumnIdentity column,
+                                  domain::PracticeValue value);
+    // A row added at the end, with what was typed into it. A column that
+    // counts itself up is given its next value whatever was typed there.
+    EditResult add_practice_row(domain::RelationId table, domain::PracticeRow row);
+    EditResult delete_practice_rows(domain::RelationId table, std::vector<std::size_t> rows);
+    // The rows a table started with, back again; or none at all. The table,
+    // its columns and its rules are untouched either way.
+    EditResult reset_practice_table(domain::RelationId table);
+    EditResult clear_practice_table(domain::RelationId table);
+    EditResult enforce_practice_constraints(bool enforced);
+    // A table's card put down where the hand let it go (Zain, 2026-10-23).
+    // `places` is where every card now stands -- the first move puts them all
+    // where they stood -- and `table` the one that was moved, which names the
+    // step. Only where the cards stand changes.
+    EditResult move_practice_table(domain::RelationId table, std::map<domain::RelationId, domain::Rect> places);
+    // The same, for a card pulled to another size by an edge or a corner. A
+    // height of nought is as tall as the card's rows ask for.
+    EditResult resize_practice_table(domain::RelationId table, std::map<domain::RelationId, domain::Rect> places);
+
     EditResult undo();
     EditResult redo();
 
 private:
+    // Where the cards stand, by a move or by a pull; the verb names the step.
+    EditResult place_practice(domain::RelationId table, std::map<domain::RelationId, domain::Rect> places,
+                              const std::string& verb);
+    // The one way an element is renamed; what differs is how its box changes.
+    EditResult rename_resizing(domain::ElementRef ref, std::string name,
+                               const std::function<std::optional<domain::Rect>(const domain::Rect&)>& resized);
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };
