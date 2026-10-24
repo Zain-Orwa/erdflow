@@ -108,7 +108,7 @@ These have been decided and are not open unless Zain reopens them.
 ## Working notes
 
 The running plan is kept **outside** this repository, at
-`/Users/zain/Developer/erdflow-notes/PLAN.md`. Read it at the start of a
+`/Users/zain/Developer/ERDFlow/notes/PLAN.md`. Read it at the start of a
 session and update it as work lands. What is actually built is recorded in
 `docs/IMPLEMENTATION_STATUS.md`.
 
