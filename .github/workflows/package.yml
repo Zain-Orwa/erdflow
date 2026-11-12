@@ -140,6 +140,11 @@ jobs:
             libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-shape0 \
             libxcb-xinerama0 libxcb-xkb1 libxcb-glx0 libegl1 libgl1 \
             libfontconfig1 libdbus-1-3 xvfb
+          # Keep the bundled PCRE2 runtime on the current Ubuntu security
+          # version, whose matching source remains on the same archive mirror.
+          # The runner image can carry a superseded version available only via
+          # Launchpad, which may be temporarily unavailable.
+          sudo apt-get install --yes --no-install-recommends --only-upgrade libpcre2-8-0
 
       - name: Configure (Linux)
         if: runner.os == 'Linux'
@@ -241,7 +246,16 @@ jobs:
           mnt="$RUNNER_TEMP/erdflow-dmg"
           mkdir -p "$mnt"
           hdiutil attach -readonly -nobrowse -mountpoint "$mnt" "$dmg"
-          trap 'hdiutil detach "$mnt"' EXIT
+          # Icon Services can briefly retain a read-only image after the
+          # smoke-test app exits. Retry teardown, then eject that read-only mount.
+          detach_image() {
+            for attempt in 1 2 3 4 5; do
+              hdiutil detach "$mnt" && return 0
+              sleep 2
+            done
+            hdiutil detach -force "$mnt"
+          }
+          trap detach_image EXIT
           app="$mnt/ERDFlow.app"
           codesign --verify --deep --strict --verbose=2 "$app"
           lipo -archs "$app/Contents/MacOS/ERDFlow" | grep -qw "${{ matrix.osx-arch }}"
@@ -294,7 +308,10 @@ jobs:
           mkdir -p "$mnt"
           hdiutil attach -readonly -nobrowse -mountpoint "$mnt" "$dmg"
           ditto "$mnt/ERDFlow.app" /Applications/ERDFlow.app
-          hdiutil detach "$mnt"
+          for attempt in 1 2 3 4 5; do
+            hdiutil detach "$mnt" && break
+            if [ "$attempt" -eq 5 ]; then hdiutil detach -force "$mnt"; else sleep 2; fi
+          done
           app=/Applications/ERDFlow.app
           codesign --verify --deep --strict --verbose=2 "$app"
           "$app/Contents/MacOS/ERDFlow" --version | grep -qx "ERDFlow $ERDFLOW_VERSION"
