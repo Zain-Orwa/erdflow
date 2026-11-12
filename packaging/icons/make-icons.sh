@@ -1,6 +1,6 @@
 #!/bin/sh
-# Regenerates ERDFlow's application icons from the owner's complete square
-# artwork, erdflow-logo.png. Run on macOS from this folder:
+# Regenerates ERDFlow's application icons from the owner's circular transparent
+# artwork, erdflow-app-icon.png. Run on macOS from this folder:
 #
 #   sh make-icons.sh
 #
@@ -14,7 +14,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
-python3 - "$here/erdflow-logo.png" <<'PY'
+python3 - "$here/erdflow-app-icon.png" <<'PY'
 import struct, sys
 with open(sys.argv[1], "rb") as source:
     header = source.read(24)
@@ -26,9 +26,9 @@ if width != height or width < 1024:
 PY
 
 # Resample the entire square source at every size. No viewport, crop or zoom:
-# the outer circle, lettering and strands must all remain inside the icon.
+# the circular outline, lettering, strands and transparent corners stay intact.
 render() {
-    sips --resampleHeightWidth "$1" "$1" "$here/erdflow-logo.png" --out "$2" >/dev/null
+    sips --resampleHeightWidth "$1" "$1" "$here/erdflow-app-icon.png" --out "$2" >/dev/null
 }
 
 mkdir "$work/erdflow.iconset"
@@ -50,7 +50,7 @@ header = struct.pack("<HHH", 0, 1, len(images))
 offset = len(header) + 16 * len(images)
 entries = b""
 for s, data in zip(sizes, images):
-    # Match the PNG's RGB/RGBA channel count; this artwork is opaque RGB.
+    # Match the PNG's RGB/RGBA channel count; this circular artwork carries alpha.
     bits = data[24] * {2: 3, 6: 4}[data[25]]
     entries += struct.pack("<BBBBHHII", s % 256, s % 256, 0, 0, 1, bits, len(data), offset)
     offset += len(data)

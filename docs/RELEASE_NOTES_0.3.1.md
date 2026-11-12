@@ -2,12 +2,15 @@
 
 ERDFlow 0.3.1 updates the application icon to the complete original logo:
 the blue circle, ERDFlow lettering and flowing strands, with nothing cropped.
+The area outside the glowing ring is transparent, giving the artwork a circular
+outline instead of hard square corners.
 
 ## What changed
 
 - The running application and macOS, Windows and Linux packages use the same
   complete logo, including installed app icons and shortcuts.
-- Each icon size is generated from the full original square artwork.
+- Each icon size preserves the full circular artwork and transparent corners.
+  Desktop environments may apply their own app-icon framing or masking.
 
 Editor behavior and projects are unchanged from 0.3.0 (file format 37).
 Existing installations with Automatic Updates enabled receive this patch

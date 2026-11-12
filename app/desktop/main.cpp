@@ -21,7 +21,7 @@ int main(int argc, char* argv[]) {
     QCoreApplication::setApplicationName("ERDFlow");
     QCoreApplication::setApplicationVersion(ERDFLOW_VERSION); // project(VERSION) in CMakeLists.txt
     QCoreApplication::setOrganizationName("ERDFlow");
-    QApplication::setWindowIcon(QIcon(QStringLiteral(":/erdflow/branding/erdflow-logo.png")));
+    QApplication::setWindowIcon(QIcon(QStringLiteral(":/erdflow/branding/erdflow-app-icon.png")));
     // The theme owns both the application palette and the diagram colours, so a
     // remembered choice is applied before any window is built.
     QApplication::setStyle("Fusion");

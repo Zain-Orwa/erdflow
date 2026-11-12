@@ -207,7 +207,7 @@ target_link_libraries(erdflow PRIVATE erdflow_desktop erdflow_infrastructure erd
 qt_add_resources(erdflow "erdflow_branding"
     PREFIX "/erdflow/branding"
     BASE "packaging/icons"
-    FILES packaging/icons/erdflow-logo.png)
+    FILES packaging/icons/erdflow-app-icon.png)
 # The application version is the project version above, and only that: the
 # program reports it, and every package carries it.
 target_compile_definitions(erdflow PRIVATE ERDFLOW_VERSION="${PROJECT_VERSION}")

@@ -3705,10 +3705,12 @@ notation, themes, and the real editor remain unchanged.
 
 The application icon now uses the owner's original 1254×1254 square artwork:
 the full blue circle, ERDFlow wordmark and strands. `packaging/icons/erdflow-logo.png`
-is the canonical source. The icon generator resamples that entire square,
+preserves the original source. `erdflow-app-icon.png` is its circular cutout
+with true alpha transparency outside the glowing ring. The icon generator
+resamples that entire PNG canvas,
 without cropping or browser viewport limits, into macOS ICNS (16–1024 px),
 Windows ICO (16–256 px) and Linux PNG (512 px). Existing bundle, installer and
-shortcut references use these files. The executable embeds the same artwork
+shortcut references use these files. The executable embeds the same circular artwork
 and sets its application/window icon, including for development launches.
 
 This patch changes only application branding and release metadata. Modeling
