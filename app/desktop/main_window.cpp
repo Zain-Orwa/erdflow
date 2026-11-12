@@ -1892,6 +1892,9 @@ namespace erdflow::desktop
         { wear_schema_header_for_tab(); };
         dress_ribbon();
         wire_home();
+        // Update and Restart (ADR-025): made once the two rows it stands on
+        // exist, and away until a newer ERDFlow has been fetched.
+        build_update_offer();
         // File, Home and Settings are the window's only top navigation (Zain,
         // 2026-10-10; ADR-022 section 9.1). Where the system owns the menu bar,
         // as on macOS, the menus stay there, outside the window. Elsewhere the
@@ -6543,6 +6546,11 @@ namespace erdflow::desktop
         // follows the window rather than staying in the one it was built in.
         if (home_)
             home_->wear(id);
+        // Update and Restart is drawn in the theme's own primary, wherever it
+        // stands (ADR-025).
+        for (auto *one : {home_update_, ribbon_update_})
+            if (one)
+                one->wear(id);
         refresh_icons();
         refresh_explorer();
         refresh_schema_explorer();
@@ -12563,6 +12571,104 @@ namespace erdflow::desktop
             event->accept();
         else
             event->ignore();
+    }
+
+    // Update and Restart (ADR-025; Zain, 2026-11-12): one small button on each
+    // of the two rows that are ever at the top of the window. Each is laid
+    // over its row, in room the row was not using, so neither row lays out
+    // anything it did not before; and since the rows are never showing
+    // together, neither are the two buttons.
+    void MainWindow::build_update_offer()
+    {
+        const auto pressed = [this]
+        {
+            if (update_and_restart)
+                update_and_restart();
+        };
+        // On Home's bar: after the name, and before the way back into the
+        // workspace where that is showing, or before Theme where it is not.
+        if (home_)
+        {
+            auto *bar = home_->top_bar();
+            home_update_ = new UpdateButton(
+                bar, [bar]
+                { return bar->brand_button()->geometry().right(); },
+                [bar]
+                {
+                    QWidget *next = bar->return_button();
+                    if (!next->isVisibleTo(bar))
+                        next = bar->theme_button();
+                    return next->geometry().left();
+                });
+            home_update_->setObjectName("homeUpdateButton");
+            // Home's controls are reached from the keyboard, and so is this.
+            // Made after everything else in the window, it is the stop before
+            // the bar's own, which is where it is read: after the name, and
+            // before the way back and Theme. Nothing else changes its place.
+            home_update_->setFocusPolicy(Qt::TabFocus);
+            connect(home_update_, &QAbstractButton::clicked, this, pressed);
+        }
+        // On the ribbon's row of tabs: at its right end, clear of whichever
+        // tab stands last.
+        if (ribbon_ && ribbon_->tabs())
+        {
+            auto *tabs = ribbon_->tabs();
+            ribbon_update_ = new UpdateButton(
+                tabs, [tabs]
+                {
+                    int last = 0;
+                    for (auto *tab : tabs->actions())
+                        if (auto *standing = tabs->widgetForAction(tab); standing && standing->isVisibleTo(tabs))
+                            last = std::max(last, standing->geometry().right());
+                    return last;
+                },
+                [tabs]
+                { return tabs->width(); });
+            ribbon_update_->setObjectName("ribbonUpdateButton");
+            connect(ribbon_update_, &QAbstractButton::clicked, this, pressed);
+        }
+        for (auto *one : {home_update_, ribbon_update_})
+            if (one)
+                one->wear(theme_);
+        // Turned off, nothing is put in place, so nothing is offered. Turned
+        // on again, what was fetched is still there, and so is the offer.
+        if (auto *updates = findChild<QAction *>("automaticUpdates"))
+            connect(updates, &QAction::toggled, this, [this](bool on)
+                    { wear_update_offer(on); });
+    }
+
+    void MainWindow::wear_update_offer(bool updates_on)
+    {
+        const auto showing = updates_on ? update_offered_ : QString();
+        for (auto *one : {home_update_, ribbon_update_})
+            if (one)
+                one->offer(showing);
+    }
+
+    void MainWindow::offer_update(const QString &version)
+    {
+        update_offered_ = version;
+        wear_update_offer(QSettings().value(infrastructure::automatic_updates_key, true).toBool());
+    }
+
+    UpdateButton *MainWindow::update_button() const
+    {
+        for (auto *one : {home_update_, ribbon_update_})
+            if (one && one->isVisible())
+                return one;
+        return nullptr;
+    }
+
+    void MainWindow::say_about_update(const QString &words)
+    {
+        if (!notice_)
+            return;
+        // Under the button, which is where the hand is; with no button out
+        // it is said where a remark about nothing in particular goes.
+        if (auto *button = update_button())
+            notice_->say(words, button->mapTo(this, QPoint(button->width() / 2, button->height())));
+        else
+            notice_->say(words);
     }
 
 } // namespace erdflow::desktop

@@ -9,6 +9,7 @@
 #include <QByteArray>
 #include <QLockFile>
 #include <QString>
+#include <QStringList>
 
 #include <functional>
 #include <memory>
@@ -50,6 +51,12 @@ std::optional<UpdateOffer> read_offer(const QByteArray& sums, const QByteArray& 
                                       const QByteArray& public_key, const QString& platform,
                                       const QString& running);
 
+// What the Windows installer is run with to put an update in place with
+// nothing shown. Asked to open ERDFlow again afterwards (ADR-025), it is told
+// so in a word of ERDFlow's own, which the installer answers by starting the
+// version it has just installed; without the word it starts nothing, as before.
+QStringList silent_install_arguments(bool open_again);
+
 // Looks for a newer release while ERDFlow is open and makes it ready, then puts
 // it in place when ERDFlow closes, so the next start is the new version. Only
 // a copy installed from a package does this, and only while automatic updates
@@ -66,6 +73,32 @@ public:
     void look();
     // Called as ERDFlow quits: puts a ready update in place.
     void put_in_place();
+
+    // Update and Restart (ADR-025; Zain, 2026-11-12). The update is still
+    // fetched silently and still put in place as ERDFlow closes; these let the
+    // window say that one is ready, and close and open ERDFlow again on
+    // request instead of waiting for it to be closed.
+    //
+    // The version fetched and waiting to be put in place, or nothing: where
+    // none is waiting, in a copy that does not update itself, and while
+    // automatic updates are off.
+    [[nodiscard]] QString waiting() const;
+    // Has `told` called each time a look this ERDFlow made for an update has
+    // ended, whatever came of it, so that whatever shows what is waiting can
+    // ask again.
+    void on_looked(std::function<void()> told);
+    // Whether another ERDFlow is open. An update waits for the last one to
+    // close, so it cannot be put in place from this one while there is.
+    [[nodiscard]] bool others_open();
+    // Whether the next closing is to open ERDFlow again once the update is in
+    // place. Off unless asked, and asked only for the closing that Update and
+    // Restart makes; taken back if that closing is refused.
+    void open_again(bool again);
+
+    // The same, told where it is installed and where it keeps what it
+    // fetches rather than finding them out. For tests, which have no
+    // installed ERDFlow to update.
+    Updater(QString running_version, QString where_installed, QString keeps_in);
 
 private:
     struct Impl;

@@ -70,6 +70,12 @@ int main(int argc, char* argv[]) {
     // viewport the visual comparisons are made at (ADR-022 section 9.6).
     // Development tooling like the options above it.
     parser.addOption({"size", "Resize the window to WIDTHxHEIGHT, such as 1440x1080.", "size"});
+    // Says that this version has been fetched and is ready, as the button at
+    // the top of the window says it (ADR-025), so Update and Restart can be
+    // looked at and photographed without a release to fetch. Development
+    // tooling like the options above it: a build from source has no update to
+    // put in place, so pressing the button there only takes it away again.
+    parser.addOption({"update-ready", "Show Update and Restart, as if this version were fetched and ready.", "version"});
     parser.addPositionalArgument("project", "An .erdx project to open.", "[project]");
     parser.process(app);
     const auto wearing = parser.isSet("theme")
@@ -115,6 +121,7 @@ int main(int argc, char* argv[]) {
         if (parser.isSet("schema") || parser.isSet("schema-full"))
             window.open_schema(parser.isSet("schema-full"));
         if (parser.isSet("practice-data")) window.open_practice_data();
+        if (parser.isSet("update-ready")) window.offer_update(parser.value("update-ready"));
         QTimer::singleShot(900, &window, [&] {
             if (parser.isSet("screenshot") && !window.grab().save(parser.value("screenshot"))) {
                 app.exit(1);
@@ -140,6 +147,30 @@ int main(int argc, char* argv[]) {
     if (!parser.isSet("smoke-test") && !parser.isSet("screenshot")) {
         QTimer::singleShot(5000, &app, [&updater] { updater.look(); });
         QObject::connect(&app, &QCoreApplication::aboutToQuit, &app, [&updater] { updater.put_in_place(); });
+        // Update and Restart (ADR-025; Zain, 2026-11-12). Each time a look
+        // has ended the window is told what is waiting, and says so with a
+        // small button at its top. Pressed, ERDFlow closes exactly as it does
+        // when it is closed by hand -- unsaved work is asked about, and
+        // Cancel there keeps ERDFlow open -- which is what puts the update in
+        // place; the one thing more is that ERDFlow is opened again after.
+        updater.on_looked([&updater, &window] { window.offer_update(updater.waiting()); });
+        window.update_and_restart = [&updater, &window] {
+            // What was ready may have gone since the button came out.
+            if (updater.waiting().isEmpty()) {
+                window.say_about_update("There is no update ready to put in place.");
+                window.offer_update({});
+                return;
+            }
+            // An update waits for the last ERDFlow to close (ADR-024), so it
+            // cannot be put in place from this one while another is open.
+            if (updater.others_open()) {
+                window.say_about_update("Another ERDFlow is open. Close it first, then press Update and Restart again.");
+                return;
+            }
+            updater.open_again(true);
+            if (window.close()) QCoreApplication::quit();
+            else updater.open_again(false);
+        };
     }
     return app.exec();
 }

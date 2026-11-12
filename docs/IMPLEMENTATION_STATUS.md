@@ -3365,6 +3365,40 @@ installed do this; a build from source never does.
 - Not yet seen end to end: the first release to carry this must be installed
   by hand, and only the release after it can be fetched by one.
 
+## Update and Restart (2026-11-12)
+
+While an update has been fetched and is waiting, a small **Update and
+Restart** button stands at the top of the window, at the right: on Home's bar,
+and on the ribbon's row of tabs in a workspace (ADR-025; Zain asked for it on
+finding that 0.3.1, fetched and waiting on his own computer, said nothing).
+Pressed, ERDFlow closes as it does when it is closed by hand -- unsaved work
+is asked about, and Cancel keeps it open -- the update is put in place by the
+steps it always was, and ERDFlow is opened again: by the shell that trades the
+bundles (macOS), by the installer, given `/RELAUNCH=1` (Windows), from the
+renamed AppImage (Linux). With another ERDFlow open, or with what was ready
+gone, it says so in a notice under the button instead. The button is laid
+over its row, in room the row was not using: nothing there is moved or
+resized, neither row is taller, and the tabs remain File, Home and Settings.
+With no update waiting, with Automatic Updates off, and in a build from
+source, it is not there. Closing ERDFlow by hand still updates it silently
+and does not open it again; automatic updates are otherwise as they were.
+
+- Infrastructure: `Updater::waiting`, `on_looked`, `others_open` and
+  `open_again`; `silent_install_arguments`.
+- Desktop: `app/desktop/update_button.{hpp,cpp}`; `MainWindow::offer_update`,
+  `update_and_restart`, `say_about_update` and `update_button`; `main.cpp`
+  joins the two, and adds the development option `--update-ready <version>`.
+- Packaging: `packaging/windows/erdflow.iss.in` starts ERDFlow when it is
+  given `/RELAUNCH=1`; the package workflow checks that it does.
+- Tests: `update` suite, five more (what is waiting; a look that finds one
+  waiting; another ERDFlow open; the installer's words; an update put in
+  place with ERDFlow opened again or not, on macOS and Linux); desktop
+  window-tools part, one more (the button on both rows, nothing moved, the
+  Settings switch, the notice).
+- Not yet seen end to end: installed 0.3.0 and 0.3.1 copies have no button to
+  show. They take the release that carries this silently, as before, and
+  show the button for the release after it.
+
 ## System qualities in this implementation
 
 | Requirement | Concrete evidence | Current limit |

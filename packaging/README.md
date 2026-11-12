@@ -62,7 +62,9 @@ builds and tests on each platform, packages, checks the package, installs,
 starts and removes it, and uploads it with its SHA-256 checksum, its SPDX bill
 of materials and the Qt build information as a workflow artifact. On Windows
 it also installs over the installed copy, as an upgrade does, and checks that
-every program and library loads only from the package or from Windows. The
+every program and library loads only from the package or from Windows; and it
+runs the installer as an ERDFlow asked to Update and Restart runs it, and
+checks that ERDFlow is opened again (ADR-025). The
 AppImage is also started on fresh Ubuntu 24.04, Debian 13 and Fedora 42
 systems. A sources job collects and checks the source archives published with
 the release (`release/SOURCES.md`), and the Linux job the source packages of
@@ -161,6 +163,10 @@ The installer is per-user: it needs no administrator rights and installs into
 desktop shortcut. The Visual C++ runtime is installed beside `erdflow.exe`.
 Its `AppId` in `erdflow.iss.in` identifies ERDFlow across versions and must
 never change: `{A5A5C30E-6D62-457C-98AD-F0F6F3275E13}`.
+
+Given `/RELAUNCH=1`, the installer starts ERDFlow once it has finished. An
+installed ERDFlow gives it that word when it was asked to Update and Restart
+(ADR-025); without it, an installer run with nothing shown starts nothing.
 
 ### Linux
 
