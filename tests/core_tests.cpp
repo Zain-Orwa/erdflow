@@ -5424,8 +5424,122 @@ void connect_without_constraints() {
     CHECK(!editor.project().connect_constraints);
 }
 
+void schema_connectors_edit_both_ends() {
+    TestIds ids;
+    Editor editor(ids);
+    editor.new_schema_project();
+    const auto a = std::get<RelationId>(*editor.create_relation("Customer", Point{100, 100}).created);
+    const auto b = std::get<RelationId>(*editor.create_relation("Order", Point{500, 100}).created);
+    const auto a_key = editor.project().schema.added.at(a).front().id;
+    ForeignKeyId key;
+    CHECK(editor.connect_foreign_key(b, {}, "CustomerID", a, a_key, &key));
+    const SchemaLine pinned{{{110, 120}, {300, 120}, {510, 140}},
+        SchemaEnd{true, {0.2, 0.4}}, SchemaEnd{true, {0.8, 0.6}}};
+    CHECK(editor.shape_schema_line(LinkSource{key}, pinned));
+    const auto original = editor.project();
+    const auto initial_history = editor.history_position();
+    const auto held_column = [&]() -> const SchemaColumn& {
+        const auto& fk = editor.project().schema.foreign_keys.at(key);
+        const auto& columns = editor.project().schema.added.at(fk.from);
+        return *std::find_if(columns.begin(), columns.end(), [&](const auto& c) { return c.id == fk.column; });
+    };
+    const auto change = [&](Cardinality first, Cardinality second, bool flip = false) {
+        const auto before = editor.project();
+        const auto position = editor.history_position();
+        CHECK(editor.change_schema_relationship(key, first, second, flip, &key));
+        CHECK(editor.history_position() == position + 1);
+        const auto after = editor.project();
+        CHECK(editor.undo());
+        CHECK(editor.project() == before);
+        CHECK(editor.redo());
+        CHECK(editor.project() == after);
+    };
+    change(Cardinality::One, Cardinality::One);
+    CHECK(editor.project().schema.foreign_keys.at(key).from == b);
+    CHECK(held_column().unique);
+    change(Cardinality::One, Cardinality::One, true);
+    CHECK(editor.project().schema.foreign_keys.at(key).from == a);
+    CHECK(editor.project().schema_layout.lines.at(key).from == pinned.to);
+    CHECK(editor.project().schema_layout.lines.at(key).route.front() == pinned.route.back());
+    CHECK(editor.schema_relationship_ends(key)->first_name == "Customer");
+    change(Cardinality::One, Cardinality::Many);
+    CHECK(!held_column().unique);
+    change(Cardinality::Many, Cardinality::One);
+    CHECK(editor.project().schema.foreign_keys.at(key).from == a);
+    change(Cardinality::Many, Cardinality::Many);
+    CHECK(editor.project().schema.relations.size() == 3);
+    CHECK(editor.project().schema.foreign_keys.size() == 2);
+    const auto junction = editor.project().schema.foreign_keys.at(key).from;
+    CHECK(editor.project().schema.added.at(junction).size() == 2);
+    CHECK(editor.schema_relationship_ends(key)->first == Cardinality::Many);
+    CHECK(editor.schema_relationship_ends(key)->second == Cardinality::Many);
+    const auto preview = schema_preview(editor.project());
+    for (const auto& table : preview.tables)
+        if (table.id == junction) {
+            CHECK(table.primary_key.size() == 2);
+            for (const auto& column : table.columns) CHECK(column.foreign_key && !column.one_to_one);
+        }
+    // Either junction connector exposes the original two logical ends.
+    for (const auto& [id, fk] : editor.project().schema.foreign_keys) {
+        (void)fk;
+        const auto ends = editor.schema_relationship_ends(id);
+        CHECK(ends && ends->first == Cardinality::Many && ends->second == Cardinality::Many);
+    }
+    change(Cardinality::One, Cardinality::Many);
+    CHECK(editor.project().schema.relations.size() == 2);
+    CHECK(editor.project().schema.foreign_keys.size() == 1);
+    CHECK(editor.project().schema_layout.tables == original.schema_layout.tables);
+    // Original endpoint columns are retained when a reference moves.
+    CHECK(editor.project().schema.added.at(b).size() >= original.schema.added.at(b).size());
+    const auto before_invalid = editor.project();
+    CHECK(!editor.change_schema_relationship(key, static_cast<Cardinality>(99), Cardinality::One));
+    CHECK(editor.project() == before_invalid);
+    CHECK(editor.go_to(initial_history));
+    CHECK(editor.project() == original);
+    ids.fail = true;
+    CHECK(!editor.change_schema_relationship(key, Cardinality::Many, Cardinality::Many));
+    CHECK(editor.project() == original && editor.history_position() == initial_history);
+    ids.fail = false;
+    // A recursive relationship still needs distinct columns on its junction.
+    ForeignKeyId recursive;
+    CHECK(editor.connect_foreign_key(a, {}, "ParentID", a, a_key, &recursive));
+    CHECK(editor.change_schema_relationship(recursive, Cardinality::Many, Cardinality::Many));
+    const auto recursive_table = editor.project().schema.foreign_keys.at(recursive).from;
+    const auto& recursive_columns = editor.project().schema.added.at(recursive_table);
+    CHECK(recursive_columns.size() == 2 && recursive_columns[0].name != recursive_columns[1].name);
+
+    // Derived connectors edit their source participants, confirm both maxima,
+    // and select the surviving line when the carrier changes.
+    editor.new_project();
+    const auto customer = entity(editor, "Customer");
+    const auto order = entity(editor, "Order");
+    const auto relation = relationship(editor, "Places");
+    CHECK(editor.connect(relation, customer));
+    CHECK(editor.connect(relation, order));
+    CHECK(editor.set_ratio(relation, Cardinality::One, Cardinality::Many));
+    const auto first_id = editor.project().relationships.at(relation).participants[0].id;
+    key = foreign_key_from(LinkSource{first_id});
+    change(Cardinality::Many, Cardinality::Many);
+    const auto ends = editor.schema_relationship_ends(key);
+    CHECK(ends && ends->first_name == "Customer" && ends->second_name == "Order");
+    for (const auto& side : editor.project().relationships.at(relation).participants)
+        CHECK(side.maximum == Cardinality::Many && side.cardinality_confirmed);
+    change(Cardinality::Many, Cardinality::One);
+    CHECK(key != foreign_key_from(LinkSource{first_id}));
+    CHECK(editor.schema_relationship_ends(key)->first_name == "Customer");
+    change(Cardinality::One, Cardinality::One);
+    change(Cardinality::One, Cardinality::One, true);
+    const auto final_preview = schema_preview(editor.project());
+    bool selected_exists = false;
+    for (const auto& table : final_preview.tables)
+        for (const auto& column : table.columns)
+            selected_exists = selected_exists || column.key_id == key;
+    CHECK(selected_exists);
+}
+
 int main() {
     const std::pair<const char*, std::function<void()>> tests[] = {
+        {"schema connectors edit both ends", schema_connectors_edit_both_ends},
         {"identity and work in progress", identity_and_work_in_progress},
         {"the diagram becomes tables", the_diagram_becomes_tables},
         {"drawn keys are the primary key", drawn_keys_are_the_primary_key},

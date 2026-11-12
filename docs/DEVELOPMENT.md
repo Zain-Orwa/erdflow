@@ -59,7 +59,7 @@ QT_QPA_PLATFORM=offscreen ./build/release/editor_benchmark
 `--schema` raises the schema preview panel, and `--schema-full` raises it over
 the whole window. The panel is closed until somebody asks for it, so without one
 of these a screenshot cannot show the schema at all. `--notation` chooses how
-every line end is drawn — `chen`, `minmax`, `crowsfoot` or `bachman` — on the
+every line end is drawn — `chen`, `minmax`, `crowsfoot`, `bachman` or `normal` — on the
 diagram and on the schema alike:
 
 ```sh
@@ -325,3 +325,71 @@ Confirm the tests pass in Debug and Release, that nothing secret is included,
 and that no untracked implementation file has been left out. Then have the
 split approved. Never use a destructive Git operation to make a split
 cleaner: keep a backup of the working tree first.
+
+## Conceptual notation semantics and ERDFlow extensions
+
+For a binary relationship, stored `Participant.maximum` and
+`Participant.participation` describe endpoint multiplicity: instances of the
+adjacent entity per one instance at the opposite end. `Partial` is minimum 0;
+`Total` is minimum 1. Total does not constrain the maximum to one.
+
+The UI's **Min–max** mode currently writes those endpoint bounds. It is an
+endpoint-oriented variant, not textbook entity-participation `(min,max)`.
+The short UI name does not explain this distinction; a clearer name would be
+“Min–max (endpoint multiplicity)”. This audit preserves the existing display
+contract rather than silently switching existing diagrams to another reading.
+
+For Customer — Places — Order, with Orders per Customer = 0..M and Customers per
+Order = 1..1, the current modes read as follows:
+
+```text
+Chen:                 Customer ---- Places ==== Order
+Crow’s Foot symbols:  Customer || -- Places -- o< Order
+ERDFlow Min–max:       Customer (1,1) -- Places -- (0,M) Order
+Textbook min–max:      Customer (0,M) -- Places -- (1,1) Order
+```
+
+`M` and `N` both mean many. In textbook entity-participation min–max, the pair
+beside an entity counts relationship instances involving that entity itself.
+For a binary relationship, this is the *opposite* stored endpoint's pair,
+including both minimum and maximum. The corrected Chen mode also uses the
+opposite minimum for the adjacent entity's participation line; its `1`/`M`
+cardinality labels still use the stored endpoint maximum.
+
+| Orders per Customer | Customers per Order | ERDFlow beside Customer / Order | Textbook beside Customer / Order |
+| --- | --- | --- | --- |
+| 0..M | 1..1 | (1,1) / (0,M) | (0,M) / (1,1) |
+| 1..M | 1..1 | (1,1) / (1,M) | (1,M) / (1,1) |
+| 0..1 | 1..1 | (1,1) / (0,1) | (0,1) / (1,1) |
+| 1..M | 1..M | (1,M) / (1,M) | (1,M) / (1,M) |
+
+### Double relationship lines
+
+Relationship participation follows the selected notation (issue #64,
+2026-11-05). This supersedes the 2026-10-03 decision to double required
+connectors in all four modes.
+
+- **Chen:** total participation uses a double line. For binary relationships
+  it follows the opposite endpoint minimum, as before.
+- **Crow’s Foot:** the connector stays single; minimum/maximum remain encoded
+  by the existing endpoint symbols.
+- **Min–max:** the connector stays single; the numeric label and the two
+  existing display modes retain their current endpoint-oriented reading.
+- **Bachman:** the connector stays single; the existing arrowheads and
+  filled/hollow end marks retain their meaning.
+
+The shared `EdgeItem::double_participation` predicate controls both painting
+and label clearance, so non-Chen labels clear the single stroke actually drawn.
+The Relational Schema has its own connector renderer and is unchanged.
+Total-specialization links to supertypes also remain doubled in every mode;
+those express completeness and are separate from relationship participation.
+
+References checked for this audit:
+
+- [Loyola database course, `(min,max)` annotation](https://pld.cs.luc.edu/courses/353/now/notes/06.html): entity-local participation bounds and reversal relative to `1:N` labels.
+- [draw.io Crow’s Foot documentation](https://www.drawio.com/docs/tutorials/crows-foot-notation/): minimum/maximum encoded by paired endpoint symbols.
+- [Song, Evans and Park, A Comparative Analysis of Entity-Relationship Diagrams (1995)](https://www.cci.drexel.edu/faculty/song/publications/p_Jcse-erd.PDF): distinguishes look-here/look-across variants and describes Bachman arrows and optional/mandatory circles.
+
+No storage, schema conversion, SQL nullability, save/load or renderer behavior
+was changed by this follow-up audit. Previously saved files retain their current
+appearance, including the binary Chen correction from the preceding fix.

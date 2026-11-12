@@ -486,7 +486,11 @@ SchemaPreview schema_preview(const Project& project) {
                     column.link = LinkSource{id};
                     column.key_id = id;
                     column.optional_link = !column.required;
-                    column.one_to_one = column.unique || column.primary_key;
+                    // A member of a composite primary key can repeat. Only a
+                    // key of one column makes this FK endpoint one-to-one.
+                    column.one_to_one = column.unique || (column.primary_key
+                        && std::count_if(from.columns.begin(), from.columns.end(),
+                            [](const auto& c) { return c.primary_key; }) == 1);
                 }
             }
         }

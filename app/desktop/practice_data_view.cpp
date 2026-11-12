@@ -24,6 +24,7 @@
 #include <QGridLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
+#include <QInputDialog>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
@@ -507,6 +508,11 @@ public:
         add_->setToolTip("Add a row to this table. Type its values, then Save Row.");
         connect(add_, &QPushButton::clicked, this, [this] { start_draft(); });
         top->addWidget(add_, 0, Qt::AlignTop);
+        add_column_ = new QPushButton("Add Column", this);
+        add_column_->setObjectName("practiceAddColumn");
+        add_column_->setToolTip("Add a column to this table and its Schema.");
+        connect(add_column_, &QPushButton::clicked, this, [this] { add_column(); });
+        top->addWidget(add_column_, 0, Qt::AlignTop);
         reset_ = new QPushButton("Reset", this);
         reset_->setObjectName("practiceReset");
         reset_->setToolTip("Put back the rows this table started with. The table, its columns and its rules are "
@@ -606,6 +612,7 @@ public:
         model_->theme = theme;
         header_->theme = theme;
         add_->setIcon(QIcon(outline_pixmap("insert", theme.selected_text, 16)));
+        add_column_->setIcon(QIcon(outline_pixmap("insert", theme.text, 16)));
         reset_->setIcon(QIcon(outline_pixmap("undo", theme.text, 16)));
         model_->refill();
         show_state();
@@ -845,6 +852,34 @@ private:
         message_->hide();
     }
 
+    void add_column() {
+        const auto origin = model_->shape.origin;
+        if (!origin) {
+            say("This table has no editable source for a new column.");
+            return;
+        }
+        QInputDialog naming(this);
+        naming.setObjectName("practiceAddColumnDialog");
+        naming.setWindowTitle("Add Column");
+        naming.setLabelText("Column name:");
+        naming.setTextValue("Column");
+        naming.setOkButtonText("Add Column");
+        if (naming.exec() != QDialog::Accepted) return;
+        const auto name = bytes(naming.textValue().trimmed());
+        if (name.empty()) {
+            say("A column needs a name.");
+            return;
+        }
+        // Entity and relationship tables gain a Conceptual attribute, as in
+        // the Schema. A multivalued attribute's table needs a Schema column:
+        // children of that attribute do not become columns in its table.
+        if (std::holds_alternative<domain::RelationId>(*origin)
+            || std::holds_alternative<domain::AttributeId>(*origin))
+            apply(editor_.add_schema_column(*origin, name));
+        else
+            apply(editor_.create_attribute(name, {}, *origin));
+    }
+
     void start_draft() {
         if (!model_->draft) {
             model_->draft = PracticeRow{};
@@ -912,6 +947,7 @@ private:
     QLabel* message_ = nullptr;
     QLabel* empty_ = nullptr;
     QPushButton* add_ = nullptr;
+    QPushButton* add_column_ = nullptr;
     QPushButton* reset_ = nullptr;
     QPushButton* save_ = nullptr;
     QPushButton* cancel_ = nullptr;

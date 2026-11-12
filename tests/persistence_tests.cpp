@@ -3155,8 +3155,36 @@ void practice_rows_persist() {
     reject(bytes(off_the_page));
 }
 
+void edited_schema_relationships_persist() {
+    QtIdGenerator ids;
+    Editor editor(ids);
+    ErdxProjectStore store;
+    QTemporaryDir directory;
+    CHECK(directory.isValid());
+    const auto path = directory.filePath("relationship.erdx").toStdString();
+    editor.new_schema_project();
+    const auto a = std::get<RelationId>(*editor.create_relation("Student").created);
+    const auto b = std::get<RelationId>(*editor.create_relation("Course").created);
+    ForeignKeyId key;
+    CHECK(editor.connect_foreign_key(b, {}, "StudentID", a, editor.project().schema.added.at(a).front().id, &key));
+    for (const auto [first, second] : {std::pair{Cardinality::One, Cardinality::One},
+            std::pair{Cardinality::One, Cardinality::Many}, std::pair{Cardinality::Many, Cardinality::One},
+            std::pair{Cardinality::Many, Cardinality::Many}, std::pair{Cardinality::One, Cardinality::Many}}) {
+        CHECK(editor.change_schema_relationship(key, first, second, false, &key));
+        const auto before = schema_preview(editor.project());
+        CHECK(store.save(path, editor.project()));
+        const auto loaded = store.load(path);
+        CHECK(loaded && *loaded.project == editor.project());
+        CHECK(editor.replace_project(*loaded.project));
+        const auto after = schema_preview(editor.project());
+        CHECK(after.tables == before.tables);
+        CHECK(editor.schema_relationship_ends(key));
+    }
+}
+
 int main() {
     const std::pair<const char*, std::function<void()>> tests[] = {
+        {"edited schema relationships persist", edited_schema_relationships_persist},
         {"UUIDv7 and exact graph roundtrip", uuid_generation_and_roundtrip},
         {"relationship sizes survive open and resize", relationship_sizes_survive_open_and_resize},
         {"lettering persists", lettering_persists},

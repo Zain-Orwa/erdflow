@@ -264,6 +264,9 @@ using ParticipantTarget = std::variant<EntityId, RelationshipId>;
 struct Participant {
     ParticipantId id;
     ParticipantTarget target;
+    // Endpoint multiplicity: instances of target per opposite instance in a
+    // binary relationship. Participation is its minimum (Partial=0, Total=1),
+    // not Chen participation of target, which uses the opposite minimum.
     Cardinality maximum = Cardinality::Many;
     Participation participation = Participation::Partial;
     // Whether the two above were chosen, or are merely what a new side starts

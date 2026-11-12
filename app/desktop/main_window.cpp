@@ -1991,9 +1991,9 @@ namespace erdflow::desktop
     namespace
     {
         // Defined further down with the rest of the toolbar's furniture; the schema
-        // panel is built before it and offers the same four notations, which have to
+        // panel is built before it and offers the same notations, which have to
         // be worded the same way in both places or they would be two lists.
-        const std::array<std::pair<Notation, QString>, 4> &notation_styles();
+        const std::array<std::pair<Notation, QString>, 5> &notation_styles();
         // A heading inside a menu, likewise defined below and wanted here. A style
         // section is not used, because some styles draw one as a bare line and throw
         // the words away -- which is what left the schema's own menus as two runs of
@@ -3652,9 +3652,9 @@ namespace erdflow::desktop
             return mode == Tool::Generalization ? QStringLiteral("Generalization") : QStringLiteral("Specialization");
         }
         // The notations offered, in the order they appear everywhere in the UI.
-        const std::array<std::pair<Notation, QString>, 4> &notation_styles()
+        const std::array<std::pair<Notation, QString>, 5> &notation_styles()
         {
-            static const std::array<std::pair<Notation, QString>, 4> styles{{{Notation::Chen, "Chen"}, {Notation::MinMax, "Min–max"}, {Notation::CrowsFoot, "Crow's foot"}, {Notation::Bachman, "Bachman"}}};
+            static const std::array<std::pair<Notation, QString>, 5> styles{{{Notation::Chen, "Chen"}, {Notation::MinMax, "Min–max"}, {Notation::CrowsFoot, "Crow's foot"}, {Notation::Bachman, "Bachman"}, {Notation::Normal, "Normal"}}};
             return styles;
         }
     } // namespace
@@ -5074,6 +5074,15 @@ namespace erdflow::desktop
 
     void MainWindow::refresh_properties()
     {
+        // The panel is made afresh below. Where it still shows what it showed,
+        // it is put back where it had been scrolled to once it is made (Zain,
+        // 2026-11-12), so choosing something in it does not send it back to
+        // its top.
+        const bool same_thing = properties_shown_ && *properties_shown_ == selection_;
+        const int was_at = properties_->verticalScrollBar()->value();
+        properties_shown_ = selection_;
+        const auto keep_place = qScopeGuard([this, same_thing, was_at]
+                                            { if (same_thing) keep_scroll_place(properties_, was_at); });
         if (auto *old = properties_->takeWidget())
         {
             old->hide();
@@ -5545,6 +5554,16 @@ namespace erdflow::desktop
                 participation->addItems({"Partial — optional", "Total — required"});
                 participation->setCurrentIndex(participant.participation == Participation::Total ? 1 : 0);
                 participant_form->addRow(field_label("Participation", label_tone, card), participation);
+                if (binary) {
+                    const auto& opposite = relationship.participants[&participant == &relationship.participants.front() ? 1 : 0];
+                    const auto meaning = QString("%1 per %2: the maximum and minimum at this endpoint. "
+                                                 "In Chen, this minimum controls the opposite entity's participation line.")
+                        .arg(text(domain::name(editor_.project(), side)),
+                             text(domain::name(editor_.project(), target_ref(opposite.target))));
+                    maximum->setToolTip(meaning);
+                    participation->setToolTip(meaning);
+                    participant_form->addRow(hint(meaning, card));
+                }
                 auto *role = new QLineEdit(text(participant.role), card);
                 role->setPlaceholderText("Role (especially for recursive links)");
                 role->setMaxLength(512);
@@ -11011,6 +11030,16 @@ namespace erdflow::desktop
     {
         if (!schema_properties_ || !schema_ || !wearing_schema_panels_)
             return;
+        // As the diagram's panel does, this one keeps the place it was scrolled
+        // to while it still shows the same kind of thing (Zain, 2026-11-12). The
+        // kind and not the thing itself: changing a relationship's type or
+        // flipping it can leave another of its foreign keys chosen.
+        const auto shown_kind = schema_->selection_now().index();
+        const bool same_kind = schema_properties_shown_ && *schema_properties_shown_ == shown_kind;
+        const int was_at = schema_properties_->verticalScrollBar()->value();
+        schema_properties_shown_ = shown_kind;
+        const auto keep_place = qScopeGuard([this, same_kind, was_at]
+                                            { if (same_kind) keep_scroll_place(schema_properties_, was_at); });
         // A field being put away with the old panel gives up its focus, which a
         // field takes for finishing an edit; it is not one, so it writes nothing.
         schema_properties_rebuilding_ = true;
@@ -11890,8 +11919,8 @@ namespace erdflow::desktop
                 // is: Properties, the line in a card of its own, then General
                 // and Ends, each with its own mark and open until the hand
                 // folds it. From and To are said once, in the card, rather than
-                // again under General. Still only read: nothing here is offered,
-                // and nothing reaches the Editor. No Constraints section until
+                // again under General. Relationship editing is offered below,
+                // with changes committed through the Editor. No Constraints section until
                 // the schema holds referential actions (Zain, 2026-10-02).
                 panel->setObjectName("schemaRelationshipProperties");
                 auto *title = new QLabel("Properties", panel);
@@ -11991,6 +12020,75 @@ namespace erdflow::desktop
                             pairs << own[part] + " → " + theirs.value(part, QStringLiteral("?"));
                         fact_row("Column Pairs", pairs);
                     }
+                    info->addWidget(card);
+                }
+
+                // Logical endpoint controls are named separately from the
+                // physical FK ends below: M:M has two table endpoints and a
+                // junction, whose individual lines still reference one row.
+                {
+                    const auto logical = editor_.schema_relationship_ends(key->id);
+                    const auto current = logical.value_or(application::SchemaRelationshipEnds{
+                        to_name.toStdString(), from.name, domain::Cardinality::One,
+                        from.columns[key->rows.front()].one_to_one ? domain::Cardinality::One : domain::Cardinality::Many});
+                    const auto apply = [this, key_id = key->id](domain::Cardinality first,
+                                                               domain::Cardinality second, bool flip)
+                    {
+                        if (schema_properties_rebuilding_) return;
+                        domain::ForeignKeyId selected = key_id;
+                        const auto result = editor_.change_schema_relationship(key_id, first, second, flip, &selected);
+                        show_result(result);
+                        if (result) schema_->choose(ChosenForeignKey{selected});
+                    };
+                    auto *card = new QFrame(panel);
+                    card->setObjectName("schemaRelationshipEditor");
+                    auto *form = new QFormLayout(card);
+                    form->setContentsMargins(10, 8, 10, 8);
+                    form->setRowWrapPolicy(QFormLayout::WrapAllRows);
+                    auto *direction = new QLabel(text(current.first_name) + " → " + text(current.second_name), card);
+                    direction->setWordWrap(true);
+                    direction->setObjectName("schemaRelationshipEndpoints");
+                    form->addRow(direction);
+                    auto *ratio = new QComboBox(card);
+                    ratio->setObjectName("schemaRelationshipType");
+                    ratio->setProperty("field", "General/Relationship Type");
+                    ratio->addItems({"One-to-one (1:1)", "One-to-many (1:M)",
+                                     "Many-to-one (M:1)", "Many-to-many (M:M)"});
+                    const auto first_many = current.first == domain::Cardinality::Many;
+                    const auto second_many = current.second == domain::Cardinality::Many;
+                    ratio->setCurrentIndex((first_many ? 2 : 0) + (second_many ? 1 : 0));
+                    ratio->setToolTip("Read from the first named table to the second. Many-to-many uses a junction table.");
+                    form->addRow(field_label("Relationship type", label_tone, card), ratio);
+                    connect(ratio, &QComboBox::activated, this, [apply](int index) {
+                        apply(index >= 2 ? domain::Cardinality::Many : domain::Cardinality::One,
+                              index % 2 ? domain::Cardinality::Many : domain::Cardinality::One, false);
+                    });
+                    const auto endpoint = [&](const QString &name, bool first)
+                    {
+                        auto *maximum = new QComboBox(card);
+                        maximum->setObjectName(first ? "schemaRelationshipFirstMaximum" : "schemaRelationshipSecondMaximum");
+                        maximum->setProperty("field", first ? "Relationship/First Maximum" : "Relationship/Second Maximum");
+                        maximum->addItems({"One (1)", "Many (M)"});
+                        maximum->setCurrentIndex((first ? first_many : second_many) ? 1 : 0);
+                        maximum->setAccessibleName(name + " maximum cardinality");
+                        auto *label = field_label(name, label_tone, card);
+                        label->setWordWrap(true);
+                        form->addRow(label, maximum);
+                        connect(maximum, &QComboBox::activated, this, [apply, current, first](int index) {
+                            const auto chosen = index ? domain::Cardinality::Many : domain::Cardinality::One;
+                            apply(first ? chosen : current.first, first ? current.second : chosen, false);
+                        });
+                    };
+                    endpoint(text(current.first_name), true);
+                    endpoint(text(current.second_name), false);
+                    auto *flip = new QPushButton("Flip relationship", card);
+                    flip->setObjectName("schemaRelationshipFlip");
+                    flip->setProperty("field", "General/Flip");
+                    flip->setToolTip("Swap the two ends' cardinality and optionality. For one-to-one, move the foreign key to the other table.");
+                    form->addRow(flip);
+                    connect(flip, &QPushButton::clicked, this, [apply, current] {
+                        apply(current.second, current.first, true);
+                    });
                     info->addWidget(card);
                 }
 
@@ -12657,6 +12755,21 @@ namespace erdflow::desktop
             if (one && one->isVisible())
                 return one;
         return nullptr;
+    }
+
+    // Puts a Properties panel that has just been made afresh back where the
+    // one before it had been scrolled to (Zain, 2026-11-12). The scroll area
+    // gives the new panel its size as it takes it, so the place is usually
+    // there to go back to at once; it is asked for once more when the window
+    // has laid the panel out, in case the bar could not yet reach that far.
+    void MainWindow::keep_scroll_place(QScrollArea *area, int at)
+    {
+        if (!area || at <= 0)
+            return;
+        auto *bar = area->verticalScrollBar();
+        bar->setValue(at);
+        QTimer::singleShot(0, bar, [bar, at]
+                           { if (bar->value() != at) bar->setValue(at); });
     }
 
     void MainWindow::say_about_update(const QString &words)

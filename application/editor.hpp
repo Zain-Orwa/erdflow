@@ -35,6 +35,13 @@ struct EditResult {
     explicit operator bool() const { return ok; }
 };
 
+struct SchemaRelationshipEnds {
+    std::string first_name;
+    std::string second_name;
+    domain::Cardinality first = domain::Cardinality::One;
+    domain::Cardinality second = domain::Cardinality::Many;
+};
+
 class Editor {
 public:
     explicit Editor(IdGenerator& ids);
@@ -81,6 +88,16 @@ public:
     EditResult add_foreign_key(domain::RelationId from, domain::SchemaColumnId column,
                                domain::RelationId to, domain::SchemaColumnId target);
     EditResult erase_foreign_key(domain::ForeignKeyId id);
+    // The logical ends behind a schema connector, including a binary
+    // relationship represented by a junction table. A missing value means
+    // this link has no editable binary relationship behind it.
+    [[nodiscard]] std::optional<SchemaRelationshipEnds> schema_relationship_ends(domain::ForeignKeyId key) const;
+    // One semantic edit, including moving the foreign key or creating a
+    // junction where the chosen maxima require it. Flip also exchanges the
+    // optionality and, for 1:1, which end carries the foreign key.
+    EditResult change_schema_relationship(domain::ForeignKeyId key,
+                                           domain::Cardinality first, domain::Cardinality second,
+                                           bool flip = false, domain::ForeignKeyId* selected = nullptr);
     // Connect with its constraints off (Zain, 2026-10-23): the column made to
     // refer to `target`, asking nothing. A column that already refers
     // somewhere is pointed here instead; it takes the target's type and size;

@@ -54,10 +54,10 @@ int main(int argc, char* argv[]) {
     // for it. Development tooling beside the three above: it is the only way
     // to photograph the schema without a person clicking Preview first.
     parser.addOption({"schema", "Raise the Relational Design panel."});
-    // Which of the four notations the ends are drawn in, so each can be
+    // Which of the notations the ends are drawn in, so each can be
     // photographed without a person working the picker. Development tooling
     // beside the options above.
-    parser.addOption({"notation", "Draw ends as chen, minmax, crowsfoot or bachman.", "name"});
+    parser.addOption({"notation", "Draw ends as chen, minmax, crowsfoot, bachman or normal.", "name"});
     // Which appearance to wear, so a screenshot can be taken of any of them
     // without disturbing the remembered choice. Development tooling like the
     // options above it.
@@ -117,6 +117,7 @@ int main(int argc, char* argv[]) {
             else if (wanted == "minmax") window.set_notation(erdflow::desktop::Notation::MinMax);
             else if (wanted == "crowsfoot") window.set_notation(erdflow::desktop::Notation::CrowsFoot);
             else if (wanted == "bachman") window.set_notation(erdflow::desktop::Notation::Bachman);
+            else if (wanted == "normal") window.set_notation(erdflow::desktop::Notation::Normal);
         }
         if (parser.isSet("schema") || parser.isSet("schema-full"))
             window.open_schema(parser.isSet("schema-full"));

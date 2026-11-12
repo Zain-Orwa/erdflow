@@ -3768,3 +3768,170 @@ An intermittent Intel desktop check compared Schema screenshots during the
 queued full-height transition. It now waits with the existing
 `settle_schema_full` helper before taking its reference image, preserving the
 exact image-equality assertion. No application or model behavior changed.
+
+
+## 2026-10-26 — Binary Chen participation direction
+
+Confirmed that stored Participant.maximum/participation are endpoint
+multiplicities (target instances per opposite instance), also used by schema
+conversion and Crow’s Foot. Chen incorrectly used the adjacent endpoint minimum
+for its entity participation line. DiagramView now projects the opposite minimum
+for binary Chen lines and their label clearance/tooltips, without modifying
+stored constraints, schema conversion, other notations or the file format.
+The relationship panel explains each endpoint as “X per Y”.
+Customer/Order cases 0..M vs 1..1, 1..M vs 1..1 and 0..1 vs 1..1 now test
+Chen stroke counts, the unchanged Customer Crow endpoint, changes at the Order
+endpoint, save/load, notation-switch invariance, required FK and uniqueness.
+Existing Chen stroke fixtures were corrected to use endpoint minima.
+Nonbinary relationships and the deliberately doubled non-Chen lines retain
+their existing behavior.
+
+Verification: full Debug and fresh Release builds succeeded; CTest 12/13 in
+each configuration, including the new canvas regressions. Only the visual
+suite failed (six snapshots: home, card-rest, card-hover, card-selected,
+conceptual, relational-design; the same six are recorded in prior results).
+No visual baselines were updated.
+
+
+## 2026-10-26 — Min–max and non-Chen line-style audit
+
+Follow-up to the binary Chen fix: preserved that fix and all production
+rendering. Existing Min–max explicitly reads the same endpoint values as
+Crow’s Foot; tests and roadmap establish that display contract. Its UI name
+does not explain the difference from textbook entity-participation min–max.
+DEVELOPMENT.md now documents both readings, Customer/Order cases A–D, sources
+and the suggested clearer name “Min–max (endpoint multiplicity)”.
+The 2026-10-03 intentional all-notation doubling is documented as an ERDFlow
+extension outside Chen. SchemaView::paint_schema is separate and draws single
+routed strokes; specialization completeness lines are also separate.
+Added exact painted Min–max label checks for the four requested binary cases
+in both display modes, plus Customer/Order stroke-count checks preserving the
+Crow’s Foot, Min–max and Bachman extensions. No production source, data format,
+schema/SQL logic, examples or visual baselines changed in this follow-up.
+Debug and Release builds succeeded; both CTest 12/13. Only visual failed:
+all six mismatch names and percentages exactly match the preceding fix’s logs.
+
+
+## 2026-11-04 — Editable schema connector relationships
+
+Selecting a schema connector now offers all four binary relationship types
+(1:1, 1:M, M:1, M:M), One/Many controls for each named logical endpoint, and
+Flip relationship. Endpoint order stays stable when the foreign key changes
+direction. The existing Ends cards continue to describe the physical foreign
+key, including a junction's individual references. All four drawing notations
+continue to read the resulting schema constraints.
+
+Each action is one Editor history step. Derived relationships update and
+confirm their source participants; a one-to-one flip changes the chosen FK
+carrier. Native relationships change UNIQUE, move the reference, or create a
+two-column junction with a composite primary key. Either connector of a pure
+junction can change its logical relationship back to a direct FK. Existing
+endpoint columns are retained; compatible columns are reused when reversing
+back. Hand-placed endpoint tables stay put, and a direct connector's pinned
+route reverses with its direction.
+
+Native flips and junction creation require single-column endpoint primary
+keys. Junctions with practice rows, descriptions or comments are not silently
+replaced. Links without a binary source report why the operation cannot apply.
+No new persistence fields are needed. A composite primary-key member is no
+longer incorrectly drawn as individually unique in native schemas.
+
+Regression coverage exercises the four kinds, each endpoint's controls, FK
+direction, stable selection/order, recursive junction columns, exact undo/redo,
+identifier-allocation failure, pinned routes, and save/reopen after each kind.
+
+Verification: Debug and fresh Release builds succeeded; full CTest passed
+12/13 in each configuration. All functional suites, including the new core,
+desktop and persistence regressions, passed. The visual suite reports six
+baseline mismatches (home, card-rest, card-hover, card-selected, conceptual,
+relational-design), identical between these Debug and Release runs. Baselines
+were not changed. Offscreen previews at a 310 px Properties width were
+visually inspected for the direct relationship and its junction conversion.
+
+
+## 2026-11-05 — Issue #64: participation lines follow notation
+
+Required relationship connectors now double only in Chen. Crow’s Foot,
+Min–max and Bachman use single connectors with their existing endpoint marks
+or numeric labels. The shared drawing/clearance predicate is the only
+production behavior changed. Chen's participation direction, specialization
+completeness lines, model values, persistence and schema conversion remain
+unchanged. Updated the directly affected stroke-count and label-clearance
+regressions, including the curved Chen connector check, and current notation
+documentation.
+
+Local Debug and Release builds succeeded. All other functional suites passed
+in full CTest runs; the updated canvas suites then passed in both builds.
+The visual suite retains six baseline mismatches. Relative to the preceding
+run, five mismatch percentages are identical; only conceptual changed as
+expected (6.37481% to 6.35404%). No visual baselines were updated.
+Eight before/after exported-renderer images were compared pixel by pixel:
+all four partial images and the required Chen image are identical; only the
+three required non-Chen images differ. The corrected Crow’s Foot and Chen
+renders were visually inspected. Review artifacts: build/issue-64-review/.
+
+
+## 2026-11-12 — Normal notation
+
+Added **Normal** as the fifth option in the existing shared Notation picker,
+Notation menu and Schema Appearance menu. It draws relationship connectors
+without endpoint symbols or cardinality/min–max labels in both Conceptual and
+Schema views. The existing four notations, Crow's Foot default, line shapes,
+routing, colours, stored constraints, project format and edit history remain
+unchanged. Transparent Schema exports keep continuous lines where optional
+endpoint circles would otherwise have left gaps.
+
+Regression checks cover the five choices and shared controls, bare Conceptual
+connectors in all three line styles and all four endpoint-bound combinations,
+Schema route and drawing restoration, transparent PNG/SVG continuity, and
+unchanged project bytes, revision, dirty state and Undo/Redo history.
+
+Debug and Release builds passed; all 12 functional CTest suites passed in each.
+Only `visual` fails on the six existing snapshots: all six names and mismatch
+percentages match the pre-change Debug run exactly in both configurations.
+Conceptual and Schema previews inspected; no baselines changed.
+
+
+## 2026-11-12 — Add Column in Practice Data
+
+Each Practice Data card now has **Add Column** with a plus icon immediately
+beside **Add Row**. It asks for a column name and uses the existing Schema
+Add column edits: native and multivalued-attribute tables gain a Schema
+column; entity and relationship tables gain the corresponding Conceptual
+attribute and Schema column. Cancelling or an empty name makes no edit.
+Existing rows and an unfinished row are preserved;
+new cells start as NULL. The addition and subsequent cell edits participate
+in the existing save format and Undo/Redo history.
+
+The production change is confined to `practice_data_view.cpp`. Desktop checks
+cover the control's placement, cancellation, blank names, native, linked and
+multivalued tables, draft preservation, new-cell editing, exact Undo/Redo and
+save/reopen.
+
+Debug and Release builds passed. Full CTest is 12/13 in each: all functional
+suites pass, and the six existing visual mismatch names and percentages are
+unchanged from before this addition. Practice Data layouts inspected at
+1440×900 and 1280×720; no baselines updated.
+
+
+## 2026-11-12 — Released together in 0.3.3; Properties keeps its place
+
+The six entries above were built in a working copy that no release was made
+from: 0.3.1 and 0.3.2 were made from the published source alone. Zain asked
+on 2026-11-12 for all of it to be released, and it is in ERDFlow from 0.3.3,
+brought over as it was written and tested there.
+
+With it, a defect he reported the same day is fixed. A Properties panel is
+made afresh after every edit, which put it back at its top however far it had
+been scrolled, so choosing a maximum or a relationship type sent the panel
+away from what had just been chosen. Each panel now keeps the place it was
+scrolled to while it still shows the same thing: the Conceptual panel while
+the same elements are selected, the Schema's while the same kind of thing is
+(changing a relationship's type or flipping it can leave another of its
+foreign keys chosen). Shown something else, a panel starts from its top, as
+before.
+
+- Desktop: `MainWindow::keep_scroll_place`, called as `refresh_properties`
+  and `refresh_schema_properties` finish; `--notation normal` (`main.cpp`).
+- Tests: desktop `properties_scroll_place_tests`.
+- `CLAUDE.md` says five notations are offered.
