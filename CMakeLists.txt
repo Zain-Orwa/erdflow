@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(ERDFlow VERSION 0.3.0 LANGUAGES CXX)
+project(ERDFlow VERSION 0.3.1 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -203,6 +203,11 @@ qt_add_resources(erdflow_desktop "erdflow_dr_icons"
 
 add_executable(erdflow app/desktop/main.cpp)
 target_link_libraries(erdflow PRIVATE erdflow_desktop erdflow_infrastructure erdflow_warnings)
+# The running application uses the same complete artwork as its packaged icon.
+qt_add_resources(erdflow "erdflow_branding"
+    PREFIX "/erdflow/branding"
+    BASE "packaging/icons"
+    FILES packaging/icons/erdflow-app-icon.png)
 # The application version is the project version above, and only that: the
 # program reports it, and every package carries it.
 target_compile_definitions(erdflow PRIVATE ERDFLOW_VERSION="${PROJECT_VERSION}")

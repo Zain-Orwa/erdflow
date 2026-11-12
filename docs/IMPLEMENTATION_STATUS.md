@@ -3699,3 +3699,22 @@ The visible description is removed, and its space is given to the centered
 demo; the previous responsive card height budget and Create baseline are
 preserved so the other cards and Home layout do not move. Motion ordering,
 notation, themes, and the real editor remain unchanged.
+
+
+## 2026-11-12 — Complete application logo (0.3.1)
+
+The application icon now uses the owner's original 1254×1254 square artwork:
+the full blue circle, ERDFlow wordmark and strands. `packaging/icons/erdflow-logo.png`
+preserves the original source. `erdflow-app-icon.png` is its circular cutout
+with true alpha transparency outside the glowing ring. The icon generator
+resamples that entire PNG canvas,
+without cropping or browser viewport limits, into macOS ICNS (16–1024 px),
+Windows ICO (16–256 px) and Linux PNG (512 px). Existing bundle, installer and
+shortcut references use these files. The executable embeds the same circular artwork
+and sets its application/window icon, including for development launches.
+
+This patch changes only application branding and release metadata. Modeling
+behavior, project format, bundle identifier and Windows installer identity
+remain unchanged. Icon dimensions, container metadata and source identity
+were checked; the local macOS package bundle builds and passes its example
+smoke test. Cross-platform installers are built and verified by Desktop Packages.

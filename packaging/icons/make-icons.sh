@@ -1,32 +1,34 @@
 #!/bin/sh
-# Regenerates ERDFlow's application icons from erdflow-icon.svg, the ERDFlow
-# mark used as the website's favicon. Run on macOS from this folder:
+# Regenerates ERDFlow's application icons from the owner's circular transparent
+# artwork, erdflow-app-icon.png. Run on macOS from this folder:
 #
 #   sh make-icons.sh
 #
-# Needs Google Chrome (to draw the SVG at each size with a transparent
-# background), iconutil and Python 3, all without extra packages. Writes:
+# Needs macOS sips, iconutil and Python 3, without extra packages. Writes:
 #   erdflow.icns    macOS application icon
 #   erdflow.ico     Windows executable and installer icon
 #   erdflow.png     Linux icon (512 x 512)
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
-chrome="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
-cp "$here/erdflow-icon.svg" "$work/icon.svg"
-cat > "$work/icon.html" <<'HTML'
-<!doctype html><html><body style="margin:0;background:transparent">
-<img src="icon.svg" style="display:block;width:100vw;height:100vh">
-</body></html>
-HTML
+python3 - "$here/erdflow-app-icon.png" <<'PY'
+import struct, sys
+with open(sys.argv[1], "rb") as source:
+    header = source.read(24)
+if header[:8] != b"\x89PNG\r\n\x1a\n" or len(header) != 24:
+    sys.exit("The icon source must be a PNG.")
+width, height = struct.unpack(">II", header[16:24])
+if width != height or width < 1024:
+    sys.exit("The icon source must be square and at least 1024 pixels, so the full logo stays intact.")
+PY
 
-# Draws the mark at one size, straight from the vector, so small sizes stay sharp.
+# Resample the entire square source at every size. No viewport, crop or zoom:
+# the circular outline, lettering, strands and transparent corners stay intact.
 render() {
-    "$chrome" --headless --disable-gpu --hide-scrollbars --default-background-color=00000000 \
-        --window-size="$1,$1" --screenshot="$2" "file://$work/icon.html" >/dev/null 2>&1
+    sips --resampleHeightWidth "$1" "$1" "$here/erdflow-app-icon.png" --out "$2" >/dev/null
 }
 
 mkdir "$work/erdflow.iconset"
@@ -48,7 +50,9 @@ header = struct.pack("<HHH", 0, 1, len(images))
 offset = len(header) + 16 * len(images)
 entries = b""
 for s, data in zip(sizes, images):
-    entries += struct.pack("<BBBBHHII", s % 256, s % 256, 0, 0, 1, 32, len(data), offset)
+    # Match the PNG's RGB/RGBA channel count; this circular artwork carries alpha.
+    bits = data[24] * {2: 3, 6: 4}[data[25]]
+    entries += struct.pack("<BBBBHHII", s % 256, s % 256, 0, 0, 1, bits, len(data), offset)
     offset += len(data)
 open(out, "wb").write(header + entries + b"".join(images))
 PY
