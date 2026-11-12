@@ -30,8 +30,9 @@ What is done and what remains is in `docs/RELEASE_0.1.0.md`.
 packaging/
   packaging.cmake            included from CMakeLists.txt when ERDFLOW_PACKAGING is ON
   icons/
-    erdflow-icon.svg         source artwork (the erdflow.app mark)
-    make-icons.sh            regenerates the three files below from it
+    erdflow-logo.png         full square application artwork, approved 2026-11-12
+    erdflow-icon.svg         earlier website mark (not the application icon)
+    make-icons.sh            regenerates the three files below from the PNG
     erdflow.icns             macOS
     erdflow.ico              Windows
     erdflow.png              Linux (512 px)
@@ -192,9 +193,16 @@ machine's (Ubuntu 24.04, glibc 2.39).
 ### Icons
 
 `icons/make-icons.sh` regenerates `erdflow.icns`, `erdflow.ico` and
-`erdflow.png` from `erdflow-icon.svg` on a Mac (headless Google Chrome,
-`iconutil`, Python 3). The generated files are committed so builds need none
-of these tools.
+`erdflow.png` from `erdflow-logo.png` on a Mac (`sips`, `iconutil`, Python 3).
+The source is the owner's original 1254 × 1254 artwork matching the logo
+selected on 2026-11-12. Every size includes the full circle, wordmark and
+strands, resampled from the complete square without cropping. macOS includes
+16–1024 px representations; Windows includes 16, 24, 32, 48, 64, 128 and
+256 px; Linux uses 512 px. The running application's window/Dock icon embeds
+the same source, including in ordinary development builds. Windows installer
+and shortcut icons and the macOS bundle and Linux launcher keep their existing
+paths to the regenerated files. The generated files are committed so builds
+need none of the icon-generation tools.
 
 ## Metadata and audit status
 
@@ -203,8 +211,8 @@ application version, Windows resources and installer, macOS plist and DMG,
 Linux artifact name, and generated notices. The `.erdx` format is separate.
 The copyright comes from the root `LICENSE`.
 
-The owner approved the official website mark and `app.erdflow.ERDFlow` bundle
-identifier. The existing Windows AppId is preserved. Ordinary application
+The owner approved the full square application logo on 2026-11-12. The
+`app.erdflow.ERDFlow` bundle identifier and Windows AppId are preserved. Ordinary application
 behavior and UI are unchanged. Packaging rejects static Qt and unsupported
 Windows/Linux architectures.
 
