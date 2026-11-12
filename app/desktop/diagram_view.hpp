@@ -31,7 +31,7 @@ enum class Tool { Select, Entity, Attribute, Relationship, Specialization, Gener
 // How each participant end is drawn. The model is the same in every notation:
 // participation supplies the minimum (0 or 1) and cardinality the maximum
 // (1 or M), so every notation reads the same two values off each participant.
-enum class Notation { Chen, MinMax, CrowsFoot, Bachman };
+enum class Notation { Chen, MinMax, CrowsFoot, Bachman, Normal };
 // Session-only text choice for Conceptual Min-max; the model keeps both bounds.
 enum class MinMaxDisplayMode { CardinalityOnly, CardinalityAndOrdinality };
 

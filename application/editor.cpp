@@ -1850,6 +1850,243 @@ EditResult Editor::erase_foreign_key(ForeignKeyId id) {
     });
 }
 
+namespace {
+// A pure junction has no payload columns or incoming references. Both of its
+// foreign keys describe the same binary relationship, so either line edits it.
+std::optional<SchemaForeignKey> junction_other(const SchemaOverrides& schema, const SchemaForeignKey& key) {
+    const auto columns = schema.added.find(key.from);
+    if (columns == schema.added.end() || columns->second.size() != 2) return {};
+    for (const auto& column : columns->second)
+        if (!column.identifier || column.unique || !column.comment.empty()) return {};
+    std::optional<SchemaForeignKey> other;
+    for (const auto& [id, fk] : schema.foreign_keys) {
+        if (fk.to == key.from) return {};
+        if (fk.from != key.from || id == key.id) continue;
+        if (other || fk.column == key.column) return {};
+        other = fk;
+    }
+    return other;
+}
+const Relationship* relationship_for_key(const Project& project, ForeignKeyId key, std::size_t& first) {
+    for (const auto& [id, relationship] : project.relationships) {
+        (void)id;
+        for (std::size_t i = 0; i < relationship.participants.size(); ++i)
+            if (foreign_key_from(LinkSource{relationship.participants[i].id}) == key) {
+                first = i;
+                return &relationship;
+            }
+    }
+    return nullptr;
+}
+}
+
+std::optional<SchemaRelationshipEnds> Editor::schema_relationship_ends(ForeignKeyId key) const {
+    if (project().schema.standalone) {
+        const auto found = project().schema.foreign_keys.find(key);
+        if (found == project().schema.foreign_keys.end()) return {};
+        const auto& fk = found->second;
+        const auto other = junction_other(project().schema, fk);
+        const auto* column = find_schema_column(project().schema, fk.column);
+        const auto& columns = project().schema.added.at(fk.from);
+        const auto keys = std::count_if(columns.begin(), columns.end(), [](const auto& c) { return c.identifier; });
+        const auto second_table = other ? other->to : fk.from;
+        const auto maximum = other || !(column->unique || (column->identifier && keys == 1))
+            ? Cardinality::Many : Cardinality::One;
+        const bool swapped = second_table < fk.to;
+        return SchemaRelationshipEnds{project().schema.relations.at(swapped ? second_table : fk.to).name,
+            project().schema.relations.at(swapped ? fk.to : second_table).name,
+            swapped ? maximum : (other ? Cardinality::Many : Cardinality::One),
+            swapped ? (other ? Cardinality::Many : Cardinality::One) : maximum};
+    }
+    std::size_t first = 0;
+    const auto* relationship = relationship_for_key(project(), key, first);
+    if (!relationship || relationship->participants.size() != 2) return {};
+    const auto& a = relationship->participants[0];
+    const auto& b = relationship->participants[1];
+    const auto called = [&](const Participant& side) {
+        const auto ref = target_ref(side.target);
+        const auto chosen = project().decisions.table_name.find(relation_from(ref));
+        return chosen == project().decisions.table_name.end() ? domain::name(project(), ref) : chosen->second;
+    };
+    return SchemaRelationshipEnds{called(a), called(b), a.maximum, b.maximum};
+}
+
+EditResult Editor::change_schema_relationship(ForeignKeyId key, Cardinality first, Cardinality second,
+                                              bool flip, ForeignKeyId* selected) {
+    ForeignKeyId next = key;
+    auto result = impl_->edit(flip ? "Flip schema relationship" : "Change schema relationship", [&](Delta& delta) {
+        if ((first != Cardinality::One && first != Cardinality::Many)
+            || (second != Cardinality::One && second != Cardinality::Many))
+            return failure("Choose One or Many for each end.");
+        if (!project().schema.standalone) {
+            std::size_t at = 0;
+            const auto* original = relationship_for_key(project(), key, at);
+            if (!original || original->participants.size() != 2)
+                return failure("This connector is not a binary relationship. Edit its source relationship's participants.");
+            auto value = *original;
+            auto& a = value.participants[0];
+            auto& b = value.participants[1];
+            a.maximum = first;
+            b.maximum = second;
+            a.cardinality_confirmed = b.cardinality_confirmed = true;
+            if (flip) {
+                std::swap(a.participation, b.participation);
+                std::swap(a.participation_confirmed, b.participation_confirmed);
+            }
+            auto decisions = project().decisions;
+            // Keep the selected line's carrier for 1:1 unless Flip asks for
+            // the opposite. Endpoint order stays stable when the key moves.
+            const auto carrier = value.participants[flip ? at : 1 - at].id;
+            if (first == Cardinality::One && second == Cardinality::One)
+                decisions.one_to_one_key[value.id] = carrier;
+            next = foreign_key_from(LinkSource{first == Cardinality::Many && second == Cardinality::One
+                ? b.id : (first == Cardinality::One && second == Cardinality::One
+                    ? value.participants[flip ? 1 - at : at].id : a.id)});
+            if (next != key && !(original->participants[0].maximum == Cardinality::Many
+                               && original->participants[1].maximum == Cardinality::Many)) {
+                auto arranged = project().schema_layout;
+                if (const auto shape = arranged.lines.find(key); shape != arranged.lines.end()) {
+                    auto reversed = shape->second;
+                    std::reverse(reversed.route.begin(), reversed.route.end());
+                    std::swap(reversed.from, reversed.to);
+                    arranged.lines.erase(key);
+                    arranged.lines[next] = std::move(reversed);
+                    delta.schema_layout = std::move(arranged);
+                }
+            }
+            if (value != *original) delta.relationships.put(value.id, std::move(value));
+            if (decisions != project().decisions) delta.decisions = std::move(decisions);
+            return EditResult{};
+        }
+        const auto found = project().schema.foreign_keys.find(key);
+        if (found == project().schema.foreign_keys.end()) return failure("The connector no longer exists.");
+        const auto original = found->second;
+        auto value = project().schema;
+        auto arranged = project().schema_layout;
+        const auto other = junction_other(value, original);
+        RelationId a = original.to;
+        RelationId b = other ? other->to : original.from;
+        if (b < a) std::swap(a, b);
+        if (other && first == Cardinality::Many && second == Cardinality::Many) return EditResult{};
+        // Moving a reference needs a candidate key on each endpoint. The
+        // native schema currently stores single-column foreign keys.
+        const auto primary = [&](RelationId table) -> std::optional<SchemaColumn> {
+            std::optional<SchemaColumn> result;
+            for (const auto& c : value.added.at(table)) {
+                if (!c.identifier) continue;
+                if (result) return {};
+                result = c;
+            }
+            return result;
+        };
+        const bool one_to_one = first == Cardinality::One && second == Cardinality::One;
+        const auto holder = one_to_one && !other ? (flip ? original.to : original.from)
+            : (first == Cardinality::Many && second == Cardinality::One ? a : b);
+        const auto target = holder == a ? b : a;
+        const bool reverse = holder != original.from || target != original.to;
+        const bool bridge = first == Cardinality::Many && second == Cardinality::Many;
+        if (!other && !reverse && !bridge) {
+            auto& column = *find_schema_column(value, original.column);
+            const auto& columns = value.added.at(original.from);
+            const auto keys = std::count_if(columns.begin(), columns.end(), [](const auto& c) { return c.identifier; });
+            if (!one_to_one && column.identifier && keys == 1)
+                return failure("This foreign key is its table's primary key. Choose a separate foreign-key column to allow many rows.");
+            column.unique = one_to_one;
+        } else {
+            const auto a_key = primary(a);
+            const auto b_key = primary(b);
+            if (!a_key || !b_key)
+                return failure("Each endpoint needs a single-column primary key to flip this connector or create a junction table.");
+            if (other) {
+                const auto rows = project().practice.tables.find(original.from);
+                if (rows != project().practice.tables.end() && !rows->second.rows.empty())
+                    return failure("The junction table contains practice rows. Clear those rows before replacing the junction.");
+                const auto& table = value.relations.at(original.from);
+                if (!table.description.empty() || !table.comment.empty())
+                    return failure("The junction table has its own description or comment. Keep it and edit its foreign keys individually.");
+                value.foreign_keys.erase(other->id);
+                value.relations.erase(original.from);
+                value.added.erase(original.from);
+                value.column_order.erase(original.from);
+                value.key_names.erase(original.from);
+                value.counting_keys.erase(original.from);
+                arranged.tables.erase(original.from);
+                arranged.widths.erase(original.from);
+                arranged.heights.erase(original.from);
+                arranged.lines.erase(other->id);
+            }
+            value.foreign_keys.erase(key);
+            // New FK columns get the key's type, with distinct names even for
+            // a recursive relationship. Original endpoint columns are retained.
+            const auto add = [&](RelationId holder, RelationId target, const SchemaColumn& target_key,
+                                 ForeignKeyId id, bool paired, bool unique) {
+                if (!paired) {
+                    for (auto& existing : value.added[holder]) {
+                        if (existing.identifier || existing.name != target_key.name
+                            || existing.logical_type != target_key.logical_type
+                            || existing.length != target_key.length || existing.scale != target_key.scale) continue;
+                        if (std::any_of(value.foreign_keys.begin(), value.foreign_keys.end(),
+                            [&](const auto& entry) { return entry.second.column == existing.id; })) continue;
+                        existing.unique = unique;
+                        value.foreign_keys[id] = SchemaForeignKey{id, holder, target, existing.id, target_key.id};
+                        return;
+                    }
+                }
+                auto column = target_key;
+                column.id = SchemaColumnId{impl_->next_id()};
+                column.identifier = paired;
+                column.key_order = paired ? static_cast<std::uint32_t>(value.added[holder].size() + 1) : 0;
+                column.required = paired || find_schema_column(project().schema, original.column)->required;
+                column.unique = unique;
+                column.auto_increment = false;
+                column.comment.clear();
+                auto base = target_key.name;
+                auto called = base;
+                const auto taken = [&](const auto& name) {
+                    return std::any_of(value.added[holder].begin(), value.added[holder].end(),
+                        [&](const auto& c) { return c.name == name; });
+                };
+                for (int n = 2; taken(called); ++n) called = base + std::to_string(n);
+                column.name = called;
+                value.foreign_keys[id] = SchemaForeignKey{id, holder, target, column.id, target_key.id};
+                value.added[holder].push_back(std::move(column));
+            };
+            if (bridge) {
+                const RelationId junction{impl_->next_id()};
+                const auto base = value.relations.at(a).name + value.relations.at(b).name;
+                auto called = base;
+                const auto taken = [&](const auto& name) {
+                    return std::any_of(value.relations.begin(), value.relations.end(),
+                        [&](const auto& pair) { return pair.second.name == name; });
+                };
+                for (int n = 2; taken(called); ++n) called = base + std::to_string(n);
+                value.relations[junction] = Relation{.id = junction, .name = called};
+                add(junction, a, *a_key, key, true, false);
+                add(junction, b, *b_key, ForeignKeyId{impl_->next_id()}, true, false);
+                const auto left = arranged.tables.find(a);
+                const auto right = arranged.tables.find(b);
+                if (left != arranged.tables.end() && right != arranged.tables.end())
+                    arranged.tables[junction] = Point{(left->second.x + right->second.x) / 2,
+                        std::max(left->second.y, right->second.y) + 240};
+            } else {
+                add(holder, target, target == a ? *a_key : *b_key, key, false, one_to_one);
+            }
+            if (!bridge && !other) {
+                if (auto shape = arranged.lines.find(key); shape != arranged.lines.end()) {
+                    std::reverse(shape->second.route.begin(), shape->second.route.end());
+                    std::swap(shape->second.from, shape->second.to);
+                }
+            } else arranged.lines.erase(key);
+        }
+        if (const auto why = broken_reference(value); !why.empty()) return failure(why);
+        if (value != project().schema) delta.schema = std::move(value);
+        if (arranged != project().schema_layout) delta.schema_layout = std::move(arranged);
+        return EditResult{};
+    });
+    if (result && selected) *selected = next;
+    return result;
+}
+
 EditResult Editor::convert_schema_to_diagram(const std::map<RelationId, Point>& tables, const DiagramSizes& sizes,
                                              std::vector<std::string>* notes) {
     return impl_->edit("Convert to Conceptual Design", [&](Delta& delta) {

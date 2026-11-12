@@ -1320,6 +1320,8 @@ struct EdgeDescription {
     // Whether this side's constraints are drawn. The constraints themselves are
     // unaffected; the line is simply bare at that end.
     bool show_constraints = true;
+    // Binary Chen participation is the minimum at the opposite endpoint.
+    Participation chen_participation = Participation::Partial;
     QString role;
     qreal offset = 0;
     // Where the line is pinned to meet each shape, when the user has locked it.
@@ -1365,9 +1367,12 @@ public:
     MinMaxDisplayMode minmax_display_mode = MinMaxDisplayMode::CardinalityAndOrdinality;
     LineStyle style = LineStyle::Straight;
 
-    // Every notation reads the same two values: the minimum from participation
-    // and the maximum from cardinality.
+    // Stored values describe endpoint multiplicity. Chen participation instead
+    // describes the adjacent entity and uses the opposite binary minimum.
     [[nodiscard]] bool mandatory() const { return descriptor.participation == Participation::Total; }
+    [[nodiscard]] bool double_participation() const {
+        return notation == Notation::Chen && descriptor.chen_participation == Participation::Total;
+    }
     [[nodiscard]] bool many() const { return descriptor.cardinality == Cardinality::Many; }
     // How far from the entity the drawn symbols extend, so labels sit clear of them.
     [[nodiscard]] qreal symbol_reach() const {
@@ -2014,7 +2019,7 @@ public:
                 return label_width / 2 * std::abs(unit.x()) + label_height / 2 * std::abs(unit.y());
             };
             constexpr qreal heaviest = 4.0 * connector_scale;
-            const auto envelope = mandatory() ? (heaviest + 1.0 * connector_scale) / 2 + heaviest / 2 : heaviest / 2;
+            const auto envelope = double_participation() ? (heaviest + 1.0 * connector_scale) / 2 + heaviest / 2 : heaviest / 2;
             constexpr qreal entity_gap = 2.0;
             constexpr qreal line_gap = 1.0;
             const auto centre = end + along * (entity_gap + reach_of(along)) + side * (envelope + line_gap + reach_of(side));
@@ -2039,7 +2044,7 @@ public:
                 stroker.setWidth(weight);
                 stroker.setCapStyle(Qt::SquareCap);
                 stroker.setJoinStyle(Qt::BevelJoin);
-                if (mandatory()) {
+                if (double_participation()) {
                     const auto apart = (weight + 1.0 * connector_scale) / 2;
                     strokes = strokes.united(stroker.createStroke(alongside(path_, apart)));
                     strokes = strokes.united(stroker.createStroke(alongside(path_, -apart)));
@@ -2093,7 +2098,9 @@ public:
                                                  : QStringLiteral("Inheritance — supertype");
         } else if (descriptor.relationship) {
             plain_tooltip = QStringLiteral("Participant: %1 · %2%3").arg(descriptor.cardinality == Cardinality::One ? "One" : "Many",
-                descriptor.participation == Participation::Total ? "total participation" : "partial participation",
+                notation == Notation::Chen
+                    ? (double_participation() ? "total participation" : "partial participation")
+                    : (mandatory() ? "minimum 1 (required)" : "minimum 0 (optional)"),
                 descriptor.role.isEmpty() ? QString{} : QStringLiteral(" · ") + descriptor.role);
         } else {
             plain_tooltip = QStringLiteral("Attribute ownership — select and delete to detach");
@@ -2112,13 +2119,11 @@ public:
         const qreal weight = (isSelected() ? 4.0 : highlighted ? 3.4 : 2.2) * connector_scale;
         painter->setPen(QPen(ink, weight));
         painter->setBrush(Qt::NoBrush);
-        // A total participation is drawn as a double line in every notation
-        // (Zain, 2026-10-03; until then only in Chen): two lines of the same
-        // weight, a narrow gap apart, one either side of where the single
-        // line runs, so both leave the diamond's corner together and stay
-        // parallel round every bend. A total specialization keeps its own
-        // double line, in every notation.
-        const bool total_side = descriptor.relationship && descriptor.participation == Participation::Total;
+        // Chen expresses total participation with two parallel lines. Other
+        // notations express the minimum in their endpoint symbols or labels
+        // and keep a single connector (issue #64). Total specialization keeps
+        // its separate double line in every notation.
+        const bool total_side = descriptor.relationship && double_participation();
         const bool doubled = std::holds_alternative<InheritanceKey>(descriptor.key) && descriptor.total;
         const QColor paper = picture_ground.value_or(canvas_);
         const bool no_paper = paper.alpha() == 0;
@@ -3678,6 +3683,9 @@ void DiagramView::synchronize() {
                 .key = participant.id, .from = id, .to = target_ref(participant.target), .relationship = id,
                 .cardinality = participant.maximum, .participation = participant.participation,
                 .show_constraints = participant.show_constraints,
+                .chen_participation = relationship.participants.size() == 2
+                    ? relationship.participants[&participant == &relationship.participants.front() ? 1 : 0].participation
+                    : participant.participation,
                 .role = QString::fromStdString(participant.role), .offset = shape.offset,
                 .owner_anchor = shape.owner_anchor, .child_anchor = shape.child_anchor,
                 .waypoints = route_of(shape), .recursion = static_cast<int>(ordinal)});

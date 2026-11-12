@@ -67,8 +67,10 @@ These have been decided and are not open unless Zain reopens them.
   On-canvas Controls), and direct Help. File's existing Open & Save, Export,
   and Import controls stay on its tool row. The non-native old menu row stays
   hidden; native menus and the shared actions/shortcuts remain intact.
-- **Crow's Foot is the default notation.** Not Chen. Four notations are offered;
-  Crow's Foot is what a diagram is drawn in before anybody chooses.
+- **Crow's Foot is the default notation.** Not Chen. Five notations are offered
+  (Zain, 2026-11-12: Normal, which draws lines with nothing at their ends,
+  joined Chen, Min–max, Crow's foot and Bachman); Crow's Foot is what a
+  diagram is drawn in before anybody chooses.
 - **Shapes are made for their names** (Zain, 2026-10-12, replacing the
   2026-10-11 rule that the defaults were the least size; least width
   2026-10-13). The defaults -- entity 133×77, relationship 171×99, attribute

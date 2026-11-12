@@ -820,6 +820,20 @@ namespace
                 hollow += empty ? 1 : 0;
             }
             require(hollow > 0, "The Company schema's optional foreign keys end hollow");
+            const auto paths = view->line_shapes();
+            window.set_notation(desktop::Notation::Normal);
+            settle();
+            for (const auto format : {desktop::PictureFormat::Png, desktop::PictureFormat::Svg}) {
+                const auto normal = picture(view->export_view(), format, desktop::PictureBackground::Transparent, 1.0);
+                for (const auto &shape : paths) {
+                    const QLineF first(shape[0], shape[1]);
+                    const auto centre = first.pointAt(21.0 / first.length());
+                    require(qAlpha(normal.image.pixel(normal.at(centre))) > 0,
+                            "Normal keeps a continuous exported line where an optional end had a hollow");
+                }
+            }
+            require(view->line_shapes() == paths, "Normal leaves every schema route unchanged");
+            window.set_notation(desktop::Notation::CrowsFoot);
             window.set_theme(desktop::ThemeId::Dracula);
             settle();
             require(in_colour(picture(view->export_view(), desktop::PictureFormat::Png, desktop::PictureBackground::White, 1.0), dark,
@@ -6050,6 +6064,12 @@ namespace
                 { return properties_speak_schema(panel()); };
                 const auto read_only = [&]
                 { return !properties_offer_edits(panel()); };
+                const auto relationship_editable = [&] {
+                    return panel().findChild<QComboBox *>("schemaRelationshipType")
+                        && panel().findChild<QComboBox *>("schemaRelationshipFirstMaximum")
+                        && panel().findChild<QComboBox *>("schemaRelationshipSecondMaximum")
+                        && panel().findChild<QPushButton *>("schemaRelationshipFlip");
+                };
                 const auto &preview = [&]() -> const domain::SchemaPreview &
                 { return view->preview(); };
                 const auto key_row_in = [&](const QModelIndex &group, domain::ForeignKeyId key)
@@ -6111,7 +6131,7 @@ namespace
                 }
                 press_row(*tree, row_saying(*tree->model(), group_of(shipment_at, "Foreign Keys"), wide));
                 const auto wide_said = properties_all(panel());
-                require(properties_heading(panel()) == "Relationship" && said("Identity/Relationship") == QStringList{name_of(shipment_at) + "(" + wide_own.join(", ") + ") → " + name_of(invoice_at) + "(" + wide_theirs.join(", ") + ")"} && said("General/Self Reference") == QStringList{"No"} && said("General/Column Pairs") == QStringList{wide_own[0] + " → " + wide_theirs[0], wide_own[1] + " → " + wide_theirs[1]} && said("Referencing/Table") == QStringList{name_of(shipment_at)} && said("Referencing/Columns") == wide_own && properties_count(panel(), "Referencing/Columns") == 2 && said("Referencing/Role") == QStringList{"FK", "FK"} && said("Referenced/Table") == QStringList{name_of(invoice_at)} && said("Referenced/Columns") == wide_theirs && properties_count(panel(), "Referenced/Columns") == 2 && said("Referenced/Role") == QStringList{"PK", "PK"} && said("Referencing/Column").isEmpty() && panel().findChildren<QWidget *>("schemaRelationshipEnd").size() == 2 && plainly() && read_only(),
+                require(properties_heading(panel()) == "Relationship" && said("Identity/Relationship") == QStringList{name_of(shipment_at) + "(" + wide_own.join(", ") + ") → " + name_of(invoice_at) + "(" + wide_theirs.join(", ") + ")"} && said("General/Self Reference") == QStringList{"No"} && said("General/Column Pairs") == QStringList{wide_own[0] + " → " + wide_theirs[0], wide_own[1] + " → " + wide_theirs[1]} && said("Referencing/Table") == QStringList{name_of(shipment_at)} && said("Referencing/Columns") == wide_own && properties_count(panel(), "Referencing/Columns") == 2 && said("Referencing/Role") == QStringList{"FK", "FK"} && said("Referenced/Table") == QStringList{name_of(invoice_at)} && said("Referenced/Columns") == wide_theirs && properties_count(panel(), "Referenced/Columns") == 2 && said("Referenced/Role") == QStringList{"PK", "PK"} && said("Referencing/Column").isEmpty() && panel().findChildren<QWidget *>("schemaRelationshipEnd").size() == 2 && plainly() && relationship_editable(),
                         "A foreign key of two columns is one relationship, its columns paired in order");
                 // Laid out as a chosen column is (Zain, 2026-10-02): Properties,
                 // the line in a card of its own, then General and Ends, both
@@ -6150,8 +6170,8 @@ namespace
                     require(ends_in_order == QStringList{"Referenced", "Referencing"} && roles_said == QStringList{"Referenced end", "Referencing end"} && said("Referenced/Cardinality") == QStringList{"One (1)"} && said("Referencing/Cardinality") == QStringList{drawn} && !panel().findChild<QLabel *>("schemaRelationshipDirection"),
                             "Ends: the referenced end, then the referencing end, each saying the cardinality the line is "
                             "drawn with there, once for the whole key");
-                    require(!any_constraint && read_only(),
-                            "No Constraints, no ON DELETE, ON UPDATE or Mandatory, and nothing offered to change");
+                    require(!any_constraint && relationship_editable(),
+                            "No referential-action controls; relationship type, endpoint maxima and Flip are editable");
                     // Folded by the hand, a section stays folded for the next
                     // line chosen, and is remembered apart from a table's or a
                     // column's sections. Folding is not an edit.
@@ -6282,7 +6302,7 @@ namespace
                     const auto carried_key = view->preview().tables[here->first].columns[here->second].key_id;
                     view->choose(desktop::ChosenForeignKey{*carried_key});
                     settle();
-                    require(said("Referencing/Table") == QStringList{name_of(paired_at)} && said("Referencing/Role") == QStringList{"PK", "FK"} && said("Referenced/Role") == QStringList{"PK"} && said("General/Self Reference") == QStringList{"No"} && plainly() && read_only(),
+                    require(said("Referencing/Table") == QStringList{name_of(paired_at)} && said("Referencing/Role") == QStringList{"PK", "FK"} && said("Referenced/Role") == QStringList{"PK"} && said("General/Self Reference") == QStringList{"No"} && plainly() && relationship_editable(),
                             "Its line says the Referencing column is a primary key and a foreign key, both");
                     view->choose(carried_now);
                     settle();
@@ -7122,7 +7142,7 @@ namespace
                     settle();
                 };
                 const auto schema_before_switching = model.project().schema;
-                require(end_now() == QStringList{"Zero or Many (0..N)"} && !properties_offer_edits(panel()),
+                require(end_now() == QStringList{"Zero or Many (0..N)"} && panel().findChild<QComboBox *>("schemaRelationshipType"),
                         "Optional and not unique, the referencing end is Zero or Many");
                 switch_on("Constraints/Not Null");
                 require(end_now() == QStringList{"One or Many (1..N)"} && model.undo_label() != "Connect tables",
@@ -7135,6 +7155,60 @@ namespace
                 undo();
                 require(end_now() == QStringList{"Zero or Many (0..N)"} && model.undo_label() == "Connect tables" && model.project().schema == schema_before_switching,
                         "And another NOT NULL: Zero or Many again");
+            }
+            // Selecting a connector exposes the four logical ratios, named
+            // endpoint controls and a real FK-direction flip. Each edit is
+            // atomic and the selected connector follows the resulting key.
+            {
+                view->choose(desktop::ChosenForeignKey{new_fk});
+                settle();
+                const auto unchanged = model.project();
+                const auto history = model.history_position();
+                const auto choose_ratio = [&](int index) {
+                    auto *ratio = panel().findChild<QComboBox *>("schemaRelationshipType");
+                    require(ratio && ratio->count() == 4, "All four relationship kinds are offered on a selected connector");
+                    ratio->setCurrentIndex(index);
+                    QMetaObject::invokeMethod(ratio, "activated", Qt::DirectConnection, Q_ARG(int, index));
+                    settle();
+                    require(std::holds_alternative<desktop::ChosenForeignKey>(view->selection_now()),
+                            "The resulting connector remains selected");
+                };
+                choose_ratio(0);
+                require(model.history_position() == history + 1 && model.schema_relationship_ends(new_fk)->second == domain::Cardinality::One,
+                        "One-to-one sets the foreign key UNIQUE in one edit");
+                undo();
+                choose_ratio(2);
+                require(model.project().schema.foreign_keys.at(new_fk).from != unchanged.schema.foreign_keys.at(new_fk).from,
+                        "Many-to-one moves the foreign key to the other endpoint");
+                require(panel().findChild<QComboBox *>("schemaRelationshipType")->currentIndex() == 2,
+                        "The endpoint order stays fixed when the relationship direction changes");
+                undo();
+                choose_ratio(3);
+                require(model.project().schema.relations.size() == unchanged.schema.relations.size() + 1
+                            && model.schema_relationship_ends(new_fk)->first == domain::Cardinality::Many
+                            && model.schema_relationship_ends(new_fk)->second == domain::Cardinality::Many,
+                        "Many-to-many creates a junction with both logical endpoints still editable");
+                choose_ratio(1);
+                require(model.project().schema.relations.size() == unchanged.schema.relations.size(),
+                        "A junction relationship can be changed back to one-to-many from its selected connector");
+                undo();
+                undo();
+                auto *first = panel().findChild<QComboBox *>("schemaRelationshipFirstMaximum");
+                auto *second = panel().findChild<QComboBox *>("schemaRelationshipSecondMaximum");
+                require(first && second, "Each named endpoint has its own maximum control");
+                second->setCurrentIndex(0);
+                QMetaObject::invokeMethod(second, "activated", Qt::DirectConnection, Q_ARG(int, 0));
+                settle();
+                require(model.schema_relationship_ends(new_fk)->second == domain::Cardinality::One,
+                        "The endpoint's One control edits that endpoint");
+                undo();
+                panel().findChild<QPushButton *>("schemaRelationshipFlip")->click();
+                settle();
+                require(model.project().schema.foreign_keys.at(new_fk).from != unchanged.schema.foreign_keys.at(new_fk).from,
+                        "Flip reverses the foreign-key direction");
+                undo();
+                require(model.project() == unchanged && model.history_position() == history,
+                        "Undo restores endpoint columns, constraints, junctions, geometry and history exactly");
             }
             const auto with_new = hold();
             undo();
@@ -9164,6 +9238,98 @@ void navigation_foldout_tests()
     require(window.menuBar()->isNativeMenuBar() || !window.menuBar()->isVisible(), "The old non-native seven-item menu row stays hidden");
 }
 
+void normal_notation_tests()
+{
+    infrastructure::QtIdGenerator ids;
+    application::Editor editor(ids);
+    infrastructure::ErdxProjectStore store;
+    desktop::MainWindow window(editor, store, ids);
+    window.resize(1440, 900);
+    window.show();
+    window.load_example();
+    window.open_schema(true);
+    settle();
+    auto *picker = child<QComboBox>(window, "notationPicker");
+    auto *normal = child<QAction>(window, "notationNormal");
+    auto *schema_normal = child<QAction>(window, "schemaNotationNormal");
+    auto *secondary = dynamic_cast<desktop::DiagramView *>(window.findChild<QWidget *>("conceptualPreview"));
+    require(picker->count() == 5 && picker->itemText(4) == "Normal"
+            && normal->text() == "Normal" && schema_normal->text() == "Normal",
+            "The fifth notation is named Normal in both workspaces");
+    require(window.canvas()->notation() == desktop::Notation::CrowsFoot, "Crow's foot remains the default");
+    const auto paths = window.schema()->line_shapes();
+    const auto boxes = window.schema()->table_boxes();
+    const auto colours = window.schema()->line_colours();
+    const auto annotated = window.schema()->grab().toImage();
+    editor.mark_saved(editor.revision());
+    const auto project = editor.project();
+    const auto bytes = infrastructure::ErdxProjectStore::encode(project);
+    const auto revision = editor.revision();
+    const auto history = editor.history_bytes();
+    const auto undo = editor.undo_label(), redo = editor.redo_label();
+    picker->setCurrentIndex(4);
+    settle();
+    require(normal->isChecked() && schema_normal->isChecked()
+            && window.canvas()->notation() == desktop::Notation::Normal
+            && window.schema()->notation() == desktop::Notation::Normal
+            && secondary && secondary->notation() == desktop::Notation::Normal,
+            "The picker synchronizes Normal across Conceptual, Schema and their menus");
+    require(window.schema()->grab().toImage() != annotated, "Normal removes the schema's endpoint notation");
+    child<QAction>(window, "notationCrowsfoot")->trigger();
+    settle();
+    require(window.schema()->grab().toImage() == annotated, "Switching back restores the existing schema drawing exactly");
+    schema_normal->trigger();
+    settle();
+    require(picker->currentIndex() == 4 && normal->isChecked()
+            && window.canvas()->notation() == desktop::Notation::Normal,
+            "The schema's Normal action updates the shared picker and Conceptual view");
+    require(window.schema()->line_shapes() == paths && window.schema()->table_boxes() == boxes
+            && window.schema()->line_colours() == colours, "Normal keeps line routes, table positions and colours");
+    require(editor.project() == project && infrastructure::ErdxProjectStore::encode(editor.project()) == bytes
+            && editor.revision() == revision && !editor.dirty() && editor.history_bytes() == history
+            && editor.undo_label() == undo && editor.redo_label() == redo,
+            "Normal is a display choice and preserves the project, constraints and edit history");
+}
+
+// Properties keeps the place it was scrolled to when choosing something in it
+// makes the panel afresh (Zain, 2026-11-12); shown something else, it starts
+// from its top as before.
+void properties_scroll_place_tests()
+{
+    infrastructure::QtIdGenerator ids;
+    application::Editor editor(ids);
+    infrastructure::ErdxProjectStore store;
+    desktop::MainWindow window(editor, store, ids);
+    window.resize(1100, 520);
+    window.show();
+    window.load_example();
+    settle();
+    auto *area = child<QDockWidget>(window, "propertiesDock")->findChild<QScrollArea *>();
+    require(area != nullptr, "The Properties dock holds the panel's scroll area");
+    std::optional<domain::RelationshipId> enrolled;
+    for (const auto &[id, relationship] : editor.project().relationships)
+        if (relationship.name == "Enrolled")
+            enrolled = id;
+    require(enrolled.has_value() && !editor.project().entities.empty(), "The example has Enrolled and its entities");
+    window.canvas()->select_elements({domain::ElementRef{*enrolled}});
+    settle();
+    auto *bar = area->verticalScrollBar();
+    require(bar->maximum() > 120, "A relationship's Properties are longer than a short panel shows");
+    bar->setValue(bar->maximum() - 7);
+    const int place = bar->value();
+    require(place > 0, "The panel is scrolled down");
+    child<QPushButton>(window, "reverseRelationship")->click();
+    settle();
+    require(bar->value() == place, "Choosing something in Properties leaves the panel where it was scrolled to");
+    child<QAction>(window, "undoCommand")->trigger();
+    settle();
+    require(bar->value() == place, "And so does undoing it");
+    window.canvas()->select_elements({domain::ElementRef{editor.project().entities.begin()->first}});
+    settle();
+    require(bar->value() == 0, "Another thing chosen is shown from its top");
+    std::cout << "PASS Properties keeps its place when something is chosen in it\n";
+}
+
 void minmax_display_menu_tests()
 {
     using desktop::MinMaxDisplayMode;
@@ -9188,9 +9354,9 @@ void minmax_display_menu_tests()
             "Display submenu has exactly the two approved choices");
     require(only->isCheckable() && combined->isCheckable() && !only->isChecked() && combined->isChecked(),
             "Combined mode is the checked default");
-    require(picker->count() == 4 && notation->actions().size() == 5
-            && notation->actions().back() == menu->menuAction(), "Four notations remain, followed by one real submenu");
-    for (const char *name : {"notationChen", "notationMinmax", "notationCrowsfoot", "notationBachman"})
+    require(picker->count() == 5 && notation->actions().size() == 6
+            && notation->actions().back() == menu->menuAction(), "Five notations are followed by one real submenu");
+    for (const char *name : {"notationChen", "notationMinmax", "notationCrowsfoot", "notationBachman", "notationNormal"})
         require(notation->actions().contains(child<QAction>(window, name)), "Existing notation actions stay intact");
     require(!menu->menuAction()->isVisible() && !only->isEnabled() && !combined->isEnabled(),
             "Display choices are hidden and disabled outside Min-max");
@@ -9631,6 +9797,71 @@ void converted_shapes_fit_their_names_tests(infrastructure::QtIdGenerator &ids)
                     !card_of("Department")->findChild<QLabel *>("practiceReady"),
                 "Rows that keep every rule leave the name alone on its line");
 
+        // Add Column is beside Add Row and uses the same table definition as
+        // the Schema, preserving both existing data and a row still being typed.
+        {
+            auto *card = card_of("Department");
+            auto *add_row = card->findChild<QPushButton *>("practiceAddRow");
+            auto *add_column = card->findChild<QPushButton *>("practiceAddColumn");
+            require(page->findChildren<QPushButton *>("practiceAddColumn").size() == 2
+                    && add_column->isVisible() && !add_column->icon().isNull()
+                    && add_column->geometry().left() > add_row->geometry().right()
+                    && add_column->geometry().right() < card->findChild<QPushButton *>("practiceReset")->geometry().left(),
+                    "Every practice card offers Add Column immediately after Add Row");
+            const auto before = model.project();
+            const auto position = model.history_position();
+            answer_in_turn({"Cancel"});
+            add_column->click();
+            require(model.project() == before && model.history_position() == position,
+                    "Cancelling Add Column changes nothing");
+            answer_in_turn({"type:   "});
+            add_column->click();
+            require(model.project() == before && model.history_position() == position
+                    && card->findChild<QLabel *>("practiceMessage")->text().contains("needs a name"),
+                    "An empty column name is refused without an edit");
+            add_row->click();
+            settle();
+            require(departments->setData(departments->index(3, 1), "Draft department", Qt::EditRole),
+                    "A row can be in progress while a column is added");
+            answer_in_turn({"type: Notes "});
+            add_column->click();
+            settle();
+            const auto notes = column(department, "Notes");
+            require(departments->columnCount() == 3 && departments->headerData(2, Qt::Horizontal).toString() == "Notes"
+                    && departments->rowCount() == 4
+                    && departments->data(departments->index(3, 1)).toString() == "Draft department"
+                    && departments->data(departments->index(3, 2)).toString() == "NULL",
+                    "The new column appears at once and keeps the unfinished row");
+            require(model.project().practice == before.practice && model.history_position() == position + 1,
+                    "Adding a column preserves all practice values and is one undo step");
+            for (int row = 0; row < 3; ++row)
+                require(!value(department, static_cast<std::size_t>(row), notes)
+                        && departments->data(departments->index(row, 2)).toString() == "NULL",
+                        "Existing rows start with NULL in the new optional column");
+            card->findChild<QPushButton *>("practiceCancelRow")->click();
+            require(departments->setData(departments->index(0, 2), "New note", Qt::EditRole),
+                    "The new column accepts practice values");
+            settle();
+            require(value(department, 0, notes) == domain::PracticeValue("New note"), "The new cell value is kept");
+            const auto after = model.project();
+            const auto reopened = infrastructure::ErdxProjectStore::decode(infrastructure::ErdxProjectStore::encode(after));
+            require(reopened && reopened.project && *reopened.project == after,
+                    "The new column and its values survive save and reopen");
+            for (int step = 0; step < 2; ++step) {
+                child<QAction>(window, "undoCommand")->trigger(); settle();
+            }
+            require(model.project() == before && departments->columnCount() == 2 && departments->rowCount() == 3,
+                    "Undo restores the exact table and data before the column and value");
+            for (int step = 0; step < 2; ++step) {
+                child<QAction>(window, "redoCommand")->trigger(); settle();
+            }
+            require(model.project() == after && departments->columnCount() == 3,
+                    "Redo restores the same column identity and its values");
+            for (int step = 0; step < 2; ++step) {
+                child<QAction>(window, "undoCommand")->trigger(); settle();
+            }
+        }
+
         // A key that is already there is refused, and the card says why.
         departments->setData(departments->index(1, 0), "1", Qt::EditRole);
         settle();
@@ -9875,6 +10106,19 @@ void converted_shapes_fit_their_names_tests(infrastructure::QtIdGenerator &ids)
             require(practice->isVisible() && child<QLabel>(diagram, "workspaceBadge")->text() == "PRACTICE DATA",
                     "Converting from the diagram shows Practice Data, and the header says so");
             require(drawn.project().practice.tables.size() == 1, "Its one table is converted");
+            const auto before_column = drawn.project();
+            answer_in_turn({"type:Nickname"});
+            practice->findChild<QPushButton *>("practiceAddColumn")->click();
+            settle();
+            auto *rows = practice->findChild<QTableView *>("practiceTable")->model();
+            require(rows->columnCount() == 2 && rows->headerData(1, Qt::Horizontal).toString() == "Nickname"
+                    && drawn.project().attributes.size() == 1
+                    && drawn.project().attributes.begin()->second.name == "Nickname"
+                    && drawn.project().practice == before_column.practice,
+                    "On a linked table Add Column creates its Conceptual attribute and keeps existing practice rows");
+            child<QAction>(diagram, "undoCommand")->trigger(); settle();
+            require(drawn.project() == before_column && rows->columnCount() == 1,
+                    "One Undo restores both linked views and their practice data");
             child<QPushButton>(diagram, "practiceShowSchema")->click();
             settle_until([&] { return !practice->isVisible(); }, "Show Schema lowers the page away");
             require(child<QPushButton>(diagram, "schemaFull")->isChecked() &&
@@ -9887,6 +10131,32 @@ void converted_shapes_fit_their_names_tests(infrastructure::QtIdGenerator &ids)
             settle_until([&] { return !practice->isVisible(); }, "Undoing the conversion lowers the page");
             require(!drawn.project().practice.converted,
                     "Undoing the conversion takes the page away with it");
+            // A multivalued attribute becomes its own table. Adding a child
+            // attribute would not give that table a column, so add to its Schema.
+            const auto student = drawn.project().entities.begin()->first;
+            const auto phone = std::get<domain::AttributeId>(*drawn.create_attribute("Phone", {}, student).created);
+            require(drawn.set_attribute_kind(phone, domain::AttributeKind::Multivalued).ok,
+                    "A multivalued attribute gives Student a Phones table");
+            diagram.open_practice_data();
+            settle();
+            QFrame *phones = nullptr;
+            for (auto *card : practice->findChildren<QFrame *>("practiceCard"))
+                if (card->findChild<QLabel *>("practiceCardName")->text() == "Phones") phones = card;
+            require(phones, "The multivalued attribute has its practice card");
+            auto *phone_rows = phones->findChild<QTableView *>("practiceTable")->model();
+            const auto before_phone_column = drawn.project();
+            const auto phone_columns = phone_rows->columnCount();
+            answer_in_turn({"type:Label"});
+            phones->findChild<QPushButton *>("practiceAddColumn")->click();
+            settle();
+            require(phone_rows->columnCount() == phone_columns + 1
+                    && phone_rows->headerData(2, Qt::Horizontal).toString() == "Label"
+                    && drawn.project().attributes == before_phone_column.attributes
+                    && drawn.project().practice == before_phone_column.practice,
+                    "The multivalued table gains a real column without changing its Conceptual attribute or rows");
+            child<QAction>(diagram, "undoCommand")->trigger(); settle();
+            require(drawn.project() == before_phone_column && phone_rows->columnCount() == phone_columns,
+                    "Undo restores the multivalued table and its data exactly");
             drawn.mark_saved(drawn.revision());
         }
         model.mark_saved(model.revision());
@@ -10225,7 +10495,7 @@ int main(int argc, char **argv)
         if (entity_kind_only) { std::cout << "Entity Kind terminology tests passed\n"; return 0; }
         if (appearance_only || whole || window_tools_part) appearance_hover_tests();
         if (appearance_only) { std::cout << "Appearance hover tests passed\n"; return 0; }
-        if (navigation_only || whole || window_tools_part) { navigation_foldout_tests(); minmax_display_menu_tests(); }
+        if (navigation_only || whole || window_tools_part) { navigation_foldout_tests(); minmax_display_menu_tests(); normal_notation_tests(); properties_scroll_place_tests(); }
         if (navigation_only) {
             infrastructure::QtIdGenerator ids;
             menu_bar_shortcut_tests(ids);
@@ -12234,7 +12504,7 @@ int main(int argc, char **argv)
         // the two controls must never disagree about which one is in use.
         auto *picker = child<QComboBox>(window, "notationPicker");
         require(tools->findChildren<QComboBox *>().contains(picker), "The notation picker is on the toolbar");
-        require(picker->count() == 4, "All four notations are offered");
+        require(picker->count() == 5, "All five notations are offered");
         for (int index = 0; index < picker->count(); ++index)
             require(!picker->itemIcon(index).isNull(), "Each notation is drawn, not just named");
         require(picker->currentIndex() == static_cast<int>(window.canvas()->notation()), "The picker starts in step");
@@ -17813,6 +18083,12 @@ int main(int argc, char **argv)
                 { return properties_speak_schema(panel()); };
                 const auto read_only = [&]
                 { return !properties_offer_edits(panel()); };
+                const auto relationship_editable = [&] {
+                    return panel().findChild<QComboBox *>("schemaRelationshipType")
+                        && panel().findChild<QComboBox *>("schemaRelationshipFirstMaximum")
+                        && panel().findChild<QComboBox *>("schemaRelationshipSecondMaximum")
+                        && panel().findChild<QPushButton *>("schemaRelationshipFlip");
+                };
                 const auto press_at = [&](QPointF at)
                 {
                     mouse(QEvent::MouseButtonPress, at, Qt::LeftButton);
@@ -17970,7 +18246,7 @@ int main(int argc, char **argv)
                         "Properties appears");
                 require(under_table == under_relationships && under_relationships == properties_all(panel()),
                         "A foreign key says the same under its table, under Relationships and as its line");
-                require(properties_heading(panel()) == "Relationship" && said("General/Type") == QStringList{"Foreign Key"} && said("Identity/Relationship") == QStringList{"Employee.ManagerID → Employee.EmployeeID"} && said("General/Self Reference") == QStringList{"Yes"} && said("Referenced/Cardinality") == QStringList{"One (1)"} && said("Referencing/Cardinality") == QStringList{manager_required ? "One or Many (1..N)" : "Zero or Many (0..N)"} && said("Referencing/Table") == QStringList{"Employee"} && said("Referencing/Column") == QStringList{"ManagerID"} && said("Referenced/Table") == QStringList{"Employee"} && said("Referenced/Column") == QStringList{"EmployeeID"} && plainly() && read_only(),
+                require(properties_heading(panel()) == "Relationship" && said("General/Type") == QStringList{"Foreign Key"} && said("Identity/Relationship") == QStringList{"Employee.ManagerID → Employee.EmployeeID"} && said("General/Self Reference") == QStringList{"Yes"} && said("Referenced/Cardinality") == QStringList{"One (1)"} && said("Referencing/Cardinality") == QStringList{manager_required ? "One or Many (1..N)" : "Zero or Many (0..N)"} && said("Referencing/Table") == QStringList{"Employee"} && said("Referencing/Column") == QStringList{"ManagerID"} && said("Referenced/Table") == QStringList{"Employee"} && said("Referenced/Column") == QStringList{"EmployeeID"} && plainly() && relationship_editable(),
                         "Referencing and referenced, the same table for a key into its own, and said to be so");
                 require(editor.revision() == revision && editor.undo_label() == undo_label && editor.dirty() == was_dirty,
                         "Choosing and reading Properties is not an edit: nothing reaches the project or the history");

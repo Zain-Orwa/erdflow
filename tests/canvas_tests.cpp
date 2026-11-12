@@ -1548,9 +1548,9 @@ void weak_and_identifying_drawing_tests() {
     require(whole() != partial, "A total specialization draws its link doubled");
 }
 
-// A total participation is drawn as a double line in every notation (Zain,
-// 2026-10-03): two lines of one weight, a narrow gap apart, either side of
-// where the single line runs. A partial one stays the single line it was.
+// Only Chen doubles a total-participation connector (issue #64). Other
+// notations keep one line and express the minimum in their symbols/labels.
+// A partial side stays single in every notation.
 void total_participation_drawing_tests(desktop::MinMaxDisplayMode mode = desktop::MinMaxDisplayMode::CardinalityAndOrdinality) {
     SequentialIds ids;
     application::Editor editor(ids);
@@ -1588,7 +1588,8 @@ void total_participation_drawing_tests(desktop::MinMaxDisplayMode mode = desktop
         return std::pair{runs, image.devicePixelRatio()};
     };
     const desktop::Notation notations[] = {desktop::Notation::CrowsFoot, desktop::Notation::Chen,
-                                           desktop::Notation::MinMax, desktop::Notation::Bachman};
+                                           desktop::Notation::MinMax, desktop::Notation::Bachman,
+                                           desktop::Notation::Normal};
     std::vector<double> single_centres;
     for (const auto notation : notations) {
         view.set_notation(notation);
@@ -1600,8 +1601,19 @@ void total_participation_drawing_tests(desktop::MinMaxDisplayMode mode = desktop
     require(editor.update_participant(enrolled, side, domain::Cardinality::Many, domain::Participation::Total, ""), "Student's side total");
     for (std::size_t n = 0; n < std::size(notations); ++n) {
         view.set_notation(notations[n]);
+        if (notations[n] == desktop::Notation::Chen) {
+            // Stored minimum is endpoint multiplicity, so Student's line
+            // follows the Course endpoint's minimum in Chen.
+            require(editor.set_participation(other, domain::Participation::Total), "Require Student participation");
+        }
         const auto [runs, ratio] = runs_across();
-        require(runs.size() == 2, "A total side is two lines, in every notation");
+        if (notations[n] != desktop::Notation::Chen) {
+            require(runs.size() == 1, "A required non-Chen side keeps one connector");
+            const auto centre = runs.front().first + runs.front().second / 2.0;
+            require(std::abs(centre - single_centres[n]) <= 1, "A non-Chen connector stays on its original path");
+            continue;
+        }
+        require(runs.size() == 2, "Chen total participation keeps two lines");
         const auto [upper, upper_length] = runs[0];
         const auto [lower, lower_length] = runs[1];
         require(std::abs(upper_length - lower_length) <= 1, "Both lines are as heavy as each other");
@@ -1610,6 +1622,7 @@ void total_participation_drawing_tests(desktop::MinMaxDisplayMode mode = desktop
         const auto centre = (upper + lower + lower_length) / 2.0;
         require(std::abs(centre - single_centres[n]) <= 1, "Either side of where the single line ran");
     }
+    require(editor.set_participation(other, domain::Participation::Partial), "Restore Course endpoint minimum");
     // The other side, still partial, is the single line it was.
     view.set_notation(desktop::Notation::CrowsFoot);
     view.synchronize();
@@ -1664,8 +1677,8 @@ void cardinality_labels_sit_at_the_entity_end_tests() {
             const auto enrolled = std::get<domain::RelationshipId>(*editor.create_relationship("Enrolled", {-95, -55, 190, 110}).created);
             const auto left = *editor.connect(enrolled, student).participant;
             const auto right = *editor.connect(enrolled, course).participant;
-            require(editor.update_participant(enrolled, left, domain::Cardinality::Many, domain::Participation::Total, ""), "Student's side total");
-            require(editor.update_participant(enrolled, right, domain::Cardinality::One, domain::Participation::Partial, ""), "Course's side partial");
+            require(editor.update_participant(enrolled, left, domain::Cardinality::Many, notation == desktop::Notation::Chen ? domain::Participation::Partial : domain::Participation::Total, ""), "Student's side total");
+            require(editor.update_participant(enrolled, right, domain::Cardinality::One, notation == desktop::Notation::Chen ? domain::Participation::Total : domain::Participation::Partial, ""), "Course's side partial");
             desktop::DiagramView view(editor);
             view.resize(1300, 600);
             view.show();
@@ -1682,7 +1695,8 @@ void cardinality_labels_sit_at_the_entity_end_tests() {
             require(dark_in(view, image, QRectF(369 - wide, -34, wide, 28)) > 0 && dark_in(view, image, QRectF(369 - wide, 6, wide, 28)) == 0,
                     "The partial side's number is just above the line, at the entity on the right");
             for (const auto x : {-366.0, -356.0, -346.0, -336.0})
-                require(runs_down(view, image, QPointF(x, 0)) == 2, "Both of the total side's lines run on unbroken beside its number");
+                require(runs_down(view, image, QPointF(x, 0)) == (notation == desktop::Notation::Chen ? 2 : 1),
+                        "The required side's connector strokes run unbroken beside its number");
             for (const auto x : {366.0, 356.0, 346.0})
                 require(runs_down(view, image, QPointF(x, 0)) == 1, "The partial side's line runs on unbroken beside its number");
         }
@@ -1695,8 +1709,8 @@ void cardinality_labels_sit_at_the_entity_end_tests() {
             const auto enrolled = std::get<domain::RelationshipId>(*editor.create_relationship("Enrolled", {-95, -55, 190, 110}).created);
             const auto above = *editor.connect(enrolled, student).participant;
             const auto below = *editor.connect(enrolled, course).participant;
-            require(editor.update_participant(enrolled, above, domain::Cardinality::Many, domain::Participation::Total, ""), "Student's side total");
-            require(editor.update_participant(enrolled, below, domain::Cardinality::One, domain::Participation::Partial, ""), "Course's side partial");
+            require(editor.update_participant(enrolled, above, domain::Cardinality::Many, notation == desktop::Notation::Chen ? domain::Participation::Partial : domain::Participation::Total, ""), "Student's side total");
+            require(editor.update_participant(enrolled, below, domain::Cardinality::One, notation == desktop::Notation::Chen ? domain::Participation::Total : domain::Participation::Partial, ""), "Course's side partial");
             desktop::DiagramView view(editor);
             view.resize(700, 1000);
             view.show();
@@ -1760,6 +1774,8 @@ void routed_entity_end_label_tests(desktop::MinMaxDisplayMode mode = desktop::Mi
         require(std::abs(label.height() - 29) < 0.001, "The existing rendered label height is preserved");
     };
     for (const auto notation : {desktop::Notation::Chen, desktop::Notation::MinMax}) {
+        const bool doubled = notation == desktop::Notation::Chen;
+        const auto normal_gap = doubled ? 8.2 : 4.2;
         // Short automatic elbow: the wide (1,M) box used to erase the
         // preceding vertical run even though it cleared the final horizontal one.
         {
@@ -1776,7 +1792,7 @@ void routed_entity_end_label_tests(desktop::MinMaxDisplayMode mode = desktop::Mi
             auto* edge = find_edge(view);
             const auto label = label_rect(edge);
             near_end(label, {300, 143});
-            clear_runs(label, {300, 143}, {245, 143}, QPointF(245, 0), true);
+            clear_runs(label, {300, 143}, {245, 143}, QPointF(245, 0), doubled);
             require(label.center().x() < 300 && !label.intersects(QRectF(300, 100, 148, 86)),
                     "Short elbow label stays on the terminal approach side and outside its entity");
             const auto label_index = edge->shape().toSubpathPolygons().size() - 1;
@@ -1808,9 +1824,9 @@ void routed_entity_end_label_tests(desktop::MinMaxDisplayMode mode = desktop::Mi
                 view.set_minmax_display_mode(mode);
                 const auto label = label_rect(find_edge(view)).translated(-translation);
                 near_end(label, {100, 0});
-                require(std::abs(label.right() - 98) < 0.001 && std::abs(label.bottom() + 8.2) < 0.001,
+                require(std::abs(label.right() - 98) < 0.001 && std::abs(label.bottom() + normal_gap) < 0.001,
                         "Origin route follows its real horizontal terminal run, with the existing end and normal gaps");
-                clear_runs(label, {100, 0}, {0, 0}, QPointF(0, -900), true);
+                clear_runs(label, {100, 0}, {0, 0}, QPointF(0, -900), doubled);
                 if (!repeated && translation == QPointF()) origin_label = label;
                 else require(QLineF(label.topLeft(), origin_label.topLeft()).length() < 0.001
                              && QLineF(label.bottomRight(), origin_label.bottomRight()).length() < 0.001,
@@ -1835,9 +1851,9 @@ void routed_entity_end_label_tests(desktop::MinMaxDisplayMode mode = desktop::Mi
             view.set_notation(notation);
             view.set_minmax_display_mode(mode);
             const auto label = label_rect(find_edge(view));
-            require(std::abs(label.right() - 98) < 0.001 && std::abs(label.bottom() + 8.2) < 0.001,
+            require(std::abs(label.right() - 98) < 0.001 && std::abs(label.bottom() + normal_gap) < 0.001,
                     "Coincident endpoint walks back to the real horizontal segment");
-            clear_runs(label, {100, 0}, {0, 0}, std::nullopt, true);
+            clear_runs(label, {100, 0}, {0, 0}, std::nullopt, doubled);
         }
         // Each recursive participant keeps its own end. Roles previously held
         // the short return's label over both strokes of the preceding run.
@@ -1862,8 +1878,8 @@ void routed_entity_end_label_tests(desktop::MinMaxDisplayMode mode = desktop::Mi
                 const bool loop = edge->toolTip().startsWith("Participant: One");
                 const auto end = loop ? QPointF(374, 186) : QPointF(300, 143);
                 near_end(label, end);
-                if (loop) clear_runs(label, end, {374, 212}, QPointF(-26, 212), true);
-                else clear_runs(label, end, {245, 143}, QPointF(245, 95), true);
+                if (loop) clear_runs(label, end, {374, 212}, QPointF(-26, 212), doubled);
+                else clear_runs(label, end, {245, 143}, QPointF(245, 95), doubled);
                 if (roles) {
                     const auto role = edge->shape().toSubpathPolygons().back().boundingRect();
                     require(!role.intersects(label), "Cleared cardinality does not collide with its existing role");
@@ -2753,8 +2769,9 @@ void notation_tests() {
     };
 
     // Every notation must draw the same participant differently.
-    const std::array<desktop::Notation, 4> styles{desktop::Notation::Chen, desktop::Notation::MinMax,
-                                                  desktop::Notation::CrowsFoot, desktop::Notation::Bachman};
+    const std::array<desktop::Notation, 5> styles{desktop::Notation::Chen, desktop::Notation::MinMax,
+                                                  desktop::Notation::CrowsFoot, desktop::Notation::Bachman,
+                                                  desktop::Notation::Normal};
     std::vector<QImage> drawn;
     for (const auto style : styles) {
         view.set_notation(style);
@@ -2769,8 +2786,8 @@ void notation_tests() {
     view.set_notation(desktop::Notation::Chen);
     require(render() == drawn.front(), "Returning to a notation reproduces its drawing");
 
-    // Within one notation, all four minimum/maximum combinations must differ,
-    // which is only true if the minimum is drawn as well as the maximum.
+    // Normal hides all four minimum/maximum combinations; the other notations
+    // still draw each pair distinctly.
     for (const auto style : styles) {
         view.set_notation(style);
         std::vector<QImage> combinations;
@@ -2782,8 +2799,100 @@ void notation_tests() {
             }
         for (std::size_t a = 0; a < combinations.size(); ++a)
             for (std::size_t b = a + 1; b < combinations.size(); ++b)
-                require(combinations[a] != combinations[b], "Every minimum/maximum pair is drawn distinctly");
+                require((combinations[a] == combinations[b]) == (style == desktop::Notation::Normal),
+                        "Only Normal draws every minimum/maximum pair as the same bare line");
     }
+
+    // Normal is exactly a bare connector, including when it bends or curves.
+    for (const auto line : {desktop::LineStyle::Straight, desktop::LineStyle::Curved, desktop::LineStyle::Elbow}) {
+        view.set_line_style(line);
+        view.set_notation(desktop::Notation::CrowsFoot);
+        require(editor.show_participant_constraints(enrolled, side, false), "Make a bare reference connector");
+        view.synchronize();
+        const auto bare = render();
+        require(editor.undo(), "Restore the participant's constraint visibility");
+        view.synchronize();
+        const auto before = editor.project();
+        const auto revision = editor.revision();
+        const auto undo = editor.undo_label();
+        view.set_notation(desktop::Notation::Normal);
+        require(render() == bare, "Normal draws only the existing connector path, with no marks or numbers");
+        view.set_notation(desktop::Notation::Chen);
+        view.set_notation(desktop::Notation::Normal);
+        require(render() == bare && editor.project() == before && editor.revision() == revision
+                && editor.undo_label() == undo, "Normal switching preserves the model, revision and undo history");
+    }
+}
+
+// Endpoint minima and Chen participation are read in opposite directions.
+void customer_order_participation_tests() {
+    SequentialIds ids;
+    application::Editor editor(ids);
+    const auto customer = std::get<domain::EntityId>(*editor.create_entity("Customer", {-520, -43, 148, 86}).created);
+    const auto order = std::get<domain::EntityId>(*editor.create_entity("Order", {372, -43, 148, 86}).created);
+    const auto places = std::get<domain::RelationshipId>(*editor.create_relationship("Places", {-95, -55, 190, 110}).created);
+    const auto customers = *editor.connect(places, customer).participant;
+    const auto orders = *editor.connect(places, order).participant;
+    require(editor.update_participant(places, customers, domain::Cardinality::One, domain::Participation::Total, ""), "Exactly one Customer per Order");
+    desktop::DiagramView view(editor);
+    view.set_grid_visible(false);
+    const auto image = [&] {
+        view.synchronize();
+        QImage result(1200, 400, QImage::Format_ARGB32_Premultiplied);
+        result.fill(view.canvas_colour());
+        QPainter painter(&result);
+        view.render_diagram(painter, QRectF(0, 0, 1200, 400), QRectF(-600, -200, 1200, 400));
+        return result;
+    };
+    const auto runs = [&](const QImage& drawn, int x) {
+        int count = 0; bool inside = false;
+        for (int y = 186; y <= 214; ++y) {
+            const bool dark = QColor(drawn.pixel(x, y)).lightness() < 160;
+            if (dark && !inside) ++count;
+            inside = dark;
+        }
+        return count;
+    };
+    std::vector<QImage> crow;
+    for (int scenario = 0; scenario < 3; ++scenario) {
+        const auto minimum = scenario == 1 ? domain::Participation::Total : domain::Participation::Partial;
+        const auto maximum = scenario == 2 ? domain::Cardinality::One : domain::Cardinality::Many;
+        require(editor.update_participant(places, orders, maximum, minimum, ""), "Orders per Customer A/B/C");
+        const auto before = editor.project();
+        const auto schema = domain::schema_preview(before);
+        bool required_customer = false;
+        for (const auto& table : schema.tables)
+            if (table.origin == domain::ElementRef{order})
+                for (const auto& column : table.columns)
+                    if (column.foreign_key) {
+                        require(column.required, "Order must have a Customer in A/B/C");
+                        require(column.unique == (scenario == 2), "Only 0..1 Orders per Customer adds FK uniqueness");
+                        required_customer = true;
+                    }
+        require(required_customer, "Schema conversion keeps Customer reference on Order");
+        view.set_notation(desktop::Notation::Chen);
+        const auto chen = image();
+        require(runs(chen, 450) == (scenario == 1 ? 2 : 1), "Customer Chen participation follows Orders per Customer minimum");
+        require(runs(chen, 750) == 2, "Order Chen participation always total, independently of maximum");
+        view.set_notation(desktop::Notation::CrowsFoot);
+        crow.push_back(image());
+        require(runs(crow.back(), 450) == 1 && runs(crow.back(), 750) == 1,
+                "Crow expresses endpoint minima with symbols on single connectors");
+        for (const auto notation : {desktop::Notation::MinMax, desktop::Notation::Bachman}) {
+            view.set_notation(notation);
+            const auto drawn = image();
+            require(runs(drawn, 450) == 1 && runs(drawn, 750) == 1,
+                    "Min-max and Bachman keep single connectors for all endpoint minima");
+        }
+        require(editor.project() == before, "Notation switching never converts or mutates constraints");
+        const auto loaded = infrastructure::ErdxProjectStore::decode(infrastructure::ErdxProjectStore::encode(before));
+        require(loaded.project && loaded.project->relationships == before.relationships, "Save/load preserves exact endpoint constraints");
+    }
+    const QRect customer_end(60, 150, 210, 100), order_end(930, 150, 210, 100);
+    require(crow[0].copy(customer_end) == crow[1].copy(customer_end)
+            && crow[0].copy(customer_end) == crow[2].copy(customer_end), "Customer Crow endpoint remains exactly one in A/B/C");
+    require(crow[0].copy(order_end) != crow[1].copy(order_end)
+            && crow[0].copy(order_end) != crow[2].copy(order_end), "Only Order endpoint minimum/maximum symbols change");
 }
 
 void minmax_display_mode_tests() {
@@ -2902,6 +3011,46 @@ void minmax_display_mode_tests() {
     require(exported() == combined_export, "Export restores the exact combined form");
     desktop::DiagramView fresh(editor);
     require(fresh.minmax_display_mode() == MinMaxDisplayMode::CardinalityAndOrdinality, "An independent canvas has no persisted display choice");
+
+    // ERDFlow's existing Min-max is endpoint-oriented, not textbook entity
+    // participation. Lock down the distinction without changing saved semantics.
+    const auto customer = std::get<domain::EntityId>(*editor.create_entity("Customer", {-520, 400, 148, 86}).created);
+    const auto order = std::get<domain::EntityId>(*editor.create_entity("Order", {372, 400, 148, 86}).created);
+    const auto places = std::get<domain::RelationshipId>(*editor.create_relationship("Places", {-95, 390, 190, 110}).created);
+    const auto customers = *editor.connect(places, customer).participant;
+    const auto orders = *editor.connect(places, order).participant;
+    struct BoundsCase {
+        domain::Cardinality customers_max, orders_max;
+        domain::Participation orders_min;
+        const char *customer_label, *order_label;
+    };
+    const std::array<BoundsCase, 4> cases{{
+        {domain::Cardinality::One, domain::Cardinality::Many, domain::Participation::Partial, "(1,1)", "(0,M)"},
+        {domain::Cardinality::One, domain::Cardinality::Many, domain::Participation::Total, "(1,1)", "(1,M)"},
+        {domain::Cardinality::One, domain::Cardinality::One, domain::Participation::Partial, "(1,1)", "(0,1)"},
+        {domain::Cardinality::Many, domain::Cardinality::Many, domain::Participation::Total, "(1,M)", "(1,M)"},
+    }};
+    const auto endpoint_edge = [&](const QString& role) -> QGraphicsItem* {
+        for (auto* edge : view.scene()->items()) {
+            if (edge->zValue() >= 0 || !edge->toolTip().startsWith("Participant:")) continue;
+            const auto label = edge->shape().toSubpathPolygons().back().boundingRect();
+            if (label.center().y() > 300 && ((label.center().x() < 0) == (role == "Customers per Order"))) return edge;
+        }
+        throw std::runtime_error("Missing Customer/Order endpoint");
+    };
+    for (const auto& bounds : cases) {
+        require(editor.update_participant(places, customers, bounds.customers_max, domain::Participation::Total, ""), "Customers per Order bounds");
+        require(editor.update_participant(places, orders, bounds.orders_max, bounds.orders_min, ""), "Orders per Customer bounds");
+        view.synchronize();
+        const auto before = editor.project();
+        expect_label(QString::fromLatin1(bounds.customer_label), endpoint_edge("Customers per Order"));
+        expect_label(QString::fromLatin1(bounds.order_label), endpoint_edge("Orders per Customer"));
+        view.set_minmax_display_mode(MinMaxDisplayMode::CardinalityOnly);
+        expect_label(bounds.customers_max == domain::Cardinality::One ? "1" : "M", endpoint_edge("Customers per Order"));
+        expect_label(bounds.orders_max == domain::Cardinality::One ? "1" : "M", endpoint_edge("Orders per Customer"));
+        view.set_minmax_display_mode(MinMaxDisplayMode::CardinalityAndOrdinality);
+        require(editor.project() == before, "Min-max display choices preserve all stored constraints");
+    }
 }
 
 // A tool used once returns to Select; a locked tool stays, so several elements
@@ -3857,6 +4006,7 @@ void line_style_tests() {
     // pixels meets two lines, not one thick one.
     require(editor.update_participant(owns, participant, domain::Cardinality::Many, domain::Participation::Total, ""),
             "Make Person's side total");
+    view.set_notation(desktop::Notation::Chen);
     view.synchronize();
     view.set_line_style(desktop::LineStyle::Curved);
     view.select_elements({});
@@ -6407,6 +6557,7 @@ int main(int argc, char** argv) {
         participant_menu_tests();
         inline_rename_tests();
         notation_tests();
+        customer_order_participation_tests();
         minmax_display_mode_tests();
         attribute_trunk_and_line_style_tests();
         line_style_tests();

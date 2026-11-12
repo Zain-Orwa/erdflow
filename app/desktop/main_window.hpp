@@ -845,6 +845,15 @@ namespace erdflow::desktop
         UpdateButton *ribbon_update_ = nullptr;
         void build_update_offer();
         void wear_update_offer(bool updates_on);
+
+        // A Properties panel is made afresh after every edit, which used to put
+        // it back at its top however far it had been scrolled. While it still
+        // shows the same thing it now keeps its place (Zain, 2026-11-12): what
+        // the Conceptual panel last showed, and which kind of thing the
+        // Schema's did. Shown something else, a panel starts from its top.
+        std::optional<std::vector<domain::ElementRef>> properties_shown_;
+        std::optional<std::size_t> schema_properties_shown_;
+        void keep_scroll_place(QScrollArea *area, int at);
     };
 
 } // namespace erdflow::desktop
