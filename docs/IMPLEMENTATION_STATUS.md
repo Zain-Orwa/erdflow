@@ -3718,3 +3718,19 @@ behavior, project format, bundle identifier and Windows installer identity
 remain unchanged. Icon dimensions, container metadata and source identity
 were checked; the local macOS package bundle builds and passes its example
 smoke test. Cross-platform installers are built and verified by Desktop Packages.
+
+
+## 2026-11-12 — Release packaging recovery
+
+The 0.3.1 build exposed two packaging failures: an obsolete runner PCRE2
+runtime required source from an unavailable Launchpad service, and macOS
+read-only DMG teardown could race Icon Services after the smoke test. Linux
+packaging now upgrades the existing PCRE2 runtime to Ubuntu's current security
+version so its matching source is available on the configured mirror. Mac
+verification retries normal ejection before forcing only its read-only test
+mount. Audit, source matching, signature checks and installer tests remain.
+
+An intermittent Intel desktop check compared Schema screenshots during the
+queued full-height transition. It now waits with the existing
+`settle_schema_full` helper before taking its reference image, preserving the
+exact image-equality assertion. No application or model behavior changed.

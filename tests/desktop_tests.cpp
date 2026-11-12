@@ -9223,7 +9223,11 @@ void minmax_display_menu_tests()
     require(menu->menuAction()->isVisible() && only->isEnabled() && only->isChecked()
             && window.canvas()->minmax_display_mode() == MinMaxDisplayMode::CardinalityOnly,
             "Returning through notation action retains the session choice");
-    window.open_schema(true); settle();
+    window.open_schema(true);
+    // Wait for the delayed full-height transition before taking the reference
+    // image; otherwise the second grab can capture a later animation frame.
+    settle_schema_full(window);
+    settle();
     const auto schema = window.schema()->grab().toImage();
     combined->trigger(); settle();
     require(combined->isChecked() && !only->isChecked()
