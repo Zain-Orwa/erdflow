@@ -47,3 +47,14 @@ Name: "{autodesktop}\ERDFlow"; Filename: "{app}\bin\erdflow.exe"; Tasks: desktop
 
 [Run]
 Filename: "{app}\bin\erdflow.exe"; Description: "{cm:LaunchProgram,ERDFlow}"; Flags: nowait postinstall skipifsilent
+; Update and Restart (ADR-025): an ERDFlow asked to update itself and open
+; again runs this installer with nothing shown and /RELAUNCH=1, and is started
+; here once the new version is in place. Without that word nothing is started,
+; as before: an update put in place because ERDFlow was closed leaves it closed.
+Filename: "{app}\bin\erdflow.exe"; Flags: nowait; Check: OpenAgainAsked
+
+[Code]
+function OpenAgainAsked: Boolean;
+begin
+  Result := ExpandConstant('{param:RELAUNCH|0}') = '1';
+end;

@@ -13,6 +13,7 @@
 #include "notice.hpp"
 #include "relational_examples.hpp"
 #include "schema_view.hpp"
+#include "update_button.hpp"
 #include "application/project_store.hpp"
 
 #include <QColor>
@@ -812,6 +813,38 @@ namespace erdflow::desktop
         // back exactly the panels that were showing when it was turned on.
         void set_full_view(bool on);
         void insert_picture_dialog(std::optional<QPointF> at = {});
+
+    public:
+        // Update and Restart (ADR-025; Zain, 2026-11-12). ERDFlow still fetches
+        // an update without a word and still puts it in place when it is closed
+        // (ADR-024); this says, with a small button at the top of the window,
+        // that one has been fetched and is ready: at the right of Home's bar,
+        // and at the right of the ribbon's row of tabs in a workspace. The
+        // window does not look for updates itself, so it is told the version
+        // by whatever does, and told nothing to take the button away again.
+        // The button is out only while Automatic Updates is on, since turned
+        // off nothing is put in place.
+        void offer_update(const QString &version);
+        // What pressing the button does: closing ERDFlow, which puts the update
+        // in place, and opening it again. Said by whatever starts the window,
+        // as where an export goes is, so the window needs to know nothing of
+        // how an update is made -- and so a test can press the button and hear
+        // that it was pressed.
+        std::function<void()> update_and_restart;
+        // Says something about the update beside the button, as a notice over
+        // the work: why it cannot be put in place just now.
+        void say_about_update(const QString &words);
+        // The button on whichever row is showing, or nothing while it is away.
+        [[nodiscard]] UpdateButton *update_button() const;
+
+    private:
+        // What was last offered, kept while Automatic Updates is off so that
+        // turning it on again brings the button back.
+        QString update_offered_;
+        UpdateButton *home_update_ = nullptr;
+        UpdateButton *ribbon_update_ = nullptr;
+        void build_update_offer();
+        void wear_update_offer(bool updates_on);
     };
 
 } // namespace erdflow::desktop

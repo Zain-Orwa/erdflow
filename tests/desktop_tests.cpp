@@ -9942,6 +9942,232 @@ void converted_shapes_fit_their_names_tests(infrastructure::QtIdGenerator &ids)
         std::cout << "PASS Help names ERDFlow's licence and Qt's, and finds the licence files of every package\n";
     }
 
+    // Update and Restart (ADR-025; Zain, 2026-11-12): the small button at the
+    // top of the window that says a newer ERDFlow has been fetched and is
+    // ready -- there only while one is, and nothing else there moved for it.
+    void update_offer_tests(infrastructure::QtIdGenerator &ids)
+    {
+        // The button by itself, on a row of its own inside a window, so that
+        // what it does for the room it is given does not depend on any
+        // system's lettering or on how small a window may be made.
+        {
+            QWidget host;
+            host.resize(500, 60);
+            QWidget row(&host);
+            row.setGeometry(0, 0, 420, 40);
+            desktop::UpdateButton button(&row, [] { return 0; }, [&row] { return row.width(); });
+            host.show();
+            settle();
+            require(button.isHidden() && button.offered().isEmpty(), "With nothing ready, the button is away");
+            button.offer("9.9.9");
+            settle();
+            const auto whole = button.sizeHint();
+            require(button.isVisible() && !button.mark_only() && button.size() == whole &&
+                        button.text() == "Update and Restart" && button.offered() == "9.9.9",
+                    "Offered a version, it is out and says Update and Restart");
+            require(button.toolTip().contains("9.9.9") && button.accessibleDescription().contains("9.9.9") &&
+                        button.accessibleName() == "Update and Restart",
+                    "Its hint names the version, and it has a name for whatever reads the screen");
+            require(button.geometry().left() > 0 && button.geometry().right() < row.width() &&
+                        button.height() < row.height() && button.y() == (row.height() - button.height()) / 2,
+                    "It stands at the right of its room, inside the row and level with it");
+            // The room narrowed: first its words go, then it does.
+            row.resize(60, 40);
+            settle();
+            require(button.isVisible() && button.mark_only() && button.width() == button.height() &&
+                        button.geometry().left() > 0 && button.geometry().right() < row.width(),
+                    "On a row too narrow for its words it keeps its mark alone");
+            row.resize(30, 40);
+            settle();
+            require(button.isHidden(), "With no room even for its mark it stays away rather than cover anything");
+            row.resize(420, 40);
+            settle();
+            require(button.isVisible() && !button.mark_only() && button.size() == whole,
+                    "And it comes back whole when there is room again");
+            // Drawn in the theme's own primary, at the strength lettering
+            // reads on; and under Plain, which shows no colour, in grey.
+            for (const auto id : {desktop::ThemeId::Azure, desktop::ThemeId::Midnight, desktop::ThemeId::HighContrast})
+            {
+                button.wear(id);
+                const auto fill = desktop::chosen_row_fill(desktop::tokens(id));
+                const auto drawn = button.grab().toImage();
+                require(drawn.pixelColor(drawn.width() / 2, 2).rgb() == fill.rgb(),
+                        "It is filled with the theme's own primary");
+            }
+            const auto azure = desktop::chosen_row_fill(desktop::tokens(desktop::ThemeId::Azure));
+            require(desktop::contrast_ratio(desktop::readable_on(azure), azure) >= 4.5, "Its lettering reads on it");
+            button.wear(desktop::ThemeId::Plain);
+            const auto plain = button.grab().toImage();
+            const auto grey = plain.pixelColor(plain.width() / 2, 2);
+            require(grey.red() == grey.green() && grey.green() == grey.blue(), "Under Plain it shows no colour");
+            // Held down, it is seen to be: its fill moves a step on.
+            button.wear(desktop::ThemeId::Azure);
+            const auto resting = button.grab().toImage();
+            QTest::mousePress(&button, Qt::LeftButton);
+            const auto held = button.grab().toImage();
+            QTest::mouseRelease(&button, Qt::LeftButton);
+            require(resting.pixelColor(resting.width() / 2, 2).rgb() == azure.rgb() &&
+                        held.pixelColor(held.width() / 2, 2).rgb() != azure.rgb(),
+                    "Held down, its fill changes, so a press is seen");
+            button.offer({});
+            settle();
+            require(button.isHidden() && button.offered().isEmpty(), "Told there is nothing ready, it is away again");
+        }
+
+        QSettings().remove(infrastructure::automatic_updates_key);
+        application::Editor editor(ids);
+        infrastructure::ErdxProjectStore store;
+        desktop::MainWindow window(editor, store, ids);
+        window.resize(1440, 900);
+        window.show();
+        window.activateWindow();
+        settle();
+        const auto named = [&](const char *name)
+        { return static_cast<desktop::UpdateButton *>(window.findChild<QAbstractButton *>(QString::fromLatin1(name))); };
+        auto *on_home = named("homeUpdateButton");
+        auto *on_ribbon = named("ribbonUpdateButton");
+        require(on_home && on_ribbon && on_home->isHidden() && on_ribbon->isHidden() && window.update_button() == nullptr,
+                "A window with no update ready shows no button, on Home or over the work");
+
+        // On Home: on Home's bar, between the name and Theme.
+        auto *home = static_cast<desktop::HomePage *>(window.findChild<QWidget *>("homePage"));
+        auto *bar = home->top_bar();
+        const auto bar_tall = bar->height();
+        const auto brand_at = bar->brand_button()->geometry();
+        const auto theme_at = bar->theme_button()->geometry();
+        window.offer_update("9.9.9");
+        settle();
+        require(window.showing_home() && window.update_button() == on_home && on_home->offered() == "9.9.9" &&
+                    on_home->parentWidget() == bar && !on_home->mark_only(),
+                "On Home, a version that is ready brings the button out on Home's bar");
+        require(on_ribbon->offered() == "9.9.9" && !on_ribbon->isVisible(),
+                "The ribbon's own is not showing while the ribbon is away");
+        require(bar->height() == bar_tall && bar->brand_button()->geometry() == brand_at &&
+                    bar->theme_button()->geometry() == theme_at,
+                "Nothing on the bar is moved or resized for it, and the bar is no taller");
+        require(on_home->geometry().left() > brand_at.right() && on_home->geometry().right() < theme_at.left() &&
+                    on_home->geometry().top() >= 0 && on_home->geometry().bottom() < bar_tall,
+                "It stands between the name and Theme, inside the bar");
+        // Reached from the keyboard, and in the order it is read: the stop
+        // after it is the bar's own first control.
+        {
+            QWidget *after = on_home->nextInFocusChain();
+            for (int step = 0; step < 2000 && after != on_home; ++step, after = after->nextInFocusChain())
+                if (after->isVisible() && after->isEnabled() && (after->focusPolicy() & Qt::TabFocus))
+                    break;
+            require(on_home->focusPolicy() == Qt::TabFocus && after == bar->theme_button(),
+                    "And it is reached from the keyboard just before the bar's own controls");
+        }
+
+        // Pressed, it asks for the update and the restart: by the pointer and
+        // from the keyboard. With nothing listening, nothing happens.
+        int pressed = 0;
+        QTest::mouseClick(on_home, Qt::LeftButton);
+        settle();
+        require(pressed == 0 && window.isVisible(), "Pressed with nothing listening, nothing happens");
+        window.update_and_restart = [&]
+        { ++pressed; };
+        QTest::mouseClick(on_home, Qt::LeftButton);
+        settle();
+        require(pressed == 1, "Pressed, it asks for the update and the restart, once");
+        QTest::keyClick(on_home, Qt::Key_Space);
+        settle();
+        require(pressed == 2, "And from the keyboard as well");
+        // A focused control shows it: drawn with and without the keyboard,
+        // the two pictures differ.
+        window.setFocus();
+        settle_for(30);
+        const auto unfocused = on_home->grab().toImage();
+        on_home->setFocus(Qt::TabFocusReason);
+        settle_for(30);
+        require(on_home->hasFocus() && on_home->grab().toImage() != unfocused, "It shows where the keyboard is");
+
+        // Taken back, it is away; over the work it is on the ribbon's row of
+        // tabs, at its right end, and the row is exactly as it was.
+        window.offer_update({});
+        window.show_home(false);
+        settle();
+        require(window.update_button() == nullptr && on_home->isHidden() && on_ribbon->isHidden(),
+                "Told there is nothing ready, the button is away on Home and over the work");
+        auto *tabs = child<QToolBar>(window, "ribbonTabs");
+        const auto tab_boxes = [&]
+        {
+            QList<QRect> boxes;
+            for (auto *action : tabs->actions())
+                if (auto *standing = tabs->widgetForAction(action))
+                    boxes << standing->geometry();
+            return boxes;
+        };
+        const auto tabs_were = tabs->actions();
+        const auto boxes_were = tab_boxes();
+        const auto row_was = tabs->geometry();
+        window.offer_update("9.9.9");
+        settle();
+        require(!window.showing_home() && window.update_button() == on_ribbon && on_ribbon->parentWidget() == tabs &&
+                    !on_ribbon->mark_only() && !on_home->isVisible(),
+                "Over the work it is on the ribbon's row of tabs");
+        require(tabs->actions() == tabs_were && tab_boxes() == boxes_were && tabs->geometry() == row_was,
+                "The row keeps exactly its tabs, each where and as large as it was, and is no taller or wider");
+        int last_tab = 0;
+        for (const auto &box : boxes_were)
+            last_tab = std::max(last_tab, box.right());
+        require(boxes_were.size() == 3 && on_ribbon->geometry().left() > last_tab &&
+                    on_ribbon->geometry().right() < tabs->width() && on_ribbon->geometry().top() >= 0 &&
+                    on_ribbon->geometry().bottom() < tabs->height(),
+                "It stands at the right end of the row, clear of File, Home and Settings and inside the row");
+        require(on_ribbon->focusPolicy() == Qt::NoFocus, "Like the row's own tabs, it is not a stop for the Tab key");
+        QTest::mouseClick(on_ribbon, Qt::LeftButton);
+        settle();
+        require(pressed == 3, "Pressed there, it asks the same");
+
+        // Why it cannot be done just now is said under the button, as a
+        // notice over the work, and not over the button itself.
+        window.say_about_update("Another ERDFlow is open. Close it first, then press Update and Restart again.");
+        settle();
+        auto *notice = static_cast<desktop::Notice *>(window.findChild<QWidget *>("notice"));
+        require(notice && notice->saying().contains("Another ERDFlow is open") &&
+                    !notice->geometry().intersects(QRect(on_ribbon->mapTo(&window, QPoint(0, 0)), on_ribbon->size())),
+                "What stops an update is said beside the button");
+        notice->put_away();
+
+        // Automatic Updates turned off puts nothing in place, so nothing is
+        // offered; turned on again, the offer is back, saying the newest.
+        auto *updates = child<QAction>(window, "automaticUpdates");
+        require(updates->isChecked(), "Automatic Updates starts on");
+        updates->setChecked(false);
+        settle();
+        require(window.update_button() == nullptr && on_ribbon->isHidden() && on_home->isHidden(),
+                "With Automatic Updates turned off, the button is away");
+        window.offer_update("9.9.10");
+        settle();
+        require(window.update_button() == nullptr, "And a version offered while it is off stays unsaid");
+        updates->setChecked(true);
+        settle();
+        require(window.update_button() == on_ribbon && on_ribbon->offered() == "9.9.10",
+                "Turned on again, the button is back, saying the version last offered");
+
+        // Home again, now with the way back into the work beside Theme: the
+        // button is in the room before it, and covers nothing even on the
+        // smallest window, where it keeps its mark alone or stays away.
+        window.show_home(true);
+        settle();
+        auto *back = bar->return_button();
+        require(back->isVisible() && window.update_button() == on_home && !on_home->mark_only() &&
+                    on_home->geometry().left() > bar->brand_button()->geometry().right() &&
+                    on_home->geometry().right() < back->geometry().left(),
+                "Home again, it stands between the name and the way back into the work");
+        window.resize(560, 460);
+        settle();
+        require(on_home->isHidden() || (on_home->geometry().left() > bar->brand_button()->geometry().right() &&
+                                         on_home->geometry().right() < back->geometry().left()),
+                "On the smallest window it still covers neither");
+        window.offer_update({});
+        settle();
+        require(window.update_button() == nullptr, "And with nothing ready any more, it is away");
+        QSettings().remove(infrastructure::automatic_updates_key);
+        std::cout << "PASS Update and Restart is offered at the top of the window while an update is ready, and moves nothing\n";
+    }
+
 int main(int argc, char **argv)
 {
     QApplication app(argc, argv);
@@ -10061,6 +10287,7 @@ int main(int argc, char **argv)
             schema_figures_tests(ids);
             licences_tests(ids);
             practice_data_tests(ids);
+            update_offer_tests(ids);
         }
         if (window_tools_part)
         {

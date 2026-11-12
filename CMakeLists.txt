@@ -54,6 +54,7 @@ add_library(erdflow_desktop app/desktop/main_window.cpp app/desktop/schema_view.
                             app/desktop/dr_icons.cpp app/desktop/dr_icon_picker.cpp
                             app/desktop/export_dialog.cpp app/desktop/search_bar.cpp
                             app/desktop/practice_data_view.cpp
+                            app/desktop/update_button.cpp
                             app/desktop/licences.cpp)
 target_link_libraries(erdflow_desktop PUBLIC erdflow_canvas Qt6::Svg PRIVATE erdflow_warnings)
 # Help -> Licences names ERDFlow's copyright holder as LICENSE does, so there

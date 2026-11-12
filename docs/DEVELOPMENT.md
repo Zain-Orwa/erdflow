@@ -104,6 +104,18 @@ can be looked at on a small window as well as the one it opens at, and at the
 QT_QPA_PLATFORM=offscreen ./build/erdflow --size 1280x720 --screenshot /tmp/home.png --smoke-test
 ```
 
+`--update-ready` shows **Update and Restart** at the top of the window as if
+that version had been fetched and were ready (ADR-025), so the button can be
+looked at without a release to fetch:
+
+```sh
+QT_QPA_PLATFORM=offscreen ./build/erdflow --example --update-ready 9.9.9 --screenshot /tmp/update.png --smoke-test
+./build/erdflow --update-ready 9.9.9
+```
+
+A build from source has no update to put in place, so pressing the button
+there says so and takes it away.
+
 The `visual` suite draws the Home screen and both workspaces at the
 1440 × 1080 reference and compares them with the pictures kept under
 `tests/visual/<system>-<major version>` (for example `macos-26`). What it

@@ -389,6 +389,46 @@ jobs:
             throw 'Uninstall left its registry entry behind'
           }
 
+      # Update and Restart (ADR-025): the installer run exactly as an ERDFlow
+      # runs it to update itself and open again -- nothing shown, and given
+      # /RELAUNCH=1 -- must start the ERDFlow it has just installed. That
+      # ERDFlow is then stopped and the installation removed. The steps either
+      # side of this one install without that word, and nothing is started.
+      - name: Update and open again (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $setup = "build/package/dist/ERDFlow-$env:ERDFLOW_VERSION-windows-x86_64-setup.exe"
+          $log = "$env:RUNNER_TEMP\erdflow-setup-open-again.log"
+          # Not started with -Wait, which would wait for the ERDFlow the
+          # installer opens as well as for the installer itself.
+          $install = Start-Process -FilePath $setup -PassThru `
+            -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/CLOSEAPPLICATIONS', '/NORESTARTAPPLICATIONS', '/RELAUNCH=1', "/LOG=$log"
+          # The exit code can be read afterwards only if the handle is held.
+          $null = $install.Handle
+          if (-not $install.WaitForExit(600000)) { throw 'Setup did not finish' }
+          if ($install.ExitCode -ne 0) { Get-Content $log; throw "Setup failed: $($install.ExitCode)" }
+          $app = Join-Path $env:LOCALAPPDATA 'Programs\ERDFlow'
+          $exe = Join-Path $app 'bin\erdflow.exe'
+          if (-not (Test-Path $exe)) { throw "erdflow.exe was not installed at $exe" }
+          $opened = $null
+          foreach ($second in 1..60) {
+            $opened = Get-Process -Name erdflow -ErrorAction SilentlyContinue
+            if ($opened) { break }
+            Start-Sleep -Seconds 1
+          }
+          if (-not $opened) { Get-Content $log; throw 'The installer did not open ERDFlow again' }
+          Write-Host "Opened again: $(($opened | ForEach-Object { $_.Path }) -join ', ')"
+          $opened | Stop-Process -Force
+          foreach ($second in 1..30) {
+            if (-not (Get-Process -Name erdflow -ErrorAction SilentlyContinue)) { break }
+            Start-Sleep -Seconds 1
+          }
+          $remove = Start-Process -FilePath (Join-Path $app 'unins000.exe') -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait -PassThru
+          if ($remove.ExitCode -ne 0) { throw "Uninstall failed: $($remove.ExitCode)" }
+          Start-Sleep -Seconds 5
+          if (Test-Path $exe) { throw "Uninstall left erdflow.exe behind" }
+
       # Installed twice, the second over the first as an upgrade installs, then
       # every program and library in it checked to load only from the package
       # or from Windows itself -- in particular never a Visual C++ runtime the

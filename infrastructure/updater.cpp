@@ -154,6 +154,16 @@ std::optional<UpdateOffer> read_offer(const QByteArray& sums, const QByteArray& 
     return std::nullopt;
 }
 
+QStringList silent_install_arguments(bool open_again) {
+    QStringList quietly{QStringLiteral("/VERYSILENT"), QStringLiteral("/SUPPRESSMSGBOXES"),
+                        QStringLiteral("/NORESTART"), QStringLiteral("/CLOSEAPPLICATIONS"),
+                        QStringLiteral("/NORESTARTAPPLICATIONS")};
+    // Read by the installer's own script (packaging/windows/erdflow.iss.in),
+    // which starts the ERDFlow it has just installed when it is given.
+    if (open_again) quietly << QStringLiteral("/RELAUNCH=1");
+    return quietly;
+}
+
 struct Updater::Impl {
     QString running;
     QString installed = installed_at();
@@ -164,12 +174,26 @@ struct Updater::Impl {
     QLockFile here{folder + "/running-" + QString::number(QCoreApplication::applicationPid()) + ".lock"};
     // Held while fetching, so that two ERDFlows open together fetch only once.
     QLockFile fetching{folder + "/fetching.lock"};
+    // Update and Restart (ADR-025): who is told when a look has ended, and
+    // whether the next closing is to open ERDFlow again. Declared before what
+    // owns the programs run in the background, so that they outlive anything
+    // those programs' endings could still call.
+    std::function<void()> looked;
+    bool again = false;
     // The programs run in the background belong to this, and are stopped with it.
     QObject owner;
 
     explicit Impl(QString version) : running(std::move(version)) {
         // A lock is stale only when the ERDFlow holding it has gone, however
         // long ago it was taken.
+        here.setStaleLockTime(0);
+        fetching.setStaleLockTime(0);
+    }
+
+    // Told where it is installed and where it keeps what it fetches, for
+    // tests; the locks above are then made in the folder given.
+    Impl(QString version, QString at, QString keeps)
+        : running(std::move(version)), installed(std::move(at)), folder(std::move(keeps)) {
         here.setStaleLockTime(0);
         fetching.setStaleLockTime(0);
     }
@@ -213,7 +237,11 @@ struct Updater::Impl {
         settings.setValue(staged_path_key, path);
     }
 
-    void done() { fetching.unlock(); }
+    void done() {
+        fetching.unlock();
+        // A look has ended, so what is waiting may have changed (ADR-025).
+        if (looked) looked();
+    }
 
     // Makes the fetched package ready to be put in place: on macOS the
     // application is taken out of the disk image now, so that closing ERDFlow
@@ -272,7 +300,27 @@ struct Updater::Impl {
 
 Updater::Updater(QString running_version) : impl_(std::make_unique<Impl>(std::move(running_version))) {}
 
+Updater::Updater(QString running_version, QString where_installed, QString keeps_in)
+    : impl_(std::make_unique<Impl>(std::move(running_version), std::move(where_installed), std::move(keeps_in))) {}
+
 Updater::~Updater() = default;
+
+QString Updater::waiting() const {
+    const auto& d = *impl_;
+    // What put_in_place asks before it puts anything in place, all but
+    // whether another ERDFlow is open, which is asked when it matters.
+    if (d.installed.isEmpty() || !automatic_updates_on()) return {};
+    const QSettings settings;
+    const auto version = settings.value(staged_version_key).toString();
+    if (!is_newer(version, d.running) || !QFileInfo::exists(settings.value(staged_path_key).toString())) return {};
+    return version;
+}
+
+void Updater::on_looked(std::function<void()> told) { impl_->looked = std::move(told); }
+
+bool Updater::others_open() { return impl_->others_open(); }
+
+void Updater::open_again(bool again) { impl_->again = again; }
 
 void Updater::look() {
     auto& d = *impl_;
@@ -342,15 +390,19 @@ void Updater::put_in_place() {
         "if mv \"$3\" \"$3.old\"; then\n"
         "  if mv \"$3.new\" \"$3\"; then rm -rf \"$3.old\" \"$2\"; else mv \"$3.old\" \"$3\"; rm -rf \"$3.new\"; fi\n"
         "else rm -rf \"$3.new\"; fi\n");
+    // Update and Restart (ADR-025): the same steps, in a shell of their own,
+    // so that however they end -- the new ERDFlow in place, or the old one
+    // put back -- ERDFlow is opened afterwards: as a new one, since the one
+    // that asked has closed by then.
+    static const auto and_open_again = QStringLiteral("(\n") + script + QStringLiteral(")\nopen -n \"$3\"\n");
     QProcess::startDetached(QStringLiteral("/bin/sh"),
-                            {QStringLiteral("-c"), script, QStringLiteral("erdflow-update"),
+                            {QStringLiteral("-c"), d.again ? and_open_again : script, QStringLiteral("erdflow-update"),
                              QString::number(QCoreApplication::applicationPid()), staged, d.installed});
 #elif defined(Q_OS_WIN)
     // The installer, run with nothing shown, puts the new version where the
-    // old one was installed and does not start it.
-    QProcess::startDetached(staged, {QStringLiteral("/VERYSILENT"), QStringLiteral("/SUPPRESSMSGBOXES"),
-                                     QStringLiteral("/NORESTART"), QStringLiteral("/CLOSEAPPLICATIONS"),
-                                     QStringLiteral("/NORESTARTAPPLICATIONS")});
+    // old one was installed and does not start it -- unless Update and Restart
+    // asked for ERDFlow to be opened again (ADR-025), which it is told.
+    QProcess::startDetached(staged, silent_install_arguments(d.again));
 #else
     // A running AppImage may be replaced: it keeps running from the file it
     // was started from. The new one is copied in beside it and renamed over it.
@@ -363,6 +415,20 @@ void Updater::put_in_place() {
     if (!error) fs::rename(beside, target, error);
     if (error) fs::remove(beside, error);
     else d.forget_staged();
+    // Update and Restart (ADR-025): ERDFlow is opened again from the file it
+    // is installed as -- the new one now, or the old one still, where the new
+    // one could not be put there. An AppImage that had to be unpacked to run,
+    // on a system that does not let it be mounted, is told to unpack itself
+    // again, or it would be put in place and then fail to open.
+    if (d.again) {
+        QProcess next;
+        next.setProgram(d.installed);
+        auto surroundings = QProcessEnvironment::systemEnvironment();
+        if (qEnvironmentVariable("APPDIR").contains(QStringLiteral("appimage_extracted_")))
+            surroundings.insert(QStringLiteral("APPIMAGE_EXTRACT_AND_RUN"), QStringLiteral("1"));
+        next.setProcessEnvironment(surroundings);
+        next.startDetached();
+    }
 #endif
 }
 
