@@ -820,6 +820,25 @@ namespace
                 hollow += empty ? 1 : 0;
             }
             require(hollow > 0, "The Company schema's optional foreign keys end hollow");
+            // Normal (Zain, 2026-11-12) draws no marks, so a picture of it on
+            // no ground has nothing to keep its lines out of: each runs whole
+            // through where an optional end has its hollow in the others.
+            const auto paths = view->line_shapes();
+            window.set_notation(desktop::Notation::Normal);
+            settle();
+            for (const auto format : {desktop::PictureFormat::Png, desktop::PictureFormat::Svg})
+            {
+                const auto normal = picture(view->export_view(), format, desktop::PictureBackground::Transparent, 1.0);
+                for (const auto &shape : paths)
+                {
+                    const QLineF first(shape[0], shape[1]);
+                    const auto centre = first.pointAt(21.0 / first.length());
+                    require(qAlpha(normal.image.pixel(normal.at(centre))) > 0,
+                            "Normal keeps a continuous exported line where an optional end had a hollow");
+                }
+            }
+            require(view->line_shapes() == paths, "Normal leaves every schema route unchanged");
+            window.set_notation(desktop::Notation::CrowsFoot);
             window.set_theme(desktop::ThemeId::Dracula);
             settle();
             require(in_colour(picture(view->export_view(), desktop::PictureFormat::Png, desktop::PictureBackground::White, 1.0), dark,
@@ -9164,6 +9183,69 @@ void navigation_foldout_tests()
     require(window.menuBar()->isNativeMenuBar() || !window.menuBar()->isVisible(), "The old non-native seven-item menu row stays hidden");
 }
 
+// Normal (Zain, 2026-11-12): the fifth notation, offered wherever the other
+// four are, in both workspaces. It draws lines with nothing at their ends,
+// and choosing it is only a way of looking: the project is not touched.
+void normal_notation_tests()
+{
+    infrastructure::QtIdGenerator ids;
+    application::Editor editor(ids);
+    infrastructure::ErdxProjectStore store;
+    desktop::MainWindow window(editor, store, ids);
+    window.resize(1440, 900);
+    window.show();
+    window.load_example();
+    window.open_schema(true);
+    settle_schema_full(window);
+    settle();
+    auto *picker = child<QComboBox>(window, "notationPicker");
+    auto *normal = child<QAction>(window, "notationNormal");
+    auto *schema_normal = child<QAction>(window, "schemaNotationNormal");
+    auto *secondary = dynamic_cast<desktop::DiagramView *>(window.findChild<QWidget *>("conceptualPreview"));
+    require(picker->count() == 5 && picker->itemText(4) == "Normal" && !picker->itemIcon(4).isNull()
+            && normal->text() == "Normal" && schema_normal->text() == "Normal",
+            "The fifth notation is named Normal in both workspaces, and drawn as the others are");
+    QStringList offered;
+    for (int index = 0; index < picker->count(); ++index)
+        offered << picker->itemText(index);
+    require(offered == QStringList{"Chen", "Min–max", "Crow's foot", "Bachman", "Normal"},
+            "The four notations keep their names and places, with Normal after them");
+    require(window.canvas()->notation() == desktop::Notation::CrowsFoot, "Crow's foot remains the default");
+    const auto paths = window.schema()->line_shapes();
+    const auto boxes = window.schema()->table_boxes();
+    const auto colours = window.schema()->line_colours();
+    const auto annotated = window.schema()->grab().toImage();
+    editor.mark_saved(editor.revision());
+    const auto project = editor.project();
+    const auto bytes = infrastructure::ErdxProjectStore::encode(project);
+    const auto revision = editor.revision();
+    const auto history = editor.history_bytes();
+    const auto undo = editor.undo_label(), redo = editor.redo_label();
+    picker->setCurrentIndex(4);
+    settle();
+    require(normal->isChecked() && schema_normal->isChecked()
+            && window.canvas()->notation() == desktop::Notation::Normal
+            && window.schema()->notation() == desktop::Notation::Normal
+            && secondary && secondary->notation() == desktop::Notation::Normal,
+            "The picker synchronizes Normal across Conceptual, Schema and their menus");
+    require(window.schema()->grab().toImage() != annotated, "Normal removes the schema's endpoint notation");
+    child<QAction>(window, "notationCrowsfoot")->trigger();
+    settle();
+    require(window.schema()->grab().toImage() == annotated, "Switching back restores the existing schema drawing exactly");
+    schema_normal->trigger();
+    settle();
+    require(picker->currentIndex() == 4 && normal->isChecked()
+            && window.canvas()->notation() == desktop::Notation::Normal,
+            "The schema's Normal action updates the shared picker and Conceptual view");
+    require(window.schema()->line_shapes() == paths && window.schema()->table_boxes() == boxes
+            && window.schema()->line_colours() == colours, "Normal keeps line routes, table positions and colours");
+    require(editor.project() == project && infrastructure::ErdxProjectStore::encode(editor.project()) == bytes
+            && editor.revision() == revision && !editor.dirty() && editor.history_bytes() == history
+            && editor.undo_label() == undo && editor.redo_label() == redo,
+            "Normal is a display choice and preserves the project, constraints and edit history");
+    std::cout << "PASS Normal is the fifth notation in both workspaces, drawn bare, and changes nothing in the project\n";
+}
+
 void minmax_display_menu_tests()
 {
     using desktop::MinMaxDisplayMode;
@@ -9188,9 +9270,9 @@ void minmax_display_menu_tests()
             "Display submenu has exactly the two approved choices");
     require(only->isCheckable() && combined->isCheckable() && !only->isChecked() && combined->isChecked(),
             "Combined mode is the checked default");
-    require(picker->count() == 4 && notation->actions().size() == 5
-            && notation->actions().back() == menu->menuAction(), "Four notations remain, followed by one real submenu");
-    for (const char *name : {"notationChen", "notationMinmax", "notationCrowsfoot", "notationBachman"})
+    require(picker->count() == 5 && notation->actions().size() == 6
+            && notation->actions().back() == menu->menuAction(), "Five notations are followed by one real submenu");
+    for (const char *name : {"notationChen", "notationMinmax", "notationCrowsfoot", "notationBachman", "notationNormal"})
         require(notation->actions().contains(child<QAction>(window, name)), "Existing notation actions stay intact");
     require(!menu->menuAction()->isVisible() && !only->isEnabled() && !combined->isEnabled(),
             "Display choices are hidden and disabled outside Min-max");
@@ -10225,7 +10307,7 @@ int main(int argc, char **argv)
         if (entity_kind_only) { std::cout << "Entity Kind terminology tests passed\n"; return 0; }
         if (appearance_only || whole || window_tools_part) appearance_hover_tests();
         if (appearance_only) { std::cout << "Appearance hover tests passed\n"; return 0; }
-        if (navigation_only || whole || window_tools_part) { navigation_foldout_tests(); minmax_display_menu_tests(); }
+        if (navigation_only || whole || window_tools_part) { navigation_foldout_tests(); minmax_display_menu_tests(); normal_notation_tests(); }
         if (navigation_only) {
             infrastructure::QtIdGenerator ids;
             menu_bar_shortcut_tests(ids);
@@ -12234,7 +12316,7 @@ int main(int argc, char **argv)
         // the two controls must never disagree about which one is in use.
         auto *picker = child<QComboBox>(window, "notationPicker");
         require(tools->findChildren<QComboBox *>().contains(picker), "The notation picker is on the toolbar");
-        require(picker->count() == 4, "All four notations are offered");
+        require(picker->count() == 5, "All five notations are offered");
         for (int index = 0; index < picker->count(); ++index)
             require(!picker->itemIcon(index).isNull(), "Each notation is drawn, not just named");
         require(picker->currentIndex() == static_cast<int>(window.canvas()->notation()), "The picker starts in step");

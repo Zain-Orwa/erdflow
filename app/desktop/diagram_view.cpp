@@ -2118,7 +2118,12 @@ public:
         // line runs, so both leave the diamond's corner together and stay
         // parallel round every bend. A total specialization keeps its own
         // double line, in every notation.
-        const bool total_side = descriptor.relationship && descriptor.participation == Participation::Total;
+        // Normal is the one notation that leaves a total side single (Zain,
+        // 2026-11-12): it shows a relationship's lines with nothing at their
+        // ends and nothing said about them, so a total side is one plain line
+        // there, like any other.
+        const bool total_side = descriptor.relationship && descriptor.participation == Participation::Total
+                                && notation != Notation::Normal;
         const bool doubled = std::holds_alternative<InheritanceKey>(descriptor.key) && descriptor.total;
         const QColor paper = picture_ground.value_or(canvas_);
         const bool no_paper = paper.alpha() == 0;

@@ -59,7 +59,7 @@ QT_QPA_PLATFORM=offscreen ./build/release/editor_benchmark
 `--schema` raises the schema preview panel, and `--schema-full` raises it over
 the whole window. The panel is closed until somebody asks for it, so without one
 of these a screenshot cannot show the schema at all. `--notation` chooses how
-every line end is drawn — `chen`, `minmax`, `crowsfoot` or `bachman` — on the
+every line end is drawn — `chen`, `minmax`, `crowsfoot`, `bachman` or `normal` — on the
 diagram and on the schema alike:
 
 ```sh

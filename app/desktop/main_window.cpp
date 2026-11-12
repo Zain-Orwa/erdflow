@@ -1991,9 +1991,9 @@ namespace erdflow::desktop
     namespace
     {
         // Defined further down with the rest of the toolbar's furniture; the schema
-        // panel is built before it and offers the same four notations, which have to
+        // panel is built before it and offers the same notations, which have to
         // be worded the same way in both places or they would be two lists.
-        const std::array<std::pair<Notation, QString>, 4> &notation_styles();
+        const std::array<std::pair<Notation, QString>, 5> &notation_styles();
         // A heading inside a menu, likewise defined below and wanted here. A style
         // section is not used, because some styles draw one as a bare line and throw
         // the words away -- which is what left the schema's own menus as two runs of
@@ -3652,9 +3652,11 @@ namespace erdflow::desktop
             return mode == Tool::Generalization ? QStringLiteral("Generalization") : QStringLiteral("Specialization");
         }
         // The notations offered, in the order they appear everywhere in the UI.
-        const std::array<std::pair<Notation, QString>, 4> &notation_styles()
+        // Normal, the fifth (Zain, 2026-11-12), draws a relationship's lines
+        // with nothing at their ends; it follows the four that state the bounds.
+        const std::array<std::pair<Notation, QString>, 5> &notation_styles()
         {
-            static const std::array<std::pair<Notation, QString>, 4> styles{{{Notation::Chen, "Chen"}, {Notation::MinMax, "Min–max"}, {Notation::CrowsFoot, "Crow's foot"}, {Notation::Bachman, "Bachman"}}};
+            static const std::array<std::pair<Notation, QString>, 5> styles{{{Notation::Chen, "Chen"}, {Notation::MinMax, "Min–max"}, {Notation::CrowsFoot, "Crow's foot"}, {Notation::Bachman, "Bachman"}, {Notation::Normal, "Normal"}}};
             return styles;
         }
     } // namespace

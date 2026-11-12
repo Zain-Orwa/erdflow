@@ -3762,7 +3762,9 @@ void SchemaView::paint_schema(QPainter& painter, const QRectF& exposed, std::opt
     // A picture drawn on no ground has nothing to lay under a mark, so there
     // the lines are kept out of the places the marks need to themselves.
     std::optional<QPainterPath> kept_off;
-    if (no_ground) {
+    // Normal draws no marks at all (Zain, 2026-11-12), so there is nothing to
+    // keep its lines out of: they run whole to the tables.
+    if (no_ground && notation_ != Notation::Normal) {
         QPainterPath marks;
         for (const auto& routed : routes_) {
             if (!on_view(routed)) continue;
@@ -3833,6 +3835,8 @@ void SchemaView::paint_schema(QPainter& painter, const QRectF& exposed, std::opt
     // outside it, both drawn wholly clear of the row they belong to, and turned
     // to face whichever side the line arrives on.
     const auto draw_ends = [&](const Routed& routed) {
+        // Normal leaves the ends bare: the line alone says the two are joined.
+        if (notation_ == Notation::Normal) return;
         const auto draw_end = [&](QPointF at, QPointF step, bool many, bool optional) {
             const auto point = [&](double along, double side) { return end_point(at, step, along, side); };
             painter.setPen(QPen(dim(routed.colour, line_shown(routed)), 2.2));

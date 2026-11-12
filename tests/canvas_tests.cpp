@@ -2786,6 +2786,90 @@ void notation_tests() {
     }
 }
 
+// Normal (Zain, 2026-11-12): the fifth notation, which draws a relationship's
+// lines with nothing at their ends -- no symbol, no letter, no bounds -- and as
+// one plain line whatever the participation. Choosing it changes nothing in
+// the project, and the four that state the bounds draw as they always have.
+void normal_notation_tests() {
+    SequentialIds ids;
+    application::Editor editor(ids);
+    const auto course = std::get<domain::EntityId>(*editor.create_entity("Course", {300, 0, 160, 80}).created);
+    const auto enrolled = std::get<domain::RelationshipId>(*editor.create_relationship("Enrolled", {-60, 0, 160, 80}).created);
+    const auto side = *editor.connect(enrolled, domain::ParticipantTarget{course}).participant;
+
+    desktop::DiagramView view(editor);
+    view.resize(640, 260);
+    view.show();
+    view.set_grid_visible(false);
+    view.fit_diagram();
+    QApplication::processEvents();
+    const auto render = [&] {
+        QApplication::processEvents();
+        QImage image(640, 260, QImage::Format_ARGB32_Premultiplied);
+        image.fill(Qt::transparent);
+        QPainter painter(&image);
+        view.render(&painter);
+        return image;
+    };
+
+    // The four that state the bounds, drawn before Normal is ever chosen.
+    const std::array<desktop::Notation, 4> stating{desktop::Notation::Chen, desktop::Notation::MinMax,
+                                                   desktop::Notation::CrowsFoot, desktop::Notation::Bachman};
+    std::vector<QImage> before;
+    for (const auto style : stating) {
+        view.set_notation(style);
+        before.push_back(render());
+    }
+    view.set_notation(desktop::Notation::Normal);
+    require(view.notation() == desktop::Notation::Normal, "Normal is kept as the chosen notation");
+    const auto normal = render();
+    for (const auto& one : before)
+        require(normal != one, "Normal draws the participant unlike any of the four that state its bounds");
+    for (std::size_t index = 0; index < stating.size(); ++index) {
+        view.set_notation(stating[index]);
+        require(render() == before[index], "Each of the four draws exactly as it did before Normal was chosen");
+    }
+
+    // Whatever the bounds, Normal draws the one plain line.
+    view.set_notation(desktop::Notation::Normal);
+    std::vector<QImage> combinations;
+    for (const auto maximum : {domain::Cardinality::One, domain::Cardinality::Many})
+        for (const auto minimum : {domain::Participation::Partial, domain::Participation::Total}) {
+            require(editor.update_participant(enrolled, side, maximum, minimum, ""), "Set participant bounds");
+            view.synchronize();
+            combinations.push_back(render());
+        }
+    for (std::size_t a = 0; a < combinations.size(); ++a)
+        for (std::size_t b = a + 1; b < combinations.size(); ++b)
+            require(combinations[a] == combinations[b], "Normal draws every minimum/maximum pair as the same plain line");
+
+    // And that line is exactly the connector with nothing at its end, however
+    // it runs: the same picture as a side that is not total, drawn in another
+    // notation with its marks put away. The side is left many and total here,
+    // which is what doubles a line and gives it the most marks in the others.
+    for (const auto line : {desktop::LineStyle::Straight, desktop::LineStyle::Curved, desktop::LineStyle::Elbow}) {
+        view.set_line_style(line);
+        view.set_notation(desktop::Notation::CrowsFoot);
+        require(editor.update_participant(enrolled, side, domain::Cardinality::Many, domain::Participation::Partial, ""),
+                "A side that is not total");
+        require(editor.show_participant_constraints(enrolled, side, false), "With its marks put away");
+        view.synchronize();
+        const auto bare = render();
+        require(editor.undo() && editor.undo(), "Many and total again, its marks showing");
+        view.synchronize();
+        const auto project = editor.project();
+        const auto revision = editor.revision();
+        const auto undo = editor.undo_label();
+        view.set_notation(desktop::Notation::Normal);
+        require(render() == bare, "Normal draws only the connector's own path, single, with no marks or numbers");
+        view.set_notation(desktop::Notation::Chen);
+        view.set_notation(desktop::Notation::Normal);
+        require(render() == bare && editor.project() == project && editor.revision() == revision
+                    && editor.undo_label() == undo,
+                "Choosing Normal changes nothing in the project, its revision or what Undo takes back");
+    }
+}
+
 void minmax_display_mode_tests() {
     using desktop::MinMaxDisplayMode;
     SequentialIds ids;
@@ -6407,6 +6491,7 @@ int main(int argc, char** argv) {
         participant_menu_tests();
         inline_rename_tests();
         notation_tests();
+        normal_notation_tests();
         minmax_display_mode_tests();
         attribute_trunk_and_line_style_tests();
         line_style_tests();

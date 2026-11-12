@@ -3399,6 +3399,38 @@ and does not open it again; automatic updates are otherwise as they were.
   show. They take the release that carries this silently, as before, and
   show the button for the release after it.
 
+## Normal notation (2026-11-12)
+
+**Normal** is the fifth choice in the shared Notation picker, the Notation
+menu and the Schema's Appearance menu, after Chen, Min–max, Crow's foot and
+Bachman (Zain asked for it; it was first built in a working copy that no
+release was made from, and is in a release from 0.3.3). It draws a
+relationship's lines with nothing at their ends: no symbol, no letter and no
+bounds, in the Conceptual diagram and in the Schema alike. In the Conceptual
+diagram a total side is one plain line in Normal, where the other four draw
+it double; a total specialization keeps its double line, as in every
+notation. A picture of the Schema on no ground keeps each line whole where an
+optional end would have had its hollow.
+
+Choosing Normal is only a way of looking. The other four notations, the
+Crow's foot default, line shapes, routes, colours, the project, its
+constraints, its file format and what Undo takes back are unchanged.
+
+- Desktop: `Notation::Normal` (`app/desktop/diagram_view.hpp`), last in the
+  list so the four keep their places; one condition in the edge's `paint`
+  (`diagram_view.cpp`); two in the Schema's (`schema_view.cpp`); the shared
+  list `notation_styles` (`main_window.cpp`); `--notation normal` (`main.cpp`).
+- Tests: canvas `normal_notation_tests` (unlike the four, which draw as they
+  did; every pair of bounds the same line; exactly the bare connector in all
+  three line styles; the project untouched); desktop `normal_notation_tests`
+  (five choices in both workspaces, kept in step; the Schema's routes, tables
+  and colours; the project, its bytes and its history) and the Schema's
+  picture on no ground; two checks that counted four notations count five.
+- Not brought with it: the other work in that working copy (the change to
+  which notations double a total side, the Schema's relationship-type
+  controls, Practice Data's Add Column), which stays unreleased until asked
+  for.
+
 ## System qualities in this implementation
 
 | Requirement | Concrete evidence | Current limit |
