@@ -3935,3 +3935,29 @@ before.
   and `refresh_schema_properties` finish; `--notation normal` (`main.cpp`).
 - Tests: desktop `properties_scroll_place_tests`.
 - `CLAUDE.md` says five notations are offered.
+
+
+## Explicit relationship minima (2026-11-13)
+
+Selecting a schema connector offers **Zero (0) — optional** and
+**One (1) — required** in each of its Ends cards, including the referenced
+end. Together with the existing One / Many maximum controls, this supports
+0..1, 1..1, 0..N and 1..N. The named endpoint dropdowns also offer all four
+bounds directly, including **Zero or One (0..1)** and **Zero or Many (0..N)**;
+choosing one applies its maximum and minimum in a single undo step. The
+cardinality description updates immediately.
+The conceptual participant form offers the same four cardinalities directly
+and also names its minimum as Zero or One alongside partial / total
+participation; both controls stay in step. The existing conceptual renderer
+draws these bounds at connector ends in each annotated notation.
+
+Crow's Foot uses a hollow circle for minimum zero; Min–max writes numeric
+bounds; Chen uses single / double participation lines; Bachman uses its
+existing optional-end circle. Normal intentionally keeps plain connectors.
+Hollow markers remain hollow in transparent exports, at either end.
+
+Explicit schema minima are refinements of the schema, persisted in format
+38, independent of column types, `NULL` / `NOT NULL`, and stored values.
+Existing projects keep their previous defaults until a minimum is chosen.
+The choices undo/redo, follow a connector when its physical direction is
+reversed, and are retained when a schema is converted into a diagram.

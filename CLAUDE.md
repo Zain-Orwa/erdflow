@@ -102,6 +102,15 @@ These have been decided and are not open unless Zain reopens them.
   not prevented.
 - **The schema generates the SQL.** Constraints shown there are database facts,
   not decoration, and `NULL` stays distinct from zero and from the empty string.
+- **Zero cardinality is optional participation, in both workspaces** (Zain,
+  2026-11-13). Offer `0..1` and `0..many` directly alongside the mandatory
+  bounds, and draw them at connector ends in Conceptual and Schema. Crow's
+  Foot uses the hollow circle with a bar or a foot; the other annotated
+  notations use their own participation marks. Normal keeps plain lines.
+  Relationship minima, a stored numeric zero, and `NULL` are distinct.
+  Existing key, identifier, UNIQUE and NULL / NOT NULL controls keep their
+  meanings. New changes are built locally and tested by Zain before he asks
+  for a GitHub push or release.
 - **Vocabulary is that of database tools.** Export and Import, never Download
   and Upload.
 

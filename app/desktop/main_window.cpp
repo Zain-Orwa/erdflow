@@ -5547,11 +5547,13 @@ namespace erdflow::desktop
                 participant_form->addRow(card_title(shaped_tag(side, "cardShape", card),
                                                     shaped_tag(ref, "cardTowardShape", card), card));
                 auto *maximum = narrowable(new QComboBox(card));
-                maximum->addItems({"1 — One", "M — Many"});
-                maximum->setCurrentIndex(participant.maximum == Cardinality::One ? 0 : 1);
-                participant_form->addRow(field_label("Maximum cardinality", label_tone, card), maximum);
+                maximum->setObjectName("participantCardinality");
+                maximum->addItems({"1 — One", "1..M — One or Many", "0..1 — Zero or One", "0..M — Zero or Many"});
+                maximum->setCurrentIndex((participant.maximum == Cardinality::One ? 0 : 1)
+                    + (participant.participation == Participation::Partial ? 2 : 0));
+                participant_form->addRow(field_label("Cardinality", label_tone, card), maximum);
                 auto *participation = narrowable(new QComboBox(card));
-                participation->addItems({"Partial — optional", "Total — required"});
+                participation->addItems({"Zero (0) — optional / partial", "One (1) — required / total"});
                 participation->setCurrentIndex(participant.participation == Participation::Total ? 1 : 0);
                 participant_form->addRow(field_label("Participation", label_tone, card), participation);
                 if (binary) {
@@ -5572,16 +5574,16 @@ namespace erdflow::desktop
                 {
                     if (refreshing_ || !editor_.project().relationships.contains(relationship_id))
                         return;
-                    const auto max = maximum->currentIndex() == 0 ? Cardinality::One : Cardinality::Many;
+                    const auto max = maximum->currentIndex() % 2 == 0 ? Cardinality::One : Cardinality::Many;
                     const auto part = participation->currentIndex() == 0 ? Participation::Partial : Participation::Total;
                     const auto role_value = bytes(role->text());
                     if (max != participant.maximum || part != participant.participation || role_value != participant.role)
                         show_result(editor_.update_participant(relationship_id, participant.id, max, part, role_value));
                 };
-                connect(maximum, &QComboBox::activated, this, [apply](int)
-                        { apply(); });
-                connect(participation, &QComboBox::activated, this, [apply](int)
-                        { apply(); });
+                connect(maximum, &QComboBox::activated, this, [apply, participation](int index)
+                        { participation->setCurrentIndex(index >= 2 ? 0 : 1); apply(); });
+                connect(participation, &QComboBox::activated, this, [apply, maximum](int index)
+                        { maximum->setCurrentIndex(maximum->currentIndex() % 2 + (index == 0 ? 2 : 0)); apply(); });
                 connect(role, &QLineEdit::editingFinished, this, apply);
                 auto *disconnect = new QPushButton("Disconnect", card);
                 connect(disconnect, &QPushButton::clicked, this, [this, relationship_id, participant]
@@ -12032,11 +12034,12 @@ namespace erdflow::desktop
                         to_name.toStdString(), from.name, domain::Cardinality::One,
                         from.columns[key->rows.front()].one_to_one ? domain::Cardinality::One : domain::Cardinality::Many});
                     const auto apply = [this, key_id = key->id](domain::Cardinality first,
-                                                               domain::Cardinality second, bool flip)
+                                                               domain::Cardinality second, bool flip,
+                                                               std::optional<application::SchemaEndpointMinimum> minimum = {})
                     {
                         if (schema_properties_rebuilding_) return;
                         domain::ForeignKeyId selected = key_id;
-                        const auto result = editor_.change_schema_relationship(key_id, first, second, flip, &selected);
+                        const auto result = editor_.change_schema_relationship(key_id, first, second, flip, &selected, minimum);
                         show_result(result);
                         if (result) schema_->choose(ChosenForeignKey{selected});
                     };
@@ -12068,15 +12071,17 @@ namespace erdflow::desktop
                         auto *maximum = new QComboBox(card);
                         maximum->setObjectName(first ? "schemaRelationshipFirstMaximum" : "schemaRelationshipSecondMaximum");
                         maximum->setProperty("field", first ? "Relationship/First Maximum" : "Relationship/Second Maximum");
-                        maximum->addItems({"One (1)", "Many (M)"});
-                        maximum->setCurrentIndex((first ? first_many : second_many) ? 1 : 0);
-                        maximum->setAccessibleName(name + " maximum cardinality");
+                        maximum->addItems({"One (1)", "One or Many (1..N)", "Zero or One (0..1)", "Zero or Many (0..N)"});
+                        maximum->setCurrentIndex(((first ? first_many : second_many) ? 1 : 0)
+                            + ((first ? current.first_optional : current.second_optional) ? 2 : 0));
+                        maximum->setAccessibleName(name + " cardinality");
                         auto *label = field_label(name, label_tone, card);
                         label->setWordWrap(true);
                         form->addRow(label, maximum);
                         connect(maximum, &QComboBox::activated, this, [apply, current, first](int index) {
-                            const auto chosen = index ? domain::Cardinality::Many : domain::Cardinality::One;
-                            apply(first ? chosen : current.first, first ? current.second : chosen, false);
+                            const auto chosen = index % 2 ? domain::Cardinality::Many : domain::Cardinality::One;
+                            apply(first ? chosen : current.first, first ? current.second : chosen, false,
+                                  application::SchemaEndpointMinimum{first, index >= 2});
                         });
                     };
                     endpoint(text(current.first_name), true);
@@ -12098,11 +12103,12 @@ namespace erdflow::desktop
                 // wears on the schema (the golden key and PK where it is a
                 // primary key, FK where it is a foreign key), and the
                 // cardinality the line is drawn with at that end. The
-                // cardinality is only read (Zain, 2026-10-02): the schema keeps
-                // none of its own. The referencing end is drawn from the foreign
+                // cardinality is read in words, with its minimum editable
+                // below. The referencing end is drawn from the foreign
                 // key -- whether it may be empty, and whether it is unique or a
                 // key -- which for a key the conversion made follows the
-                // diagram; the referenced end is always drawn as one.
+                // diagram. Explicit minima can now be chosen at either end,
+                // independently of column nullability (2026-11-13).
                 struct EndColumn
                 {
                     QString name;
@@ -12119,7 +12125,7 @@ namespace erdflow::desktop
                 ends->setSpacing(8);
                 const auto end_card = [&](const QString &field_key, const QString &which, const QString &table_name,
                                           const std::vector<EndColumn> &columns, const QString &cardinality,
-                                          const QString &why)
+                                          const QString &why, bool optional, bool referencing)
                 {
                     section_now = field_key;
                     auto *card = new QFrame(panel);
@@ -12198,6 +12204,19 @@ namespace erdflow::desktop
                     drawn->setToolTip(why);
                     grid->addWidget(drawn, next, 1);
                     down->addLayout(grid);
+                    auto *minimum = new QComboBox(card);
+                    minimum->setObjectName(referencing ? "schemaReferencingMinimum" : "schemaReferencedMinimum");
+                    minimum->setProperty("field", field_key + "/Minimum");
+                    minimum->setAccessibleName(which + " minimum cardinality");
+                    minimum->addItems({"Zero (0) — optional", "One (1) — required"});
+                    minimum->setCurrentIndex(optional ? 0 : 1);
+                    minimum->setToolTip("Zero means no related rows are required. This changes relationship participation, "
+                                        "independently of the column's NULL / NOT NULL constraint and stored values.");
+                    down->addWidget(minimum);
+                    connect(minimum, &QComboBox::activated, this, [this, id = key->id, referencing](int index) {
+                        if (!schema_properties_rebuilding_)
+                            show_result(editor_.set_schema_relationship_minimum(id, referencing, index == 0));
+                    });
                     ends->addWidget(card);
                 };
                 std::vector<EndColumn> referencing;
@@ -12215,12 +12234,13 @@ namespace erdflow::desktop
                 // Read as the line is drawn: every column of a key says the
                 // same, so its first says it for the key.
                 const auto &holder = from.columns[key->rows.front()];
-                end_card("Referenced", "Referenced end", to_name, referenced, drawn_as(false, false),
-                         "As the line is drawn at this end: a foreign key refers to one row.");
+                end_card("Referenced", "Referenced end", to_name, referenced, drawn_as(holder.optional_reference, false),
+                         "As the line is drawn at this end: zero or one, or exactly one related row.",
+                         holder.optional_reference, false);
                 end_card("Referencing", "Referencing end", text(from.name), referencing,
                          drawn_as(holder.optional_link, !holder.one_to_one),
                          "As the line is drawn at this end, from the foreign key: whether it may be empty, and whether "
-                         "it is unique or a key.");
+                         "it is unique or a key.", holder.optional_link, true);
             }
         }
         if (!shown)

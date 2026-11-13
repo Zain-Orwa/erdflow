@@ -17,6 +17,7 @@
 #include <stdexcept>
 #include <string>
 #include <type_traits>
+#include <tuple>
 
 using namespace erdflow::domain;
 using namespace erdflow::application;
@@ -5424,6 +5425,67 @@ void connect_without_constraints() {
     CHECK(!editor.project().connect_constraints);
 }
 
+void schema_relationship_minima_are_not_null_constraints() {
+    TestIds ids;
+    Editor editor(ids);
+    editor.new_schema_project();
+    const auto a = std::get<RelationId>(*editor.create_relation("Library").created);
+    const auto b = std::get<RelationId>(*editor.create_relation("Loan").created);
+    const auto primary = editor.project().schema.added.at(a).front().id;
+    ForeignKeyId key;
+    CHECK(editor.connect_foreign_key(b, {}, "LibraryID", a, primary, &key));
+    const auto column_id = editor.project().schema.foreign_keys.at(key).column;
+    const auto drawn = [&]() -> PreviewColumn {
+        for (const auto& table : schema_preview(editor.project()).tables)
+            for (const auto& c : table.columns) if (c.key_id == key) return c;
+        throw std::runtime_error("Missing connector");
+    };
+    for (const auto type : {LogicalType::Int, LogicalType::Varchar, LogicalType::Date, LogicalType::Bit}) {
+        CHECK(editor.set_schema_column_type(primary, type));
+        CHECK(editor.set_schema_column_rules(column_id, false, true, false));
+        const auto columns = editor.project().schema.added;
+        const auto before = editor.project();
+        CHECK(editor.set_schema_relationship_minimum(key, true, true));
+        CHECK(editor.set_schema_relationship_minimum(key, false, true));
+        CHECK(drawn().optional_link && drawn().optional_reference && !drawn().one_to_one);
+        CHECK(editor.project().schema.added == columns); // type, NULL, unique, and values untouched
+        const auto optional = editor.project();
+        CHECK(editor.undo());
+        CHECK(editor.undo());
+        CHECK(editor.project() == before);
+        CHECK(editor.redo());
+        CHECK(editor.redo());
+        CHECK(editor.project() == optional);
+        CHECK(editor.set_schema_column_rules(column_id, false, false, true));
+        CHECK(drawn().optional_link && drawn().optional_reference && drawn().one_to_one);
+        CHECK(editor.set_schema_relationship_minimum(key, true, false));
+        CHECK(!drawn().optional_link && drawn().optional_reference && !drawn().required);
+        CHECK(editor.set_schema_relationship_minimum(key, false, false));
+        CHECK(!drawn().optional_reference);
+    }
+    CHECK(editor.set_schema_relationship_minimum(key, true, true));
+    CHECK(editor.set_schema_relationship_minimum(key, false, false));
+    const auto before_junction = editor.project();
+    CHECK(editor.change_schema_relationship(key, Cardinality::Many, Cardinality::Many, false, &key));
+    CHECK(!editor.schema_relationship_ends(key)->first_optional && editor.schema_relationship_ends(key)->second_optional);
+    CHECK(editor.change_schema_relationship(key, Cardinality::One, Cardinality::Many, false, &key));
+    CHECK(!editor.schema_relationship_ends(key)->first_optional && editor.schema_relationship_ends(key)->second_optional);
+    CHECK(editor.undo());
+    CHECK(editor.undo());
+    CHECK(editor.project() == before_junction);
+    CHECK(editor.change_schema_relationship(key, Cardinality::Many, Cardinality::One, false, &key));
+    CHECK(!drawn().optional_link && drawn().optional_reference); // physical direction reversed
+    CHECK(editor.undo());
+    const auto before_delete = editor.project();
+    CHECK(editor.erase_schema_column(column_id));
+    CHECK(editor.project().schema.relationship_minima.empty());
+    CHECK(editor.undo());
+    CHECK(editor.project() == before_delete);
+    CHECK(editor.erase_foreign_key(key));
+    CHECK(editor.project().schema.relationship_minima.empty());
+    CHECK(!editor.set_schema_relationship_minimum(key, true, true));
+}
+
 void schema_connectors_edit_both_ends() {
     TestIds ids;
     Editor editor(ids);
@@ -5535,10 +5597,32 @@ void schema_connectors_edit_both_ends() {
         for (const auto& column : table.columns)
             selected_exists = selected_exists || column.key_id == key;
     CHECK(selected_exists);
+    // The combined optional choices are atomic on a derived schema too,
+    // including moving a key and creating / collapsing a junction.
+    for (const auto [first, second, endpoint] : {
+            std::tuple{Cardinality::One, Cardinality::One, true},
+            std::tuple{Cardinality::One, Cardinality::Many, false},
+            std::tuple{Cardinality::Many, Cardinality::Many, true},
+            std::tuple{Cardinality::Many, Cardinality::One, false}}) {
+        const auto before = editor.project();
+        const auto old_key = key;
+        CHECK(editor.change_schema_relationship(key, first, second, false, &key,
+            SchemaEndpointMinimum{endpoint, true}));
+        const auto bounds = editor.schema_relationship_ends(key);
+        CHECK(bounds && (endpoint ? bounds->first_optional : bounds->second_optional));
+        const auto after = editor.project();
+        CHECK(editor.undo());
+        CHECK(editor.project() == before);
+        CHECK(editor.redo());
+        CHECK(editor.project() == after);
+        CHECK(editor.undo());
+        key = old_key;
+    }
 }
 
 int main() {
     const std::pair<const char*, std::function<void()>> tests[] = {
+        {"schema minima are not NULL constraints", schema_relationship_minima_are_not_null_constraints},
         {"schema connectors edit both ends", schema_connectors_edit_both_ends},
         {"identity and work in progress", identity_and_work_in_progress},
         {"the diagram becomes tables", the_diagram_becomes_tables},

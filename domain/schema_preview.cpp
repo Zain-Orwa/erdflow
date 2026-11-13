@@ -461,6 +461,16 @@ std::optional<ColumnIdentity> column_identity(const PreviewColumn& column) {
 
 SchemaPreview schema_preview(const Project& project) {
     SchemaPreview preview;
+    const auto apply_minima = [&] {
+        for (auto& table : preview.tables)
+            for (auto& column : table.columns) {
+                if (!column.key_id) continue;
+                const auto found = project.schema.relationship_minima.find(*column.key_id);
+                if (found == project.schema.relationship_minima.end()) continue;
+                column.optional_link = found->second.referencing_optional;
+                column.optional_reference = found->second.referenced_optional;
+            }
+    };
     if (project.schema.standalone) {
         std::map<RelationId, std::size_t> positions;
         for (const auto& [id, relation] : project.schema.relations) {
@@ -495,6 +505,7 @@ SchemaPreview schema_preview(const Project& project) {
             }
         }
         for (auto& table : preview.tables) table.primary_key = key_columns(table);
+        apply_minima();
         return preview;
     }
     std::map<ElementRef, std::size_t> table_of;   // which table an element became
@@ -947,6 +958,7 @@ SchemaPreview schema_preview(const Project& project) {
     group_columns(preview);
     // Only then is a table listed in an order somebody gave it.
     arrange_columns(project, preview);
+    apply_minima();
     return preview;
 }
 

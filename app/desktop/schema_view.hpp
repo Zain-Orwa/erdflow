@@ -549,6 +549,7 @@ private:
         std::size_t to_column = 0;
         bool many = false;
         bool optional = false;
+        bool optional_reference = false;
         // Whether each end has been pulled off its table and left hanging.
         bool from_loose = false;
         bool to_loose = false;

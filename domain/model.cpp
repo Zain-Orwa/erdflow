@@ -980,6 +980,13 @@ std::vector<Issue> validate(const Project& project) {
                 error("schema.counting_key.missing", "A counting key refers to a missing element.");
         // A name typed over a foreign key's belongs to a key the model can
         // still make, and is text like any other name.
+        if (project.schema.relationship_minima.size() > max_elements)
+            error("schema.minimum.limit", "The relationship minima exceed the element limit.");
+        for (const auto& [key, bounds] : project.schema.relationship_minima) {
+            (void)bounds;
+            if (!foreign_keys.contains(key))
+                error("schema.minimum.missing", "A relationship minimum refers to a missing connector.");
+        }
         if (project.schema.foreign_key_names.size() > max_elements)
             error("schema.foreign_key_name.limit", "The foreign key names exceed the element limit.");
         for (const auto& [column, chosen] : project.schema.foreign_key_names) {

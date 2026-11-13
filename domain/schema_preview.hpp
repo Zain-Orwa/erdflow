@@ -112,9 +112,11 @@ struct PreviewColumn {
     // identity of its own (column_identity).
     std::optional<RelationId> invented_for;
     std::optional<SpecializationId> discriminates;
-    // Whether the row it points at need not exist, and whether the relationship
-    // behind it is one to one. Together these decide how the line is drawn.
+    // The minima drawn at the referencing and referenced ends, and whether
+    // the referencing maximum is one. Explicit schema participation overrides
+    // the historical nullable-column default without changing required.
     bool optional_link = false;
+    bool optional_reference = false;
     bool one_to_one = false;
     auto operator<=>(const PreviewColumn&) const = default;
 };
