@@ -112,7 +112,8 @@ std::size_t payload(const SchemaColumn& value) { return value.name.capacity() + 
 std::size_t payload(const SchemaOverrides& value) {
     // Native tables and keys participate in the same bounded undo history.
     std::size_t native = entries(value.relations.size(), sizeof(Relation))
-                       + entries(value.foreign_keys.size(), sizeof(SchemaForeignKey));
+                       + entries(value.foreign_keys.size(), sizeof(SchemaForeignKey))
+                       + entries(value.relationship_minima.size(), sizeof(std::pair<const ForeignKeyId, SchemaRelationshipMinimum>));
     for (const auto& [id, table] : value.relations) {
         (void)id;
         native += table.name.capacity() + table.description.capacity() + table.comment.capacity();
@@ -1797,6 +1798,7 @@ EditResult Editor::connect_foreign_key_freely(RelationId referencing, std::optio
                     continue;
                 }
                 if (at->second.target == target) return EditResult{};
+                value.relationship_minima.erase(at->first);
                 at = value.foreign_keys.erase(at);
             }
             auto& held = *find_schema_column(value, *column);
@@ -1842,11 +1844,30 @@ EditResult Editor::erase_foreign_key(ForeignKeyId id) {
         if (!project().schema.foreign_keys.contains(id)) return failure("The foreign key no longer exists.");
         auto value = project().schema;
         value.foreign_keys.erase(id);
+        value.relationship_minima.erase(id);
         auto layout = project().schema_layout;
         layout.lines.erase(id);
         delta.schema = std::move(value);
         delta.schema_layout = std::move(layout);
         return EditResult{};
+    });
+}
+
+EditResult Editor::set_schema_relationship_minimum(ForeignKeyId key, bool referencing, bool optional) {
+    return impl_->edit("Change relationship minimum", [&](Delta& delta) {
+        const auto preview = schema_preview(project());
+        for (const auto& table : preview.tables)
+            for (const auto& column : table.columns) {
+                if (column.key_id != key || !column.references) continue;
+                auto value = project().schema;
+                auto [at, inserted] = value.relationship_minima.try_emplace(key,
+                    SchemaRelationshipMinimum{column.optional_link, column.optional_reference});
+                (void)inserted;
+                (referencing ? at->second.referencing_optional : at->second.referenced_optional) = optional;
+                if (value != project().schema) delta.schema = std::move(value);
+                return EditResult{};
+            }
+        return failure("The connector no longer exists.");
     });
 }
 
@@ -1878,9 +1899,43 @@ const Relationship* relationship_for_key(const Project& project, ForeignKeyId ke
     }
     return nullptr;
 }
+// Map a named logical endpoint to the physical FK end that draws it. A
+// junction's two many endpoints live at the referencing ends of its two keys.
+std::optional<std::pair<ForeignKeyId, bool>> minimum_end(const Project& project, ForeignKeyId key, bool first) {
+    if (project.schema.standalone) {
+        const auto found = project.schema.foreign_keys.find(key);
+        if (found == project.schema.foreign_keys.end()) return {};
+        const auto& fk = found->second;
+        const auto other = junction_other(project.schema, fk);
+        const auto second_table = other ? other->to : fk.from;
+        const bool swapped = second_table < fk.to;
+        if (other) return std::pair{first == swapped ? other->id : key, true};
+        return std::pair{key, first == swapped};
+    }
+    std::size_t at = 0;
+    const auto* relationship = relationship_for_key(project, key, at);
+    if (!relationship || relationship->participants.size() != 2) return {};
+    const auto& sides = relationship->participants;
+    if (sides[0].maximum == Cardinality::Many && sides[1].maximum == Cardinality::Many)
+        return std::pair{foreign_key_from(LinkSource{sides[first ? 0 : 1].id}), true};
+    return std::pair{key, (first ? 0u : 1u) != at};
+}
+SchemaRelationshipMinimum drawn_minimum(const Project& project, ForeignKeyId key) {
+    for (const auto& table : schema_preview(project).tables)
+        for (const auto& column : table.columns)
+            if (column.key_id == key)
+                return {column.optional_link, column.optional_reference};
+    return {};
+}
 }
 
 std::optional<SchemaRelationshipEnds> Editor::schema_relationship_ends(ForeignKeyId key) const {
+    const auto optional = [&](bool first) {
+        const auto end = minimum_end(project(), key, first);
+        if (!end) return false;
+        const auto bounds = drawn_minimum(project(), end->first);
+        return end->second ? bounds.referencing_optional : bounds.referenced_optional;
+    };
     if (project().schema.standalone) {
         const auto found = project().schema.foreign_keys.find(key);
         if (found == project().schema.foreign_keys.end()) return {};
@@ -1896,7 +1951,7 @@ std::optional<SchemaRelationshipEnds> Editor::schema_relationship_ends(ForeignKe
         return SchemaRelationshipEnds{project().schema.relations.at(swapped ? second_table : fk.to).name,
             project().schema.relations.at(swapped ? fk.to : second_table).name,
             swapped ? maximum : (other ? Cardinality::Many : Cardinality::One),
-            swapped ? (other ? Cardinality::Many : Cardinality::One) : maximum};
+            swapped ? (other ? Cardinality::Many : Cardinality::One) : maximum, optional(true), optional(false)};
     }
     std::size_t first = 0;
     const auto* relationship = relationship_for_key(project(), key, first);
@@ -1908,13 +1963,14 @@ std::optional<SchemaRelationshipEnds> Editor::schema_relationship_ends(ForeignKe
         const auto chosen = project().decisions.table_name.find(relation_from(ref));
         return chosen == project().decisions.table_name.end() ? domain::name(project(), ref) : chosen->second;
     };
-    return SchemaRelationshipEnds{called(a), called(b), a.maximum, b.maximum};
+    return SchemaRelationshipEnds{called(a), called(b), a.maximum, b.maximum, optional(true), optional(false)};
 }
 
 EditResult Editor::change_schema_relationship(ForeignKeyId key, Cardinality first, Cardinality second,
-                                              bool flip, ForeignKeyId* selected) {
+                                              bool flip, ForeignKeyId* selected,
+                                              std::optional<SchemaEndpointMinimum> minimum) {
     ForeignKeyId next = key;
-    auto result = impl_->edit(flip ? "Flip schema relationship" : "Change schema relationship", [&](Delta& delta) {
+    const auto change = [&](Delta& delta) {
         if ((first != Cardinality::One && first != Cardinality::Many)
             || (second != Cardinality::One && second != Cardinality::Many))
             return failure("Choose One or Many for each end.");
@@ -1944,6 +2000,13 @@ EditResult Editor::change_schema_relationship(ForeignKeyId key, Cardinality firs
                     ? value.participants[flip ? 1 - at : at].id : a.id)});
             if (next != key && !(original->participants[0].maximum == Cardinality::Many
                                && original->participants[1].maximum == Cardinality::Many)) {
+                auto schema = project().schema;
+                if (const auto minimum = schema.relationship_minima.find(key); minimum != schema.relationship_minima.end()) {
+                    const auto bounds = minimum->second;
+                    schema.relationship_minima.erase(minimum);
+                    schema.relationship_minima[next] = {bounds.referenced_optional, bounds.referencing_optional};
+                    delta.schema = std::move(schema);
+                }
                 auto arranged = project().schema_layout;
                 if (const auto shape = arranged.lines.find(key); shape != arranged.lines.end()) {
                     auto reversed = shape->second;
@@ -2005,6 +2068,7 @@ EditResult Editor::change_schema_relationship(ForeignKeyId key, Cardinality firs
                 if (!table.description.empty() || !table.comment.empty())
                     return failure("The junction table has its own description or comment. Keep it and edit its foreign keys individually.");
                 value.foreign_keys.erase(other->id);
+                value.relationship_minima.erase(other->id);
                 value.relations.erase(original.from);
                 value.added.erase(original.from);
                 value.column_order.erase(original.from);
@@ -2072,6 +2136,8 @@ EditResult Editor::change_schema_relationship(ForeignKeyId key, Cardinality firs
                 add(holder, target, target == a ? *a_key : *b_key, key, false, one_to_one);
             }
             if (!bridge && !other) {
+                if (auto minimum = value.relationship_minima.find(key); minimum != value.relationship_minima.end())
+                    std::swap(minimum->second.referencing_optional, minimum->second.referenced_optional);
                 if (auto shape = arranged.lines.find(key); shape != arranged.lines.end()) {
                     std::reverse(shape->second.route.begin(), shape->second.route.end());
                     std::swap(shape->second.from, shape->second.to);
@@ -2082,6 +2148,39 @@ EditResult Editor::change_schema_relationship(ForeignKeyId key, Cardinality firs
         if (value != project().schema) delta.schema = std::move(value);
         if (arranged != project().schema_layout) delta.schema_layout = std::move(arranged);
         return EditResult{};
+    };
+    auto result = impl_->edit(flip ? "Flip schema relationship" : "Change schema relationship", [&](Delta& delta) {
+        const auto changed = change(delta);
+        if (!changed) return changed;
+        const auto explicit_minimum = [&](bool first) -> std::optional<bool> {
+            const auto end = minimum_end(project(), key, flip ? !first : first);
+            if (!end) return {};
+            const auto bounds = project().schema.relationship_minima.find(end->first);
+            if (bounds == project().schema.relationship_minima.end()) return {};
+            return end->second ? bounds->second.referencing_optional : bounds->second.referenced_optional;
+        };
+        if (!minimum && !explicit_minimum(true) && !explicit_minimum(false)) return changed;
+        // Read the resulting keys after a move or junction conversion. Keep
+        // explicit minima with the named endpoints, including across M:M,
+        // and apply a full cardinality choice in this same undo step.
+        auto candidate = project();
+        auto changes = delta;
+        changes.toggle(candidate);
+        const auto record = [&](bool first, bool optional) {
+            const auto end = minimum_end(candidate, next, first);
+            if (!end) return false;
+            auto bounds = drawn_minimum(candidate, end->first);
+            (end->second ? bounds.referencing_optional : bounds.referenced_optional) = optional;
+            candidate.schema.relationship_minima[end->first] = bounds;
+            return true;
+        };
+        for (const bool first : {true, false})
+            if (const auto optional = explicit_minimum(first); optional && !record(first, *optional))
+                return failure("This connector has no editable binary endpoint.");
+        if (minimum && !record(minimum->first, minimum->optional))
+            return failure("This connector has no editable binary endpoint.");
+        if (candidate.schema != project().schema) delta.schema = std::move(candidate.schema);
+        return changed;
     });
     if (result && selected) *selected = next;
     return result;
@@ -2336,7 +2435,10 @@ EditResult Editor::erase_schema_column(SchemaColumnId id) {
         auto layout = project().schema_layout;
         std::erase_if(value.foreign_keys, [&](const auto& entry) {
             const bool drop = entry.second.column == id || entry.second.target == id;
-            if (drop) layout.lines.erase(entry.first);
+            if (drop) {
+                layout.lines.erase(entry.first);
+                value.relationship_minima.erase(entry.first);
+            }
             return drop;
         });
         delta.schema_layout = std::move(layout);
@@ -2966,6 +3068,7 @@ EditResult Editor::disconnect(RelationshipId relationship, ParticipantId partici
         // key made for another side keeps all of them.
         const auto key = foreign_key_from(LinkSource{participant});
         auto schema = schema_with(project().schema, [&](SchemaOverrides& s) {
+            s.relationship_minima.erase(key);
             std::erase_if(s.foreign_key_names, [&](const auto& entry) { return entry.first.key == key; });
             forget_in_orders(s, [&](const ColumnIdentity& column) {
                 const auto* part = std::get_if<ForeignKeyColumn>(&column);
@@ -3412,6 +3515,7 @@ EditResult Editor::erase(const std::vector<ElementRef>& elements,
         std::erase_if(overrides.hidden, [&](const AttributeId& id) { return gone.contains(ElementRef{id}); });
         std::erase_if(overrides.key_names, [&](const auto& entry) { return gone_relations.contains(entry.first); });
         std::erase_if(overrides.counting_keys, [&](const auto& id) { return gone_relations.contains(id); });
+        std::erase_if(overrides.relationship_minima, [&](const auto& entry) { return gone_keys.contains(entry.first); });
         std::erase_if(overrides.foreign_key_names, [&](const auto& entry) { return gone_keys.contains(entry.first.key); });
         // An order given to a table's columns goes with the table, and loses
         // each column whose element goes with these.

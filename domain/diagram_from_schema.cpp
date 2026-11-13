@@ -382,6 +382,9 @@ DiagramFromSchema diagram_from_schema(const Project& project, const std::map<Rel
         if (own->name != made.relationships.at(relationship).name + "ID") overrides.key_names[relation] = own->name;
         if (own->auto_increment) overrides.counting_keys.insert(relation);
     }
+    for (const auto& [old_key, bounds] : project.schema.relationship_minima)
+        if (const auto side = link_of.find(old_key); side != link_of.end())
+            overrides.relationship_minima[foreign_key_from(LinkSource{side->second})] = bounds;
     made.schema = overrides;
 
     // Where the tables sit on the schema, and how they were sized and their

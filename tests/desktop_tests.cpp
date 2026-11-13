@@ -9238,6 +9238,134 @@ void navigation_foldout_tests()
     require(window.menuBar()->isNativeMenuBar() || !window.menuBar()->isVisible(), "The old non-native seven-item menu row stays hidden");
 }
 
+void schema_startup_scroll_tests()
+{
+    infrastructure::QtIdGenerator ids;
+    infrastructure::ErdxProjectStore store;
+    application::Editor fixture(ids);
+    fixture.new_schema_project();
+    require(fixture.create_relation("Near", domain::Point{50, 22}).ok
+            && fixture.create_relation("Far", domain::Point{2000, 2000}).ok, "A schema that scrolls in both directions");
+    QTemporaryDir files;
+    const auto path = files.filePath("scroll.erdx");
+    require(store.save(path.toStdString(), fixture.project()).ok, "Save the startup fixture");
+    application::Editor editor(ids);
+    desktop::MainWindow window(editor, store, ids);
+    window.set_theme(desktop::ThemeId::Azure);
+    window.showMaximized();
+    QTimer::singleShot(0, &window, [&] {
+        require(window.open_path(path), "Open a standalone schema at startup");
+        window.open_schema(true);
+    });
+    QTest::qWait(700); // startup also schedules the full-view transition at 320 ms
+    settle_motion(window);
+    auto *panel = child<QWidget>(window, "schemaPanel");
+    auto *area = child<QScrollArea>(window, "schemaScroll");
+    auto *controls = child<QWidget>(window, "schemaControls");
+    require(panel->y() == 0 && panel->height() == panel->parentWidget()->height(),
+            "Opening animation settles into the current full-height schema layout");
+    require(controls->isVisible() && area->rect().contains(controls->geometry())
+                && window.rect().contains(controls->mapTo(&window, controls->rect().bottomRight())),
+            "The existing view controls remain inside the visible window");
+    const auto placed = editor.project().schema_layout;
+    for (auto *bar : {area->horizontalScrollBar(), area->verticalScrollBar()}) {
+        require(bar->maximum() > 0, "The schema has its existing scroll range");
+        bar->setValue(bar->maximum());
+        settle();
+        require(bar->value() == bar->maximum(), "The canvas scrolls to its far edge");
+        bar->setValue(0);
+        settle();
+        require(bar->value() == 0, "The canvas scrolls back to its near edge");
+    }
+    require(editor.project().schema_layout == placed, "Scrolling preserves every table and connector position");
+    editor.mark_saved(editor.revision());
+}
+
+void relationship_minimum_controls_tests()
+{
+    infrastructure::QtIdGenerator ids;
+    application::Editor editor(ids);
+    infrastructure::ErdxProjectStore store;
+    editor.new_schema_project();
+    const auto parent = std::get<domain::RelationId>(*editor.create_relation("Book", domain::Point{80, 80}).created);
+    const auto child_table = std::get<domain::RelationId>(*editor.create_relation("Loan", domain::Point{650, 80}).created);
+    domain::ForeignKeyId key;
+    require(editor.connect_foreign_key(child_table, {}, "BookID", parent,
+                editor.project().schema.added.at(parent).front().id, &key).ok, "Connect the test tables");
+    require(editor.set_schema_relationship_minimum(key, true, false).ok, "Start with required participation");
+    desktop::MainWindow window(editor, store, ids);
+    window.resize(1440, 1000);
+    window.show();
+    window.open_schema(true);
+    auto *view = window.schema();
+    view->choose(desktop::ChosenForeignKey{key});
+    settle();
+    const auto panel = [&]() -> const QWidget& { return *child<QDockWidget>(window, "propertiesDock")->widget(); };
+    const auto choose_minimum = [&](const char* name, int index) {
+        auto *combo = window.findChild<QComboBox*>(name);
+        require(combo && combo->count() == 2, "Each connector end offers minimum Zero and One");
+        combo->setCurrentIndex(index);
+        QMetaObject::invokeMethod(combo, "activated", Qt::DirectConnection, Q_ARG(int, index));
+        settle();
+    };
+    const auto columns = editor.project().schema.added;
+    for (const auto notation : {desktop::Notation::CrowsFoot, desktop::Notation::MinMax,
+                               desktop::Notation::Chen, desktop::Notation::Bachman, desktop::Notation::Normal}) {
+        window.set_notation(notation);
+        settle();
+        const auto before = editor.project();
+        const auto required = view->grab().toImage();
+        choose_minimum("schemaReferencingMinimum", 0);
+        require(properties_value(panel(), "Referencing/Cardinality") == QStringList{"Zero or Many (0..N)"},
+                "The zero minimum and Many maximum read as Zero or Many");
+        const auto near_optional = view->grab().toImage();
+        choose_minimum("schemaReferencedMinimum", 0);
+        require(properties_value(panel(), "Referenced/Cardinality") == QStringList{"Zero or One (0..1)"},
+                "The referenced One maximum also allows Zero");
+        const auto both_optional = view->grab().toImage();
+        require(editor.project().schema.added == columns, "Minimum controls preserve all column constraints and types");
+        require(notation == desktop::Notation::Normal ? required == both_optional
+                    : required != near_optional && near_optional != both_optional,
+                "Each annotated notation draws the chosen minimum at both ends; Normal stays plain");
+        child<QAction>(window, "undoCommand")->trigger();
+        child<QAction>(window, "undoCommand")->trigger();
+        settle();
+        require(editor.project() == before, "Undo restores both minimum facts");
+        const auto restored = view->grab().toImage();
+        require(restored == required, "Undo restores the exact connector drawing");
+    }
+    // UNIQUE changes only the maximum, so the same Zero minimum becomes 0..1.
+    choose_minimum("schemaReferencingMinimum", 0);
+    auto *ratio = window.findChild<QComboBox*>("schemaRelationshipType");
+    require(ratio, "The relationship maximum is editable");
+    ratio->setCurrentIndex(0);
+    QMetaObject::invokeMethod(ratio, "activated", Qt::DirectConnection, Q_ARG(int, 0));
+    settle();
+    require(properties_value(panel(), "Referencing/Cardinality") == QStringList{"Zero or One (0..1)"},
+            "Zero-or-one is available at the referencing end as well");
+    for (const auto index : {2, 3}) {
+        auto *bounds = window.findChild<QComboBox*>("schemaRelationshipSecondMaximum");
+        require(bounds && bounds->findText("Zero or One (0..1)") >= 0
+                && bounds->findText("Zero or Many (0..N)") >= 0,
+                "Both optional cardinalities are offered as direct choices");
+        const auto previous = editor.project();
+        const auto position = editor.history_position();
+        bounds->setCurrentIndex(index);
+        QMetaObject::invokeMethod(bounds, "activated", Qt::DirectConnection, Q_ARG(int, index));
+        settle();
+        require(properties_value(panel(), "Referencing/Cardinality")
+                    == QStringList{index == 2 ? "Zero or One (0..1)" : "Zero or Many (0..N)"},
+                "Choosing an optional cardinality sets its maximum and zero minimum together");
+        if (editor.project() != previous) {
+            require(editor.history_position() == position + 1, "The full cardinality is one undo step");
+            child<QAction>(window, "undoCommand")->trigger();
+            settle();
+            require(editor.project() == previous, "One undo restores the full previous bounds");
+        }
+    }
+    editor.mark_saved(editor.revision());
+}
+
 void normal_notation_tests()
 {
     infrastructure::QtIdGenerator ids;
@@ -10486,6 +10614,12 @@ int main(int argc, char **argv)
     std::optional<PaintingOnRequest> painting_on_request(std::in_place);
     try
     {
+        if (arguments.contains("--relationship-minima-only")) {
+            painting_on_request.reset();
+            schema_startup_scroll_tests();
+            relationship_minimum_controls_tests();
+            return 0;
+        }
         if (whole || window_tools_part) settling_tests();
         if (toolbar_fit_only || whole || window_tools_part) toolbar_fitting_tests();
         if (toolbar_fit_only) { std::cout << "Toolbar fitting tests passed\n"; return 0; }
@@ -10517,6 +10651,8 @@ int main(int argc, char **argv)
             // Relational Design's own checks look at what the schema really
             // paints on screen as it is scrolled, so they are drawn as usual.
             painting_on_request.reset();
+            schema_startup_scroll_tests();
+            relationship_minimum_controls_tests();
             relational_design_tests(ids);
             painting_on_request.emplace();
             if (arguments.contains("--schema-connections-only"))
@@ -12474,6 +12610,23 @@ int main(int argc, char **argv)
                 "Cardinality edit preserves participant ID");
         require(window.editor().project().relationships.at(relationship).participants.front().maximum == domain::Cardinality::One,
                 "Participant form applies cardinality");
+
+        for (const auto index : {2, 3}) {
+            auto *card = child<QDockWidget>(window, "propertiesDock")->findChildren<QWidget*>("participantCard").front();
+            auto *bounds = card->findChild<QComboBox*>("participantCardinality");
+            require(bounds && bounds->count() == 4, "Conceptual offers all four endpoint bounds directly");
+            const auto before = editor.project();
+            bounds->setCurrentIndex(index);
+            QMetaObject::invokeMethod(bounds, "activated", Q_ARG(int, index));
+            settle();
+            const auto& side = editor.project().relationships.at(relationship).participants.front();
+            require(side.participation == domain::Participation::Partial
+                        && side.maximum == (index == 2 ? domain::Cardinality::One : domain::Cardinality::Many),
+                    "Conceptual supports both Zero or One and Zero or Many without changing participant identity");
+            child<QAction>(window, "undoCommand")->trigger();
+            settle();
+            require(editor.project() == before, "A full conceptual cardinality undoes in one step");
+        }
 
         // The ratio sets both sides at once and stays in step with them.
         auto *ratio = child<QComboBox>(window, "relationshipRatio");

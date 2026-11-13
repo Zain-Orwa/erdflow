@@ -102,8 +102,43 @@ These have been decided and are not open unless Zain reopens them.
   not prevented.
 - **The schema generates the SQL.** Constraints shown there are database facts,
   not decoration, and `NULL` stays distinct from zero and from the empty string.
+- **Zero cardinality is optional participation, in both workspaces** (Zain,
+  2026-11-13). Offer `0..1` and `0..many` directly alongside the mandatory
+  bounds, and draw them at connector ends in Conceptual and Schema. Crow's
+  Foot uses the hollow circle with a bar or a foot; the other annotated
+  notations use their own participation marks. Normal keeps plain lines.
+  Relationship minima, a stored numeric zero, and `NULL` are distinct.
+  Existing key, identifier, UNIQUE and NULL / NOT NULL controls keep their
+  meanings. New changes are built locally and tested by Zain before he asks
+  for a GitHub push or release.
 - **Vocabulary is that of database tools.** Export and Import, never Download
   and Upload.
+
+---
+
+## Where work starts
+
+**Every change, fix or improvement starts in one place: this folder,
+`/Users/zain/Developer/ERDFlow/erdflow`, on Zain's own computer.** (Zain,
+2026-11-12.) Then it is committed, pushed and merged, in that order:
+
+1. **Before starting,** this folder's `main` must match GitHub's
+   (`git fetch`, then `git status` says it is up to date) and nothing may be
+   uncommitted. If either is not so, stop and tell Zain before doing anything.
+2. **Work on a branch made from that `main`,** here. Not in a separate copy,
+   clone or worktree that this folder does not have.
+3. **Commit it.** Nothing is left as loose, uncommitted work in this folder
+   when a piece of work is finished, and nothing is called done while it
+   exists only here.
+4. **Push it and open a pull request,** once Zain has said to. Merging and
+   releasing are his to approve.
+5. **A release is made only from GitHub's `main`,** after the work is merged
+   there, and afterwards this folder is brought back to that `main`.
+
+Why: features were built here as uncommitted work and never committed. Two
+releases were then made from clean copies that did not have them, and what
+Zain had been using was missing from the application everybody else
+received. One place to start from, and commits, are what prevent that.
 
 ---
 

@@ -3357,6 +3357,7 @@ void SchemaView::reroute() {
         routed.to_table = target;
         routed.many = !column.one_to_one;
         routed.optional = column.optional_link;
+        routed.optional_reference = column.optional_reference;
 
         // Corners put in by hand win outright: the line goes where it was put,
         // and the router is not consulted about a shape somebody has decided.
@@ -3762,15 +3763,31 @@ void SchemaView::paint_schema(QPainter& painter, const QRectF& exposed, std::opt
     // A picture drawn on no ground has nothing to lay under a mark, so there
     // the lines are kept out of the places the marks need to themselves.
     std::optional<QPainterPath> kept_off;
-    if (no_ground && notation_ != Notation::Normal) {
+    if ((no_ground || notation_ == Notation::Chen) && notation_ != Notation::Normal) {
         QPainterPath marks;
         for (const auto& routed : routes_) {
             if (!on_view(routed)) continue;
             if (labelled) {
                 for (const auto& [at, step] : {std::pair{routed.from, routed.from_step}, std::pair{routed.to, routed.to_step}})
-                    if (const auto [box, room] = label_beside(at, step); room) marks.addRect(box);
-            } else if (routed.optional) {
-                marks.addEllipse(end_point(routed.from, routed.from_step, minimum_at, 0), hollow_radius, hollow_radius);
+                    if (const auto [box, room] = label_beside(at, step); no_ground && room) marks.addRect(box);
+                if (notation_ == Notation::Chen) {
+                    const auto total = [&](QPointF at, QPointF step, bool optional) {
+                        if (optional) return;
+                        QPolygonF gap;
+                        for (const auto [along, side] : {std::pair{1., -2.}, {12., -2.}, {12., 2.}, {1., 2.}})
+                            gap << end_point(at, step, along, side);
+                        marks.addPolygon(gap);
+                    };
+                    // Chen participation is read from the opposite bound:
+                    // 0..N children means the parent may take no part.
+                    total(routed.from, routed.from_step, routed.optional_reference);
+                    total(routed.to, routed.to_step, routed.optional);
+                }
+            } else {
+                if (routed.optional)
+                    marks.addEllipse(end_point(routed.from, routed.from_step, minimum_at, 0), hollow_radius, hollow_radius);
+                if (routed.optional_reference)
+                    marks.addEllipse(end_point(routed.to, routed.to_step, minimum_at, 0), hollow_radius, hollow_radius);
             }
         }
         QPainterPath everywhere;
@@ -3834,7 +3851,7 @@ void SchemaView::paint_schema(QPainter& painter, const QRectF& exposed, std::opt
     // to face whichever side the line arrives on.
     const auto draw_ends = [&](const Routed& routed) {
         if (notation_ == Notation::Normal) return;
-        const auto draw_end = [&](QPointF at, QPointF step, bool many, bool optional) {
+        const auto draw_end = [&](QPointF at, QPointF step, bool many, bool optional, bool chen_optional) {
             const auto point = [&](double along, double side) { return end_point(at, step, along, side); };
             painter.setPen(QPen(dim(routed.colour, line_shown(routed)), 2.2));
             painter.setBrush(Qt::NoBrush);
@@ -3845,6 +3862,13 @@ void SchemaView::paint_schema(QPainter& painter, const QRectF& exposed, std::opt
                 // table's own words. On no ground the lines were kept off it.
                 const auto [box, room] = label_beside(at, step);
                 if (room && !no_ground) painter.fillRect(box, mark_ground);
+                if (notation_ == Notation::Chen && !chen_optional) {
+                    // Chen's total participation is a double line; partial
+                    // participation keeps the single connector. Keep the two
+                    // strokes short and clear of the cardinality label.
+                    for (const auto side : {-3.5, 3.5})
+                        painter.drawLine(point(1, side), point(12, side));
+                }
                 painter.drawText(box, Qt::AlignCenter,
                                  notation_ == Notation::Chen
                                      ? (many ? "M" : "1")
@@ -3871,8 +3895,8 @@ void SchemaView::paint_schema(QPainter& painter, const QRectF& exposed, std::opt
                 painter.drawLine(point(minimum_at, -foot_spread), point(minimum_at, foot_spread));
             }
         };
-        draw_end(routed.from, routed.from_step, routed.many, routed.optional);
-        draw_end(routed.to, routed.to_step, false, false);
+        draw_end(routed.from, routed.from_step, routed.many, routed.optional, routed.optional_reference);
+        draw_end(routed.to, routed.to_step, false, routed.optional_reference, routed.optional);
     };
 
     // Then the tables.

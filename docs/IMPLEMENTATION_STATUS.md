@@ -3935,3 +3935,67 @@ before.
   and `refresh_schema_properties` finish; `--notation normal` (`main.cpp`).
 - Tests: desktop `properties_scroll_place_tests`.
 - `CLAUDE.md` says five notations are offered.
+
+
+## Explicit relationship minima (2026-11-13)
+
+Selecting a schema connector offers **Zero (0) — optional** and
+**One (1) — required** in each of its Ends cards, including the referenced
+end. Together with the existing One / Many maximum controls, this supports
+0..1, 1..1, 0..N and 1..N. The named endpoint dropdowns also offer all four
+bounds directly, including **Zero or One (0..1)** and **Zero or Many (0..N)**;
+choosing one applies its maximum and minimum in a single undo step. The
+cardinality description updates immediately.
+The conceptual participant form offers the same four cardinalities directly
+and also names its minimum as Zero or One alongside partial / total
+participation; both controls stay in step. The existing conceptual renderer
+draws these bounds at connector ends in each annotated notation.
+
+Crow's Foot uses a hollow circle for minimum zero; Min–max writes numeric
+bounds; Chen uses single / double participation lines; Bachman uses its
+existing optional-end circle. Normal intentionally keeps plain connectors.
+Hollow markers remain hollow in transparent exports, at either end.
+
+Explicit schema minima are refinements of the schema, persisted in format
+38, independent of column types, `NULL` / `NOT NULL`, and stored values.
+Existing projects keep their previous defaults until a minimum is chosen.
+The choices undo/redo, follow a connector when its physical direction is
+reversed, and are retained when a schema is converted into a diagram.
+
+
+Validation for the local review build: all 12 functional CTest suites pass in
+Debug and Release. The visual suite reports the same six baseline failures on
+unchanged main f4389ab; ten rendered snapshots are byte-identical between main
+and this work, and only the Conceptual properties snapshot changes with its new
+cardinality / participation choices. The supplied format-37 Simple Library
+opens, an illustrative copy saves and reopens in format 38 with its original
+columns and constraints intact, and schema exports were inspected in all four
+annotated notations. The source changes are committed locally for Zain to test;
+nothing has been pushed or released.
+
+
+## Schema startup layout correction (2026-11-13)
+
+When the window finishes maximising while the schema opening animation runs,
+the animation's original destination can leave the full-height schema partway
+down the stage. The lower canvas, scrollbars and view controls then extend
+past the visible window. The animation now finishes by applying the existing
+current layout. Table and connector coordinates, scroll/pan/zoom handlers,
+view controls and schema presentation are unchanged. A startup regression
+check opens a saved schema, checks that the full canvas and controls are inside
+the window, scrolls to each edge and back, and verifies the saved positions.
+
+Both Debug and Release pass all 12 functional suites with this correction,
+including the startup/scroll regression check. The visual suite retains the
+same six pre-existing baseline failures; its mismatch figures are unchanged.
+
+
+## Release 0.3.4 validation (2026-11-14)
+
+Zain approved publishing the tested optional-cardinality work and requested
+that obsolete snapshots and parallel source checkouts be retired. The macOS
+26 visual references were inspected against the current UI and refreshed;
+they now represent the released controls rather than the superseded UI.
+All 13 CTest suites pass in both Debug and Release, including visual and the
+schema startup/scrolling regression check. No scrolling, pan, zoom or table
+layout behavior was replaced to add optional cardinalities.

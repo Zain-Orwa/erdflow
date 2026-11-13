@@ -836,3 +836,21 @@ for being an unsupported field, and unpaired surrogates and truncated,
 non-hexadecimal or unknown escapes are each refused by their own reported
 reason. See the [performance baseline](PERFORMANCE_BASELINE.md) for why the
 preflight avoids the parser.
+
+
+## Version 38: explicit relationship minima
+
+The writer emits version 38 (2026-11-13). `project.schema` may contain
+`relationship_minima`, an array of objects with exactly `key` (foreign-key
+UUID), `referencing_optional` (boolean), and `referenced_optional` (boolean).
+True means minimum zero; false means minimum one. The maximum still comes
+from the relationship / key constraints. These participation bounds do not
+store data values or change column `NULL` / `NOT NULL` constraints.
+
+The section is omitted when empty. Files of versions 1–37 retain their
+previous endpoint defaults; a minimum chosen explicitly then survives future
+changes to column nullability. Unknown fields, duplicate keys, non-boolean
+bounds, and references to nonexistent connector identities are rejected.
+An older reader rejects version 38 instead of discarding the new bounds.
+The bounds are part of schema undo/redo and follow connector direction changes
+and conversion from a standalone schema into a conceptual diagram.

@@ -68,7 +68,7 @@ namespace {
 // the columns of a table worked out from the diagram.
 // Version 35 distinguishes borderless free text from card notes and symbols.
 // Version 37 keeps the rows put into the schema's tables to practise with.
-constexpr int current_format_version = 37;
+constexpr int current_format_version = 38;
 
 // A titled card note, written by an older ERDFlow, as the free text it is now
 // read as: the title on the first line and the text beneath. Kept within a
@@ -497,24 +497,48 @@ QJsonObject encode_schema(const SchemaOverrides& schema) {
         for (const auto& column : columns) listed.append(column_identity_object(column));
         column_order.append(QJsonObject{{"relation", uuid_text(relation.value)}, {"columns", listed}});
     }
-    return QJsonObject{{"added", added}, {"hidden", hidden}, {"keys", keys},
+    QJsonObject encoded{{"added", added}, {"hidden", hidden}, {"keys", keys},
                        {"counting_keys", counting}, {"standalone", schema.standalone},
                        {"relations", relations}, {"foreign_keys", foreign_keys},
                        {"foreign_key_names", key_names}, {"column_order", column_order}};
+    if (!schema.relationship_minima.empty()) {
+        QJsonArray minima;
+        for (const auto& [key, bounds] : schema.relationship_minima)
+            minima.append(QJsonObject{{"key", uuid_text(key.value)},
+                {"referencing_optional", bounds.referencing_optional},
+                {"referenced_optional", bounds.referenced_optional}});
+        encoded["relationship_minima"] = minima;
+    }
+    return encoded;
 }
 
 SchemaOverrides parse_schema(const QJsonValue& value, bool named_keys, bool counted,
                             bool relational, bool native, bool renamed_keys, bool ordered_keys,
-                            bool ordered_columns) {
-    auto o = ordered_columns ? object(value, {"added", "hidden", "keys", "counting_keys", "standalone", "relations",
+                            bool ordered_columns, bool minimum_bounds) {
+    // Version 38 permits this optional section; older readers still reject it.
+    auto base = value;
+    QJsonArray minima;
+    if (minimum_bounds && base.isObject() && base.toObject().contains("relationship_minima")) {
+        auto fields = base.toObject();
+        minima = array(fields.take("relationship_minima"));
+        base = fields;
+    }
+    auto o = ordered_columns ? object(base, {"added", "hidden", "keys", "counting_keys", "standalone", "relations",
                                               "foreign_keys", "foreign_key_names", "column_order"})
-           : renamed_keys ? object(value, {"added", "hidden", "keys", "counting_keys", "standalone", "relations",
+           : renamed_keys ? object(base, {"added", "hidden", "keys", "counting_keys", "standalone", "relations",
                                            "foreign_keys", "foreign_key_names"})
-           : native ? object(value, {"added", "hidden", "keys", "counting_keys", "standalone", "relations", "foreign_keys"})
-           : counted ? object(value, {"added", "hidden", "keys", "counting_keys"})
-           : named_keys ? object(value, {"added", "hidden", "keys"})
-                        : object(value, {"added", "hidden"});
+           : native ? object(base, {"added", "hidden", "keys", "counting_keys", "standalone", "relations", "foreign_keys"})
+           : counted ? object(base, {"added", "hidden", "keys", "counting_keys"})
+           : named_keys ? object(base, {"added", "hidden", "keys"})
+                        : object(base, {"added", "hidden"});
     SchemaOverrides schema;
+    for (const auto& item : minima) {
+        const auto row = object(item, {"key", "referencing_optional", "referenced_optional"});
+        const SchemaRelationshipMinimum bounds{parse_flag(row["referencing_optional"], "referencing_optional"),
+            parse_flag(row["referenced_optional"], "referenced_optional")};
+        if (!schema.relationship_minima.emplace(ForeignKeyId{parse_id(row["key"])}, bounds).second)
+            invalid("Duplicate relationship minimum.");
+    }
     if (native) {
         schema.standalone = parse_flag(o["standalone"], "standalone");
         for (const auto& item : array(o["relations"])) {
@@ -1566,7 +1590,7 @@ application::LoadResult ErdxProjectStore::decode(const QByteArray& input) {
         if (catalogued) project.decisions = parse_decisions(data["decisions"], relational, number_version >= 28);
         if (diverged) project.schema = parse_schema(data["schema"], named_keys, generated, relational, number_version >= 30,
                                                          number_version >= 31, number_version >= 32,
-                                                         number_version >= 33);
+                                                         number_version >= 33, number_version >= 38);
         if (arranged) project.schema_layout = parse_layout(data["schema_layout"], pulled_tables, relational);
         if (practised) {
             project.practice = parse_practice(data["practice"]);

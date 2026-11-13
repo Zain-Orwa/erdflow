@@ -684,10 +684,19 @@ struct DiscriminatorColumn {
 using ColumnIdentity =
     std::variant<AttributeId, SchemaColumnId, ForeignKeyColumn, InventedKeyColumn, DiscriminatorColumn>;
 
+// Explicit schema participation bounds, separate from the stored column value
+// and its NULL / NOT NULL constraint. The maximum still comes from the key.
+struct SchemaRelationshipMinimum {
+    bool referencing_optional = false;
+    bool referenced_optional = false;
+    auto operator<=>(const SchemaRelationshipMinimum&) const = default;
+};
+
 struct SchemaOverrides {
     bool standalone = false;
     std::map<RelationId, Relation> relations;
     std::map<ForeignKeyId, SchemaForeignKey> foreign_keys;
+    std::map<ForeignKeyId, SchemaRelationshipMinimum> relationship_minima;
     // Columns added to one table at the schema level only, in the order they
     // were added, under the element whose table they were added to.
     std::map<RelationId, std::vector<SchemaColumn>> added;

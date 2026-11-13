@@ -40,6 +40,13 @@ struct SchemaRelationshipEnds {
     std::string second_name;
     domain::Cardinality first = domain::Cardinality::One;
     domain::Cardinality second = domain::Cardinality::Many;
+    bool first_optional = false;
+    bool second_optional = false;
+};
+
+struct SchemaEndpointMinimum {
+    bool first = false;
+    bool optional = false;
 };
 
 class Editor {
@@ -88,6 +95,9 @@ public:
     EditResult add_foreign_key(domain::RelationId from, domain::SchemaColumnId column,
                                domain::RelationId to, domain::SchemaColumnId target);
     EditResult erase_foreign_key(domain::ForeignKeyId id);
+    // Set the minimum at one physical connector end without changing NULL,
+    // column types, or the relationship's maximum.
+    EditResult set_schema_relationship_minimum(domain::ForeignKeyId key, bool referencing, bool optional);
     // The logical ends behind a schema connector, including a binary
     // relationship represented by a junction table. A missing value means
     // this link has no editable binary relationship behind it.
@@ -97,7 +107,8 @@ public:
     // optionality and, for 1:1, which end carries the foreign key.
     EditResult change_schema_relationship(domain::ForeignKeyId key,
                                            domain::Cardinality first, domain::Cardinality second,
-                                           bool flip = false, domain::ForeignKeyId* selected = nullptr);
+                                           bool flip = false, domain::ForeignKeyId* selected = nullptr,
+                                           std::optional<SchemaEndpointMinimum> minimum = {});
     // Connect with its constraints off (Zain, 2026-10-23): the column made to
     // refer to `target`, asking nothing. A column that already refers
     // somewhere is pointed here instead; it takes the target's type and size;
