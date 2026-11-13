@@ -8382,7 +8382,12 @@ namespace erdflow::desktop
         schema_panel_->setGeometry(0, at.toInt(), stage->width(), tall); });
         connect(rise, &QVariantAnimation::finished, this, [this]
                 {
-        if (!schema_open_) schema_panel_->hide(); });
+        if (!schema_open_) schema_panel_->hide();
+        // The window can finish maximising or enter full schema view while
+        // this animation is running. Its captured destination then belongs
+        // to the old stage size: settle at the current layout, so the canvas
+        // and its scrollbars / controls remain wholly inside the window.
+        else lay_out_schema(); });
         rise->start(QAbstractAnimation::DeleteWhenStopped);
         if (auto *button = findChild<QPushButton *>("previewSchema"))
             button->setChecked(shown);

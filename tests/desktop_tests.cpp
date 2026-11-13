@@ -9238,6 +9238,49 @@ void navigation_foldout_tests()
     require(window.menuBar()->isNativeMenuBar() || !window.menuBar()->isVisible(), "The old non-native seven-item menu row stays hidden");
 }
 
+void schema_startup_scroll_tests()
+{
+    infrastructure::QtIdGenerator ids;
+    infrastructure::ErdxProjectStore store;
+    application::Editor fixture(ids);
+    fixture.new_schema_project();
+    require(fixture.create_relation("Near", domain::Point{50, 22}).ok
+            && fixture.create_relation("Far", domain::Point{2000, 2000}).ok, "A schema that scrolls in both directions");
+    QTemporaryDir files;
+    const auto path = files.filePath("scroll.erdx");
+    require(store.save(path.toStdString(), fixture.project()).ok, "Save the startup fixture");
+    application::Editor editor(ids);
+    desktop::MainWindow window(editor, store, ids);
+    window.set_theme(desktop::ThemeId::Azure);
+    window.showMaximized();
+    QTimer::singleShot(0, &window, [&] {
+        require(window.open_path(path), "Open a standalone schema at startup");
+        window.open_schema(true);
+    });
+    QTest::qWait(700); // startup also schedules the full-view transition at 320 ms
+    settle_motion(window);
+    auto *panel = child<QWidget>(window, "schemaPanel");
+    auto *area = child<QScrollArea>(window, "schemaScroll");
+    auto *controls = child<QWidget>(window, "schemaControls");
+    require(panel->y() == 0 && panel->height() == panel->parentWidget()->height(),
+            "Opening animation settles into the current full-height schema layout");
+    require(controls->isVisible() && area->rect().contains(controls->geometry())
+                && window.rect().contains(controls->mapTo(&window, controls->rect().bottomRight())),
+            "The existing view controls remain inside the visible window");
+    const auto placed = editor.project().schema_layout;
+    for (auto *bar : {area->horizontalScrollBar(), area->verticalScrollBar()}) {
+        require(bar->maximum() > 0, "The schema has its existing scroll range");
+        bar->setValue(bar->maximum());
+        settle();
+        require(bar->value() == bar->maximum(), "The canvas scrolls to its far edge");
+        bar->setValue(0);
+        settle();
+        require(bar->value() == 0, "The canvas scrolls back to its near edge");
+    }
+    require(editor.project().schema_layout == placed, "Scrolling preserves every table and connector position");
+    editor.mark_saved(editor.revision());
+}
+
 void relationship_minimum_controls_tests()
 {
     infrastructure::QtIdGenerator ids;
@@ -10573,6 +10616,7 @@ int main(int argc, char **argv)
     {
         if (arguments.contains("--relationship-minima-only")) {
             painting_on_request.reset();
+            schema_startup_scroll_tests();
             relationship_minimum_controls_tests();
             return 0;
         }
@@ -10607,6 +10651,7 @@ int main(int argc, char **argv)
             // Relational Design's own checks look at what the schema really
             // paints on screen as it is scrolled, so they are drawn as usual.
             painting_on_request.reset();
+            schema_startup_scroll_tests();
             relationship_minimum_controls_tests();
             relational_design_tests(ids);
             painting_on_request.emplace();

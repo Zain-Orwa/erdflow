@@ -3972,3 +3972,19 @@ opens, an illustrative copy saves and reopens in format 38 with its original
 columns and constraints intact, and schema exports were inspected in all four
 annotated notations. The source changes are committed locally for Zain to test;
 nothing has been pushed or released.
+
+
+## Schema startup layout correction (2026-11-13)
+
+When the window finishes maximising while the schema opening animation runs,
+the animation's original destination can leave the full-height schema partway
+down the stage. The lower canvas, scrollbars and view controls then extend
+past the visible window. The animation now finishes by applying the existing
+current layout. Table and connector coordinates, scroll/pan/zoom handlers,
+view controls and schema presentation are unchanged. A startup regression
+check opens a saved schema, checks that the full canvas and controls are inside
+the window, scrolls to each edge and back, and verifies the saved positions.
+
+Both Debug and Release pass all 12 functional suites with this correction,
+including the startup/scroll regression check. The visual suite retains the
+same six pre-existing baseline failures; its mismatch figures are unchanged.
