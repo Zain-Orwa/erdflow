@@ -3988,3 +3988,14 @@ the window, scrolls to each edge and back, and verifies the saved positions.
 Both Debug and Release pass all 12 functional suites with this correction,
 including the startup/scroll regression check. The visual suite retains the
 same six pre-existing baseline failures; its mismatch figures are unchanged.
+
+
+## Release 0.3.4 validation (2026-11-14)
+
+Zain approved publishing the tested optional-cardinality work and requested
+that obsolete snapshots and parallel source checkouts be retired. The macOS
+26 visual references were inspected against the current UI and refreshed;
+they now represent the released controls rather than the superseded UI.
+All 13 CTest suites pass in both Debug and Release, including visual and the
+schema startup/scrolling regression check. No scrolling, pan, zoom or table
+layout behavior was replaced to add optional cardinalities.
