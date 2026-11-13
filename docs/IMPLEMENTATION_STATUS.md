@@ -3961,3 +3961,14 @@ Explicit schema minima are refinements of the schema, persisted in format
 Existing projects keep their previous defaults until a minimum is chosen.
 The choices undo/redo, follow a connector when its physical direction is
 reversed, and are retained when a schema is converted into a diagram.
+
+
+Validation for the local review build: all 12 functional CTest suites pass in
+Debug and Release. The visual suite reports the same six baseline failures on
+unchanged main f4389ab; ten rendered snapshots are byte-identical between main
+and this work, and only the Conceptual properties snapshot changes with its new
+cardinality / participation choices. The supplied format-37 Simple Library
+opens, an illustrative copy saves and reopens in format 38 with its original
+columns and constraints intact, and schema exports were inspected in all four
+annotated notations. The source changes are committed locally for Zain to test;
+nothing has been pushed or released.
